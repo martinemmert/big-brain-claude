@@ -7,6 +7,10 @@ sessions at once. Brain shows every session across all your Claude accounts, wha
 is doing, and above all **which ones are waiting for you**. One key jumps to the session's
 iTerm2 tab.
 
+https://github.com/user-attachments/assets/dc7c6023-01a2-48a5-aaae-39ee590d54b0
+
+*A three-minute tour, narrated. Brain runs on made-up demo sessions here.*
+
 ![Brain with demo data](docs/screenshot.png)
 
 Built with [GPUI](https://gpui.rs), the GPU-accelerated UI framework from Zed. The interface
