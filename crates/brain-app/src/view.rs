@@ -11,8 +11,9 @@ use gpui::{
 };
 
 use crate::conversation::Conversation;
+use crate::input::{InputAction, LineInput};
 use crate::model::Model;
-use crate::system::{self, JumpResult};
+use crate::system::{self, ItermResult};
 use crate::theme;
 
 /// Sessions on "your turn" for longer than this move to the "Ruhend" section.
@@ -32,7 +33,20 @@ pub struct BrainView {
     tab: DetailTab,
     conversation: Option<Conversation>,
     messages_scroll: ScrollHandle,
+    mode: Mode,
+    search: LineInput,
+    rename: LineInput,
+    /// Session to scroll into view on the next render of the list.
+    pending_scroll: Option<SessionKey>,
     _poll: Task<()>,
+}
+
+/// Where typed keys go.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Normal,
+    Search,
+    Rename,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -88,6 +102,10 @@ impl BrainView {
             tab: DetailTab::Messages,
             conversation: None,
             messages_scroll: ScrollHandle::new(),
+            mode: Mode::Normal,
+            search: LineInput::default(),
+            rename: LineInput::default(),
+            pending_scroll: None,
             _poll: poll,
         };
         view.selected = view.groups(now_ms()).navigable(false).first().map(|s| s.key.clone());
@@ -115,7 +133,8 @@ impl BrainView {
             .board
             .sorted()
             .into_iter()
-            .filter(|s| self.filter.as_ref().is_none_or(|f| *f == s.key.account));
+            .filter(|s| self.filter.as_ref().is_none_or(|f| *f == s.key.account))
+            .filter(|s| s.matches(&self.search.text));
         for session in visible {
             match session.phase() {
                 Phase::NeedsYou => groups.attention.push(session),
@@ -143,6 +162,41 @@ impl BrainView {
 
     fn on_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
+        let clipboard = || cx.read_from_clipboard().and_then(|item| item.text());
+
+        match self.mode {
+            Mode::Rename => {
+                match self.rename.handle(keystroke, clipboard) {
+                    InputAction::Submit => self.submit_rename(),
+                    InputAction::Cancel => self.mode = Mode::Normal,
+                    InputAction::Changed | InputAction::Ignored => {}
+                }
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
+            Mode::Search if !matches!(keystroke.key.as_str(), "up" | "down" | "enter") => {
+                match self.search.handle(keystroke, clipboard) {
+                    InputAction::Cancel => {
+                        self.search.text.clear();
+                        self.mode = Mode::Normal;
+                    }
+                    InputAction::Changed => self.select_first_visible(),
+                    InputAction::Submit | InputAction::Ignored => {}
+                }
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
+            _ => {}
+        }
+
+        if keystroke.modifiers.platform && keystroke.key == "f" {
+            self.mode = Mode::Search;
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if keystroke.modifiers.platform || keystroke.modifiers.control {
             return;
         }
@@ -155,17 +209,23 @@ impl BrainView {
         let current = self.selected.as_ref().and_then(|k| list.iter().position(|l| l == k));
 
         match keystroke.key.as_str() {
-            "down" | "j" => self.select_index(&list, current.map_or(0, |i| (i + 1).min(list.len().saturating_sub(1)))),
-            "up" | "k" => self.select_index(&list, current.map_or(0, |i| i.saturating_sub(1))),
+            "down" => self.select_index(&list, current.map_or(0, |i| (i + 1).min(list.len().saturating_sub(1)))),
+            "up" => self.select_index(&list, current.map_or(0, |i| i.saturating_sub(1))),
             "enter" => self.jump_selected(),
+            "escape" if !self.search.text.is_empty() => self.search.text.clear(),
+            _ if self.mode == Mode::Search => return,
+            "j" => self.select_index(&list, current.map_or(0, |i| (i + 1).min(list.len().saturating_sub(1)))),
+            "k" => self.select_index(&list, current.map_or(0, |i| i.saturating_sub(1))),
             "tab" => self.cycle_filter(keystroke.modifiers.shift),
             "e" => self.show_ended = !self.show_ended,
+            "r" => self.start_rename(),
             "left" | "right" => {
                 self.tab = match self.tab {
                     DetailTab::Messages => DetailTab::Timeline,
                     DetailTab::Timeline => DetailTab::Messages,
                 }
             }
+            _ if keystroke.key_char.as_deref() == Some("/") => self.mode = Mode::Search,
             key if key.len() == 1 && ('1'..='9').contains(&key.chars().next().unwrap()) => {
                 let index = key.parse::<usize>().unwrap() - 1;
                 if index < list.len() {
@@ -179,10 +239,52 @@ impl BrainView {
         cx.notify();
     }
 
+    fn select_first_visible(&mut self) {
+        let first = self.groups(now_ms()).navigable(self.show_ended).first().map(|s| s.key.clone());
+        if first.is_some() {
+            self.selected = first.clone();
+            self.pending_scroll = first;
+        }
+    }
+
+    fn start_rename(&mut self) {
+        let Some(session) = self.selected.as_ref().and_then(|k| self.model.board.get(k)) else {
+            return;
+        };
+        if !session.accepts_input() {
+            self.set_status("Umbenennen geht nur, wenn die Session fertig ist und auf dich wartet – nicht während sie arbeitet oder eine Freigabe offen ist.");
+            return;
+        }
+        self.rename = LineInput::with_text(&session.display_name());
+        self.mode = Mode::Rename;
+    }
+
+    fn submit_rename(&mut self) {
+        self.mode = Mode::Normal;
+        let name = self.rename.text.trim().to_string();
+        let Some(key) = self.selected.clone() else { return };
+        let still_idle = self.model.board.get(&key).is_some_and(|s| s.accepts_input());
+        if name.is_empty() || !still_idle {
+            if !still_idle {
+                self.set_status("Die Session arbeitet inzwischen wieder – nicht umbenannt.");
+            }
+            return;
+        }
+        match system::type_into_session(key.pid, &format!("/rename {name}")) {
+            ItermResult::Done => self.set_status(&format!("„{name}“ an die Session geschickt (/rename).")),
+            ItermResult::NoTerminal => self.set_status("Kein Terminal zu dieser Session gefunden."),
+            ItermResult::Failed(reason) => self.set_status(&format!("Umbenennen fehlgeschlagen: {reason}")),
+        }
+    }
+
+    fn set_status(&mut self, message: &str) {
+        self.status = Some((message.to_string(), Instant::now()));
+    }
+
     fn select_index(&mut self, list: &[SessionKey], index: usize) {
         if let Some(key) = list.get(index) {
             self.selected = Some(key.clone());
-            self.list_scroll.scroll_to_item(index);
+            self.pending_scroll = Some(key.clone());
         }
     }
 
@@ -218,11 +320,11 @@ impl BrainView {
     fn jump_selected(&mut self) {
         let Some(key) = self.selected.clone() else { return };
         let message = match system::jump_to_iterm(key.pid) {
-            JumpResult::Focused => return,
-            JumpResult::NoTerminal => format!("pid {} hat kein Terminal (beendet oder SDK-Session)", key.pid),
-            JumpResult::NotFound(reason) => format!("Sprung fehlgeschlagen: {reason}"),
+            ItermResult::Done => return,
+            ItermResult::NoTerminal => format!("pid {} hat kein Terminal (beendet oder SDK-Session)", key.pid),
+            ItermResult::Failed(reason) => format!("Sprung fehlgeschlagen: {reason}"),
         };
-        self.status = Some((message, Instant::now()));
+        self.set_status(&message);
     }
 
     // ---- rendering -------------------------------------------------------------
@@ -293,11 +395,24 @@ impl BrainView {
     }
 
     fn render_list(&self, groups: &Groups, now: i64, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut children: Vec<AnyElement> = Vec::new();
+        let mut children: Vec<AnyElement> = vec![self.render_search(cx)];
         let mut nav_index = 0usize;
+        let searching = !self.search.text.is_empty();
+        let total = groups.navigable(true).len();
 
+        if searching && total == 0 {
+            children.push(
+                div()
+                    .px_3()
+                    .py_4()
+                    .text_sm()
+                    .text_color(theme::text_muted())
+                    .child(format!("Keine Session passt zu „{}“.", self.search.text))
+                    .into_any_element(),
+            );
+        }
         children.push(section_header("Braucht dich", groups.attention.len(), true));
-        if groups.attention.is_empty() {
+        if groups.attention.is_empty() && !searching {
             children.push(
                 div()
                     .px_3()
@@ -309,6 +424,7 @@ impl BrainView {
             );
         }
         for session in &groups.attention {
+            self.scroll_if_pending(&session.key, children.len(), nav_index);
             children.push(self.render_card(session, nav_index, now, cx).into_any_element());
             nav_index += 1;
         }
@@ -323,6 +439,7 @@ impl BrainView {
             }
             children.push(section_header(title, sessions.len(), false));
             for session in sessions.iter() {
+                self.scroll_if_pending(&session.key, children.len(), nav_index);
                 children.push(self.render_row(session, nav_index, now, cx).into_any_element());
                 nav_index += 1;
             }
@@ -343,6 +460,7 @@ impl BrainView {
             );
             if self.show_ended {
                 for session in &groups.ended {
+                    self.scroll_if_pending(&session.key, children.len(), nav_index);
                     children.push(self.render_row(session, nav_index, now, cx).into_any_element());
                     nav_index += 1;
                 }
@@ -363,6 +481,100 @@ impl BrainView {
             .border_r_1()
             .border_color(theme::border())
             .children(children)
+    }
+
+    fn scroll_if_pending(&self, key: &SessionKey, child_index: usize, nav_index: usize) {
+        if self.pending_scroll.as_ref() == Some(key) {
+            // The first session scrolls the list to the very top so the search
+            // field and section header stay visible.
+            self.list_scroll.scroll_to_item(if nav_index == 0 { 0 } else { child_index });
+        }
+    }
+
+    fn render_search(&self, cx: &mut Context<Self>) -> AnyElement {
+        let editing = self.mode == Mode::Search;
+        let query = self.search.text.clone();
+        let content: AnyElement = if query.is_empty() && !editing {
+            div().text_color(theme::text_faint()).child("Sessions durchsuchen").into_any_element()
+        } else {
+            div()
+                .flex()
+                .items_center()
+                .min_w_0()
+                .text_color(theme::text_strong())
+                .child(query)
+                .when(editing, |d| d.child(caret("search-caret")))
+                .into_any_element()
+        };
+        div()
+            .id("search")
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .px(px(10.))
+            .py(px(6.))
+            .mb(px(2.))
+            .rounded(px(7.))
+            .bg(theme::card_bg())
+            .border_1()
+            .border_color(if editing { gpui::rgba(0x4da3ff88) } else { theme::card_border() })
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.mode = Mode::Search;
+                cx.notify();
+            }))
+            .child(div().text_color(theme::text_muted()).child("⌕"))
+            .child(content)
+            .child(div().flex_1())
+            .child(kbd(if editing { "esc".into() } else { "/".into() }))
+            .into_any_element()
+    }
+
+    fn render_name(&self, s: &Session, cx: &mut Context<Self>) -> AnyElement {
+        if self.mode == Mode::Rename {
+            return div()
+                .flex()
+                .items_center()
+                .min_w_0()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .min_w_0()
+                        .px(px(8.))
+                        .py(px(2.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(gpui::rgba(0x4da3ff88))
+                        .bg(theme::card_bg())
+                        .text_size(px(19.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme::text_strong())
+                        .child(self.rename.text.clone())
+                        .child(caret("rename-caret")),
+                )
+                .into_any_element();
+        }
+        div()
+            .id("session-name")
+            .flex()
+            .items_center()
+            .gap_2()
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.start_rename();
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .text_size(px(19.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(theme::text_strong())
+                    .child(s.display_name()),
+            )
+            .child(div().text_sm().text_color(theme::text_faint()).child("✎"))
+            .into_any_element()
     }
 
     fn render_card(&self, s: &Session, nav_index: usize, now: i64, cx: &mut Context<Self>) -> impl IntoElement {
@@ -532,6 +744,9 @@ impl BrainView {
         if let Some(started) = s.started_ms {
             meta.push(format!("seit {}", clock(started)));
         }
+        if self.mode == Mode::Rename {
+            meta = vec!["⏎ schickt /rename an die Session · esc bricht ab".into()];
+        }
 
         div()
             .id("detail")
@@ -549,13 +764,7 @@ impl BrainView {
                     .items_center()
                     .gap(px(10.))
                     .child(dot(accent_color(phase), phase == Phase::NeedsYou, "detail-dot"))
-                    .child(
-                        div()
-                            .text_size(px(19.))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(theme::text_strong())
-                            .child(s.display_name()),
-                    )
+                    .child(self.render_name(s, cx))
                     .child(self.account_badge(&s.key.account))
                     .child(div().flex_1())
                     .child(
@@ -695,7 +904,7 @@ impl BrainView {
     }
 
     fn render_footer(&self) -> impl IntoElement {
-        let hints = ["↑↓ wählen", "⏎ springen", "←→ Nachrichten/Verlauf", "1–9 direkt", "⇥ Konto", "E beendete"];
+        let hints = ["↑↓ wählen", "⏎ springen", "/ suchen", "R umbenennen", "←→ Nachrichten/Verlauf", "1–9 direkt", "⇥ Konto", "E beendete"];
         div()
             .flex()
             .flex_none()
@@ -730,6 +939,11 @@ impl Render for BrainView {
         let groups = self.groups(now);
         let waiting = groups.attention.len();
         window.set_window_title(&if waiting > 0 { format!("Brain — {waiting} brauchen dich") } else { "Brain".into() });
+        let titlebar = self.render_titlebar(&groups, cx).into_any_element();
+        let list = self.render_list(&groups, now, cx).into_any_element();
+        let detail = self.render_detail(now, cx);
+        drop(groups);
+        self.pending_scroll = None;
 
         div()
             .flex()
@@ -741,14 +955,14 @@ impl Render for BrainView {
             .text_size(px(13.))
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
-            .child(self.render_titlebar(&groups, cx))
+            .child(titlebar)
             .child(
                 div()
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .child(self.render_list(&groups, now, cx))
-                    .child(self.render_detail(now, cx)),
+                    .child(list)
+                    .child(detail),
             )
             .child(self.render_footer())
     }
@@ -800,6 +1014,21 @@ fn name_label(s: &Session) -> impl IntoElement {
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::text_strong())
         .child(s.display_name())
+}
+
+fn caret(id: &'static str) -> AnyElement {
+    div()
+        .flex_none()
+        .ml(px(1.))
+        .w(px(1.5))
+        .h(px(16.))
+        .bg(theme::blue())
+        .with_animation(
+            id,
+            Animation::new(Duration::from_millis(1000)).repeat().with_easing(pulsating_between(0.0, 1.0)),
+            |caret, delta| caret.opacity(delta),
+        )
+        .into_any_element()
 }
 
 fn kbd(label: String) -> impl IntoElement {

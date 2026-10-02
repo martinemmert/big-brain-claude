@@ -141,6 +141,26 @@ impl Session {
         }
     }
 
+    /// True when the turn has ended, so text typed into the terminal lands in
+    /// Claude Code's prompt box (and not in a permission dialog or a running turn).
+    pub fn accepts_input(&self) -> bool {
+        self.alive && matches!(self.current_signal(), Some((Signal::Idle, _)))
+    }
+
+    /// Whether the session matches every whitespace-separated term of `query`
+    /// in its name, path, account or headline (case-insensitive).
+    pub fn matches(&self, query: &str) -> bool {
+        let haystack = format!(
+            "{} {} {} {}",
+            self.display_name(),
+            self.cwd.as_deref().unwrap_or_default(),
+            self.key.account,
+            self.headline().unwrap_or_default()
+        )
+        .to_lowercase();
+        query.to_lowercase().split_whitespace().all(|term| haystack.contains(term))
+    }
+
     /// When the current phase began (epoch ms).
     pub fn phase_since_ms(&self) -> i64 {
         self.current_signal()
@@ -412,6 +432,30 @@ mod tests {
         let s = board.get(&key()).unwrap();
         assert_eq!(s.phase(), Phase::YourTurn);
         assert_eq!(s.headline().as_deref(), Some("Server läuft auf :8096"));
+    }
+
+    #[test]
+    fn input_is_only_accepted_after_the_turn_ended() {
+        let mut board = Board::default();
+        board.apply_event(&ev(0, Source::Hook, Kind::Prompt, None));
+        assert!(!board.get(&key()).unwrap().accepts_input());
+        board.apply_event(&ev(1, Source::Hook, Kind::Permission, Some("Bash?")));
+        assert!(!board.get(&key()).unwrap().accepts_input());
+        board.apply_event(&ev(2, Source::Report, Kind::Waiting, Some("Postgres?")));
+        board.apply_event(&ev(3, Source::Hook, Kind::Stop, None));
+        assert!(board.get(&key()).unwrap().accepts_input());
+    }
+
+    #[test]
+    fn search_matches_all_terms_across_name_path_and_headline() {
+        let mut board = Board::default();
+        board.apply_session_file("second", &file("idle", 0), true);
+        board.apply_event(&ev(1, Source::Report, Kind::Done, Some("SVG-Export fertig")));
+        let s = board.get(&key()).unwrap();
+
+        assert!(s.matches("CHECKOUT svg"));
+        assert!(s.matches("second /w/"));
+        assert!(!s.matches("checkout pdf"));
     }
 
     #[test]

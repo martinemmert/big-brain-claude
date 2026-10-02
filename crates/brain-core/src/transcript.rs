@@ -54,20 +54,36 @@ pub fn find_transcript(account: &Account, session_id: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-/// The last `limit` messages, oldest first. Only the end of the file is read,
-/// so large transcripts stay cheap.
+/// The last `limit` messages, oldest first. Reads from the end of the file and
+/// reaches further back only while too few messages were found, so large
+/// transcripts stay cheap.
 pub fn read_recent_messages(transcript: &Path, limit: usize) -> Vec<Message> {
-    const TAIL_BYTES: u64 = 768 * 1024;
+    const FIRST_READ: u64 = 512 * 1024;
+    const MAX_READ: u64 = 6 * 1024 * 1024;
+    let len = std::fs::metadata(transcript).map(|m| m.len()).unwrap_or(0);
+    let mut window = FIRST_READ;
+    loop {
+        let mut messages = read_tail(transcript, len, window);
+        let reached_start = window >= len;
+        if messages.len() >= limit || reached_start || window >= MAX_READ {
+            let skip = messages.len().saturating_sub(limit);
+            messages.drain(..skip);
+            return messages;
+        }
+        window *= 4;
+    }
+}
+
+fn read_tail(transcript: &Path, len: u64, window: u64) -> Vec<Message> {
     let Ok(mut file) = std::fs::File::open(transcript) else {
         return Vec::new();
     };
-    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let start = len.saturating_sub(TAIL_BYTES);
+    let start = len.saturating_sub(window);
     if file.seek(SeekFrom::Start(start)).is_err() {
         return Vec::new();
     }
     let mut buf = Vec::new();
-    if file.read_to_end(&mut buf).is_err() {
+    if file.take(len - start).read_to_end(&mut buf).is_err() {
         return Vec::new();
     }
     let text = String::from_utf8_lossy(&buf);
@@ -75,14 +91,10 @@ pub fn read_recent_messages(transcript: &Path, limit: usize) -> Vec<Message> {
     if start > 0 {
         lines.next(); // probably cut in the middle
     }
-
-    let mut messages: Vec<Message> = lines
+    lines
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .flat_map(|entry| messages_of(&entry))
-        .collect();
-    let skip = messages.len().saturating_sub(limit);
-    messages.drain(..skip);
-    messages
+        .collect()
 }
 
 fn messages_of(entry: &Value) -> Vec<Message> {
@@ -260,6 +272,18 @@ mod tests {
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].tool.as_deref(), Some("Edit"));
         assert_eq!(got[1].tool.as_deref(), Some("mcp__x__thing"));
+    }
+
+    #[test]
+    fn reaches_back_past_large_tool_output_at_the_end() {
+        let filler = format!(r#"{{"type":"attachment","data":"{}"}}"#, "x".repeat(300 * 1024));
+        let mut lines: Vec<&str> = LINES.to_vec();
+        lines.extend([filler.as_str(), filler.as_str(), filler.as_str()]);
+        let (_dir, path) = transcript(&lines);
+
+        let got = read_recent_messages(&path, 50);
+
+        assert_eq!(got.first().map(|m| m.text.as_str()), Some("Baue den Export"));
     }
 
     #[test]

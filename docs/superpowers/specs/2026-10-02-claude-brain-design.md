@@ -90,6 +90,18 @@ summaries, and harness input (subagent hand-backs, task notifications) as faint
 system notes. Thinking blocks, tool results and sidechain lines are skipped. New
 messages scroll into view unless the user scrolled up.
 
+## Search and rename (added 2026-10-02)
+
+- `/` or `⌘F` focuses a search field above the list; every whitespace-separated
+  term must appear in name, path, account or headline (case-insensitive).
+- `R` (or clicking the name) edits the session name. Enter types
+  `/rename <name>` plus Return into the session's iTerm2 pane without focusing
+  it. Only offered while the turn has ended (`Session::accepts_input`), so the
+  text never lands in a permission dialog or a running turn.
+- Jumping addresses iTerm2 windows by `id` and selects session → tab → window;
+  index-based references broke with several windows because selecting a
+  window reorders them.
+
 ## Error handling
 
 - Malformed JSONL lines are skipped.

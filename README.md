@@ -38,6 +38,8 @@ from `<config>/projects/*/<session-id>.jsonl`.
 ## Keys
 
 `↑↓`/`jk` select · `⏎` or double-click jump to iTerm · `1–9` jump directly ·
+`/` or `⌘F` search (name, path, account, last message; `esc` clears) ·
+`R` or click the name: rename via Claude Code's `/rename` (only while the session waits for you) ·
 `←→` switch Nachrichten/Verlauf · `⇥` cycle account filter · `E` show ended sessions ·
 `⌘Q` quit
 
