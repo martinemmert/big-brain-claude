@@ -1,3 +1,7 @@
 target/
 .superpowers/
 .DS_Store
+video/audio/
+video/build/
+video/out/
+__pycache__/

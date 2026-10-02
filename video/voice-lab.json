@@ -1,0 +1,7 @@
+{
+  "name": "brain-explainer",
+  "language": "english",
+  "lines": "lines.json",
+  "voice": "voice.json",
+  "out": "audio"
+}

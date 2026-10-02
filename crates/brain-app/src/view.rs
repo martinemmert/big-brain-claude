@@ -248,10 +248,6 @@ impl BrainView {
     }
 
     fn start_rename(&mut self) {
-        if self.model.demo_messages.is_some() {
-            self.set_status("Im Demo-Modus lässt sich nichts umbenennen.");
-            return;
-        }
         let Some(session) = self.selected.as_ref().and_then(|k| self.model.board.get(k)) else {
             return;
         };
@@ -265,6 +261,11 @@ impl BrainView {
 
     fn submit_rename(&mut self) {
         self.mode = Mode::Normal;
+        if self.model.demo_messages.is_some() {
+            // Demo pids are made up; the field can be shown but nothing is sent.
+            self.set_status("Im Demo-Modus wird nichts umbenannt.");
+            return;
+        }
         let name = self.rename.text.trim().to_string();
         let Some(key) = self.selected.clone() else { return };
         let still_idle = self.model.board.get(&key).is_some_and(|s| s.accepts_input());
@@ -349,10 +350,12 @@ impl BrainView {
         let total = groups.attention.len() + groups.working.len() + groups.resting.len();
         let calling = groups.attention.iter().filter(|s| s.phase() == Phase::NeedsYou).count();
         let waiting = groups.attention.len();
+        let sessions = if total == 1 { "1 Session".to_string() } else { format!("{total} Sessions") };
         let summary = match (waiting, total) {
             (_, 0) => "Keine laufenden Sessions".to_string(),
-            (0, _) => format!("{total} Sessions, niemand wartet"),
-            (w, _) => format!("{total} Sessions, {w} warten auf dich"),
+            (0, _) => format!("{sessions}, niemand wartet"),
+            (1, _) => format!("{sessions}, 1 wartet auf dich"),
+            (w, _) => format!("{sessions}, {w} warten auf dich"),
         };
 
         let mut segments = vec![(None, SharedString::from("Alle"))];

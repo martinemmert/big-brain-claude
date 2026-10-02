@@ -183,5 +183,16 @@ pub fn build() -> Demo {
         ],
     );
 
+    messages.insert(
+        SessionKey { account: "main".into(), pid: 4104 },
+        vec![
+            msg(9, Role::User, None, "Rechnungs-IDs auf UUIDs umstellen, ohne dass alte Links kaputtgehen."),
+            msg(8, Role::Assistant, None, "Ich lege eine neue Spalte `uuid` an, fülle sie für alle bestehenden Rechnungen und leite alte numerische URLs per **301** weiter."),
+            msg(7, Role::Tool, Some("Write"), "~/Projects/billing-service/migrations/0042_invoice_uuid.sql"),
+            msg(5, Role::Tool, Some("Bash"), "make db-migrate && cargo test -p billing invoices"),
+            msg(2, Role::Tool, Some("Edit"), "~/Projects/billing-service/src/routes/invoices.rs"),
+        ],
+    );
+
     Demo { accounts, board, messages }
 }

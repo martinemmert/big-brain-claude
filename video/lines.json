@@ -1,0 +1,17 @@
+{
+  "01-intro": "If you run a lot of Claude Code sessions at the same time, you know the feeling. A dozen terminal windows, and somewhere in there, one session has been waiting for you for ten minutes. Brain is a small native Mac app that keeps an eye on all of them for you.",
+  "02-overview": "This is Brain. On the left is every running session, across all of your Claude accounts. On the right is the one you have selected.",
+  "03-triage": "At the top are the sessions that need you. Red means Claude has a question, or is waiting for a permission. Amber means a session finished its turn, and it's your move. The longest wait is always on top, and the number tells you how long it has been waiting.",
+  "04-question": "Here, the API gateway session asks whether its rate limits should apply per tenant, or globally. Claude wrote that question itself. More on how in a moment.",
+  "05-working": "Below are the sessions that are still working, each with a short line about what it is doing right now. And further down, the ones that have been resting for a while.",
+  "06-messages": "On the right, you read the latest messages of the selected session. Your prompts, Claude's replies, nicely formatted, and every tool call as a single line. So you know what happened, without switching to the terminal.",
+  "07-timeline": "The timeline shows every event of the session, in order. Prompts, permission requests, finished turns, and the status reports Claude sent along the way.",
+  "08-jump": "When you're ready to answer, press Return. Brain brings the right iTerm window, tab and split pane to the front, and you're right where Claude is waiting.",
+  "09-accounts": "If you work with more than one Claude account, Brain finds all of them on its own. Press Tab to filter by account.",
+  "10-search": "Press slash to search. Brain matches the session name, the project path, the account and the last message.",
+  "11-rename": "And press R to give a session a better name. Brain sends Claude Code's own rename command, so the new name shows up in your terminal as well.",
+  "12-protocol": "So how does Brain know all this? From two sources. Claude Code hooks report automatically, when you send a prompt, when a permission is needed, and when a turn ends. And a short section in your CLAUDE dot M D asks Claude to report what it is doing, and what it is waiting for, with a single command: brain report.",
+  "13-notify": "Whenever a session starts waiting for you, Brain also sends a notification. So you can stay focused on something else, and still never keep Claude waiting.",
+  "14-install": "Getting started takes one script. It builds the app, installs the brain command, and adds the hooks to every Claude account, with a backup of every file it touches.",
+  "15-outro": "Brain is open source. You'll find it on GitHub, at martin emmert, slash, big brain claude. Thanks for watching."
+}

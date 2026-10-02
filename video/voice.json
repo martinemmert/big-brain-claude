@@ -1,0 +1,11 @@
+{
+  "model": "qwen3-clone",
+  "repo": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit",
+  "params": {
+    "ref": "voice",
+    "temperature": 0.9
+  },
+  "pronounce": [],
+  "from": "20261002-230420-649",
+  "refText": "If you run a lot of Claude Code sessions at the same time, you know the feeling. A dozen terminal windows, and somewhere in there, one session has been waiting for you for ten minutes. Brain is a small native Mac app that keeps an eye on all of them for you."
+}
