@@ -14,8 +14,9 @@ cargo install --quiet --path crates/brain-cli --force
 echo "→ Brain.app"
 cargo build --quiet --release -p brain-app
 app="$HOME/Applications/Brain.app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/brain-app "$app/Contents/MacOS/brain-app"
+cp assets/Brain.icns "$app/Contents/Resources/Brain.icns"
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -25,6 +26,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
   <key>CFBundleDisplayName</key><string>Brain</string>
   <key>CFBundleIdentifier</key><string>local.claude-brain</string>
   <key>CFBundleExecutable</key><string>brain-app</string>
+  <key>CFBundleIconFile</key><string>Brain</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>NSHighResolutionCapable</key><true/>
@@ -33,6 +35,9 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+# Make Finder and the Dock pick up a changed icon.
+touch "$app"
 
 echo "→ Hooks & Protokoll"
 "$HOME/.cargo/bin/brain" install

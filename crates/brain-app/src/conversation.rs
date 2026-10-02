@@ -21,6 +21,11 @@ impl Conversation {
         Self { key, session_id: None, path: None, len: 0, messages: Vec::new() }
     }
 
+    /// A conversation that never reloads (demo mode).
+    pub fn fixed(key: SessionKey, messages: Vec<Message>) -> Self {
+        Self { messages, ..Self::empty(key) }
+    }
+
     /// Re-reads the transcript if the session, its id or the file size changed.
     /// Returns true when `messages` changed.
     pub fn sync(&mut self, key: &SessionKey, session_id: Option<&str>, accounts: &[Account]) -> bool {

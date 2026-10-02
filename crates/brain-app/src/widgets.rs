@@ -1,0 +1,177 @@
+//! Small building blocks shared by the views.
+
+use std::time::Duration;
+
+use brain_core::state::Phase;
+use chrono::{Local, TimeZone, Utc};
+use gpui::{
+    div, prelude::*, pulsating_between, px, AnyElement, Animation, AnimationExt as _, ElementId,
+    FontWeight, Rgba,
+};
+
+use crate::theme;
+
+pub fn now_ms() -> i64 {
+    Utc::now().timestamp_millis()
+}
+
+pub fn clock(ms: i64) -> String {
+    Local.timestamp_millis_opt(ms).single().map(|t| t.format("%H:%M").to_string()).unwrap_or_default()
+}
+
+/// Drops Markdown emphasis and code markers for one-line previews, and puts
+/// Claude Code's English notification texts into the UI's language.
+pub fn plain(text: &str) -> String {
+    let text = text.replace("**", "").replace('`', "");
+    if let Some(rest) = text.strip_prefix("Claude needs your permission") {
+        let tool = rest.trim().strip_prefix("to use ").map(str::trim).filter(|t| !t.is_empty());
+        return match tool {
+            Some(tool) => format!("Braucht deine Freigabe für {tool}"),
+            None => "Braucht deine Freigabe".into(),
+        };
+    }
+    if text.starts_with("Claude is waiting for your input") {
+        return "Wartet auf deine Eingabe".into();
+    }
+    text
+}
+
+pub fn phase_color(phase: Phase) -> Rgba {
+    match phase {
+        Phase::NeedsYou => theme::calls(),
+        Phase::YourTurn => theme::turn(),
+        Phase::Working => theme::working(),
+        Phase::Ended => theme::ended(),
+    }
+}
+
+pub fn phase_label(phase: Phase) -> &'static str {
+    match phase {
+        Phase::NeedsYou => "Wartet auf dich",
+        Phase::YourTurn => "Fertig, du bist dran",
+        Phase::Working => "Arbeitet",
+        Phase::Ended => "Beendet",
+    }
+}
+
+/// A status dot; `pulse` breathes it to draw the eye (used only for "calls you").
+pub fn dot(color: Rgba, size: f32, pulse: bool, id: impl Into<ElementId>) -> AnyElement {
+    let dot = div().flex_none().size(px(size)).rounded_full().bg(color);
+    if !pulse {
+        return dot.into_any_element();
+    }
+    div()
+        .flex_none()
+        .relative()
+        .size(px(size))
+        .child(
+            div()
+                .absolute()
+                .top(px(-3.))
+                .left(px(-3.))
+                .size(px(size + 6.))
+                .rounded_full()
+                .bg(theme::alpha(color, 70))
+                .with_animation(
+                    id,
+                    Animation::new(Duration::from_millis(1800)).repeat().with_easing(pulsating_between(0.0, 1.0)),
+                    |halo, delta| halo.opacity(delta),
+                ),
+        )
+        .child(dot.absolute().top_0().left_0())
+        .into_any_element()
+}
+
+/// Blinking text cursor for Brain's line inputs.
+pub fn caret(id: &'static str) -> AnyElement {
+    div()
+        .flex_none()
+        .ml(px(1.))
+        .w(px(1.5))
+        .h(px(16.))
+        .bg(theme::working())
+        .with_animation(
+            id,
+            Animation::new(Duration::from_millis(1000)).repeat().with_easing(pulsating_between(0.0, 1.0)),
+            |caret, delta| caret.opacity(delta),
+        )
+        .into_any_element()
+}
+
+/// A key cap like `⏎` or `/`.
+pub fn kbd(label: impl Into<String>) -> impl IntoElement {
+    div()
+        .flex_none()
+        .min_w(px(18.))
+        .h(px(18.))
+        .px(px(5.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.))
+        .bg(theme::raised())
+        .border_1()
+        .border_color(theme::line_strong())
+        .text_size(px(10.5))
+        .text_color(theme::text_muted())
+        .child(label.into())
+}
+
+/// The account name as a tinted badge.
+pub fn account_badge(account: &str, index: usize) -> impl IntoElement {
+    let (bg, fg) = theme::account_colors(index);
+    div()
+        .flex_none()
+        .px(px(6.))
+        .py(px(1.))
+        .rounded(px(5.))
+        .bg(bg)
+        .text_color(fg)
+        .text_size(px(10.5))
+        .font_weight(FontWeight::MEDIUM)
+        .child(account.to_string())
+}
+
+/// Section title with its count, e.g. "Braucht dich 3". `alert` turns the count red.
+pub fn section_title(title: &str, count: usize, alert: bool) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(7.))
+        .mt(px(14.))
+        .mb(px(4.))
+        .px(px(4.))
+        .text_size(px(12.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme::text_muted())
+        .child(title.to_string())
+        .child(if alert && count > 0 {
+            div()
+                .px(px(6.))
+                .rounded_full()
+                .bg(theme::calls())
+                .text_color(theme::text_strong())
+                .text_size(px(11.))
+                .font_weight(FontWeight::BOLD)
+                .child(count.to_string())
+        } else {
+            div().text_color(theme::text_faint()).font_weight(FontWeight::MEDIUM).child(count.to_string())
+        })
+        .into_any_element()
+}
+
+/// A small rounded chip for metadata (path, pid, start time).
+pub fn chip(content: impl Into<String>, mono: bool) -> impl IntoElement {
+    div()
+        .flex_none()
+        .px(px(7.))
+        .py(px(2.))
+        .rounded(px(5.))
+        .bg(theme::surface())
+        .border_1()
+        .border_color(theme::line())
+        .text_size(px(11.5))
+        .text_color(theme::text_muted())
+        .when(mono, |d| d.font_family("Menlo").text_size(px(11.)))
+        .child(content.into())
+}

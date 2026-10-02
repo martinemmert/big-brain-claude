@@ -102,6 +102,17 @@ messages scroll into view unless the user scrolled up.
   index-based references broke with several windows because selecting a
   window reorders them.
 
+## Visual design (added 2026-10-02)
+
+Ink-blue surfaces (`#0F1322` → `#1D2338`) and four signal colours that each mean one thing:
+coral `#FF5C6C` calls you, amber `#F2B84B` your turn, blue `#5AA9FF` working, green
+`#45D19A` done. The memorable element is the waiting card: a colour rail, the waiting time
+as the strongest number, and a soft glow on the selected one. Sentence-case section titles
+with counts, metadata as chips, monospace only for real code (paths, commands, code
+blocks). Claude's replies are rendered from Markdown (`brain_core::markdown`). The icon is
+a 3 × 3 grid of sessions with one calling (`scripts/make-icon.swift`). `BRAIN_DEMO=1`
+loads made-up sessions for screenshots.
+
 ## Error handling
 
 - Malformed JSONL lines are skipped.

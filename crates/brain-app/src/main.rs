@@ -1,9 +1,12 @@
 mod conversation;
+mod demo;
 mod input;
+mod messages;
 mod model;
 mod system;
 mod theme;
 mod view;
+mod widgets;
 
 use gpui::{
     actions, point, prelude::*, px, size, App, Application, Bounds, KeyBinding, Menu, MenuItem,

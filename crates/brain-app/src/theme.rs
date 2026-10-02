@@ -1,38 +1,43 @@
-//! Colours and small formatting helpers shared by the views.
+//! Brain's palette: ink-blue surfaces, four signal colours that mean exactly one
+//! thing each (calls you, your turn, working, done), and per-account hues.
 
 use gpui::{rgb, rgba, Rgba};
 
-pub fn window_bg() -> Rgba { rgb(0x0b0d12) }
-pub fn chrome_bg() -> Rgba { rgb(0x11141a) }
-pub fn panel_bg() -> Rgba { rgb(0x0e1117) }
-pub fn card_bg() -> Rgba { rgb(0x161a22) }
-pub fn card_selected_bg() -> Rgba { rgb(0x1c1f2b) }
-pub fn row_hover_bg() -> Rgba { rgb(0x151922) }
-pub fn border() -> Rgba { rgb(0x1d212b) }
-pub fn card_border() -> Rgba { rgb(0x242a36) }
+// Surfaces, darkest to lightest.
+pub fn ink() -> Rgba { rgb(0x0f1322) }
+pub fn chrome() -> Rgba { rgb(0x121728) }
+pub fn surface() -> Rgba { rgb(0x161b2c) }
+pub fn raised() -> Rgba { rgb(0x1d2338) }
+pub fn hover() -> Rgba { rgb(0x1a2033) }
+pub fn line() -> Rgba { rgb(0x232a40) }
+pub fn line_strong() -> Rgba { rgb(0x2e3654) }
 
-pub fn text() -> Rgba { rgb(0xd7dae0) }
-pub fn text_strong() -> Rgba { rgb(0xffffff) }
-pub fn text_muted() -> Rgba { rgb(0x7c8394) }
-pub fn text_faint() -> Rgba { rgb(0x5b6272) }
+// Text.
+pub fn text() -> Rgba { rgb(0xd5d9e6) }
+pub fn text_strong() -> Rgba { rgb(0xf3f4f9) }
+pub fn text_muted() -> Rgba { rgb(0x8c93aa) }
+pub fn text_faint() -> Rgba { rgb(0x5f6782) }
 
-pub fn red() -> Rgba { rgb(0xff4d5e) }
-pub fn red_soft() -> Rgba { rgb(0xff8a95) }
-pub fn red_tint() -> Rgba { rgba(0xff4d5e1f) }
-pub fn red_edge() -> Rgba { rgba(0xff4d5e88) }
-pub fn amber() -> Rgba { rgb(0xf5b942) }
-pub fn amber_edge() -> Rgba { rgba(0xf5b94255) }
-pub fn blue() -> Rgba { rgb(0x4da3ff) }
-pub fn green() -> Rgba { rgb(0x3ccf91) }
-pub fn grey() -> Rgba { rgb(0x4a5060) }
+// Signals.
+pub fn calls() -> Rgba { rgb(0xff5c6c) }
+pub fn calls_soft() -> Rgba { rgb(0xff8f9a) }
+pub fn turn() -> Rgba { rgb(0xf2b84b) }
+pub fn working() -> Rgba { rgb(0x5aa9ff) }
+pub fn done() -> Rgba { rgb(0x45d19a) }
+pub fn ended() -> Rgba { rgb(0x4a5272) }
 
-/// Badge colours per account: main is blue, the next ones purple, teal, pink.
+/// `color` at the given alpha (0–255).
+pub fn alpha(color: Rgba, a: u8) -> Rgba {
+    Rgba { a: a as f32 / 255.0, ..color }
+}
+
+/// Background and text colour of an account badge: main is blue, then violet, teal, rose.
 pub fn account_colors(index: usize) -> (Rgba, Rgba) {
     const PALETTE: [(u32, u32); 4] = [
-        (0x4da3ff26, 0x8cc4ff),
-        (0xb07cff26, 0xcdaaff),
-        (0x2fd0c226, 0x7fe6dc),
-        (0xff6fb526, 0xffa3d1),
+        (0x5aa9ff24, 0x9ccaff),
+        (0xa78bfa26, 0xc9b8ff),
+        (0x2dd4bf24, 0x86eadb),
+        (0xfb718524, 0xffa8b8),
     ];
     let (bg, fg) = PALETTE[index % PALETTE.len()];
     (rgba(bg), rgb(fg))

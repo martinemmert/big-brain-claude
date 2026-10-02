@@ -7,7 +7,10 @@ use brain_core::process::pid_alive;
 use brain_core::sessions::read_session_files;
 use brain_core::state::{Board, Phase, SessionKey};
 use brain_core::store::{Store, Tail};
+use brain_core::transcript::Message;
 use chrono::{Local, NaiveDate};
+
+use crate::demo;
 
 /// A session that just started waiting for the user.
 pub struct Attention {
@@ -25,6 +28,8 @@ pub struct Model {
     day: NaiveDate,
     last_phases: HashMap<SessionKey, Phase>,
     primed: bool,
+    /// Fixed conversations in demo mode; `None` reads real transcripts.
+    pub demo_messages: Option<HashMap<SessionKey, Vec<Message>>>,
 }
 
 impl Model {
@@ -32,7 +37,7 @@ impl Model {
         let home = home_dir();
         let store = Store::new(Store::default_root(&home));
         let day = Local::now().date_naive();
-        Self {
+        let mut model = Self {
             accounts: discover_accounts(&home),
             board: Board::default(),
             tail: Tail::new(store.file_for(day)),
@@ -40,12 +45,23 @@ impl Model {
             day,
             last_phases: HashMap::new(),
             primed: false,
+            demo_messages: None,
+        };
+        if demo::enabled() {
+            let demo = demo::build();
+            model.accounts = demo.accounts;
+            model.board = demo.board;
+            model.demo_messages = Some(demo.messages);
         }
+        model
     }
 
     /// Reads new events and session files. Returns sessions that moved into
     /// NeedsYou/YourTurn since the last refresh (none on the very first one).
     pub fn refresh(&mut self) -> Vec<Attention> {
+        if self.demo_messages.is_some() {
+            return Vec::new();
+        }
         let today = Local::now().date_naive();
         if today != self.day {
             // Finish yesterday's file, then follow today's.
