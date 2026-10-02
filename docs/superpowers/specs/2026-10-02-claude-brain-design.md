@@ -80,6 +80,16 @@ Tab cycles the account filter. macOS notification when a session enters NeedsYou
 Jump: `ps -o tty= -p <pid>` → AppleScript asks iTerm2 for the session with that
 tty and selects its window, tab and session.
 
+## Messages tab (added 2026-10-02)
+
+The detail pane has two tabs: **Nachrichten** (default) and **Verlauf**.
+Nachrichten reads the last 40 messages of the selected session from its
+transcript (`<config>/projects/*/<session-id>.jsonl`, tail only, reloaded when
+the file grows): user prompts, Claude's full replies, tool calls as one-line
+summaries, and harness input (subagent hand-backs, task notifications) as faint
+system notes. Thinking blocks, tool results and sidechain lines are skipped. New
+messages scroll into view unless the user scrolled up.
+
 ## Error handling
 
 - Malformed JSONL lines are skipped.

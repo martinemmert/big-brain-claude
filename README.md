@@ -29,12 +29,17 @@ Every session writes one JSON line per event to
 Without hooks the app still shows a coarse state from Claude Code's own
 `<config>/sessions/<pid>.json` files.
 
+The **Nachrichten** tab shows the last 40 messages of the selected session
+(your prompts, Claude's replies in full, tool calls as one-liners), read live
+from `<config>/projects/*/<session-id>.jsonl`.
+
 `brain status` prints the board in the terminal.
 
 ## Keys
 
 `↑↓`/`jk` select · `⏎` or double-click jump to iTerm · `1–9` jump directly ·
-`⇥` cycle account filter · `E` show ended sessions · `⌘Q` quit
+`←→` switch Nachrichten/Verlauf · `⇥` cycle account filter · `E` show ended sessions ·
+`⌘Q` quit
 
 ## Develop
 

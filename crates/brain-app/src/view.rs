@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use brain_core::event::{Event, Kind, Source};
 use brain_core::state::{Phase, Session, SessionKey};
+use brain_core::transcript::{Message, Prompt, Role};
 use chrono::{Local, TimeZone, Utc};
 use gpui::{
     div, prelude::*, pulsating_between, px, relative, AnyElement, Animation, AnimationExt as _,
@@ -9,6 +10,7 @@ use gpui::{
     SharedString, Task, Window,
 };
 
+use crate::conversation::Conversation;
 use crate::model::Model;
 use crate::system::{self, JumpResult};
 use crate::theme;
@@ -27,7 +29,16 @@ pub struct BrainView {
     show_ended: bool,
     status: Option<(String, Instant)>,
     list_scroll: ScrollHandle,
+    tab: DetailTab,
+    conversation: Option<Conversation>,
+    messages_scroll: ScrollHandle,
     _poll: Task<()>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DetailTab {
+    Messages,
+    Timeline,
 }
 
 /// The left column, already filtered and sorted.
@@ -74,6 +85,9 @@ impl BrainView {
             show_ended: false,
             status: None,
             list_scroll: ScrollHandle::new(),
+            tab: DetailTab::Messages,
+            conversation: None,
+            messages_scroll: ScrollHandle::new(),
             _poll: poll,
         };
         view.selected = view.groups(now_ms()).navigable(false).first().map(|s| s.key.clone());
@@ -146,6 +160,12 @@ impl BrainView {
             "enter" => self.jump_selected(),
             "tab" => self.cycle_filter(keystroke.modifiers.shift),
             "e" => self.show_ended = !self.show_ended,
+            "left" | "right" => {
+                self.tab = match self.tab {
+                    DetailTab::Messages => DetailTab::Timeline,
+                    DetailTab::Timeline => DetailTab::Messages,
+                }
+            }
             key if key.len() == 1 && ('1'..='9').contains(&key.chars().next().unwrap()) => {
                 let index = key.parse::<usize>().unwrap() - 1;
                 if index < list.len() {
@@ -172,6 +192,27 @@ impl BrainView {
         let at = options.iter().position(|o| *o == self.filter).unwrap_or(0);
         let next = if backwards { (at + options.len() - 1) % options.len() } else { (at + 1) % options.len() };
         self.filter = options[next].clone();
+    }
+
+    /// Keeps the message list in step with the selected session. New messages
+    /// scroll into view unless the user scrolled up to read older ones.
+    fn sync_conversation(&mut self) {
+        let Some(key) = self.selected.clone() else {
+            self.conversation = None;
+            return;
+        };
+        let session_id = self.model.board.get(&key).and_then(|s| s.session_id.clone());
+        let switched = self.conversation.as_ref().is_none_or(|c| c.key != key);
+        let at_bottom = {
+            let offset = self.messages_scroll.offset().y;
+            let max = self.messages_scroll.max_offset().height;
+            -offset >= max - px(24.)
+        };
+        let conversation = self.conversation.get_or_insert_with(|| Conversation::empty(key.clone()));
+        let changed = conversation.sync(&key, session_id.as_deref(), &self.model.accounts);
+        if switched || (changed && at_bottom) {
+            self.messages_scroll.scroll_to_bottom();
+        }
     }
 
     fn jump_selected(&mut self) {
@@ -331,10 +372,10 @@ impl BrainView {
             Phase::NeedsYou => (theme::red(), theme::red_edge()),
             _ => (theme::amber(), theme::amber_edge()),
         };
-        let headline = s.headline().unwrap_or_else(|| match phase {
+        let headline = plain(&s.headline().unwrap_or_else(|| match phase {
             Phase::NeedsYou => "Wartet auf Eingabe".into(),
             _ => "Fertig – du bist dran".into(),
-        });
+        }));
 
         div()
             .id(("card", nav_index))
@@ -400,7 +441,7 @@ impl BrainView {
             Phase::Ended => theme::grey(),
         };
         let detail = match phase {
-            Phase::Working => s.headline().unwrap_or_else(|| "arbeitet…".into()),
+            Phase::Working => plain(&s.headline().unwrap_or_else(|| "arbeitet…".into())),
             Phase::YourTurn => format!("seit {}", theme::ago(s.phase_since_ms(), now)),
             _ => format!("vor {}", theme::ago(s.last_activity_ms, now)),
         };
@@ -475,7 +516,17 @@ impl BrainView {
             Phase::Working => ("Arbeitet gerade", theme::blue(), gpui::rgba(0x4da3ff14), gpui::rgba(0x4da3ff44)),
             Phase::Ended => ("Beendet", theme::text_muted(), gpui::rgba(0xffffff08), theme::card_border()),
         };
-        let headline = s.headline().unwrap_or_else(|| "Keine Meldung – Zustand kommt direkt aus Claude Code.".into());
+        let last_reply = self
+            .conversation
+            .as_ref()
+            .filter(|c| c.key == s.key)
+            .and_then(|c| c.messages.iter().rev().find(|m| m.role == Role::Assistant))
+            .map(|m| brain_core::hook::one_line(&m.text, 320));
+        let headline = plain(
+            &s.headline()
+                .or(last_reply)
+                .unwrap_or_else(|| "Keine Meldung – Zustand kommt direkt aus Claude Code.".into()),
+        );
 
         let mut meta = vec![s.cwd.as_deref().map(theme::tilde).unwrap_or_default(), format!("pid {}", s.key.pid)];
         if let Some(started) = s.started_ms {
@@ -485,13 +536,13 @@ impl BrainView {
         div()
             .id("detail")
             .flex_1()
+            .min_w_0()
             .flex()
             .flex_col()
             .h_full()
             .px(px(22.))
-            .py(px(18.))
+            .pt(px(18.))
             .bg(theme::panel_bg())
-            .overflow_y_scroll()
             .child(
                 div()
                     .flex()
@@ -544,7 +595,7 @@ impl BrainView {
                     .flex()
                     .flex_col()
                     .gap(px(6.))
-                    .mb(px(22.))
+                    .mb(px(14.))
                     .px(px(14.))
                     .py(px(12.))
                     .rounded(px(9.))
@@ -560,31 +611,91 @@ impl BrainView {
                     )
                     .child(div().text_color(theme::text_strong()).line_height(relative(1.4)).child(headline)),
             )
-            .child(section_header("Verlauf · neueste zuerst", s.timeline.len(), false))
-            .child(
+            .child(self.render_tabs(s, cx))
+            .child(match self.tab {
+                DetailTab::Messages => self.render_messages(),
+                DetailTab::Timeline => render_timeline(s),
+            })
+            .into_any_element()
+    }
+
+    fn render_tabs(&self, s: &Session, cx: &mut Context<Self>) -> impl IntoElement {
+        let message_count = self.conversation.as_ref().map_or(0, |c| c.messages.len());
+        let tabs = [
+            (DetailTab::Messages, "Nachrichten", message_count),
+            (DetailTab::Timeline, "Verlauf", s.timeline.len()),
+        ];
+        div()
+            .flex()
+            .flex_none()
+            .gap_1()
+            .border_b_1()
+            .border_color(theme::border())
+            .children(tabs.into_iter().map(|(tab, label, count)| {
+                let active = self.tab == tab;
                 div()
+                    .id(label)
                     .flex()
-                    .flex_col()
-                    .ml(px(4.))
-                    .pl(px(16.))
-                    .border_l_2()
-                    .border_color(gpui::rgb(0x232836))
-                    .when(s.timeline.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .py_2()
-                                .text_sm()
-                                .text_color(theme::text_muted())
-                                .child("Noch keine Ereignisse. Sie erscheinen, sobald die Hooks aktiv sind (brain install)."),
-                        )
-                    })
-                    .children(s.timeline.iter().rev().take(80).map(timeline_entry)),
-            )
+                    .items_center()
+                    .gap(px(6.))
+                    .px(px(10.))
+                    .py(px(7.))
+                    .cursor_pointer()
+                    .border_b_2()
+                    .border_color(if active { theme::blue() } else { gpui::rgba(0x00000000) })
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(if active { theme::text_strong() } else { theme::text_muted() })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.tab = tab;
+                        cx.notify();
+                    }))
+                    .child(label)
+                    .child(div().text_color(theme::text_faint()).child(count.to_string()))
+            }))
+    }
+
+    fn render_messages(&self) -> AnyElement {
+        let messages = self.conversation.as_ref().map(|c| c.messages.as_slice()).unwrap_or_default();
+        let mut children: Vec<AnyElement> = Vec::new();
+        if messages.is_empty() {
+            children.push(
+                div()
+                    .py_4()
+                    .text_sm()
+                    .text_color(theme::text_muted())
+                    .child("Kein Transkript gefunden – die Session hat noch keine Nachrichten.")
+                    .into_any_element(),
+            );
+        }
+        let mut previous: Option<Role> = None;
+        for message in messages {
+            // Tool calls following each other form one tight block.
+            let gap = match (previous, message.role) {
+                (None, _) => px(0.),
+                (Some(Role::Tool), Role::Tool) => px(2.),
+                _ => px(14.),
+            };
+            children.push(div().mt(gap).child(message_entry(message)).into_any_element());
+            previous = Some(message.role);
+        }
+
+        div()
+            .id("messages")
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .pt(px(14.))
+            .pb(px(18.))
+            .overflow_y_scroll()
+            .track_scroll(&self.messages_scroll)
+            .children(children)
             .into_any_element()
     }
 
     fn render_footer(&self) -> impl IntoElement {
-        let hints = ["↑↓ wählen", "⏎ springen", "1–9 direkt", "⇥ Konto", "E beendete"];
+        let hints = ["↑↓ wählen", "⏎ springen", "←→ Nachrichten/Verlauf", "1–9 direkt", "⇥ Konto", "E beendete"];
         div()
             .flex()
             .flex_none()
@@ -614,6 +725,7 @@ impl Render for BrainView {
         if self.selected.as_ref().is_none_or(|k| !visible.contains(k)) {
             self.selected = visible.first().cloned();
         }
+        self.sync_conversation();
 
         let groups = self.groups(now);
         let waiting = groups.attention.len();
@@ -643,6 +755,11 @@ impl Render for BrainView {
 }
 
 // ---- small building blocks ---------------------------------------------------------
+
+/// Drops Markdown emphasis and code markers for one-line previews.
+fn plain(text: &str) -> String {
+    text.replace("**", "").replace('`', "")
+}
 
 fn now_ms() -> i64 {
     Utc::now().timestamp_millis()
@@ -722,12 +839,157 @@ fn section_header(title: &str, count: usize, alert: bool) -> AnyElement {
         .into_any_element()
 }
 
+fn render_timeline(s: &Session) -> AnyElement {
+    div()
+        .id("timeline")
+        .flex_1()
+        .min_h_0()
+        .pt(px(12.))
+        .pb(px(18.))
+        .overflow_y_scroll()
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .ml(px(4.))
+                .pl(px(16.))
+                .border_l_2()
+                .border_color(gpui::rgb(0x232836))
+                .when(s.timeline.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .py_2()
+                            .text_sm()
+                            .text_color(theme::text_muted())
+                            .child("Noch keine Ereignisse. Sie erscheinen, sobald die Hooks aktiv sind (brain install)."),
+                    )
+                })
+                .children(s.timeline.iter().rev().take(80).map(timeline_entry)),
+        )
+        .into_any_element()
+}
+
+fn message_entry(message: &Message) -> AnyElement {
+    let time = message
+        .ts
+        .map(|t| t.with_timezone(&Local).format("%H:%M").to_string())
+        .unwrap_or_default();
+    let speaker = |name: &str, color: Rgba| {
+        div()
+            .flex()
+            .gap_2()
+            .mb(px(4.))
+            .text_size(px(10.5))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(div().text_color(color).child(name.to_string()))
+            .child(div().text_color(theme::text_faint()).child(time.clone()))
+    };
+
+    match message.role {
+        Role::User => div()
+            .flex()
+            .flex_col()
+            .child(speaker("DU", theme::amber()))
+            .child(
+                div()
+                    .px(px(12.))
+                    .py(px(8.))
+                    .rounded(px(8.))
+                    .bg(gpui::rgb(0x1a1f2b))
+                    .border_l_2()
+                    .border_color(theme::amber_edge())
+                    .text_color(theme::text_strong())
+                    .line_height(relative(1.45))
+                    .line_clamp(12)
+                    .child(message.text.clone()),
+            )
+            .into_any_element(),
+        Role::Assistant => div()
+            .flex()
+            .flex_col()
+            .child(speaker("CLAUDE", theme::blue()))
+            .child(
+                div()
+                    .text_color(theme::text())
+                    .line_height(relative(1.5))
+                    .child(message.text.replace("**", "")),
+            )
+            .into_any_element(),
+        Role::System => div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px(px(8.))
+            .text_size(px(11.5))
+            .italic()
+            .text_color(theme::text_faint())
+            .child("↩")
+            .child(div().flex_1().min_w_0().truncate().child(message.text.clone()))
+            .into_any_element(),
+        Role::Tool => {
+            let tool = message.tool.clone().unwrap_or_default();
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px(px(8.))
+                .py(px(3.))
+                .rounded(px(5.))
+                .bg(gpui::rgba(0xffffff06))
+                .font_family("Menlo")
+                .text_size(px(11.5))
+                .child(div().flex_none().w(px(14.)).text_color(theme::text_muted()).child(tool_icon(&tool)))
+                .child(div().flex_none().text_color(theme::text_muted()).child(short_tool_name(&tool)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme::text())
+                        .child(theme::tilde(&message.text)),
+                )
+                .into_any_element()
+        }
+    }
+}
+
+fn tool_icon(tool: &str) -> &'static str {
+    match tool {
+        "Bash" => "❯",
+        "Read" => "◱",
+        "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => "✎",
+        "Grep" | "Glob" => "⌕",
+        "WebSearch" | "WebFetch" => "◍",
+        "Agent" | "Task" => "◆",
+        "TodoWrite" => "☑",
+        _ => "⚙",
+    }
+}
+
+/// `mcp__claude-in-chrome__navigate` → `chrome·navigate`
+fn short_tool_name(tool: &str) -> String {
+    match tool.strip_prefix("mcp__") {
+        Some(rest) => {
+            let mut parts = rest.splitn(2, "__");
+            let server = parts.next().unwrap_or_default();
+            let action = parts.next().unwrap_or_default();
+            let server = server.rsplit(['_', '-']).next().unwrap_or(server);
+            format!("{server}·{action}")
+        }
+        None => tool.to_string(),
+    }
+}
+
 fn timeline_entry(event: &Event) -> impl IntoElement {
     let text = event.text.clone().unwrap_or_default();
     let (color, label): (Rgba, String) = match event.kind {
         Kind::SessionStart => (theme::grey(), "Session gestartet".into()),
         Kind::SessionEnd => (theme::grey(), "Session beendet".into()),
-        Kind::Prompt => (gpui::rgb(0x8a93a6), if text.is_empty() { "Neuer Prompt".into() } else { format!("Du: {text}") }),
+        Kind::Prompt => match brain_core::transcript::classify_prompt(&text) {
+            Some(Prompt::User(t)) => (gpui::rgb(0x8a93a6), format!("Du: {t}")),
+            Some(Prompt::System(t)) => (theme::grey(), format!("↩ {}", t.trim_matches(['[', ']']))),
+            None => (gpui::rgb(0x8a93a6), "Neuer Prompt".into()),
+        },
         Kind::Permission => (theme::red(), if text.is_empty() { "Braucht Freigabe".into() } else { text }),
         Kind::Stop => (theme::amber(), if text.is_empty() { "Turn beendet".into() } else { format!("Antwort: {text}") }),
         Kind::Doing => (theme::blue(), text),

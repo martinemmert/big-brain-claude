@@ -9,3 +9,4 @@ pub mod process;
 pub mod sessions;
 pub mod state;
 pub mod store;
+pub mod transcript;

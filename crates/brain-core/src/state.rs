@@ -36,9 +36,10 @@ impl Signal {
 
     fn from_file_status(status: &str) -> Option<Self> {
         match status {
-            "busy" | "shell" => Some(Signal::Busy),
+            "busy" => Some(Signal::Busy),
             "waiting" => Some(Signal::Waiting),
-            "idle" => Some(Signal::Idle),
+            // `shell`: the turn ended while a background shell keeps running.
+            "idle" | "shell" => Some(Signal::Idle),
             _ => None,
         }
     }
@@ -72,6 +73,8 @@ pub struct Session {
 
     hook_signal: Option<(Signal, i64)>,
     file_signal: Option<(Signal, i64)>,
+    /// Whether the last turn hook was a prompt (`true`) or a stop (`false`).
+    turn_open: Option<bool>,
 }
 
 const TIMELINE_LIMIT: usize = 200;
@@ -95,6 +98,7 @@ impl Session {
             reply: None,
             hook_signal: None,
             file_signal: None,
+            turn_open: None,
         }
     }
 
@@ -110,7 +114,13 @@ impl Session {
     }
 
     fn current_signal(&self) -> Option<(Signal, i64)> {
-        match (self.hook_signal, self.file_signal) {
+        // After a stop hook (and no new prompt) the file's `waiting` can only be
+        // Claude Code's idle reminder, not a permission prompt.
+        let file = self.file_signal.map(|(signal, ts)| match signal {
+            Signal::Waiting if self.turn_open == Some(false) => (Signal::Idle, ts),
+            _ => (signal, ts),
+        });
+        match (self.hook_signal, file) {
             (Some(h), Some(f)) => Some(if h.1 >= f.1 { h } else { f }),
             (h, f) => h.or(f),
         }
@@ -173,9 +183,13 @@ impl Session {
 
         // Claude Code also sends a `Notification` when a finished session has been
         // idle for a while. Permission prompts only happen mid-turn, so a
-        // notification on an idle session is kept in the timeline only.
-        let idle_reminder = event.kind == Kind::Permission
-            && matches!(self.current_signal(), Some((Signal::Idle, _)));
+        // notification after the turn ended is kept in the timeline only.
+        let turn_closed = match self.current_signal() {
+            Some((Signal::Busy, _)) => false,
+            Some((Signal::Idle, _)) => true,
+            Some((Signal::Waiting | Signal::Ended, _)) | None => self.turn_open == Some(false),
+        };
+        let idle_reminder = event.kind == Kind::Permission && turn_closed;
         if idle_reminder {
             self.timeline.push(event.clone());
             return;
@@ -206,6 +220,11 @@ impl Session {
         }
 
         if event.source == Source::Hook {
+            match event.kind {
+                Kind::Prompt => self.turn_open = Some(true),
+                Kind::Stop | Kind::SessionStart => self.turn_open = Some(false),
+                _ => {}
+            }
             if let Some(signal) = Signal::from_hook(event.kind) {
                 if self.hook_signal.is_none_or(|(_, prev)| ts >= prev) {
                     self.hook_signal = Some((signal, ts));
@@ -380,6 +399,19 @@ mod tests {
         assert_eq!(s.phase(), Phase::YourTurn);
         assert_eq!(s.headline().as_deref(), Some("Fertig"));
         assert_eq!(s.timeline.len(), 3);
+    }
+
+    #[test]
+    fn reminder_after_stop_is_ignored_even_when_a_background_shell_runs() {
+        let mut board = Board::default();
+        board.apply_event(&ev(0, Source::Hook, Kind::Prompt, None));
+        board.apply_event(&ev(5, Source::Hook, Kind::Stop, Some("Server läuft auf :8096")));
+        board.apply_session_file("second", &file("shell", 5), true);
+        board.apply_event(&ev(65, Source::Hook, Kind::Permission, Some("Claude is waiting for your input")));
+
+        let s = board.get(&key()).unwrap();
+        assert_eq!(s.phase(), Phase::YourTurn);
+        assert_eq!(s.headline().as_deref(), Some("Server läuft auf :8096"));
     }
 
     #[test]

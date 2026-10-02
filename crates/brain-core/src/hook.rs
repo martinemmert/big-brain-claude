@@ -36,7 +36,14 @@ impl HookPayload {
     /// or for `Stop` the start of Claude's last reply.
     pub fn text(&self) -> Option<String> {
         let raw = match self.kind()? {
-            Kind::Prompt => self.prompt.clone(),
+            Kind::Prompt => self
+                .prompt
+                .as_deref()
+                .and_then(crate::transcript::classify_prompt)
+                .map(|p| match p {
+                    crate::transcript::Prompt::User(t) => t,
+                    crate::transcript::Prompt::System(t) => format!("[{t}]"),
+                }),
             Kind::Permission => self.message.clone(),
             Kind::Stop => self.last_assistant_message.clone().filter(|m| !m.trim().is_empty()).or_else(|| {
                 self.transcript_path
