@@ -1,0 +1,45 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// Where an event came from: a Claude Code hook or an explicit `brain report`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Source {
+    Hook,
+    Report,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    SessionStart,
+    /// The user submitted a prompt; a new turn starts.
+    Prompt,
+    /// Claude Code needs permission or input (`Notification` hook).
+    Permission,
+    /// The turn ended (`Stop` hook).
+    Stop,
+    SessionEnd,
+    Doing,
+    Waiting,
+    Done,
+}
+
+/// One line in `~/.claude-brain/events/YYYY-MM-DD.jsonl`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Event {
+    pub v: u32,
+    pub ts: DateTime<Utc>,
+    pub account: String,
+    pub pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    pub source: Source,
+    pub kind: Kind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}

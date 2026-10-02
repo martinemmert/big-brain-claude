@@ -1,0 +1,13 @@
+[package]
+name = "brain-app"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "brain-app"
+path = "src/main.rs"
+
+[dependencies]
+brain-core.workspace = true
+gpui = "0.2.2"
+chrono.workspace = true
