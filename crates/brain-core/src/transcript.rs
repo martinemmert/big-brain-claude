@@ -75,6 +75,11 @@ pub fn read_recent_messages(transcript: &Path, limit: usize) -> Vec<Message> {
 }
 
 fn read_tail(transcript: &Path, len: u64, window: u64) -> Vec<Message> {
+    tail_entries(transcript, len, window).iter().flat_map(messages_of).collect()
+}
+
+/// The JSON entries in the last `window` bytes of a transcript.
+fn tail_entries(transcript: &Path, len: u64, window: u64) -> Vec<Value> {
     let Ok(mut file) = std::fs::File::open(transcript) else {
         return Vec::new();
     };
@@ -91,10 +96,93 @@ fn read_tail(transcript: &Path, len: u64, window: u64) -> Vec<Message> {
     if start > 0 {
         lines.next(); // probably cut in the middle
     }
-    lines
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .flat_map(|entry| messages_of(&entry))
-        .collect()
+    lines.filter_map(|line| serde_json::from_str::<Value>(line).ok()).collect()
+}
+
+/// Whether the latest turn is still running or has ended, according to the transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Turn {
+    Working,
+    Ended,
+}
+
+/// What the end of a transcript says about its session.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Insight {
+    /// The latest turn state and when it was written (epoch ms).
+    pub turn: Option<(Turn, i64)>,
+    pub model: Option<String>,
+    /// Tokens the last request sent: input plus cache reads and writes.
+    pub context_tokens: Option<u64>,
+    pub permission_mode: Option<String>,
+    /// Claude Code's own running total (`cost-state` entries).
+    pub cost_usd: Option<f64>,
+    /// Claude Code's generated title (`ai-title`).
+    pub title: Option<String>,
+}
+
+/// Reads the last 512 KiB of a transcript.
+///
+/// A turn ends with a `system`/`turn_duration` entry; a denied permission or Esc writes
+/// `[Request interrupted by user…]` and no hook fires, so this catches what hooks miss.
+pub fn insight(transcript: &Path) -> Insight {
+    let len = std::fs::metadata(transcript).map(|m| m.len()).unwrap_or(0);
+    let mut out = Insight::default();
+    for entry in tail_entries(transcript, len, 512 * 1024) {
+        if entry.get("isSidechain").and_then(Value::as_bool).unwrap_or(false) {
+            continue;
+        }
+        let ts = entry
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(|t| t.parse::<DateTime<Utc>>().ok())
+            .map(|t| t.timestamp_millis());
+        let field = |key: &str| entry.get(key).and_then(Value::as_str).map(str::to_string);
+        match entry.get("type").and_then(Value::as_str).unwrap_or_default() {
+            "system" if field("subtype").as_deref() == Some("turn_duration") => {
+                if let Some(ts) = ts {
+                    out.turn = Some((Turn::Ended, ts));
+                }
+            }
+            "user" if !entry.get("isMeta").and_then(Value::as_bool).unwrap_or(false) => {
+                let Some(ts) = ts else { continue };
+                let state = if user_texts(&entry).any(|t| t.starts_with("[Request interrupted by user")) {
+                    Turn::Ended
+                } else {
+                    Turn::Working
+                };
+                out.turn = Some((state, ts));
+            }
+            "assistant" => {
+                if let Some(ts) = ts {
+                    out.turn = Some((Turn::Working, ts));
+                }
+                let message = entry.get("message");
+                if let Some(model) = message.and_then(|m| m.get("model")).and_then(Value::as_str) {
+                    out.model = Some(model.to_string());
+                }
+                if let Some(usage) = message.and_then(|m| m.get("usage")) {
+                    let n = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
+                    out.context_tokens = Some(n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens"));
+                }
+            }
+            "permission-mode" => out.permission_mode = field("permissionMode").or(out.permission_mode.take()),
+            "cost-state" => out.cost_usd = entry.get("totalCostUSD").and_then(Value::as_f64).or(out.cost_usd),
+            "ai-title" => out.title = field("aiTitle").or(out.title.take()),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The text parts of a user entry (a plain string or text blocks).
+fn user_texts(entry: &Value) -> impl Iterator<Item = &str> {
+    let content = entry.get("message").and_then(|m| m.get("content"));
+    let single = content.and_then(Value::as_str);
+    let blocks = content.and_then(Value::as_array).into_iter().flatten().filter_map(|b| {
+        (b.get("type").and_then(Value::as_str) == Some("text")).then(|| b.get("text").and_then(Value::as_str)).flatten()
+    });
+    single.into_iter().chain(blocks)
 }
 
 fn messages_of(entry: &Value) -> Vec<Message> {
@@ -284,6 +372,42 @@ mod tests {
         let got = read_recent_messages(&path, 50);
 
         assert_eq!(got.first().map(|m| m.text.as_str()), Some("Baue den Export"));
+    }
+
+    /// Shapes taken from a real transcript where a Bash permission was denied with Esc.
+    #[test]
+    fn a_denied_permission_ends_the_turn_and_session_details_are_read() {
+        let lines = [
+            r#"{"type":"permission-mode","permissionMode":"default"}"#,
+            r#"{"type":"user","message":{"role":"user","content":"Run date"},"timestamp":"2026-10-03T08:42:46.000Z"}"#,
+            r#"{"type":"ai-title","aiTitle":"Date output file test"}"#,
+            r#"{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","content":[{"type":"tool_use","name":"Bash","input":{"command":"date"}}],"usage":{"input_tokens":12,"cache_read_input_tokens":20000,"cache_creation_input_tokens":3000,"output_tokens":40}},"timestamp":"2026-10-03T08:42:49.000Z"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","is_error":true,"content":"The user doesn't want to proceed with this tool use."}]},"timestamp":"2026-10-03T08:43:07.000Z"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]},"timestamp":"2026-10-03T08:43:07.100Z"}"#,
+            r#"{"type":"cost-state","totalCostUSD":0.0474824}"#,
+        ];
+        let (_dir, path) = transcript(&lines);
+
+        let got = insight(&path);
+
+        let ended_at = "2026-10-03T08:43:07.100Z".parse::<DateTime<Utc>>().unwrap().timestamp_millis();
+        assert_eq!(got.turn, Some((Turn::Ended, ended_at)));
+        assert_eq!(got.model.as_deref(), Some("claude-haiku-4-5-20251001"));
+        assert_eq!(got.context_tokens, Some(23012));
+        assert_eq!(got.permission_mode.as_deref(), Some("default"));
+        assert_eq!(got.cost_usd, Some(0.0474824));
+        assert_eq!(got.title.as_deref(), Some("Date output file test"));
+    }
+
+    #[test]
+    fn a_new_prompt_after_the_turn_ended_means_working_again() {
+        let lines = [
+            r#"{"type":"system","subtype":"turn_duration","timestamp":"2026-10-03T09:00:00.000Z"}"#,
+            r#"{"type":"user","message":{"role":"user","content":"weiter"},"timestamp":"2026-10-03T09:01:00.000Z"}"#,
+        ];
+        let (_dir, path) = transcript(&lines);
+
+        assert_eq!(insight(&path).turn.map(|(t, _)| t), Some(Turn::Working));
     }
 
     #[test]

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::event::{Event, Kind, Source};
 use crate::sessions::SessionFile;
+use crate::transcript::{Insight, Turn};
 
 /// What the user sees for a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -71,8 +72,12 @@ pub struct Session {
     done: Option<String>,
     reply: Option<String>,
 
+    /// Model, context, cost, permission mode and title from the transcript.
+    pub insight: Insight,
+
     hook_signal: Option<(Signal, i64)>,
     file_signal: Option<(Signal, i64)>,
+    transcript_signal: Option<(Signal, i64)>,
     /// Whether the last turn hook was a prompt (`true`) or a stop (`false`).
     turn_open: Option<bool>,
 }
@@ -96,8 +101,10 @@ impl Session {
             permission: None,
             done: None,
             reply: None,
+            insight: Insight::default(),
             hook_signal: None,
             file_signal: None,
+            transcript_signal: None,
             turn_open: None,
         }
     }
@@ -120,10 +127,19 @@ impl Session {
             Signal::Waiting if self.turn_open == Some(false) => (Signal::Idle, ts),
             _ => (signal, ts),
         });
-        match (self.hook_signal, file) {
-            (Some(h), Some(f)) => Some(if h.1 >= f.1 { h } else { f }),
-            (h, f) => h.or(f),
-        }
+        // The newest of the three wins; on a tie the hook, then the file.
+        [self.hook_signal, file, self.transcript_signal]
+            .into_iter()
+            .flatten()
+            .reduce(|best, next| if next.1 > best.1 { next } else { best })
+    }
+
+    /// True while a permission dialog is open: the newest signal says waiting and Claude Code's
+    /// own status file agrees. Only then may Brain answer it with Return or Esc.
+    pub fn awaiting_permission(&self) -> bool {
+        self.alive
+            && matches!(self.current_signal(), Some((Signal::Waiting, _)))
+            && matches!(self.file_signal, Some((Signal::Waiting, _)))
     }
 
     pub fn phase(&self) -> Phase {
@@ -296,6 +312,23 @@ impl Board {
             .map(|signal| (signal, status_ts));
     }
 
+    /// What the end of the session's transcript says (a third source next to hooks and the
+    /// status file; it sees denied permissions and interruptions that fire no hook).
+    pub fn apply_insight(&mut self, key: &SessionKey, insight: Insight) {
+        let Some(session) = self.sessions.get_mut(key) else { return };
+        session.transcript_signal = insight.turn.map(|(turn, ts)| {
+            let signal = match turn {
+                Turn::Working => Signal::Busy,
+                Turn::Ended => Signal::Idle,
+            };
+            (signal, ts)
+        });
+        if let Some((_, ts)) = session.transcript_signal {
+            session.last_activity_ms = session.last_activity_ms.max(ts);
+        }
+        session.insight = insight;
+    }
+
     pub fn set_alive(&mut self, key: &SessionKey, alive: bool) {
         if let Some(session) = self.sessions.get_mut(key) {
             session.alive = alive;
@@ -456,6 +489,24 @@ mod tests {
         assert!(s.matches("CHECKOUT svg"));
         assert!(s.matches("second /w/"));
         assert!(!s.matches("checkout pdf"));
+    }
+
+    #[test]
+    fn a_denial_seen_in_the_transcript_clears_a_stale_permission() {
+        let mut board = Board::default();
+        board.apply_event(&ev(0, Source::Hook, Kind::Prompt, None));
+        board.apply_event(&ev(5, Source::Hook, Kind::Permission, Some("Bash?")));
+        assert!(!board.get(&key()).unwrap().awaiting_permission(), "no status file yet");
+        board.apply_session_file("second", &file("waiting", 5), true);
+        assert!(board.get(&key()).unwrap().awaiting_permission());
+
+        // Denied with Esc: no hook fires, the status file may lag, the transcript ends the turn.
+        let turn = Some((Turn::Ended, (1_790_000_000 + 9) * 1000));
+        board.apply_insight(&key(), Insight { turn, ..Insight::default() });
+
+        let s = board.get(&key()).unwrap();
+        assert_eq!(s.phase(), Phase::YourTurn);
+        assert!(!s.awaiting_permission());
     }
 
     #[test]

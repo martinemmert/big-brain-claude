@@ -1,8 +1,10 @@
 mod conversation;
 mod demo;
+mod i18n;
 mod input;
 mod messages;
 mod model;
+mod notify;
 mod system;
 mod theme;
 mod view;

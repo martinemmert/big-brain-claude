@@ -7,6 +7,7 @@ pub mod hook;
 pub mod install;
 pub mod markdown;
 pub mod process;
+pub mod project;
 pub mod sessions;
 pub mod state;
 pub mod store;
