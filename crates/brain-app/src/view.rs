@@ -10,7 +10,8 @@ use gpui::{
 use crate::conversation::Conversation;
 use crate::input::{InputAction, LineInput};
 use crate::model::Model;
-use crate::system::{self, ItermResult};
+use crate::system;
+use crate::terminal::{self, Outcome};
 use crate::widgets::{
     account_badge, caret, chip, clock, dot, kbd, now_ms, phase_color, phase_label, plain, section_title,
 };
@@ -275,10 +276,12 @@ impl BrainView {
             }
             return;
         }
-        match system::type_into_session(key.pid, &format!("/rename {name}")) {
-            ItermResult::Done => self.set_status(&format!("„{name}“ an die Session geschickt (/rename).")),
-            ItermResult::NoTerminal => self.set_status("Kein Terminal zu dieser Session gefunden."),
-            ItermResult::Failed(reason) => self.set_status(&format!("Umbenennen fehlgeschlagen: {reason}")),
+        match terminal::type_text(key.pid, &format!("/rename {name}")) {
+            Outcome::Done => self.set_status(&format!("„{name}“ an die Session geschickt (/rename).")),
+            Outcome::NoTerminal => self.set_status("Kein Terminal zu dieser Session gefunden."),
+            Outcome::Unsupported(reason) | Outcome::Failed(reason) => {
+                self.set_status(&format!("Umbenennen fehlgeschlagen: {reason}"))
+            }
         }
     }
 
@@ -336,10 +339,11 @@ impl BrainView {
             self.set_status("Im Demo-Modus öffnet Brain kein Terminal.");
             return;
         }
-        let message = match system::jump_to_iterm(key.pid) {
-            ItermResult::Done => return,
-            ItermResult::NoTerminal => format!("pid {} hat kein Terminal (beendet oder SDK-Session)", key.pid),
-            ItermResult::Failed(reason) => format!("Sprung fehlgeschlagen: {reason}"),
+        let cwd = self.model.board.get(&key).and_then(|s| s.cwd.clone());
+        let message = match terminal::focus(key.pid, cwd.as_deref()) {
+            Outcome::Done => return,
+            Outcome::NoTerminal => format!("pid {} hat kein Terminal (beendet oder SDK-Session)", key.pid),
+            Outcome::Unsupported(reason) | Outcome::Failed(reason) => format!("Sprung fehlgeschlagen: {reason}"),
         };
         self.set_status(&message);
     }

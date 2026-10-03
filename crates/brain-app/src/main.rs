@@ -4,6 +4,7 @@ mod input;
 mod messages;
 mod model;
 mod system;
+mod terminal;
 mod theme;
 mod view;
 mod widgets;
