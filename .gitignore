@@ -6,3 +6,4 @@ video/build/
 video/out/
 __pycache__/
 dist/
+.claude/

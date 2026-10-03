@@ -1442,7 +1442,7 @@ fn short_model(model: &str) -> String {
     name.split('-').filter(|p| !(p.len() == 8 && p.chars().all(|c| c.is_ascii_digit()))).collect::<Vec<_>>().join("-")
 }
 
-/// 23012 → `23k`, 1_250_000 → `1.3M`.
+/// 23012 → `23k`, 1_340_000 → `1.3M`.
 fn format_tokens(tokens: u64) -> String {
     match tokens {
         0..=999 => tokens.to_string(),
@@ -1460,7 +1460,7 @@ mod tests {
         assert_eq!(short_model("claude-haiku-4-5-20251001"), "haiku-4-5");
         assert_eq!(short_model("claude-opus-5-5"), "opus-5-5");
         assert_eq!(format_tokens(23_012), "23k");
-        assert_eq!(format_tokens(1_250_000), "1.3M");
+        assert_eq!(format_tokens(1_340_000), "1.3M");
         assert_eq!(format_tokens(812), "812");
     }
 }

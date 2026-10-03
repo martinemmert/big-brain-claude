@@ -7,7 +7,7 @@ mod messages;
 mod model;
 mod notify;
 mod prefs;
-mod system;
+mod terminal;
 mod theme;
 mod view;
 mod widgets;
