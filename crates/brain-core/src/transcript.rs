@@ -59,6 +59,38 @@ pub fn find_transcript(account: &Account, session_id: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// Copies a session's transcript (and its folder of subagent transcripts and tool output, if any)
+/// into the same project folder of another account, so that account can `claude --resume` it.
+/// Returns the copied transcript's path.
+pub fn copy_to_account(transcript: &Path, target: &Account) -> std::io::Result<PathBuf> {
+    let not_found = || std::io::Error::new(std::io::ErrorKind::NotFound, "transcript has no project folder");
+    let project = transcript.parent().and_then(Path::file_name).ok_or_else(not_found)?;
+    let file = transcript.file_name().ok_or_else(not_found)?;
+    let dest_dir = target.config_dir.join("projects").join(project);
+    std::fs::create_dir_all(&dest_dir)?;
+    let dest = dest_dir.join(file);
+    std::fs::copy(transcript, &dest)?;
+    let side = transcript.with_extension("");
+    if side.is_dir() {
+        copy_dir(&side, &dest.with_extension(""))?;
+    }
+    Ok(dest)
+}
+
+fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
 /// The last `limit` messages, oldest first. Reads from the end of the file and
 /// reaches further back only while too few messages were found, so large
 /// transcripts stay cheap.
@@ -445,6 +477,23 @@ mod tests {
         let (_dir, path) = transcript(&lines);
 
         assert_eq!(insight(&path).turn.map(|(t, _)| t), Some(Turn::Working));
+    }
+
+    #[test]
+    fn copies_a_transcript_with_its_subagent_folder_into_another_account() {
+        let home = tempfile::tempdir().unwrap();
+        let main = Account::from_config_dir(home.path().join(".claude"));
+        let second = Account::from_config_dir(home.path().join(".claude-second"));
+        let project = main.config_dir.join("projects/-Users-me-app");
+        std::fs::create_dir_all(project.join("abc/subagents")).unwrap();
+        std::fs::write(project.join("abc.jsonl"), "{}\n").unwrap();
+        std::fs::write(project.join("abc/subagents/agent-1.jsonl"), "{}\n").unwrap();
+
+        let copied = copy_to_account(&project.join("abc.jsonl"), &second).unwrap();
+
+        assert_eq!(copied, second.config_dir.join("projects/-Users-me-app/abc.jsonl"));
+        assert!(second.config_dir.join("projects/-Users-me-app/abc/subagents/agent-1.jsonl").is_file());
+        assert_eq!(find_transcript(&second, "abc"), Some(copied));
     }
 
     #[test]

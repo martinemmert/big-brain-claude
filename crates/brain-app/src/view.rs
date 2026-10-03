@@ -67,6 +67,8 @@ pub struct BrainView {
     changes: Option<ChangesCache>,
     changes_loading: bool,
     new_session: NewSession,
+    /// `A` was pressed once on this session: a second press within 5 s moves it.
+    move_armed: Option<(SessionKey, Instant)>,
     /// A newer release on GitHub, if the daily check found one.
     update: Option<crate::links::Update>,
     _update_check: Option<Task<()>>,
@@ -86,9 +88,25 @@ enum Mode {
 /// The "new session" dialog: a folder (picked from recent ones or typed) and an account.
 #[derive(Default)]
 struct NewSession {
+    /// The search field, or the value of the placeholder being asked for.
     folder: LineInput,
     account: usize,
     pick: usize,
+    templates: Vec<brain_core::templates::Template>,
+    /// The picked template and its placeholder values so far.
+    chosen: Option<Chosen>,
+}
+
+struct Chosen {
+    template: brain_core::templates::Template,
+    values: Vec<(String, String)>,
+}
+
+/// One row of the new-session list.
+#[derive(Clone)]
+enum Choice {
+    Template(usize),
+    Folder(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -179,6 +197,7 @@ impl BrainView {
             changes: None,
             changes_loading: false,
             new_session: NewSession::default(),
+            move_armed: None,
             update: None,
             _update_check: None,
             _poll: poll,
@@ -399,10 +418,15 @@ impl BrainView {
         .detach();
     }
 
+    fn open_new_session_dialog(&mut self) {
+        let templates = brain_core::templates::load_all(&brain_core::templates::templates_dir(&brain_core::account::home_dir()));
+        self.new_session = NewSession { templates, ..NewSession::default() };
+        self.mode = Mode::NewSession;
+    }
+
     /// Folders to start a session in: the typed path first (if it is one), then the folders of
     /// known sessions, most recently active first, filtered by the typed words.
-    fn folder_suggestions(&self) -> Vec<String> {
-        let query = self.new_session.folder.text.trim().to_string();
+    fn folder_suggestions(&self, query: &str) -> Vec<String> {
         let mut sessions: Vec<&Session> = self.model.board.keys().filter_map(|k| self.model.board.get(k)).collect();
         sessions.sort_by_key(|s| std::cmp::Reverse(s.last_activity_ms));
         let mut folders: Vec<String> = Vec::new();
@@ -421,13 +445,63 @@ impl BrainView {
         folders
     }
 
+    /// What the dialog lists right now: templates and folders while picking, only folders once a
+    /// template without a folder is chosen, nothing while a placeholder is asked for.
+    fn new_session_choices(&self) -> Vec<Choice> {
+        let query = self.new_session.folder.text.trim().to_string();
+        match &self.new_session.chosen {
+            Some(chosen) if self.pending_placeholder().is_some() || chosen.template.folder.is_some() => Vec::new(),
+            Some(_) => self.folder_suggestions(&query).into_iter().map(Choice::Folder).collect(),
+            None => {
+                let lower = query.to_lowercase();
+                let templates = self
+                    .new_session
+                    .templates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| lower.split_whitespace().all(|w| t.name.to_lowercase().contains(w)))
+                    .map(|(i, _)| Choice::Template(i));
+                templates.chain(self.folder_suggestions(&query).into_iter().map(Choice::Folder)).collect()
+            }
+        }
+    }
+
+    /// The next placeholder of the chosen template that has no value yet.
+    fn pending_placeholder(&self) -> Option<String> {
+        let chosen = self.new_session.chosen.as_ref()?;
+        chosen.template.placeholders().into_iter().find(|name| !chosen.values.iter().any(|(n, _)| n == name))
+    }
+
     fn on_new_session_key(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) {
-        let count = self.folder_suggestions().len();
+        let m = &keystroke.modifiers;
+        if m.platform && keystroke.key == "e" {
+            if let Some(Choice::Template(i)) = self.new_session_choices().get(self.new_session.pick).cloned() {
+                open_in_editor(&self.new_session.templates[i].path);
+            }
+            return;
+        }
+        if m.platform && m.shift && keystroke.key == "n" {
+            let dir = brain_core::templates::templates_dir(&brain_core::account::home_dir());
+            let prompt = t(
+                "Beschreibe hier die Aufgabe. Platzhalter wie {ticket} fragt Brain beim Start ab.",
+                "Describe the task here. Brain asks for placeholders like {ticket} when it starts.",
+            );
+            match brain_core::templates::create(&dir, t("Neue Vorlage", "New template"), prompt) {
+                Ok(path) => {
+                    open_in_editor(&path);
+                    self.set_status(t("Vorlage angelegt – nach dem Speichern ⌘N erneut öffnen.", "Template created – reopen ⌘N after saving it."));
+                    self.mode = Mode::Normal;
+                }
+                Err(err) => self.set_status(err.to_string()),
+            }
+            return;
+        }
+        let count = self.new_session_choices().len();
         match keystroke.key.as_str() {
             "down" => self.new_session.pick = (self.new_session.pick + 1).min(count.saturating_sub(1)),
             "up" => self.new_session.pick = self.new_session.pick.saturating_sub(1),
             "tab" => self.new_session.account = (self.new_session.account + 1) % self.model.accounts.len().max(1),
-            "enter" => self.start_new_session(),
+            "enter" => self.confirm_new_session(),
             "escape" => self.mode = Mode::Normal,
             _ => {
                 let clipboard = || cx.read_from_clipboard().and_then(|item| item.text());
@@ -438,14 +512,64 @@ impl BrainView {
         }
     }
 
-    fn start_new_session(&mut self) {
-        let Some(folder) = self.folder_suggestions().get(self.new_session.pick).cloned() else {
-            self.set_status(t("Wähle einen Ordner oder tippe einen Pfad.", "Pick a folder or type a path."));
+    /// ⏎ in the dialog: pick a template or folder, take a placeholder value, or start.
+    fn confirm_new_session(&mut self) {
+        if let Some(name) = self.pending_placeholder() {
+            let value = self.new_session.folder.text.trim().to_string();
+            if let Some(chosen) = self.new_session.chosen.as_mut() {
+                chosen.values.push((name, value));
+            }
+            self.new_session.folder = LineInput::default();
+            self.new_session.pick = 0;
+            let has_folder = self.new_session.chosen.as_ref().is_some_and(|c| c.template.folder.is_some());
+            if self.pending_placeholder().is_none() && has_folder {
+                self.start_new_session(None);
+            }
             return;
-        };
+        }
+        match self.new_session_choices().get(self.new_session.pick).cloned() {
+            Some(Choice::Template(i)) => {
+                let template = self.new_session.templates[i].clone();
+                if let Some(index) = template.account.as_ref().and_then(|id| self.model.accounts.iter().position(|a| a.id == *id)) {
+                    self.new_session.account = index;
+                }
+                let ready = template.folder.is_some() && template.placeholders().is_empty();
+                self.new_session.chosen = Some(Chosen { template, values: Vec::new() });
+                self.new_session.folder = LineInput::default();
+                self.new_session.pick = 0;
+                if ready {
+                    self.start_new_session(None);
+                }
+            }
+            Some(Choice::Folder(folder)) => self.start_new_session(Some(folder)),
+            None => self.set_status(t("Wähle einen Ordner oder tippe einen Pfad.", "Pick a folder or type a path.")),
+        }
+    }
+
+    /// Opens a new tab running `claude` (with the template's model and filled-in prompt, if any).
+    fn start_new_session(&mut self, folder: Option<String>) {
+        let chosen = self.new_session.chosen.as_ref();
+        let folder = folder.or_else(|| chosen.and_then(|c| c.template.folder.clone())).map(|f| {
+            let home = brain_core::account::home_dir().display().to_string();
+            match f.strip_prefix('~') {
+                Some(rest) => format!("{home}{rest}"),
+                None => f,
+            }
+        });
+        let Some(folder) = folder else { return };
         if !std::path::Path::new(&folder).is_dir() {
             self.set_status(tr!("Ordner nicht gefunden: {folder}", "Folder not found: {folder}"));
             return;
+        }
+        let mut command = String::from("claude");
+        if let Some(chosen) = chosen {
+            if let Some(model) = &chosen.template.model {
+                command.push_str(&format!(" --model {}", shell_quote(model)));
+            }
+            let prompt = chosen.template.fill(&chosen.values);
+            if !prompt.is_empty() {
+                command.push_str(&format!(" {}", shell_quote(&prompt)));
+            }
         }
         self.mode = Mode::Normal;
         let config_dir = self
@@ -457,15 +581,27 @@ impl BrainView {
         if self.blocked_in_demo() {
             return;
         }
-        let outcome = brain_terminal::open_new(&folder, config_dir.as_deref(), "claude");
+        let outcome = brain_terminal::open_new(&folder, config_dir.as_deref(), &command);
         self.report(outcome, Some(t("Neue Session gestartet.", "Started a new session.").into()));
     }
 
     fn render_new_session(&self, cx: &mut Context<Self>) -> AnyElement {
-        let suggestions = self.folder_suggestions();
         let query = self.new_session.folder.text.clone();
+        let choices = self.new_session_choices();
         let accounts: Vec<(usize, SharedString)> =
             self.model.accounts.iter().enumerate().map(|(i, a)| (i, SharedString::from(a.id.clone()))).collect();
+        let chosen = self.new_session.chosen.as_ref();
+        let asking = self.pending_placeholder();
+        let placeholder: String = match (&asking, chosen) {
+            (Some(name), _) => tr!("Wert für {{{name}}} …", "Value for {{{name}}} …"),
+            (None, Some(_)) => t("Ordner für die Vorlage suchen oder Pfad tippen …", "Search a folder for the template or type a path …").into(),
+            (None, None) => t("Vorlage oder Ordner suchen, oder Pfad tippen …", "Search templates or folders, or type a path …").into(),
+        };
+        let title = match chosen {
+            Some(c) => format!("{} · {}", t("Neue Session", "New session"), c.template.name),
+            None => t("Neue Session", "New session").to_string(),
+        };
+        let preview = chosen.filter(|c| !c.template.prompt.is_empty()).map(|c| c.template.fill(&c.values));
         div()
             .flex_1()
             .min_w_0()
@@ -476,7 +612,7 @@ impl BrainView {
             .px(px(28.))
             .pt(px(24.))
             .bg(theme::ink())
-            .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).text_color(theme::text_strong()).child(t("Neue Session", "New session")))
+            .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).text_color(theme::text_strong()).child(title))
             .child(
                 div()
                     .flex()
@@ -488,6 +624,22 @@ impl BrainView {
                         cx.notify();
                     }))),
             )
+            .when_some(preview, |d, prompt| {
+                d.child(
+                    div()
+                        .px(px(12.))
+                        .py(px(9.))
+                        .rounded(px(8.))
+                        .bg(theme::surface())
+                        .border_1()
+                        .border_color(theme::line())
+                        .text_size(px(12.5))
+                        .line_height(relative(1.5))
+                        .line_clamp(6)
+                        .text_color(theme::text())
+                        .child(prompt),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -499,29 +651,97 @@ impl BrainView {
                     .bg(theme::surface())
                     .border_1()
                     .border_color(theme::alpha(theme::working(), 0x99))
-                    .when(query.is_empty(), |d| d.child(div().text_color(theme::text_faint()).child(t("Ordner suchen oder Pfad tippen …", "Search folders or type a path …"))))
+                    .when(query.is_empty(), |d| d.child(div().text_color(theme::text_faint()).child(placeholder)))
                     .child(div().text_color(theme::text_strong()).child(query))
                     .child(caret("new-caret")),
             )
-            .child(
-                div().flex().flex_col().gap(px(2.)).children(suggestions.into_iter().enumerate().map(|(i, folder)| {
-                    let active = i == self.new_session.pick;
-                    div()
-                        .px(px(10.))
-                        .py(px(6.))
-                        .rounded(px(6.))
-                        .font_family("Menlo")
-                        .text_size(px(12.))
-                        .text_color(if active { theme::text_strong() } else { theme::text() })
-                        .when(active, |d| d.bg(theme::raised()))
-                        .child(theme::tilde(&folder))
-                }))
-            )
+            .child(div().flex().flex_col().gap(px(2.)).children(choices.into_iter().enumerate().map(|(i, choice)| {
+                let active = i == self.new_session.pick;
+                let row = div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .px(px(10.))
+                    .py(px(6.))
+                    .rounded(px(6.))
+                    .text_size(px(12.5))
+                    .text_color(if active { theme::text_strong() } else { theme::text() })
+                    .when(active, |d| d.bg(theme::raised()));
+                match choice {
+                    Choice::Template(index) => {
+                        let template = &self.new_session.templates[index];
+                        row.child(div().flex_none().text_color(theme::turn()).child("▸"))
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(template.name.clone()))
+                            .when_some(template.folder.clone(), |d, f| {
+                                d.child(div().text_color(theme::text_faint()).font_family("Menlo").text_size(px(11.5)).child(f))
+                            })
+                    }
+                    Choice::Folder(folder) => row.font_family("Menlo").text_size(px(12.)).child(theme::tilde(&folder)),
+                }
+            })))
             .child(div().text_size(px(11.5)).text_color(theme::text_faint()).child(t(
-                "⏎ startet `claude` in einem neuen Terminal-Tab · ↑↓ Ordner · ⇥ Konto · esc",
-                "⏎ starts `claude` in a new terminal tab · ↑↓ folder · ⇥ account · esc",
+                "⏎ wählen/starten · ↑↓ · ⇥ Konto · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc",
+                "⏎ pick/start · ↑↓ · ⇥ account · ⌘E edit template · ⌘⇧N new template · esc",
             )))
             .into_any_element()
+    }
+
+    /// `A` twice: moves a waiting session to the next account. The transcript is copied, the copy
+    /// resumed there in a new tab (`--fork-session`), and the original gets `/exit`.
+    fn move_to_other_account(&mut self) {
+        let Some(session) = self.selected_session() else { return };
+        let key = session.key.clone();
+        let Some(index) = self.model.accounts.iter().position(|a| a.id == key.account) else { return };
+        let next = self.model.accounts.get((index + 1) % self.model.accounts.len()).cloned();
+        let Some(target) = next.filter(|t| t.id != key.account) else {
+            self.set_status(t("Es gibt kein zweites Konto.", "There is no other account."));
+            return;
+        };
+        if !session.accepts_input() {
+            self.set_status(t(
+                "Umziehen geht, sobald die Session fertig ist und auf dich wartet.",
+                "Moving works once the session has finished and waits for you.",
+            ));
+            return;
+        }
+        let (session_id, cwd) = (session.session_id.clone(), session.cwd.clone());
+        let armed = self.move_armed.as_ref().is_some_and(|(k, at)| *k == key && at.elapsed() < Duration::from_secs(5));
+        if !armed {
+            self.move_armed = Some((key, Instant::now()));
+            let target = target.id.clone();
+            self.set_status(tr!("Nochmal A zieht die Session nach {target} um.", "Press A again to move the session to {target}."));
+            return;
+        }
+        self.move_armed = None;
+        let (Some(session_id), Some(cwd)) = (session_id, cwd) else {
+            self.set_status(t("Zu dieser Session fehlt die ID oder der Ordner.", "This session has no id or folder."));
+            return;
+        };
+        if self.blocked_in_demo() {
+            return;
+        }
+        let transcript = self.model.account(&key.account).and_then(|a| brain_core::transcript::find_transcript(a, &session_id));
+        let Some(transcript) = transcript else {
+            self.set_status(t("Transkript nicht gefunden.", "Transcript not found."));
+            return;
+        };
+        if let Err(err) = brain_core::transcript::copy_to_account(&transcript, &target) {
+            self.set_status(tr!("Kopieren fehlgeschlagen: {err}", "Copy failed: {err}"));
+            return;
+        }
+        let config_dir = (target.id != "main").then(|| target.config_dir.display().to_string());
+        let outcome = brain_terminal::open_new(&cwd, config_dir.as_deref(), &format!("claude --resume {session_id} --fork-session"));
+        if !matches!(outcome, Outcome::Done) {
+            self.report(outcome, None);
+            return;
+        }
+        let closed = matches!(brain_terminal::type_text(key.pid, "/exit"), Outcome::Done);
+        let target = target.id;
+        self.set_status(if closed {
+            tr!("Nach {target} umgezogen, das Original ist geschlossen.", "Moved to {target}; the original is closed.")
+        } else {
+            tr!("Nach {target} umgezogen. Das Original konnte Brain nicht schließen.", "Moved to {target}. Brain could not close the original.")
+        });
     }
 
     /// `S`: not snoozed → 15 min → 1 h → until tomorrow 9:00 → not snoozed.
@@ -670,8 +890,7 @@ impl BrainView {
             return;
         }
         if keystroke.modifiers.platform && keystroke.key == "n" {
-            self.new_session = NewSession::default();
-            self.mode = Mode::NewSession;
+            self.open_new_session_dialog();
             cx.stop_propagation();
             cx.notify();
             return;
@@ -711,6 +930,7 @@ impl BrainView {
             "p" => self.toggle_pin(),
             "m" => self.toggle_mute(),
             "s" => self.cycle_snooze(),
+            "a" => self.move_to_other_account(),
             "g" => {
                 self.prefs.layout = if self.prefs.layout == Layout::Projects { Layout::Status } else { Layout::Projects };
                 self.prefs.save();
@@ -1953,7 +2173,7 @@ impl BrainView {
             ("R", t("umbenennen", "rename")),
             ("P M S", t("anheften · stumm · pausieren", "pin · mute · snooze")),
             ("G", t("Projekte", "projects")),
-            ("⇥", t("Konto", "account")),
+            ("A", t("Konto wechseln", "move account")),
         ];
         div()
             .flex()
@@ -2254,6 +2474,16 @@ fn lookup_prs(sessions: Vec<(SessionKey, String)>) -> HashMap<SessionKey, brain_
         }
     }
     out
+}
+
+/// Opens a file with the app macOS uses for its type (your Markdown editor for templates).
+fn open_in_editor(path: &std::path::Path) {
+    let _ = std::process::Command::new("open").arg(path).spawn();
+}
+
+/// Single-quotes a word for `sh`.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 fn marker(text: String, color: gpui::Rgba) -> AnyElement {
