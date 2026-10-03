@@ -48,7 +48,11 @@ follows your macOS language: English or German.
 - **Menu bar count** and native **notifications** with *Open* and *Snooze 15 min*, sound only
   when a session calls you; reminders while a session keeps waiting (`remind_after_minutes`
   in `config.json`, 10 by default, 0 turns them off) and snoozing per session.
-- **New sessions** in a recent folder and any account (`⌘N`).
+- **New sessions** in a recent folder and any account (`⌘N`), or from a **template**: a
+  Markdown file with folder, account, model and a first prompt with placeholders (below).
+- **Move a session to the other account** (`A` twice), e.g. when one hits its five-hour limit:
+  Brain copies the transcript, resumes it there with `claude --resume <id> --fork-session` and
+  closes the original.
 - **Quick replies.** `T`, then `1`–`9` sends a canned reply; set your own with
   `"quick_replies": ["…", "…"]` in `~/.claude-brain/config.json`.
 - **English or German**, following your macOS language (override with `BRAIN_LANG=de|en` or
@@ -163,6 +167,7 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `P` / `M` | pin / mute notifications |
 | `S` | snooze: 15 min → 1 h → until tomorrow 9:00 → off |
 | `G` / `D` | group by project / today's digest (`⌘C` copies it) |
+| `A` `A` | move the session to the next account |
 | `⌘N` | start a new session |
 | `←` `→` | switch between messages, timeline and changes |
 | `⇥` | cycle the account filter |
@@ -170,6 +175,24 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 
 `brain status` prints the board in the terminal; `brain sessions --json` lists the open
 sessions for scripts (account, pid, name, phase, headline, cwd).
+
+## Templates
+
+Templates live in `~/.claude-brain/templates/*.md` and are edited in your own editor
+(`⌘E` in the `⌘N` dialog opens the selected one, `⌘⇧N` creates a new one):
+
+```markdown
+---
+name: Review a merge request
+folder: ~/Work/app
+account: main
+model: haiku
+---
+Review the merge request for {branch} and list blocking issues first.
+```
+
+Every header line is optional. Brain asks for each `{placeholder}` and, if the template has no
+`folder`, for the folder, then starts `claude --model … '<prompt>'` in a new terminal tab.
 
 ## Develop
 
