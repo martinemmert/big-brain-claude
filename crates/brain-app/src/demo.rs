@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use brain_core::account::Account;
-use brain_core::event::{Event, Kind, Source};
+use brain_core::event::{BackgroundTask, Event, Kind, Source};
 use brain_core::sessions::SessionFile;
 use brain_core::state::{Board, SessionKey};
 use brain_core::transcript::{Insight, Message, Role};
@@ -96,9 +96,12 @@ pub fn build() -> Demo {
             pid: 4106,
             account: "main",
             name: "infra-terraform",
-            status: "busy",
-            minutes_ago: 1,
-            events: vec![(4, Source::Hook, Kind::Prompt, "Plan the new staging cluster")],
+            status: "idle",
+            minutes_ago: 2,
+            events: vec![
+                (9, Source::Hook, Kind::Prompt, "Plan the new staging cluster"),
+                (2, Source::Hook, Kind::Stop, "Two agents are checking the network and the cost estimate; I'll summarise when they are back."),
+            ],
         },
         Spec {
             pid: 4107,
@@ -120,9 +123,18 @@ pub fn build() -> Demo {
 
     let now = Utc::now();
     let ms = |minutes: i64| (now - Duration::minutes(minutes)).timestamp_millis();
+    let agent = |id: &str, description: &str| BackgroundTask {
+        id: id.into(),
+        kind: "subagent".into(),
+        status: Some("running".into()),
+        description: Some(description.into()),
+        agent_type: Some("general-purpose".into()),
+    };
+    let background = vec![agent("a1", "Check the VPC and subnet layout"), agent("a2", "Estimate the monthly cost")];
     let mut board = Board::default();
     for spec in &specs {
         for (minutes, source, kind, text) in &spec.events {
+            let tasks = (spec.pid == 4106 && *kind == Kind::Stop).then(|| background.clone());
             board.apply_event(&Event {
                 v: 1,
                 ts: now - Duration::minutes(*minutes),
@@ -133,7 +145,7 @@ pub fn build() -> Demo {
                 source: *source,
                 kind: *kind,
                 text: (!text.is_empty()).then(|| text.to_string()),
-                tasks: None,
+                tasks,
             });
         }
         board.apply_session_file(
