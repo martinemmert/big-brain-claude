@@ -1,11 +1,21 @@
 //! What the user chose in Brain and keeps across restarts: pinned and muted sessions and the
 //! list layout, in `~/.claude-brain/state.json`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use brain_core::state::SessionKey;
 use serde::{Deserialize, Serialize};
+
+/// How the list is arranged: by state, by project, or the day's digest.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Layout {
+    #[default]
+    Status,
+    Projects,
+    Today,
+}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Prefs {
@@ -14,7 +24,10 @@ pub struct Prefs {
     #[serde(default)]
     muted: BTreeSet<String>,
     #[serde(default)]
-    pub group_by_project: bool,
+    pub layout: Layout,
+    /// Session id → snoozed until (epoch ms).
+    #[serde(default)]
+    snoozed: BTreeMap<String, i64>,
 }
 
 /// Sessions are remembered by account and pid: stable for the life of a session.
@@ -59,6 +72,18 @@ impl Prefs {
 
     pub fn toggle_mute(&mut self, key: &SessionKey) -> bool {
         toggle(&mut self.muted, id(key))
+    }
+
+    /// Until when the session is snoozed, if that is still in the future.
+    pub fn snoozed_until(&self, key: &SessionKey, now_ms: i64) -> Option<i64> {
+        self.snoozed.get(&id(key)).copied().filter(|until| *until > now_ms)
+    }
+
+    pub fn snooze(&mut self, key: &SessionKey, until: Option<i64>) {
+        match until {
+            Some(until) => self.snoozed.insert(id(key), until),
+            None => self.snoozed.remove(&id(key)),
+        };
     }
 }
 

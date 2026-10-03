@@ -57,8 +57,28 @@ pub fn phase_color(phase: Phase) -> Rgba {
         Phase::NeedsYou => theme::calls(),
         Phase::YourTurn => theme::turn(),
         Phase::Working => theme::working(),
+        Phase::Background => theme::background(),
         Phase::Ended => theme::ended(),
     }
+}
+
+/// "2 subagents, 1 shell running" from a stop's background tasks.
+pub fn background_summary(tasks: &[brain_core::event::BackgroundTask]) -> String {
+    let count = |kind: &str| tasks.iter().filter(|t| t.kind == kind).count();
+    let (agents, shells) = (count("subagent"), count("shell"));
+    let other = tasks.len() - agents - shells;
+    let mut parts = Vec::new();
+    if agents > 0 {
+        parts.push(if agents == 1 { t("1 Subagent", "1 subagent").to_string() } else { crate::tr!("{agents} Subagents", "{agents} subagents") });
+    }
+    if shells > 0 {
+        parts.push(if shells == 1 { t("1 Shell", "1 shell").to_string() } else { crate::tr!("{shells} Shells", "{shells} shells") });
+    }
+    if other > 0 {
+        parts.push(if other == 1 { t("1 Task", "1 task").to_string() } else { crate::tr!("{other} Tasks", "{other} tasks") });
+    }
+    let list = parts.join(", ");
+    if tasks.len() == 1 { crate::tr!("{list} läuft", "{list} running") } else { crate::tr!("{list} laufen", "{list} running") }
 }
 
 pub fn phase_label(phase: Phase) -> &'static str {
@@ -66,6 +86,7 @@ pub fn phase_label(phase: Phase) -> &'static str {
         Phase::NeedsYou => t("Wartet auf dich", "Waiting for you"),
         Phase::YourTurn => t("Fertig, du bist dran", "Done, your turn"),
         Phase::Working => t("Arbeitet", "Working"),
+        Phase::Background => t("Arbeitet im Hintergrund", "Working in the background"),
         Phase::Ended => t("Beendet", "Ended"),
     }
 }

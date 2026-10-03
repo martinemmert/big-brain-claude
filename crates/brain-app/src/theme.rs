@@ -23,6 +23,8 @@ pub fn calls() -> Rgba { rgb(0xff5c6c) }
 pub fn calls_soft() -> Rgba { rgb(0xff8f9a) }
 pub fn turn() -> Rgba { rgb(0xf2b84b) }
 pub fn working() -> Rgba { rgb(0x5aa9ff) }
+/// Working, but only in the background (subagents, shells): a quieter blue.
+pub fn background() -> Rgba { rgb(0x8f9cf5) }
 pub fn done() -> Rgba { rgb(0x45d19a) }
 pub fn ended() -> Rgba { rgb(0x4a5272) }
 

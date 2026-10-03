@@ -1,7 +1,9 @@
+mod config;
 mod conversation;
 mod demo;
 mod i18n;
 mod input;
+mod links;
 mod menubar;
 mod messages;
 mod model;
@@ -19,7 +21,9 @@ use gpui::{
 actions!(brain, [Quit]);
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    let app = Application::new();
+    app.on_open_urls(links::received);
+    app.run(|cx: &mut App| {
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
         cx.set_menus(vec![Menu {

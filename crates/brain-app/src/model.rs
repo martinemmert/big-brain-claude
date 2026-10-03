@@ -10,6 +10,7 @@ use brain_core::sessions::read_session_files;
 use brain_core::state::{Board, Phase, SessionKey};
 use brain_core::store::{Store, Tail};
 use brain_core::transcript::{find_transcript, insight, Message};
+use brain_core::usage::{self, Snapshot};
 use chrono::{Days, Local, NaiveDate};
 
 use crate::demo;
@@ -43,6 +44,8 @@ pub struct Model {
     primed: bool,
     transcripts: HashMap<SessionKey, TranscriptCache>,
     projects: HashMap<String, Project>,
+    /// Status line snapshots (plan limits, context, cost) of all sessions.
+    pub usage: Vec<Snapshot>,
     /// Fixed conversations in demo mode; `None` reads real transcripts.
     pub demo_messages: Option<HashMap<SessionKey, Vec<Message>>>,
 }
@@ -62,12 +65,14 @@ impl Model {
             primed: false,
             transcripts: HashMap::new(),
             projects: HashMap::new(),
+            usage: Vec::new(),
             demo_messages: None,
         };
         if demo::enabled() {
             let demo = demo::build();
             model.accounts = demo.accounts;
             model.board = demo.board;
+            model.usage = demo.usage;
             model.demo_messages = Some(demo.messages);
             return model;
         }
@@ -82,6 +87,11 @@ impl Model {
 
     pub fn is_demo(&self) -> bool {
         self.demo_messages.is_some()
+    }
+
+    /// The status line snapshot of a session, if its status line reported to Brain.
+    pub fn snapshot(&self, key: &SessionKey) -> Option<&Snapshot> {
+        self.usage.iter().find(|s| s.account == key.account && s.pid == key.pid)
     }
 
     pub fn account(&self, id: &str) -> Option<&Account> {
@@ -128,6 +138,7 @@ impl Model {
             self.board.set_alive(&key, pid_alive(key.pid));
         }
         self.refresh_transcripts(&seen);
+        self.usage = usage::read_all(&usage::status_dir(&home_dir()));
 
         let mut attention = Vec::new();
         for session in self.board.sorted() {

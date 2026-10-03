@@ -8,6 +8,7 @@ use brain_core::event::{Event, Kind, Source};
 use brain_core::sessions::SessionFile;
 use brain_core::state::{Board, SessionKey};
 use brain_core::transcript::{Insight, Message, Role};
+use brain_core::usage::{Limit, Snapshot};
 use chrono::{Duration, Utc};
 
 pub fn enabled() -> bool {
@@ -17,6 +18,7 @@ pub fn enabled() -> bool {
 pub struct Demo {
     pub accounts: Vec<Account>,
     pub board: Board,
+    pub usage: Vec<Snapshot>,
     pub messages: HashMap<SessionKey, Vec<Message>>,
 }
 
@@ -217,5 +219,24 @@ pub fn build() -> Demo {
         );
     }
 
-    Demo { accounts, board, messages }
+    let resets = |hours: i64| Some((now + Duration::hours(hours)).timestamp());
+    let snapshot = |account: &str, pid: u32, five: f64, seven: f64, context: f64, cost: f64| Snapshot {
+        account: account.into(),
+        pid,
+        session_id: Some(format!("demo-{pid}")),
+        ts: now.timestamp_millis(),
+        context_percent: Some(context),
+        context_size: Some(200_000),
+        cost_usd: Some(cost),
+        five_hour: Some(Limit { used_percentage: five, resets_at: resets(2) }),
+        seven_day: Some(Limit { used_percentage: seven, resets_at: resets(80) }),
+    };
+    let usage = vec![
+        snapshot("main", 4101, 46.0, 21.0, 71.0, 3.84),
+        snapshot("main", 4103, 46.0, 21.0, 19.0, 0.41),
+        snapshot("main", 4104, 46.0, 21.0, 48.0, 2.17),
+        snapshot("second", 4102, 12.0, 34.0, 30.0, 0.92),
+    ];
+
+    Demo { accounts, board, usage, messages }
 }

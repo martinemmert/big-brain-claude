@@ -8,16 +8,17 @@ use gpui::{
     FontWeight, KeyDownEvent, ScrollHandle, SharedString, Task, Window,
 };
 
+use crate::config;
 use crate::conversation::Conversation;
 use crate::i18n::t;
 use crate::input::{InputAction, LineInput};
 use crate::menubar::MenuBar;
 use crate::model::{Model, HISTORY_DAYS};
 use crate::notify::{self, Notifier};
-use crate::prefs::Prefs;
+use crate::prefs::{Layout, Prefs};
 use brain_terminal::{self as terminal, Capabilities, Key, Outcome};
 use crate::widgets::{
-    account_badge, caret, chip, clock, dot, kbd, now_ms, phase_color, phase_label, plain, section_title,
+    account_badge, background_summary, caret, chip, clock, dot, kbd, now_ms, phase_color, phase_label, plain, section_title,
 };
 use crate::{messages, theme, tr};
 
@@ -48,12 +49,18 @@ pub struct BrainView {
     reply: LineInput,
     /// Session to scroll into view on the next render of the list.
     pending_scroll: Option<SessionKey>,
-    /// Notifications for these sessions are held back until the given time (epoch ms).
-    snoozed: HashMap<SessionKey, i64>,
+    /// Reminders sent while a session keeps waiting: since when it waits, and how many.
+    reminders: HashMap<SessionKey, (i64, u32)>,
     /// The terminal hosting the selected session and what Brain can do with it.
     host: Option<(SessionKey, Capabilities)>,
     /// Project name and worktree per session, refreshed on render.
     projects: HashMap<SessionKey, (String, Option<String>)>,
+    changes: Option<ChangesCache>,
+    changes_loading: bool,
+    new_session: NewSession,
+    /// A newer release on GitHub, if the daily check found one.
+    update: Option<crate::links::Update>,
+    _update_check: Option<Task<()>>,
     _poll: Task<()>,
 }
 
@@ -64,12 +71,29 @@ enum Mode {
     Search,
     Rename,
     Reply,
+    NewSession,
+}
+
+/// The "new session" dialog: a folder (picked from recent ones or typed) and an account.
+#[derive(Default)]
+struct NewSession {
+    folder: LineInput,
+    account: usize,
+    pick: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DetailTab {
     Messages,
     Timeline,
+    Changes,
+}
+
+/// The selected session's git changes, loaded off the UI thread.
+struct ChangesCache {
+    key: SessionKey,
+    loaded: Instant,
+    changes: Option<brain_core::changes::Changes>,
 }
 
 /// The left column, already filtered and sorted.
@@ -78,6 +102,7 @@ struct Groups<'a> {
     attention: Vec<&'a Session>,
     working: Vec<&'a Session>,
     resting: Vec<&'a Session>,
+    snoozed: Vec<&'a Session>,
     ended: Vec<&'a Session>,
 }
 
@@ -88,6 +113,7 @@ impl<'a> Groups<'a> {
         all.extend(&self.attention);
         all.extend(&self.working);
         all.extend(&self.resting);
+        all.extend(&self.snoozed);
         if include_ended {
             all.extend(&self.ended);
         }
@@ -95,7 +121,7 @@ impl<'a> Groups<'a> {
     }
 
     fn live_count(&self) -> usize {
-        self.pinned.len() + self.attention.len() + self.working.len() + self.resting.len()
+        self.pinned.len() + self.attention.len() + self.working.len() + self.resting.len() + self.snoozed.len()
     }
 }
 
@@ -133,20 +159,38 @@ impl BrainView {
             rename: LineInput::default(),
             reply: LineInput::default(),
             pending_scroll: None,
-            snoozed: HashMap::new(),
+            reminders: HashMap::new(),
             host: None,
             projects: HashMap::new(),
+            changes: None,
+            changes_loading: false,
+            new_session: NewSession::default(),
+            update: None,
+            _update_check: None,
             _poll: poll,
         };
         view.selected = view.groups(now_ms()).navigable(false).first().map(|s| s.key.clone());
+        if !view.model.is_demo() {
+            view._update_check = Some(cx.spawn(async move |this, cx| loop {
+                let found = cx.background_executor().spawn(async { crate::links::check_for_update() }).await;
+                if this.update(cx, |this, cx| {
+                    this.update = found;
+                    cx.notify();
+                })
+                .is_err()
+                {
+                    break;
+                }
+                cx.background_executor().timer(Duration::from_secs(24 * 60 * 60)).await;
+            }));
+        }
         view
     }
 
     fn tick(&mut self, cx: &mut Context<Self>) {
         let now = now_ms();
         for item in self.model.refresh() {
-            let snoozed = self.snoozed.get(&item.key).is_some_and(|until| *until > now);
-            if snoozed || self.prefs.is_muted(&item.key) {
+            if self.prefs.snoozed_until(&item.key, now).is_some() || self.prefs.is_muted(&item.key) {
                 continue;
             }
             let account = item.key.account.clone();
@@ -166,9 +210,18 @@ impl BrainView {
                     cx.activate(true);
                 }
                 notify::Response::Snooze(key) => {
-                    self.snoozed.insert(key, now + SNOOZE_MS);
+                    self.prefs.snooze(&key, Some(now + SNOOZE_MS));
+                    self.prefs.save();
                 }
             }
+        }
+        self.remind(now);
+        self.load_changes(cx);
+        for key in crate::links::take_sessions() {
+            self.selected = Some(key.clone());
+            self.pending_scroll = Some(key);
+            self.mode = Mode::Normal;
+            cx.activate(true);
         }
         if MenuBar::take_click() {
             cx.activate(true);
@@ -180,8 +233,219 @@ impl BrainView {
         cx.notify();
     }
 
+    /// Reminds again about sessions that keep waiting: every `remind_after_minutes`, at most
+    /// three times per waiting period, never for muted or snoozed ones.
+    fn remind(&mut self, now: i64) {
+        const MAX_REMINDERS: u32 = 3;
+        let Some(interval) = config::remind_after_ms() else { return };
+        let waiting: Vec<(SessionKey, i64, Phase, String, Option<String>)> = self
+            .model
+            .board
+            .sorted()
+            .into_iter()
+            .filter(|s| matches!(s.phase(), Phase::NeedsYou | Phase::YourTurn))
+            .map(|s| (s.key.clone(), s.phase_since_ms(), s.phase(), s.display_name(), s.headline()))
+            .collect();
+        self.reminders.retain(|key, _| waiting.iter().any(|(k, ..)| k == key));
+        for (key, since, phase, name, headline) in waiting {
+            if self.prefs.is_muted(&key) || self.prefs.snoozed_until(&key, now).is_some() {
+                continue;
+            }
+            let entry = self.reminders.entry(key.clone()).or_insert((since, 0));
+            if entry.0 != since {
+                *entry = (since, 0);
+            }
+            let due = since + interval * (entry.1 as i64 + 1);
+            if entry.1 >= MAX_REMINDERS || now < due {
+                continue;
+            }
+            entry.1 += 1;
+            let waited = theme::ago(since, now);
+            let account = key.account.clone();
+            let subtitle = tr!("{account} · wartet seit {waited}", "{account} · waiting for {waited}");
+            let body = plain(headline.as_deref().unwrap_or(""));
+            self.notifier.post(&key, &name, &subtitle, &body, phase == Phase::NeedsYou);
+        }
+    }
+
+    /// While the Changes tab is open: reloads the selected session's git changes every 5 s.
+    fn load_changes(&mut self, cx: &mut Context<Self>) {
+        if self.tab != DetailTab::Changes || self.changes_loading || self.model.is_demo() {
+            return;
+        }
+        let Some(session) = self.selected_session() else { return };
+        let fresh = self.changes.as_ref().is_some_and(|c| c.key == session.key && c.loaded.elapsed() < Duration::from_secs(5));
+        let Some(cwd) = session.cwd.clone().filter(|_| !fresh) else { return };
+        let key = session.key.clone();
+        self.changes_loading = true;
+        let task = cx.background_executor().spawn(async move { brain_core::changes::changes_of(std::path::Path::new(&cwd)) });
+        cx.spawn(async move |this, cx| {
+            let changes = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.changes = Some(ChangesCache { key, loaded: Instant::now(), changes });
+                this.changes_loading = false;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Folders to start a session in: the typed path first (if it is one), then the folders of
+    /// known sessions, most recently active first, filtered by the typed words.
+    fn folder_suggestions(&self) -> Vec<String> {
+        let query = self.new_session.folder.text.trim().to_string();
+        let mut sessions: Vec<&Session> = self.model.board.keys().filter_map(|k| self.model.board.get(k)).collect();
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.last_activity_ms));
+        let mut folders: Vec<String> = Vec::new();
+        if query.starts_with('/') || query.starts_with('~') {
+            let home = brain_core::account::home_dir().display().to_string();
+            folders.push(query.replacen('~', &home, 1));
+        }
+        let terms: Vec<String> = query.to_lowercase().split_whitespace().map(str::to_string).collect();
+        for cwd in sessions.iter().filter_map(|s| s.cwd.clone()) {
+            let lower = cwd.to_lowercase();
+            if !folders.contains(&cwd) && terms.iter().all(|t| lower.contains(t)) {
+                folders.push(cwd);
+            }
+        }
+        folders.truncate(12);
+        folders
+    }
+
+    fn on_new_session_key(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) {
+        let count = self.folder_suggestions().len();
+        match keystroke.key.as_str() {
+            "down" => self.new_session.pick = (self.new_session.pick + 1).min(count.saturating_sub(1)),
+            "up" => self.new_session.pick = self.new_session.pick.saturating_sub(1),
+            "tab" => self.new_session.account = (self.new_session.account + 1) % self.model.accounts.len().max(1),
+            "enter" => self.start_new_session(),
+            "escape" => self.mode = Mode::Normal,
+            _ => {
+                let clipboard = || cx.read_from_clipboard().and_then(|item| item.text());
+                if self.new_session.folder.handle(keystroke, clipboard) == InputAction::Changed {
+                    self.new_session.pick = 0;
+                }
+            }
+        }
+    }
+
+    fn start_new_session(&mut self) {
+        let Some(folder) = self.folder_suggestions().get(self.new_session.pick).cloned() else {
+            self.set_status(t("Wähle einen Ordner oder tippe einen Pfad.", "Pick a folder or type a path."));
+            return;
+        };
+        if !std::path::Path::new(&folder).is_dir() {
+            self.set_status(tr!("Ordner nicht gefunden: {folder}", "Folder not found: {folder}"));
+            return;
+        }
+        self.mode = Mode::Normal;
+        let config_dir = self
+            .model
+            .accounts
+            .get(self.new_session.account)
+            .filter(|a| a.id != "main")
+            .map(|a| a.config_dir.display().to_string());
+        if self.blocked_in_demo() {
+            return;
+        }
+        let outcome = brain_terminal::open_new(&folder, config_dir.as_deref(), "claude");
+        self.report(outcome, Some(t("Neue Session gestartet.", "Started a new session.").into()));
+    }
+
+    fn render_new_session(&self, cx: &mut Context<Self>) -> AnyElement {
+        let suggestions = self.folder_suggestions();
+        let query = self.new_session.folder.text.clone();
+        let accounts: Vec<(usize, SharedString)> =
+            self.model.accounts.iter().enumerate().map(|(i, a)| (i, SharedString::from(a.id.clone()))).collect();
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .h_full()
+            .px(px(28.))
+            .pt(px(24.))
+            .bg(theme::ink())
+            .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).text_color(theme::text_strong()).child(t("Neue Session", "New session")))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(div().text_size(px(12.5)).text_color(theme::text_muted()).child(t("Konto", "Account")))
+                    .child(segmented("new-account", accounts, self.new_session.account, cx.listener(|this, value: &usize, _, cx| {
+                        this.new_session.account = *value;
+                        cx.notify();
+                    }))),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .h(px(36.))
+                    .px(px(12.))
+                    .rounded(px(8.))
+                    .bg(theme::surface())
+                    .border_1()
+                    .border_color(theme::alpha(theme::working(), 0x99))
+                    .when(query.is_empty(), |d| d.child(div().text_color(theme::text_faint()).child(t("Ordner suchen oder Pfad tippen …", "Search folders or type a path …"))))
+                    .child(div().text_color(theme::text_strong()).child(query))
+                    .child(caret("new-caret")),
+            )
+            .child(
+                div().flex().flex_col().gap(px(2.)).children(suggestions.into_iter().enumerate().map(|(i, folder)| {
+                    let active = i == self.new_session.pick;
+                    div()
+                        .px(px(10.))
+                        .py(px(6.))
+                        .rounded(px(6.))
+                        .font_family("Menlo")
+                        .text_size(px(12.))
+                        .text_color(if active { theme::text_strong() } else { theme::text() })
+                        .when(active, |d| d.bg(theme::raised()))
+                        .child(theme::tilde(&folder))
+                }))
+            )
+            .child(div().text_size(px(11.5)).text_color(theme::text_faint()).child(t(
+                "⏎ startet `claude` in einem neuen Terminal-Tab · ↑↓ Ordner · ⇥ Konto · esc",
+                "⏎ starts `claude` in a new terminal tab · ↑↓ folder · ⇥ account · esc",
+            )))
+            .into_any_element()
+    }
+
+    /// `S`: not snoozed → 15 min → 1 h → until tomorrow 9:00 → not snoozed.
+    fn cycle_snooze(&mut self) {
+        let Some(key) = self.selected.clone() else { return };
+        let now = now_ms();
+        let tomorrow = (chrono::Local::now() + chrono::Duration::days(1))
+            .date_naive()
+            .and_hms_opt(9, 0, 0)
+            .and_then(|t| t.and_local_timezone(chrono::Local).single())
+            .map(|t| t.timestamp_millis());
+        let current = self.prefs.snoozed_until(&key, now);
+        let quarter = now + 15 * 60 * 1000;
+        let hour = now + 60 * 60 * 1000;
+        let next = match current {
+            None => Some(quarter),
+            Some(until) if until <= quarter + 60_000 => Some(hour),
+            Some(until) if until <= hour + 60_000 => tomorrow,
+            Some(_) => None,
+        };
+        self.prefs.snooze(&key, next);
+        self.prefs.save();
+        self.set_status(match next {
+            Some(until) => {
+                let at = clock(until);
+                tr!("Pausiert bis {at}.", "Snoozed until {at}.")
+            }
+            None => t("Nicht mehr pausiert.", "No longer snoozed.").to_string(),
+        });
+    }
+
     fn groups(&self, now: i64) -> Groups<'_> {
-        let mut groups = Groups { pinned: vec![], attention: vec![], working: vec![], resting: vec![], ended: vec![] };
+        let mut groups = Groups { pinned: vec![], attention: vec![], working: vec![], resting: vec![], snoozed: vec![], ended: vec![] };
         let searching = !self.search.text.is_empty();
         let visible = self
             .model
@@ -195,11 +459,16 @@ impl BrainView {
                 groups.pinned.push(session);
                 continue;
             }
+            let waiting = matches!(session.phase(), Phase::NeedsYou | Phase::YourTurn);
+            if waiting && self.prefs.snoozed_until(&session.key, now).is_some() {
+                groups.snoozed.push(session);
+                continue;
+            }
             match session.phase() {
                 Phase::NeedsYou => groups.attention.push(session),
                 Phase::YourTurn if now - session.phase_since_ms() > RESTING_AFTER_MS => groups.resting.push(session),
                 Phase::YourTurn => groups.attention.push(session),
-                Phase::Working => groups.working.push(session),
+                Phase::Working | Phase::Background => groups.working.push(session),
                 Phase::Ended if searching || now - session.last_activity_ms < ENDED_VISIBLE_MS => groups.ended.push(session),
                 Phase::Ended => {}
             }
@@ -240,6 +509,12 @@ impl BrainView {
         let clipboard = || cx.read_from_clipboard().and_then(|item| item.text());
 
         match self.mode {
+            Mode::NewSession => {
+                self.on_new_session_key(keystroke, cx);
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
             Mode::Rename | Mode::Reply => {
                 let renaming = self.mode == Mode::Rename;
                 let field = if renaming { &mut self.rename } else { &mut self.reply };
@@ -275,6 +550,22 @@ impl BrainView {
             cx.notify();
             return;
         }
+        if keystroke.modifiers.platform && keystroke.key == "n" {
+            self.new_session = NewSession::default();
+            self.mode = Mode::NewSession;
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+        if keystroke.modifiers.platform && keystroke.key == "c" && self.prefs.layout == Layout::Today {
+            let date = chrono::Local::now().format("%d.%m.%Y").to_string();
+            let markdown = brain_core::digest::markdown(&tr!("Heute, {date}", "Today, {date}"), &self.today_digest());
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(markdown));
+            self.set_status(t("Tagesübersicht kopiert.", "Copied the day's digest."));
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if keystroke.modifiers.platform || keystroke.modifiers.control {
             return;
         }
@@ -300,14 +591,27 @@ impl BrainView {
             "n" => self.answer_permission(false),
             "p" => self.toggle_pin(),
             "m" => self.toggle_mute(),
+            "s" => self.cycle_snooze(),
             "g" => {
-                self.prefs.group_by_project = !self.prefs.group_by_project;
+                self.prefs.layout = if self.prefs.layout == Layout::Projects { Layout::Status } else { Layout::Projects };
                 self.prefs.save();
             }
-            "left" | "right" => {
+            "d" => {
+                self.prefs.layout = if self.prefs.layout == Layout::Today { Layout::Status } else { Layout::Today };
+                self.prefs.save();
+            }
+            "right" => {
                 self.tab = match self.tab {
                     DetailTab::Messages => DetailTab::Timeline,
+                    DetailTab::Timeline => DetailTab::Changes,
+                    DetailTab::Changes => DetailTab::Messages,
+                }
+            }
+            "left" => {
+                self.tab = match self.tab {
+                    DetailTab::Messages => DetailTab::Changes,
                     DetailTab::Timeline => DetailTab::Messages,
+                    DetailTab::Changes => DetailTab::Timeline,
                 }
             }
             _ if keystroke.key_char.as_deref() == Some("/") => self.mode = Mode::Search,
@@ -616,12 +920,33 @@ impl BrainView {
             .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).text_color(theme::text_strong()).child("Brain"))
             .child(div().text_size(px(12.5)).text_color(theme::text_muted()).child(summary))
             .child(div().flex_1())
+            .when_some(self.update.clone(), |d, update| {
+                let version = update.version.clone();
+                d.child(
+                    div()
+                        .id("update")
+                        .flex_none()
+                        .px(px(9.))
+                        .py(px(3.))
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .bg(theme::alpha(theme::done(), 0x22))
+                        .text_size(px(12.))
+                        .text_color(theme::done())
+                        .on_click(move |_: &ClickEvent, _, cx| cx.open_url(&update.url))
+                        .child(tr!("Update {version}", "Update {version}")),
+                )
+            })
             .child(segmented(
                 "layout",
-                vec![(false, SharedString::from(t("Status", "Status"))), (true, SharedString::from(t("Projekte", "Projects")))],
-                self.prefs.group_by_project,
-                cx.listener(|this, value: &bool, _, cx| {
-                    this.prefs.group_by_project = *value;
+                vec![
+                    (Layout::Status, SharedString::from(t("Status", "Status"))),
+                    (Layout::Projects, SharedString::from(t("Projekte", "Projects"))),
+                    (Layout::Today, SharedString::from(t("Heute", "Today"))),
+                ],
+                self.prefs.layout,
+                cx.listener(|this, value: &Layout, _, cx| {
+                    this.prefs.layout = *value;
                     this.prefs.save();
                     cx.notify();
                 }),
@@ -647,7 +972,7 @@ impl BrainView {
         }
 
         let mut nav = 0usize;
-        if self.prefs.group_by_project {
+        if self.prefs.layout != Layout::Status {
             self.render_by_project(groups, now, cx, &mut nav, &mut children);
         } else {
             self.render_by_status(groups, now, cx, &mut nav, &mut children);
@@ -658,21 +983,74 @@ impl BrainView {
             .id("session-list")
             .flex()
             .flex_col()
-            .flex_none()
-            .w(relative(0.4))
-            .min_w(px(360.))
-            .max_w(px(480.))
-            .h_full()
+            .flex_1()
+            .min_h_0()
             .px(px(12.))
             .pt(px(12.))
             .pb(px(16.))
             .gap(px(6.))
-            .bg(theme::chrome())
             .overflow_y_scroll()
             .track_scroll(&self.list_scroll)
-            .border_r_1()
-            .border_color(theme::line())
             .children(children)
+    }
+
+    /// Plan limits per account (from the status line) and today's cost, under the list.
+    fn render_usage(&self, now: i64) -> Option<AnyElement> {
+        let today = chrono::Local::now().date_naive();
+        let rows: Vec<AnyElement> = self
+            .model
+            .accounts
+            .iter()
+            .filter_map(|account| {
+                let limits = brain_core::usage::account_limits(&self.model.usage, &account.id);
+                let cost: f64 = self
+                    .model
+                    .usage
+                    .iter()
+                    .filter(|s| s.account == account.id)
+                    .filter(|s| chrono::DateTime::from_timestamp_millis(s.ts).is_some_and(|t| t.with_timezone(&chrono::Local).date_naive() == today))
+                    .filter_map(|s| s.cost_usd)
+                    .sum();
+                if limits.is_none() && cost == 0.0 {
+                    return None;
+                }
+                let mut row = div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(account_badge(&account.id, self.account_index(&account.id)));
+                if let Some(snapshot) = limits {
+                    for (label, limit) in [("5h", snapshot.five_hour), ("7d", snapshot.seven_day)] {
+                        if let Some(limit) = limit {
+                            row = row.child(limit_bar(label, limit, now));
+                        }
+                    }
+                }
+                if cost > 0.0 {
+                    row = row.child(div().flex_1()).child(
+                        div().flex_none().text_size(px(11.5)).text_color(theme::text_muted()).child(tr!("heute ${cost:.2}", "today ${cost:.2}")),
+                    );
+                }
+                Some(row.into_any_element())
+            })
+            .collect();
+        if rows.is_empty() {
+            return None;
+        }
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .flex_none()
+                .gap(px(8.))
+                .px(px(16.))
+                .py(px(10.))
+                .border_t_1()
+                .border_color(theme::line())
+                .child(div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::text_faint()).child(t("Nutzung", "Usage")))
+                .children(rows)
+                .into_any_element(),
+        )
     }
 
     fn render_by_status(&self, groups: &Groups, now: i64, cx: &mut Context<Self>, nav: &mut usize, children: &mut Vec<AnyElement>) {
@@ -693,6 +1071,7 @@ impl BrainView {
         for (title, sessions) in [
             (t("Arbeitet", "Working"), &groups.working),
             (t("Ruht seit über 2 h", "Resting for over 2 h"), &groups.resting),
+            (t("Pausiert", "Snoozed"), &groups.snoozed),
         ] {
             if sessions.is_empty() {
                 continue;
@@ -755,7 +1134,8 @@ impl BrainView {
     /// Recently waiting sessions as cards, the others as rows.
     fn push_session(&self, s: &Session, nav: &mut usize, now: i64, cx: &mut Context<Self>, children: &mut Vec<AnyElement>) {
         self.scroll_if_pending(&s.key, children.len(), *nav);
-        let waiting = matches!(s.phase(), Phase::NeedsYou | Phase::YourTurn);
+        let snoozed = self.prefs.snoozed_until(&s.key, now).is_some();
+        let waiting = matches!(s.phase(), Phase::NeedsYou | Phase::YourTurn) && !snoozed;
         let recent = now - s.phase_since_ms() <= RESTING_AFTER_MS || s.phase() == Phase::NeedsYou;
         let element = if waiting && recent { self.render_card(s, *nav, now, cx) } else { self.render_row(s, *nav, now, cx) };
         children.push(element);
@@ -820,6 +1200,10 @@ impl BrainView {
         }
         if self.prefs.is_muted(&s.key) {
             out.push(marker(t("stumm", "muted").into(), theme::text_faint()));
+        }
+        if let Some(until) = self.prefs.snoozed_until(&s.key, now_ms()) {
+            let at = clock(until);
+            out.push(marker(tr!("pausiert bis {at}", "snoozed until {at}"), theme::text_faint()));
         }
         out
     }
@@ -895,6 +1279,7 @@ impl BrainView {
         let phase = s.phase();
         let detail = match phase {
             Phase::Working => plain(&s.headline().unwrap_or_else(|| t("arbeitet …", "working …").into())),
+            Phase::Background => background_summary(s.background_tasks()),
             Phase::YourTurn => {
                 let ago = theme::ago(s.phase_since_ms(), now);
                 tr!("fertig seit {ago}", "done for {ago}")
@@ -1003,14 +1388,18 @@ impl BrainView {
         }
         let mut meta = vec![chip(s.cwd.as_deref().map(theme::tilde).unwrap_or_default(), true).into_any_element()];
         let info = &s.insight;
+        let status = self.model.snapshot(&s.key);
         if let Some(model) = &info.model {
             meta.push(chip(short_model(model), false).into_any_element());
         }
-        if let Some(tokens) = info.context_tokens {
+        // The status line knows the real fill level; the transcript only the token count.
+        if let Some(percent) = status.and_then(|s| s.context_percent) {
+            meta.push(chip(tr!("{percent:.0}% Kontext", "{percent:.0}% context"), false).into_any_element());
+        } else if let Some(tokens) = info.context_tokens {
             let tokens = format_tokens(tokens);
             meta.push(chip(tr!("{tokens} Kontext", "{tokens} context"), false).into_any_element());
         }
-        if let Some(cost) = info.cost_usd {
+        if let Some(cost) = status.and_then(|s| s.cost_usd).or(info.cost_usd) {
             meta.push(chip(format!("${cost:.2}"), false).into_any_element());
         }
         if let Some(mode) = info.permission_mode.as_deref().filter(|m| *m != "default") {
@@ -1092,6 +1481,7 @@ impl BrainView {
                     .overflow_y_scroll()
                     .children(messages::timeline(s))
                     .into_any_element(),
+                DetailTab::Changes => self.render_changes(s),
             })
             .into_any_element()
     }
@@ -1112,6 +1502,24 @@ impl BrainView {
                 .unwrap_or_else(|| t("Noch keine Meldung von dieser Session.", "No message from this session yet.").into()),
         );
         let since = theme::ago(s.phase_since_ms(), now);
+        let tasks: Vec<AnyElement> = if phase == Phase::Background {
+            s.background_tasks()
+                .iter()
+                .map(|task| {
+                    let what = task.description.clone().unwrap_or_else(|| task.id.clone());
+                    let kind = task.agent_type.clone().unwrap_or_else(|| task.kind.clone());
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .text_size(px(12.))
+                        .child(div().flex_none().text_color(theme::background()).child(kind))
+                        .child(div().min_w_0().truncate().text_color(theme::text()).child(what))
+                        .into_any_element()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         let mut actions: Vec<AnyElement> = Vec::new();
         if s.awaiting_permission() {
@@ -1155,6 +1563,10 @@ impl BrainView {
                     .child(div().text_color(theme::text_muted()).child(tr!("seit {since}", "for {since}"))),
             )
             .child(div().text_color(theme::text_strong()).line_height(relative(1.5)).child(headline))
+            .when(!tasks.is_empty(), |d| {
+                d.child(div().text_size(px(12.)).text_color(theme::text_muted()).child(background_summary(s.background_tasks())))
+                    .children(tasks)
+            })
             .when(self.mode == Mode::Reply, |d| {
                 d.child(
                     div()
@@ -1190,9 +1602,16 @@ impl BrainView {
 
     fn render_tabs(&self, s: &Session, cx: &mut Context<Self>) -> impl IntoElement {
         let message_count = self.conversation.as_ref().map_or(0, |c| c.messages.len());
+        let change_count = self
+            .changes
+            .as_ref()
+            .filter(|c| c.key == s.key)
+            .and_then(|c| c.changes.as_ref())
+            .map_or(0, |c| c.files.len());
         let tabs = [
             (DetailTab::Messages, "messages-tab", t("Nachrichten", "Messages"), message_count),
             (DetailTab::Timeline, "timeline-tab", t("Verlauf", "Timeline"), s.timeline.len()),
+            (DetailTab::Changes, "changes-tab", t("Änderungen", "Changes"), change_count),
         ];
         div()
             .flex()
@@ -1223,6 +1642,127 @@ impl BrainView {
                     .child(label)
                     .child(div().text_size(px(11.5)).text_color(theme::text_faint()).child(count.to_string()))
             }))
+    }
+
+    fn render_changes(&self, s: &Session) -> AnyElement {
+        let cache = self.changes.as_ref().filter(|c| c.key == s.key);
+        let body: Vec<AnyElement> = match cache.map(|c| c.changes.as_ref()) {
+            None => vec![hint(t("Lade Änderungen …", "Loading changes …").into())],
+            Some(None) => vec![hint(t("Der Ordner dieser Session ist kein Git-Repository.", "This session's folder is not a git repository.").into())],
+            Some(Some(changes)) => {
+                let (added, removed) = changes.totals();
+                let mut head = div().flex().flex_wrap().items_center().gap(px(6.)).pb(px(6.));
+                if let Some(branch) = &changes.branch {
+                    head = head.child(chip(format!("⑂ {branch}"), true));
+                }
+                if let Some((ahead, behind)) = changes.ahead_behind {
+                    head = head.child(chip(format!("↑{ahead} ↓{behind}"), false));
+                }
+                let files = changes.files.len();
+                head = head.child(chip(tr!("{files} Dateien · +{added} −{removed}", "{files} files · +{added} −{removed}"), false));
+                let mut out = vec![head.into_any_element()];
+                if changes.files.is_empty() {
+                    out.push(hint(t("Keine offenen Änderungen.", "No uncommitted changes.").into()));
+                }
+                out.extend(changes.files.iter().map(change_row));
+                out
+            }
+        };
+        div()
+            .id("changes")
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .pt(px(14.))
+            .pb(px(20.))
+            .overflow_y_scroll()
+            .children(body)
+            .into_any_element()
+    }
+
+    /// The day's digest: what each session reported as done, per project.
+    fn today_digest(&self) -> Vec<brain_core::digest::ProjectDay> {
+        let sessions = self
+            .model
+            .board
+            .keys()
+            .filter(|k| self.filter.as_ref().is_none_or(|f| *f == k.account))
+            .filter_map(|k| {
+                let session = self.model.board.get(k)?;
+                let project = self.projects.get(k).map(|(name, _)| name.clone()).unwrap_or_else(|| session.display_name());
+                Some((project, session))
+            })
+            .collect::<Vec<_>>();
+        brain_core::digest::day(sessions, chrono::Local::now().date_naive())
+    }
+
+    fn render_today(&self, cx: &mut Context<Self>) -> AnyElement {
+        let projects = self.today_digest();
+        let date = chrono::Local::now().format("%d.%m.%Y").to_string();
+        let title = tr!("Heute, {date}", "Today, {date}");
+        let mut body: Vec<AnyElement> = Vec::new();
+        if projects.is_empty() {
+            body.push(hint(t(
+                "Heute hat noch keine Session etwas als erledigt gemeldet.",
+                "No session has reported anything as done today.",
+            ).into()));
+        }
+        for project in &projects {
+            body.push(
+                div().mt(px(14.)).text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::text_strong()).child(project.project.clone()).into_any_element(),
+            );
+            for session in &project.sessions {
+                body.push(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .mt(px(6.))
+                        .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::text()).child(session.name.clone()))
+                        .child(account_badge(&session.account, self.account_index(&session.account)))
+                        .into_any_element(),
+                );
+                for entry in &session.entries {
+                    body.push(
+                        div()
+                            .flex()
+                            .gap(px(10.))
+                            .pl(px(2.))
+                            .text_size(px(12.5))
+                            .child(div().flex_none().w(px(40.)).text_color(theme::text_faint()).child(entry.at.format("%H:%M").to_string()))
+                            .child(div().flex_1().min_w_0().line_height(relative(1.45)).text_color(theme::text()).child(plain(&entry.text)))
+                            .into_any_element(),
+                    );
+                }
+            }
+        }
+        let markdown = brain_core::digest::markdown(&title, &projects);
+        div()
+            .id("today")
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .h_full()
+            .px(px(28.))
+            .pt(px(20.))
+            .bg(theme::ink())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).text_color(theme::text_strong()).child(title))
+                    .child(div().flex_1())
+                    .child(button("copy-digest", t("Als Markdown kopieren", "Copy as Markdown"), "⌘C", false, !projects.is_empty(), cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(markdown.clone()));
+                        this.set_status(t("Tagesübersicht kopiert.", "Copied the day's digest."));
+                        cx.notify();
+                    }))),
+            )
+            .child(div().id("today-body").flex_1().min_h_0().flex().flex_col().gap(px(2.)).pb(px(24.)).overflow_y_scroll().children(body))
+            .into_any_element()
     }
 
     fn render_messages(&self) -> AnyElement {
@@ -1256,7 +1796,7 @@ impl BrainView {
             ("T", t("antworten", "reply")),
             ("Y N", t("Freigabe", "permission")),
             ("R", t("umbenennen", "rename")),
-            ("P M", t("anheften · stumm", "pin · mute")),
+            ("P M S", t("anheften · stumm · pausieren", "pin · mute · snooze")),
             ("G", t("Projekte", "projects")),
             ("⇥", t("Konto", "account")),
         ];
@@ -1306,8 +1846,27 @@ impl Render for BrainView {
         let waiting = waiting_sessions.len();
         window.set_window_title(&if waiting > 0 { tr!("Brain – {waiting} warten", "Brain – {waiting} waiting") } else { "Brain".into() });
         let titlebar = self.render_titlebar(&groups, cx).into_any_element();
-        let list = self.render_list(&groups, now, cx).into_any_element();
-        let detail = self.render_detail(now, cx);
+        let list = div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .w(relative(0.4))
+            .min_w(px(360.))
+            .max_w(px(480.))
+            .h_full()
+            .bg(theme::chrome())
+            .border_r_1()
+            .border_color(theme::line())
+            .child(self.render_list(&groups, now, cx))
+            .children(self.render_usage(now))
+            .into_any_element();
+        let detail = if self.mode == Mode::NewSession {
+            self.render_new_session(cx)
+        } else if self.prefs.layout == Layout::Today {
+            self.render_today(cx)
+        } else {
+            self.render_detail(now, cx)
+        };
         drop(waiting_sessions);
         drop(groups);
         self.pending_scroll = None;
@@ -1409,6 +1968,61 @@ fn button(
         .when(!enabled, |d| d.opacity(0.4))
         .child(label.to_string())
         .child(kbd(key.to_string()))
+        .into_any_element()
+}
+
+/// `5h ▓▓▓░░ 46% · 15:20`: a plan limit window with its reset time.
+fn limit_bar(label: &str, limit: brain_core::usage::Limit, now_ms: i64) -> AnyElement {
+    let used = limit.used_percentage.clamp(0.0, 100.0);
+    let color = if used >= 90.0 { theme::calls() } else if used >= 70.0 { theme::turn() } else { theme::working() };
+    let resets = limit.resets_at.filter(|r| r * 1000 > now_ms).map(|r| {
+        let at = chrono::DateTime::from_timestamp(r, 0).map(|t| t.with_timezone(&chrono::Local));
+        match at {
+            Some(t) if r * 1000 - now_ms < 24 * 3600 * 1000 => t.format("%H:%M").to_string(),
+            Some(t) => t.format("%a").to_string(),
+            None => String::new(),
+        }
+    });
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(5.))
+        .text_size(px(11.))
+        .child(div().text_color(theme::text_faint()).child(label.to_string()))
+        .child(
+            div()
+                .w(px(46.))
+                .h(px(5.))
+                .rounded_full()
+                .bg(theme::raised())
+                .child(div().h_full().rounded_full().bg(color).w(px(46. * used as f32 / 100.))),
+        )
+        .child(div().text_color(theme::text()).child(format!("{used:.0}%")))
+        .when_some(resets, |d, at| d.child(div().text_color(theme::text_faint()).child(format!("↻ {at}"))))
+        .into_any_element()
+}
+
+/// One changed file: status code, path, added and removed lines.
+fn change_row(file: &brain_core::changes::FileChange) -> AnyElement {
+    let code = file.status.trim();
+    let color = match code.chars().next() {
+        Some('A') => theme::done(),
+        Some('D') => theme::calls(),
+        Some('R') => theme::working(),
+        Some('?') => theme::text_faint(),
+        _ => theme::turn(),
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .py(px(3.))
+        .text_size(px(12.))
+        .child(div().flex_none().w(px(22.)).font_family("Menlo").text_color(color).child(if code.is_empty() { "M".to_string() } else { code.to_string() }))
+        .child(div().flex_1().min_w_0().truncate().font_family("Menlo").text_size(px(11.5)).text_color(theme::text()).child(file.path.clone()))
+        .when_some(file.added.filter(|a| *a > 0), |d, a| d.child(div().flex_none().text_color(theme::done()).child(format!("+{a}"))))
+        .when_some(file.removed.filter(|r| *r > 0), |d, r| d.child(div().flex_none().text_color(theme::calls()).child(format!("−{r}"))))
         .into_any_element()
 }
 
