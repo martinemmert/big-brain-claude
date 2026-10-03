@@ -33,6 +33,10 @@ follows your macOS language: English or German.
 - **Plan usage.** Five-hour and weekly limits per account with their reset times, from the
   status line (Brain wraps your status line command and passes its output through unchanged).
 - **Changes.** Branch, ahead/behind and the changed files of the session's working directory.
+- **Pull requests.** The PR of each session's branch with its checks (`#12 ✓`, `#12 ✗`, `#12 …`),
+  via the GitHub CLI (`gh`, logged in); click it to open the PR.
+- **Conflicts.** A warning (and one notification) when two sessions edit the same files, read
+  from their transcripts, and a softer hint when they change files in the same checkout.
 - **Today.** What every session reported as done today, per project; copy it as Markdown.
 - **Timeline.** Every hook event and report of a session, plus seven days of history; ended
   sessions can be resumed (`claude --resume`) in a new tab.
@@ -45,6 +49,8 @@ follows your macOS language: English or German.
   when a session calls you; reminders while a session keeps waiting (`remind_after_minutes`
   in `config.json`, 10 by default, 0 turns them off) and snoozing per session.
 - **New sessions** in a recent folder and any account (`⌘N`).
+- **Quick replies.** `T`, then `1`–`9` sends a canned reply; set your own with
+  `"quick_replies": ["…", "…"]` in `~/.claude-brain/config.json`.
 - **English or German**, following your macOS language (override with `BRAIN_LANG=de|en` or
   `{"language": "de"}` in `~/.claude-brain/config.json`).
 
@@ -151,7 +157,7 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `⏎`, double-click | open the session's terminal (resume it if it ended) |
 | `1`–`9` | open the n-th session |
 | `Y` / `N` | allow / deny an open permission prompt |
-| `T` | reply to a session that waits for you |
+| `T` | reply to a session that waits for you (then `1`–`9` for a quick reply) |
 | `R`, click the name | rename (only while the session waits for you) |
 | `/`, `⌘F` | search (`esc` clears) |
 | `P` / `M` | pin / mute notifications |

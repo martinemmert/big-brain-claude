@@ -23,7 +23,7 @@ pub fn clock(ms: i64) -> String {
 /// Drops Markdown emphasis and code markers for one-line previews, and words Claude Code's
 /// notification texts (and Brain's own notes) in the UI's language.
 pub fn plain(text: &str) -> String {
-    let text = text.replace("**", "").replace('`', "");
+    let text = flatten_tables(&text.replace("**", "").replace('`', ""));
     if let Some(rest) = text.strip_prefix("Claude needs your permission") {
         let tool = rest.trim().strip_prefix("to use ").map(str::trim).filter(|t| !t.is_empty());
         return match tool {
@@ -39,6 +39,19 @@ pub fn plain(text: &str) -> String {
         return note(inner.strip_suffix(']').unwrap_or(inner));
     }
     note(&text)
+}
+
+/// A Markdown table squashed into one line reads `| a | b | |---|---| | 1 | 2 |`: keep the cells,
+/// drop the separator row, join with middle dots.
+fn flatten_tables(text: &str) -> String {
+    if !text.contains("|-") && !text.contains("| -") {
+        return text.to_string();
+    }
+    text.split('|')
+        .map(str::trim)
+        .filter(|cell| !cell.is_empty() && !cell.chars().all(|c| matches!(c, '-' | ':' | ' ')))
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// Brain's harness notes from `brain_core::transcript` in the UI language.
@@ -211,4 +224,15 @@ pub fn chip(content: impl Into<String>, mono: bool) -> impl IntoElement {
         .text_color(theme::text_muted())
         .when(mono, |d| d.font_family("Menlo").text_size(px(11.)))
         .child(content.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tables_in_one_line_previews_keep_their_cells() {
+        assert_eq!(flatten_tables("Plan: | a | b | |---|---| | 1 | 2 |"), "Plan: · a · b · 1 · 2");
+        assert_eq!(flatten_tables("no | table here"), "no | table here");
+    }
 }

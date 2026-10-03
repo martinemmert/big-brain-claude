@@ -227,6 +227,7 @@ pub fn build() -> Demo {
                 permission_mode: Some(mode.into()),
                 cost_usd: Some(cost),
                 title: None,
+                edited: Vec::new(),
             },
         );
     }

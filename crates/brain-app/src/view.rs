@@ -55,6 +55,15 @@ pub struct BrainView {
     host: Option<(SessionKey, Capabilities)>,
     /// Project name and worktree per session, refreshed on render.
     projects: HashMap<SessionKey, (String, Option<String>)>,
+    /// The checked-out working tree per session (for conflicts and PR lookups).
+    checkouts: HashMap<SessionKey, std::path::PathBuf>,
+    /// The PR of each session's branch, refreshed every two minutes in the background.
+    prs: HashMap<SessionKey, brain_core::github::PullRequest>,
+    _pr_check: Option<Task<()>>,
+    /// Sessions editing the same files or checkout, computed on render.
+    conflicts: HashMap<SessionKey, brain_core::conflicts::Conflict>,
+    /// Pairs already notified about shared files.
+    conflicts_notified: std::collections::HashSet<(SessionKey, SessionKey)>,
     changes: Option<ChangesCache>,
     changes_loading: bool,
     new_session: NewSession,
@@ -162,6 +171,11 @@ impl BrainView {
             reminders: HashMap::new(),
             host: None,
             projects: HashMap::new(),
+            checkouts: HashMap::new(),
+            prs: HashMap::new(),
+            _pr_check: None,
+            conflicts: HashMap::new(),
+            conflicts_notified: std::collections::HashSet::new(),
             changes: None,
             changes_loading: false,
             new_session: NewSession::default(),
@@ -171,6 +185,20 @@ impl BrainView {
         };
         view.selected = view.groups(now_ms()).navigable(false).first().map(|s| s.key.clone());
         if !view.model.is_demo() {
+            view._pr_check = Some(cx.spawn(async move |this, cx| loop {
+                cx.background_executor().timer(Duration::from_secs(3)).await;
+                let Ok(work) = this.update(cx, |this, _| this.pr_lookups()) else { break };
+                let found = cx.background_executor().spawn(async move { lookup_prs(work) }).await;
+                if this.update(cx, |this, cx| {
+                    this.prs = found;
+                    cx.notify();
+                })
+                .is_err()
+                {
+                    break;
+                }
+                cx.background_executor().timer(Duration::from_secs(117)).await;
+            }));
             view._update_check = Some(cx.spawn(async move |this, cx| loop {
                 let found = cx.background_executor().spawn(async { crate::links::check_for_update() }).await;
                 if this.update(cx, |this, cx| {
@@ -216,6 +244,7 @@ impl BrainView {
             }
         }
         self.remind(now);
+        self.notify_conflicts();
         self.load_changes(cx);
         for key in crate::links::take_sessions() {
             self.selected = Some(key.clone());
@@ -265,6 +294,86 @@ impl BrainView {
             let subtitle = tr!("{account} · wartet seit {waited}", "{account} · waiting for {waited}");
             let body = plain(headline.as_deref().unwrap_or(""));
             self.notifier.post(&key, &name, &subtitle, &body, phase == Phase::NeedsYou);
+        }
+    }
+
+    /// Live sessions with a folder, for the background PR lookup.
+    fn pr_lookups(&self) -> Vec<(SessionKey, String)> {
+        self.model
+            .board
+            .keys()
+            .filter_map(|k| {
+                let s = self.model.board.get(k)?;
+                (s.phase() != Phase::Ended).then(|| Some((k.clone(), s.cwd.clone()?))).flatten()
+            })
+            .collect()
+    }
+
+    /// Edited files per live session, checked against each other.
+    fn compute_conflicts(&self) -> HashMap<SessionKey, brain_core::conflicts::Conflict> {
+        let work: Vec<brain_core::conflicts::Work> = self
+            .model
+            .board
+            .keys()
+            .filter_map(|k| self.model.board.get(k))
+            .filter(|s| s.phase() != Phase::Ended)
+            .map(|s| brain_core::conflicts::Work {
+                key: s.key.clone(),
+                checkout: self.checkouts.get(&s.key).cloned(),
+                edited: &s.insight.edited,
+            })
+            .collect();
+        brain_core::conflicts::conflicts(&work)
+    }
+
+    /// "Edits the same files as X: a.rs, b.rs" and "Works in the same checkout as Y".
+    fn conflict_lines(&self, s: &Session) -> Vec<AnyElement> {
+        let Some(conflict) = self.conflicts.get(&s.key) else { return Vec::new() };
+        let name = |key: &SessionKey| self.model.board.get(key).map(|o| o.display_name()).unwrap_or_default();
+        let mut out = Vec::new();
+        for (other, files) in &conflict.shared_files {
+            let other = name(other);
+            let list = files.iter().map(|f| f.rsplit('/').next().unwrap_or(f)).collect::<Vec<_>>().join(", ");
+            out.push(
+                div()
+                    .text_size(px(12.))
+                    .line_height(relative(1.45))
+                    .text_color(theme::calls_soft())
+                    .child(tr!("⚠ Bearbeitet dieselben Dateien wie {other}: {list}", "⚠ Edits the same files as {other}: {list}"))
+                    .into_any_element(),
+            );
+        }
+        if !conflict.same_checkout.is_empty() {
+            let others = conflict.same_checkout.iter().map(name).collect::<Vec<_>>().join(", ");
+            out.push(
+                div()
+                    .text_size(px(12.))
+                    .text_color(theme::turn())
+                    .child(tr!("Ändert Dateien im selben Checkout wie {others}", "Changes files in the same checkout as {others}"))
+                    .into_any_element(),
+            );
+        }
+        out
+    }
+
+    /// One notification per pair of sessions that start editing the same files.
+    fn notify_conflicts(&mut self) {
+        let found = self.compute_conflicts();
+        let mut posts = Vec::new();
+        for (key, conflict) in &found {
+            for (other, files) in &conflict.shared_files {
+                let pair = if key < other { (key.clone(), other.clone()) } else { (other.clone(), key.clone()) };
+                if self.conflicts_notified.insert(pair) {
+                    posts.push((key.clone(), other.clone(), files.clone()));
+                }
+            }
+        }
+        for (key, other, files) in posts {
+            let name = self.model.board.get(&key).map(|s| s.display_name()).unwrap_or_default();
+            let other_name = self.model.board.get(&other).map(|s| s.display_name()).unwrap_or_default();
+            let list = files.iter().map(|f| f.rsplit('/').next().unwrap_or(f)).collect::<Vec<_>>().join(", ");
+            let subtitle = tr!("bearbeitet dieselben Dateien wie {other_name}", "edits the same files as {other_name}");
+            self.notifier.post(&key, &name, &subtitle, &list, false);
         }
     }
 
@@ -511,6 +620,16 @@ impl BrainView {
         match self.mode {
             Mode::NewSession => {
                 self.on_new_session_key(keystroke, cx);
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
+            Mode::Reply if self.reply.text.is_empty() && keystroke.key.len() == 1 && ('1'..='9').contains(&keystroke.key.chars().next().unwrap()) && !keystroke.modifiers.platform => {
+                let index = keystroke.key.parse::<usize>().unwrap() - 1;
+                if let Some(reply) = config::quick_replies().get(index).cloned() {
+                    self.reply = LineInput::with_text(&reply);
+                    self.submit_reply();
+                }
                 cx.stop_propagation();
                 cx.notify();
                 return;
@@ -873,7 +992,9 @@ impl BrainView {
         for (key, cwd) in sessions {
             let project = self.model.project(&cwd);
             let entry = (project.name.clone(), project.worktree.clone());
-            self.projects.insert(key, entry);
+            let checkout = project.checkout.clone();
+            self.projects.insert(key.clone(), entry);
+            self.checkouts.insert(key, checkout);
         }
     }
 
@@ -1196,6 +1317,12 @@ impl BrainView {
         if let Some((_, Some(worktree))) = self.projects.get(&s.key) {
             out.push(marker(format!("⑂ {worktree}"), theme::text_faint()));
         }
+        if let Some(pr) = self.prs.get(&s.key) {
+            out.push(pr_marker(pr));
+        }
+        if self.conflicts.get(&s.key).is_some_and(|c| !c.shared_files.is_empty()) {
+            out.push(marker(t("⚠ Konflikt", "⚠ conflict").into(), theme::calls()));
+        }
         if self.prefs.is_pinned(&s.key) {
             out.push(marker("★".into(), theme::turn()));
         }
@@ -1466,7 +1593,16 @@ impl BrainView {
                     .child(div().flex_1())
                     .child(primary),
             )
-            .child(div().flex().flex_wrap().gap(px(6.)).mt(px(10.)).mb(px(18.)).children(self.meta_chips(s)))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(6.))
+                    .mt(px(10.))
+                    .mb(px(18.))
+                    .children(self.meta_chips(s))
+                    .when_some(self.prs.get(&s.key).cloned(), |d, pr| d.child(pr_chip(pr))),
+            )
             .child(self.render_callout(s, now, caps, cx))
             .child(self.render_tabs(s, cx))
             .child(match self.tab {
@@ -1564,6 +1700,7 @@ impl BrainView {
                     .child(div().text_color(theme::text_muted()).child(tr!("seit {since}", "for {since}"))),
             )
             .child(div().text_color(theme::text_strong()).line_height(relative(1.5)).child(headline))
+            .children(self.conflict_lines(s))
             .when(!tasks.is_empty(), |d| {
                 d.child(div().text_size(px(12.)).text_color(theme::text_muted()).child(background_summary(s.background_tasks())))
                     .children(tasks)
@@ -1596,6 +1733,23 @@ impl BrainView {
                         )
                         .child(div().flex_none().text_size(px(11.)).text_color(theme::text_muted()).child(t("⏎ senden · esc", "⏎ send · esc"))),
                 )
+                .when(self.reply.text.is_empty(), |d| {
+                    d.child(div().flex().flex_col().items_start().gap(px(4.)).children(config::quick_replies().into_iter().enumerate().map(|(i, reply)| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .px(px(8.))
+                            .py(px(3.))
+                            .rounded(px(6.))
+                            .bg(theme::surface())
+                            .border_1()
+                            .border_color(theme::line())
+                            .text_size(px(12.))
+                            .child(kbd(format!("{}", i + 1)))
+                            .child(div().text_color(theme::text()).child(reply))
+                    })))
+                })
             })
             .when(!actions.is_empty(), |d| d.child(div().flex().gap(px(8.)).mt(px(2.)).children(actions)))
             .into_any_element()
@@ -1834,6 +1988,7 @@ impl Render for BrainView {
         self.sync_conversation();
         self.sync_host();
         self.sync_projects();
+        self.conflicts = self.compute_conflicts();
 
         let groups = self.groups(now);
         let waiting_sessions: Vec<&Session> = groups
@@ -2025,6 +2180,80 @@ fn change_row(file: &brain_core::changes::FileChange) -> AnyElement {
         .when_some(file.added.filter(|a| *a > 0), |d, a| d.child(div().flex_none().text_color(theme::done()).child(format!("+{a}"))))
         .when_some(file.removed.filter(|r| *r > 0), |d, r| d.child(div().flex_none().text_color(theme::calls()).child(format!("−{r}"))))
         .into_any_element()
+}
+
+/// `#12 ✓`, `#12 ✗`, `#12 …`: the PR of the session's branch and its checks.
+fn pr_marker(pr: &brain_core::github::PullRequest) -> AnyElement {
+    let (symbol, color) = pr_look(pr);
+    marker(format!("#{} {symbol}", pr.number), color)
+}
+
+fn pr_look(pr: &brain_core::github::PullRequest) -> (&'static str, gpui::Rgba) {
+    use brain_core::github::Checks;
+    match (pr.state.as_str(), pr.checks) {
+        ("MERGED", _) => ("merged", theme::text_faint()),
+        ("CLOSED", _) => ("closed", theme::text_faint()),
+        (_, Checks::Failing) => ("✗", theme::calls()),
+        (_, Checks::Pending) => ("…", theme::turn()),
+        (_, Checks::Passing) => ("✓", theme::done()),
+        (_, Checks::None) => ("", theme::text_muted()),
+    }
+}
+
+/// A chip that opens the PR in the browser.
+fn pr_chip(pr: brain_core::github::PullRequest) -> AnyElement {
+    let (symbol, color) = pr_look(&pr);
+    let failing = pr.failing.len();
+    let mut label = format!("PR #{} {symbol}", pr.number);
+    if failing > 0 {
+        label.push_str(&tr!(" · {failing} Checks rot", " · {failing} checks failing"));
+    }
+    if pr.draft {
+        label.push_str(t(" · Entwurf", " · draft"));
+    }
+    match pr.review.as_deref() {
+        Some("APPROVED") => label.push_str(t(" · freigegeben", " · approved")),
+        Some("CHANGES_REQUESTED") => label.push_str(t(" · Änderungen gewünscht", " · changes requested")),
+        _ => {}
+    }
+    let url = pr.url.clone();
+    div()
+        .id("pr-chip")
+        .flex_none()
+        .px(px(7.))
+        .py(px(2.))
+        .rounded(px(5.))
+        .cursor_pointer()
+        .bg(theme::alpha(color, 0x1c))
+        .border_1()
+        .border_color(theme::alpha(color, 0x55))
+        .text_size(px(11.5))
+        .text_color(color)
+        .on_click(move |_: &ClickEvent, _, cx| cx.open_url(&url))
+        .child(label)
+        .into_any_element()
+}
+
+/// Looks up the PR of every session's branch (blocking; runs off the UI thread).
+/// Sessions on the same checkout and branch share one `gh` call.
+fn lookup_prs(sessions: Vec<(SessionKey, String)>) -> HashMap<SessionKey, brain_core::github::PullRequest> {
+    let mut by_branch: HashMap<(String, String), Option<brain_core::github::PullRequest>> = HashMap::new();
+    let mut out = HashMap::new();
+    for (key, cwd) in sessions {
+        let path = std::path::Path::new(&cwd);
+        let Some(branch) = brain_core::changes::branch_of(path) else { continue };
+        if matches!(branch.as_str(), "main" | "master") {
+            continue;
+        }
+        let pr = by_branch
+            .entry((cwd.clone(), branch.clone()))
+            .or_insert_with(|| brain_core::github::pull_request(path, &branch))
+            .clone();
+        if let Some(pr) = pr {
+            out.insert(key, pr);
+        }
+    }
+    out
 }
 
 fn marker(text: String, color: gpui::Rgba) -> AnyElement {
