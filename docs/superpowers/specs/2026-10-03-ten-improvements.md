@@ -36,3 +36,11 @@ pub fn open_new(cwd: &str, config_dir: Option<&str>, command: &str) -> Outcome; 
 ```
 
 The pure parts (process-tree classification, tmux output parsing, script building) are unit-tested.
+
+## Outcome (2026-10-03)
+
+All ten shipped in 0.2.0. Verified live: Allow (Return) and Deny (Esc) on real permission
+prompts, replying with `T`, terminal adapters for iTerm2, Terminal.app and tmux (VS Code/Cursor
+only by fixture), the transcript ending a stale permission state after a denial. Findings on
+the way: the Stop hook payload, `system/turn_duration` and `cost-state` transcript entries,
+`shell` status; iTerm2 split panes in background tabs need tab → session → window selection.

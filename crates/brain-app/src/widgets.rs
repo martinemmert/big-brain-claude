@@ -34,6 +34,10 @@ pub fn plain(text: &str) -> String {
     if text.starts_with("Claude is waiting for your input") {
         return t("Wartet auf deine Eingabe", "Waiting for your input").into();
     }
+    // Harness prompts (subagent hand-backs, task notifications) are stored as `[note]`.
+    if let Some(inner) = text.strip_prefix('[') {
+        return note(inner.strip_suffix(']').unwrap_or(inner));
+    }
     note(&text)
 }
 

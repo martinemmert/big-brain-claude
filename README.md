@@ -9,12 +9,13 @@ to the session's terminal with one key.
 
 https://github.com/user-attachments/assets/dc7c6023-01a2-48a5-aaae-39ee590d54b0
 
-*A three-minute tour, narrated. Brain runs on made-up demo sessions here.*
+*A three-minute tour of version 0.1 (German interface), narrated. Brain runs on made-up demo
+sessions here.*
 
 ![Brain with demo data](docs/screenshot.png)
 
 Built with [GPUI](https://gpui.rs), the GPU-accelerated UI framework from Zed. The interface
-is in German.
+follows your macOS language: English or German.
 
 ## What it does
 

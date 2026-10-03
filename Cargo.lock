@@ -712,7 +712,7 @@ dependencies = [
 
 [[package]]
 name = "brain-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "block2",
  "brain-core",
@@ -728,7 +728,7 @@ dependencies = [
 
 [[package]]
 name = "brain-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "brain-core",
  "chrono",
@@ -738,7 +738,7 @@ dependencies = [
 
 [[package]]
 name = "brain-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "libc",
