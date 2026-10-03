@@ -4,8 +4,8 @@
 
 A native macOS window for everyone running many [Claude Code](https://claude.com/claude-code)
 sessions at once. Brain shows every session across all your Claude accounts, what each one
-is doing, and above all **which ones are waiting for you**. One key jumps to the session's
-iTerm2 tab.
+is doing, and above all **which ones are waiting for you**. Answer them right there, or jump
+to the session's terminal with one key.
 
 https://github.com/user-attachments/assets/dc7c6023-01a2-48a5-aaae-39ee590d54b0
 
@@ -20,15 +20,24 @@ is in German.
 
 - **Triage inbox.** Sessions that wait for you come first, longest wait on top: red when
   Claude asks a question or needs a permission, amber when a turn finished.
+- **Answer from Brain.** Allow or deny an open permission prompt (`Y` / `N`), or reply to a
+  session that waits for you (`T`). Brain only types when the session's state is unambiguous.
 - **All accounts in one place.** `~/.claude`, `~/.claude-second` and any other
   `~/.claude-*` config dir (as used with `CLAUDE_CONFIG_DIR`) are picked up automatically.
 - **Latest messages.** Your prompts, Claude's replies rendered as Markdown, tool calls as
   one-line summaries, read live from the session transcript.
-- **Timeline.** Every hook event and report of a session.
-- **Jump to iTerm2.** Selects the right window, tab and split pane.
-- **Search** by name, path, account or last message.
+- **Session details.** Model, context size, Claude Code's own cost total and permission mode.
+- **Timeline.** Every hook event and report of a session, plus seven days of history; ended
+  sessions can be resumed (`claude --resume`) in a new tab.
+- **Open the terminal.** iTerm2, Terminal.app and tmux (in any terminal) jump to the exact
+  pane; VS Code and Cursor bring the project window forward.
+- **Search** by name, path, account or last message; **group by project** (git worktrees
+  count as their main repository); **pin** and **mute** sessions.
 - **Rename** a waiting session; Brain types `/rename <name>` into its terminal.
-- **Notifications** when a session starts waiting for you.
+- **Menu bar count** and native **notifications** with *Open* and *Snooze 15 min*, sound only
+  when a session calls you.
+- **English or German**, following your macOS language (override with `BRAIN_LANG=de|en` or
+  `{"language": "de"}` in `~/.claude-brain/config.json`).
 
 ## How sessions report
 
@@ -45,7 +54,7 @@ Without hooks Brain still shows a coarse state from Claude Code's own
 
 ## Install
 
-Requirements: macOS 13+, iTerm2.
+Requirements: macOS 13+ (Apple Silicon for the release builds).
 
 ### From a release
 
@@ -105,10 +114,14 @@ and `~/.claude-brain`.
 | Key | Action |
 |---|---|
 | `↑` `↓` / `j` `k` | select |
-| `⏎`, double-click | open the session in iTerm2 |
+| `⏎`, double-click | open the session's terminal (resume it if it ended) |
 | `1`–`9` | open the n-th session |
-| `/`, `⌘F` | search (`esc` clears) |
+| `Y` / `N` | allow / deny an open permission prompt |
+| `T` | reply to a session that waits for you |
 | `R`, click the name | rename (only while the session waits for you) |
+| `/`, `⌘F` | search (`esc` clears) |
+| `P` / `M` | pin / mute notifications |
+| `G` | group by project |
 | `←` `→` | switch between messages and timeline |
 | `⇥` | cycle the account filter |
 | `E` | show ended sessions |

@@ -9,6 +9,7 @@ use gpui::{
     FontWeight, Rgba,
 };
 
+use crate::i18n::t;
 use crate::theme;
 
 pub fn now_ms() -> i64 {
@@ -19,21 +20,32 @@ pub fn clock(ms: i64) -> String {
     Local.timestamp_millis_opt(ms).single().map(|t| t.format("%H:%M").to_string()).unwrap_or_default()
 }
 
-/// Drops Markdown emphasis and code markers for one-line previews, and puts
-/// Claude Code's English notification texts into the UI's language.
+/// Drops Markdown emphasis and code markers for one-line previews, and words Claude Code's
+/// notification texts (and Brain's own notes) in the UI's language.
 pub fn plain(text: &str) -> String {
     let text = text.replace("**", "").replace('`', "");
     if let Some(rest) = text.strip_prefix("Claude needs your permission") {
         let tool = rest.trim().strip_prefix("to use ").map(str::trim).filter(|t| !t.is_empty());
         return match tool {
-            Some(tool) => format!("Braucht deine Freigabe für {tool}"),
-            None => "Braucht deine Freigabe".into(),
+            Some(tool) => crate::tr!("Braucht deine Freigabe für {tool}", "Needs your permission for {tool}"),
+            None => t("Braucht deine Freigabe", "Needs your permission").into(),
         };
     }
     if text.starts_with("Claude is waiting for your input") {
-        return "Wartet auf deine Eingabe".into();
+        return t("Wartet auf deine Eingabe", "Waiting for your input").into();
     }
-    text
+    note(&text)
+}
+
+/// Brain's harness notes from `brain_core::transcript` in the UI language.
+pub fn note(text: &str) -> String {
+    use brain_core::transcript::{NOTE_AGENT_REPLY, NOTE_TASK, NOTE_TODOS};
+    match text {
+        NOTE_AGENT_REPLY => t("Rückmeldung eines Subagents", NOTE_AGENT_REPLY).into(),
+        NOTE_TASK => t("Eine Hintergrund-Aufgabe meldet sich", NOTE_TASK).into(),
+        NOTE_TODOS => t("Todo-Liste aktualisiert", NOTE_TODOS).into(),
+        other => other.to_string(),
+    }
 }
 
 pub fn phase_color(phase: Phase) -> Rgba {
@@ -47,10 +59,10 @@ pub fn phase_color(phase: Phase) -> Rgba {
 
 pub fn phase_label(phase: Phase) -> &'static str {
     match phase {
-        Phase::NeedsYou => "Wartet auf dich",
-        Phase::YourTurn => "Fertig, du bist dran",
-        Phase::Working => "Arbeitet",
-        Phase::Ended => "Beendet",
+        Phase::NeedsYou => t("Wartet auf dich", "Waiting for you"),
+        Phase::YourTurn => t("Fertig, du bist dran", "Done, your turn"),
+        Phase::Working => t("Arbeitet", "Working"),
+        Phase::Ended => t("Beendet", "Ended"),
     }
 }
 

@@ -9,7 +9,9 @@ use gpui::{
     div, prelude::*, px, relative, AnyElement, FontWeight, HighlightStyle, SharedString, StyledText,
 };
 
-use crate::theme;
+use crate::i18n::t;
+use crate::widgets::{note, plain};
+use crate::{theme, tr};
 
 /// Consecutive tool calls are shown as one block; long runs are cut to this many rows.
 const TOOL_ROWS_SHOWN: usize = 6;
@@ -46,7 +48,7 @@ fn user_bubble(message: &Message) -> AnyElement {
         .flex_col()
         .items_end()
         .gap(px(4.))
-        .child(div().text_size(px(11.)).text_color(theme::text_faint()).child(format!("Du · {}", time_of(message))))
+        .child(div().text_size(px(11.)).text_color(theme::text_faint()).child(format!("{} · {}", t("Du", "You"), time_of(message))))
         .child(
             div()
                 .max_w(relative(0.82))
@@ -93,7 +95,7 @@ fn system_note(text: &str) -> AnyElement {
         .text_size(px(11.5))
         .text_color(theme::text_faint())
         .child(div().h(px(1.)).w(px(14.)).bg(theme::line_strong()))
-        .child(div().flex_1().min_w_0().truncate().child(text.to_string()))
+        .child(div().flex_1().min_w_0().truncate().child(note(text)))
         .into_any_element()
 }
 
@@ -114,7 +116,7 @@ fn tool_block(calls: &[Message]) -> AnyElement {
                     .text_size(px(11.))
                     .text_color(theme::text_faint())
                     .pb(px(2.))
-                    .child(format!("{hidden} frühere Tool-Aufrufe")),
+                    .child(tr!("{hidden} frühere Tool-Aufrufe", "{hidden} earlier tool calls")),
             )
         })
         .children(calls[hidden..].iter().map(tool_row))
@@ -145,7 +147,7 @@ fn tool_row(call: &Message) -> AnyElement {
                 .font_family("Menlo")
                 .text_size(px(11.5))
                 .text_color(theme::text())
-                .child(theme::tilde(&call.text)),
+                .child(theme::tilde(&note(&call.text))),
         )
         .into_any_element()
 }
@@ -306,7 +308,10 @@ pub fn timeline(s: &Session) -> Vec<AnyElement> {
             .py_2()
             .text_sm()
             .text_color(theme::text_muted())
-            .child("Noch keine Ereignisse. Sie erscheinen, sobald die Hooks aktiv sind (brain install).")
+            .child(t(
+                "Noch keine Ereignisse. Sie erscheinen, sobald die Hooks aktiv sind (brain install).",
+                "No events yet. They appear once the hooks are installed (brain install).",
+            ))
             .into_any_element()];
     }
     s.timeline.iter().rev().take(80).map(timeline_entry).collect()
@@ -315,18 +320,18 @@ pub fn timeline(s: &Session) -> Vec<AnyElement> {
 fn timeline_entry(event: &Event) -> AnyElement {
     let text = event.text.clone().unwrap_or_default();
     let (color, label): (gpui::Rgba, String) = match event.kind {
-        Kind::SessionStart => (theme::ended(), "Session gestartet".into()),
-        Kind::SessionEnd => (theme::ended(), "Session beendet".into()),
+        Kind::SessionStart => (theme::ended(), t("Session gestartet", "Session started").into()),
+        Kind::SessionEnd => (theme::ended(), t("Session beendet", "Session ended").into()),
         Kind::Prompt => match classify_prompt(&text) {
-            Some(Prompt::User(t)) => (theme::turn(), format!("Du: {t}")),
-            Some(Prompt::System(t)) => (theme::ended(), t.trim_matches(['[', ']']).to_string()),
-            None => (theme::turn(), "Neuer Prompt".into()),
+            Some(Prompt::User(prompt)) => (theme::turn(), format!("{}: {prompt}", t("Du", "You"))),
+            Some(Prompt::System(note_text)) => (theme::ended(), note(note_text.trim_matches(['[', ']']))),
+            None => (theme::turn(), t("Neuer Prompt", "New prompt").into()),
         },
-        Kind::Permission => (theme::calls(), if text.is_empty() { "Braucht Freigabe".into() } else { text }),
-        Kind::Stop => (theme::text_faint(), if text.is_empty() { "Turn beendet".into() } else { crate::widgets::plain(&text) }),
+        Kind::Permission => (theme::calls(), if text.is_empty() { t("Braucht Freigabe", "Needs permission").into() } else { plain(&text) }),
+        Kind::Stop => (theme::text_faint(), if text.is_empty() { t("Turn beendet", "Turn ended").into() } else { plain(&text) }),
         Kind::Doing => (theme::working(), text),
-        Kind::Waiting => (theme::calls(), format!("Frage: {text}")),
-        Kind::Done => (theme::done(), format!("Erledigt: {text}")),
+        Kind::Waiting => (theme::calls(), format!("{}: {text}", t("Frage", "Question"))),
+        Kind::Done => (theme::done(), format!("{}: {text}", t("Erledigt", "Done"))),
     };
     let reported = event.source == Source::Report;
     let time = event.ts.with_timezone(&Local).format("%H:%M").to_string();
@@ -356,7 +361,7 @@ fn timeline_entry(event: &Event) -> AnyElement {
                     .bg(theme::alpha(theme::working(), 0x1f))
                     .text_size(px(10.5))
                     .text_color(theme::working())
-                    .child("gemeldet"),
+                    .child(t("gemeldet", "reported")),
             )
         })
         .into_any_element()

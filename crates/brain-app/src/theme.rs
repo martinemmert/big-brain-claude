@@ -43,11 +43,11 @@ pub fn account_colors(index: usize) -> (Rgba, Rgba) {
     (rgba(bg), rgb(fg))
 }
 
-/// "gerade", "4 min", "2 h", "3 d"
+/// "now", "4 min", "2 h", "3 d"
 pub fn ago(ms: i64, now_ms: i64) -> String {
     let secs = ((now_ms - ms) / 1000).max(0);
     match secs {
-        0..=59 => "gerade".into(),
+        0..=59 => crate::i18n::t("gerade", "now").into(),
         60..=3599 => format!("{} min", secs / 60),
         3600..=86_399 => format!("{} h", secs / 3600),
         _ => format!("{} d", secs / 86_400),

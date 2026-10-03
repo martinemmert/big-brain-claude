@@ -20,6 +20,11 @@ pub enum Role {
     System,
 }
 
+/// Notes for turn input that came from the harness; the UI may translate them.
+pub const NOTE_AGENT_REPLY: &str = "A subagent reported back";
+pub const NOTE_TASK: &str = "A background task reported back";
+pub const NOTE_TODOS: &str = "Updated the todo list";
+
 /// What a user-turn text really is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Prompt {
@@ -264,12 +269,12 @@ pub fn classify_prompt(raw: &str) -> Option<Prompt> {
         return (!inner.is_empty()).then_some(Prompt::User(inner));
     }
     if text.starts_with("<agent-message") {
-        return Some(Prompt::System("Rückmeldung eines Agents".into()));
+        return Some(Prompt::System(NOTE_AGENT_REPLY.into()));
     }
     if text.starts_with("<task-notification") {
         let summary = between(text, "<summary>", "</summary>")
             .map(|s| crate::hook::one_line(s, 160))
-            .unwrap_or_else(|| "Hintergrund-Aufgabe meldet sich".into());
+            .unwrap_or_else(|| NOTE_TASK.into());
         return Some(Prompt::System(summary));
     }
     None
@@ -292,7 +297,7 @@ fn tool_summary(name: &str, input: &Value) -> String {
         "WebFetch" => field("url"),
         "Agent" | "Task" => field("description"),
         "Skill" => field("skill"),
-        "TodoWrite" => Some("Todo-Liste aktualisiert".into()),
+        "TodoWrite" => Some(NOTE_TODOS.into()),
         _ => None,
     }
     .or_else(|| {
@@ -340,9 +345,9 @@ mod tests {
             got,
             vec![
                 (Role::User, "Baue den Export".into()),
-                (Role::System, "Hintergrund-Aufgabe meldet sich".into()),
+                (Role::System, NOTE_TASK.into()),
                 (Role::User, "/review 42".into()),
-                (Role::System, "Rückmeldung eines Agents".into()),
+                (Role::System, NOTE_AGENT_REPLY.into()),
                 (Role::Assistant, "Ich schaue mir das an.\n\nZuerst die Tests.".into()),
                 (Role::Tool, "cargo test -p core".into()),
                 (Role::Tool, "/w/src/view.rs".into()),

@@ -1,23 +1,36 @@
-//! Keeps the [`Board`] in sync with the event log and the session files.
+//! Keeps the [`Board`] in sync with the event log, the session files and the transcripts.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use brain_core::account::{discover_accounts, home_dir, Account};
 use brain_core::process::pid_alive;
+use brain_core::project::{project_of, Project};
 use brain_core::sessions::read_session_files;
 use brain_core::state::{Board, Phase, SessionKey};
 use brain_core::store::{Store, Tail};
-use brain_core::transcript::Message;
-use chrono::{Local, NaiveDate};
+use brain_core::transcript::{find_transcript, insight, Message};
+use chrono::{Days, Local, NaiveDate};
 
 use crate::demo;
 
+/// How many days of events are read at start, so sessions running past midnight keep their
+/// timeline and recently ended ones stay searchable.
+pub const HISTORY_DAYS: u64 = 7;
+
 /// A session that just started waiting for the user.
 pub struct Attention {
+    pub key: SessionKey,
     pub name: String,
-    pub account: String,
     pub phase: Phase,
     pub headline: Option<String>,
+}
+
+/// Where a session's transcript is and how long it was when last read.
+struct TranscriptCache {
+    session_id: String,
+    path: Option<PathBuf>,
+    len: u64,
 }
 
 pub struct Model {
@@ -28,6 +41,8 @@ pub struct Model {
     day: NaiveDate,
     last_phases: HashMap<SessionKey, Phase>,
     primed: bool,
+    transcripts: HashMap<SessionKey, TranscriptCache>,
+    projects: HashMap<String, Project>,
     /// Fixed conversations in demo mode; `None` reads real transcripts.
     pub demo_messages: Option<HashMap<SessionKey, Vec<Message>>>,
 }
@@ -45,6 +60,8 @@ impl Model {
             day,
             last_phases: HashMap::new(),
             primed: false,
+            transcripts: HashMap::new(),
+            projects: HashMap::new(),
             demo_messages: None,
         };
         if demo::enabled() {
@@ -52,14 +69,36 @@ impl Model {
             model.accounts = demo.accounts;
             model.board = demo.board;
             model.demo_messages = Some(demo.messages);
+            return model;
+        }
+        for back in (1..HISTORY_DAYS).rev() {
+            let Some(day) = day.checked_sub_days(Days::new(back)) else { continue };
+            for event in Tail::new(model.store.file_for(day)).read_new() {
+                model.board.apply_event(&event);
+            }
         }
         model
     }
 
-    /// Reads new events and session files. Returns sessions that moved into
+    pub fn is_demo(&self) -> bool {
+        self.demo_messages.is_some()
+    }
+
+    pub fn account(&self, id: &str) -> Option<&Account> {
+        self.accounts.iter().find(|a| a.id == id)
+    }
+
+    /// The project of a directory, computed once per directory.
+    pub fn project(&mut self, cwd: &str) -> &Project {
+        self.projects
+            .entry(cwd.to_string())
+            .or_insert_with(|| project_of(Path::new(cwd)))
+    }
+
+    /// Reads new events, session files and grown transcripts. Returns sessions that moved into
     /// NeedsYou/YourTurn since the last refresh (none on the very first one).
     pub fn refresh(&mut self) -> Vec<Attention> {
-        if self.demo_messages.is_some() {
+        if self.is_demo() {
             return Vec::new();
         }
         let today = Local::now().date_naive();
@@ -88,6 +127,7 @@ impl Model {
         for key in unseen {
             self.board.set_alive(&key, pid_alive(key.pid));
         }
+        self.refresh_transcripts(&seen);
 
         let mut attention = Vec::new();
         for session in self.board.sorted() {
@@ -96,8 +136,8 @@ impl Model {
             let entered = matches!(phase, Phase::NeedsYou | Phase::YourTurn) && previous != Some(phase);
             if self.primed && entered && previous.is_some() {
                 attention.push(Attention {
+                    key: session.key.clone(),
                     name: session.display_name(),
-                    account: session.key.account.clone(),
                     phase,
                     headline: session.headline(),
                 });
@@ -105,5 +145,37 @@ impl Model {
         }
         self.primed = true;
         attention
+    }
+
+    /// Re-reads a live session's transcript tail when the file grew.
+    fn refresh_transcripts(&mut self, live: &[SessionKey]) {
+        for key in live {
+            let Some(session) = self.board.get(key) else { continue };
+            if !session.alive {
+                continue;
+            }
+            let Some(session_id) = session.session_id.clone() else { continue };
+            let Some(account) = self.accounts.iter().find(|a| a.id == key.account) else { continue };
+
+            let cache = self.transcripts.entry(key.clone()).or_insert_with(|| TranscriptCache {
+                session_id: session_id.clone(),
+                path: None,
+                len: 0,
+            });
+            if cache.session_id != session_id {
+                *cache = TranscriptCache { session_id: session_id.clone(), path: None, len: 0 };
+            }
+            if cache.path.is_none() {
+                cache.path = find_transcript(account, &session_id);
+            }
+            let Some(path) = cache.path.clone() else { continue };
+            let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            if len == cache.len {
+                continue;
+            }
+            cache.len = len;
+            let info = insight(&path);
+            self.board.apply_insight(key, info);
+        }
     }
 }
