@@ -75,6 +75,7 @@ fn main() -> ExitCode {
 fn run_hook(store: &Store, accounts: &[Account]) -> Option<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input).ok()?;
+    capture_raw_hook(&input);
     let payload: HookPayload = serde_json::from_str(&input).ok()?;
     let kind = payload.kind()?;
 
@@ -99,6 +100,20 @@ fn run_hook(store: &Store, accounts: &[Account]) -> Option<()> {
             text: payload.text(),
         })
         .ok()
+}
+
+/// Diagnostics: when `~/.claude-brain/capture-hooks/` exists, every raw hook payload is appended
+/// there (one JSON line per payload, a file per day). Delete the folder to stop.
+fn capture_raw_hook(input: &str) {
+    let dir = home_dir().join(".claude-brain/capture-hooks");
+    if !dir.is_dir() {
+        return;
+    }
+    let file = dir.join(format!("{}.jsonl", chrono::Local::now().format("%Y-%m-%d")));
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(file) {
+        use std::io::Write;
+        let _ = writeln!(f, "{}", input.trim());
+    }
 }
 
 fn find_by_session_id(accounts: &[Account], session_id: &str) -> Option<(Account, u32)> {

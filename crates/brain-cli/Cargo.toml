@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 brain-core.workspace = true
+brain-terminal.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
 clap = { version = "4", features = ["derive"] }

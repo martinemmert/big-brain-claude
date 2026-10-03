@@ -1,9 +1,6 @@
 //! Terminal adapters: find the terminal hosting a Claude Code process and
 //! focus it, type into it or open a new tab.
 
-// `send_key`, `open_new`, `host_of` and `capabilities` are for answering from
-// Brain and resuming sessions, which are not wired up yet.
-
 mod iterm;
 mod script;
 mod terminal_app;

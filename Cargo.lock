@@ -716,6 +716,7 @@ version = "0.2.0"
 dependencies = [
  "block2",
  "brain-core",
+ "brain-terminal",
  "chrono",
  "gpui",
  "objc2",
@@ -731,6 +732,7 @@ name = "brain-cli"
 version = "0.2.0"
 dependencies = [
  "brain-core",
+ "brain-terminal",
  "chrono",
  "clap",
  "serde_json",
@@ -746,6 +748,10 @@ dependencies = [
  "serde_json",
  "tempfile",
 ]
+
+[[package]]
+name = "brain-terminal"
+version = "0.2.0"
 
 [[package]]
 name = "bstr"

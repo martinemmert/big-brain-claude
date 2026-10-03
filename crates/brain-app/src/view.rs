@@ -15,7 +15,7 @@ use crate::menubar::MenuBar;
 use crate::model::{Model, HISTORY_DAYS};
 use crate::notify::{self, Notifier};
 use crate::prefs::Prefs;
-use crate::terminal::{self, Capabilities, Key, Outcome};
+use brain_terminal::{self as terminal, Capabilities, Key, Outcome};
 use crate::widgets::{
     account_badge, caret, chip, clock, dot, kbd, now_ms, phase_color, phase_label, plain, section_title,
 };
