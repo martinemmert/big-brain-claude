@@ -103,6 +103,7 @@ mod tests {
             source: Source::Report,
             kind: Kind::Doing,
             text: Some(text.into()),
+            tasks: None,
         }
     }
 

@@ -131,6 +131,7 @@ pub fn build() -> Demo {
                 source: *source,
                 kind: *kind,
                 text: (!text.is_empty()).then(|| text.to_string()),
+                tasks: None,
             });
         }
         board.apply_session_file(

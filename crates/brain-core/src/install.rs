@@ -22,6 +22,7 @@ The user tracks all Claude Code sessions in the Brain dashboard. Report there wi
 - Before ending a turn with a question or decision for the user: `brain report --waiting \"<the question>\"`
 - After finishing a substantial task: `brain report --done \"<one-line result>\"`
 - When starting a long multi-step task: `brain report --doing \"<what you are doing>\"`
+- If you end a turn while subagents or background tasks still run and you need nothing from the user, don't report `--waiting`: Brain shows the session as working in the background. If you do ask the user something, report `--waiting` even while work is running.
 
 Session state (working, permission prompts, turn end) is tracked automatically by hooks; only report content. If `brain` fails, ignore it and continue.
 {SECTION_END}
@@ -54,6 +55,10 @@ pub fn patch_settings(settings: &mut Value, hook_command: &str) {
         }));
     }
 
+    if let Some(brain) = hook_command.strip_suffix(" hook") {
+        wrap_statusline(root, brain);
+    }
+
     let permissions = root.entry("permissions").or_insert_with(|| json!({}));
     if let Some(permissions) = permissions.as_object_mut() {
         let allow = permissions.entry("allow").or_insert_with(|| json!([]));
@@ -63,6 +68,73 @@ pub fn patch_settings(settings: &mut Value, hook_command: &str) {
             }
         }
     }
+}
+
+/// Puts `brain statusline` in front of the configured status line, so Brain sees the status line
+/// JSON (plan limits, context, cost). The previous command runs unchanged after it, with the same
+/// input, and its output is what Claude Code shows. Re-running only updates Brain's path.
+fn wrap_statusline(root: &mut Map<String, Value>, brain: &str) {
+    let current = root.get("statusLine").and_then(|s| s.get("command")).and_then(Value::as_str).map(str::to_string);
+    let previous = match current {
+        Some(command) => match wrapped_command(&command) {
+            Some(inner) => inner,
+            None => Some(command),
+        },
+        None => None,
+    };
+    let command = match &previous {
+        Some(inner) => format!("{brain} statusline --then {}", shell_single_quote(inner)),
+        None => format!("{brain} statusline"),
+    };
+    let line = root.entry("statusLine").or_insert_with(|| json!({}));
+    if !line.is_object() {
+        *line = json!({});
+    }
+    let line = line.as_object_mut().expect("object");
+    line.insert("type".into(), json!("command"));
+    line.insert("command".into(), json!(command));
+}
+
+/// The reverse: restores the wrapped command, or removes a status line Brain added alone.
+fn unwrap_statusline(root: &mut Map<String, Value>) {
+    let Some(command) = root.get("statusLine").and_then(|s| s.get("command")).and_then(Value::as_str) else {
+        return;
+    };
+    match wrapped_command(command) {
+        Some(Some(inner)) => {
+            if let Some(line) = root.get_mut("statusLine").and_then(Value::as_object_mut) {
+                line.insert("command".into(), json!(inner));
+            }
+        }
+        Some(None) => {
+            root.remove("statusLine");
+        }
+        None => {}
+    }
+}
+
+/// `Some(previous)` when `command` is Brain's wrapper (`None` inside: nothing was wrapped).
+fn wrapped_command(command: &str) -> Option<Option<String>> {
+    let (program, rest) = command.split_once(" statusline")?;
+    if !program.trim_matches('\'').ends_with("brain") {
+        return None;
+    }
+    let rest = rest.trim_start();
+    if rest.is_empty() {
+        return Some(None);
+    }
+    let quoted = rest.strip_prefix("--then ")?;
+    Some(Some(shell_single_unquote(quoted.trim())?))
+}
+
+fn shell_single_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+/// Reads `'…'` written by [`shell_single_quote`].
+fn shell_single_unquote(quoted: &str) -> Option<String> {
+    let inner = quoted.strip_prefix('\'')?.strip_suffix('\'')?;
+    Some(inner.replace(r"'\''", "'"))
 }
 
 fn group_is_brain(group: &Value) -> bool {
@@ -101,6 +173,7 @@ pub fn patch_claude_md(content: &str) -> String {
 /// through this removal are dropped; everything else is left untouched.
 pub fn unpatch_settings(settings: &mut Value) {
     let Some(root) = settings.as_object_mut() else { return };
+    unwrap_statusline(root);
 
     if let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) {
         let had_events = !hooks.is_empty();
@@ -215,6 +288,38 @@ pub fn unpatch_settings_text(text: &str) -> Result<String, serde_json::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_status_line_is_wrapped_once_and_restored_exactly() {
+        let original = json!({ "statusLine": { "type": "command", "command": "bash \"$HOME/.claude/statusline-command.sh\"", "padding": 0 } });
+        let mut settings = original.clone();
+
+        patch_settings(&mut settings, "/opt/bin/brain hook");
+        let once = settings.clone();
+        assert_eq!(
+            settings["statusLine"]["command"],
+            "/opt/bin/brain statusline --then 'bash \"$HOME/.claude/statusline-command.sh\"'"
+        );
+        assert_eq!(settings["statusLine"]["padding"], 0);
+
+        patch_settings(&mut settings, "/opt/bin/brain hook");
+        assert_eq!(settings["statusLine"], once["statusLine"], "no double wrapping");
+        patch_settings(&mut settings, "/new/brain hook");
+        assert!(settings["statusLine"]["command"].as_str().unwrap().starts_with("/new/brain statusline --then"));
+
+        unpatch_settings(&mut settings);
+        assert_eq!(settings["statusLine"], original["statusLine"]);
+    }
+
+    #[test]
+    fn a_status_line_brain_added_alone_is_removed_again() {
+        let mut settings = json!({});
+        patch_settings(&mut settings, "brain hook");
+        assert_eq!(settings["statusLine"]["command"], "brain statusline");
+        unpatch_settings(&mut settings);
+        assert!(settings.get("statusLine").is_none());
+        assert_eq!(shell_single_unquote(&shell_single_quote("it's")).as_deref(), Some("it's"));
+    }
 
     #[test]
     fn settings_patch_keeps_foreign_hooks_and_is_idempotent() {

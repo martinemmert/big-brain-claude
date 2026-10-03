@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::event::{Event, Kind, Source};
+use crate::event::{BackgroundTask, Event, Kind, Source};
 use crate::sessions::SessionFile;
 use crate::transcript::{Insight, Turn};
 
@@ -12,6 +12,9 @@ pub enum Phase {
     /// The turn finished; the user is up.
     YourTurn,
     Working,
+    /// The turn ended without a question, but subagents or background shells still run and
+    /// will wake the session up again.
+    Background,
     Ended,
 }
 
@@ -74,6 +77,8 @@ pub struct Session {
 
     /// Model, context, cost, permission mode and title from the transcript.
     pub insight: Insight,
+    /// What the last stop left running in the background.
+    background: Vec<BackgroundTask>,
 
     hook_signal: Option<(Signal, i64)>,
     file_signal: Option<(Signal, i64)>,
@@ -102,6 +107,7 @@ impl Session {
             done: None,
             reply: None,
             insight: Insight::default(),
+            background: Vec::new(),
             hook_signal: None,
             file_signal: None,
             transcript_signal: None,
@@ -149,7 +155,9 @@ impl Session {
         match self.current_signal().map(|(signal, _)| signal) {
             Some(Signal::Busy) => Phase::Working,
             Some(Signal::Waiting) => Phase::NeedsYou,
+            // An explicit question wins: Claude decided it needs the user, background work or not.
             Some(Signal::Idle) if self.question.is_some() => Phase::NeedsYou,
+            Some(Signal::Idle) if !self.background.is_empty() => Phase::Background,
             Some(Signal::Idle) => Phase::YourTurn,
             Some(Signal::Ended) => Phase::Ended,
             None if self.question.is_some() => Phase::NeedsYou,
@@ -195,7 +203,13 @@ impl Session {
             },
             Phase::YourTurn | Phase::Ended => pick(&[&self.done, &self.reply, &self.doing, &self.prompt]),
             Phase::Working => pick(&[&self.doing, &self.prompt]),
+            Phase::Background => pick(&[&self.doing, &self.reply, &self.prompt]),
         }
+    }
+
+    /// Subagents, shells, monitors … the last turn left running.
+    pub fn background_tasks(&self) -> &[BackgroundTask] {
+        &self.background
     }
 
     /// True when the headline comes from Claude's own `brain report`.
@@ -203,7 +217,7 @@ impl Session {
         match self.phase() {
             Phase::NeedsYou => self.question.is_some() && self.permission.is_none(),
             Phase::YourTurn | Phase::Ended => self.done.is_some(),
-            Phase::Working => self.doing.is_some(),
+            Phase::Working | Phase::Background => self.doing.is_some(),
         }
     }
 
@@ -245,6 +259,7 @@ impl Session {
             Kind::Stop => {
                 self.reply = text;
                 self.permission = None;
+                self.background = event.tasks.clone().unwrap_or_default();
             }
             Kind::Doing => self.doing = text,
             Kind::Waiting => self.question = text,
@@ -252,7 +267,8 @@ impl Session {
                 self.done = text;
                 self.question = None;
             }
-            Kind::SessionStart | Kind::SessionEnd => {}
+            Kind::SessionEnd => self.background.clear(),
+            Kind::SessionStart => {}
         }
 
         if event.source == Source::Hook {
@@ -351,7 +367,7 @@ impl Board {
             let (pa, pb) = (a.phase(), b.phase());
             pa.cmp(&pb).then_with(|| match pa {
                 Phase::NeedsYou | Phase::YourTurn => a.phase_since_ms().cmp(&b.phase_since_ms()),
-                Phase::Working => a.display_name().cmp(&b.display_name()),
+                Phase::Working | Phase::Background => a.display_name().cmp(&b.display_name()),
                 Phase::Ended => b.last_activity_ms.cmp(&a.last_activity_ms),
             })
         });
@@ -375,6 +391,7 @@ mod tests {
             source,
             kind,
             text: text.map(str::to_string),
+            tasks: None,
         }
     }
 
@@ -507,6 +524,45 @@ mod tests {
         let s = board.get(&key()).unwrap();
         assert_eq!(s.phase(), Phase::YourTurn);
         assert!(!s.awaiting_permission());
+    }
+
+    fn stop_with(secs: i64, tasks: &[(&str, &str)]) -> Event {
+        let tasks = tasks
+            .iter()
+            .map(|(id, kind)| BackgroundTask {
+                id: id.to_string(),
+                kind: kind.to_string(),
+                status: Some("running".into()),
+                description: None,
+                agent_type: None,
+            })
+            .collect();
+        Event { tasks: Some(tasks), ..ev(secs, Source::Hook, Kind::Stop, Some("launched")) }
+    }
+
+    /// Payload shapes as seen from a real session that started a background `sleep` and then
+    /// a background subagent.
+    #[test]
+    fn running_background_work_is_not_waiting_for_the_user_unless_claude_asks() {
+        let mut board = Board::default();
+        board.apply_event(&ev(0, Source::Hook, Kind::Prompt, None));
+        board.apply_event(&stop_with(5, &[("a81e9", "subagent")]));
+        let s = board.get(&key()).unwrap();
+        assert_eq!(s.phase(), Phase::Background);
+        assert_eq!(s.background_tasks().len(), 1);
+        assert!(s.accepts_input());
+
+        // The task notification wakes the session, the next stop has nothing left.
+        board.apply_event(&ev(40, Source::Hook, Kind::Prompt, Some("[Agent finished]")));
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::Working);
+        board.apply_event(&stop_with(41, &[]));
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::YourTurn);
+
+        // A question wins even with work running.
+        board.apply_event(&ev(50, Source::Hook, Kind::Prompt, None));
+        board.apply_event(&ev(55, Source::Report, Kind::Waiting, Some("Which branch?")));
+        board.apply_event(&stop_with(56, &[("b79", "shell")]));
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::NeedsYou);
     }
 
     #[test]

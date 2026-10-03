@@ -1,3 +1,5 @@
+mod statusline;
+
 use std::io::Read;
 use std::process::ExitCode;
 
@@ -41,6 +43,12 @@ enum Command {
     Uninstall,
     /// Print the current board.
     Status,
+    /// Status line wrapper: records plan limits, context and cost for Brain, then runs `--then`.
+    Statusline {
+        /// The status line command to run afterwards, with the same input.
+        #[arg(long)]
+        then: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -69,6 +77,7 @@ fn main() -> ExitCode {
         Command::Install => run_install(&accounts),
         Command::Uninstall => run_uninstall(&accounts),
         Command::Status => run_status(&store, &accounts),
+        Command::Statusline { then } => statusline::run(then, &accounts),
     }
 }
 
@@ -98,6 +107,7 @@ fn run_hook(store: &Store, accounts: &[Account]) -> Option<()> {
             source: Source::Hook,
             kind,
             text: payload.text(),
+            tasks: (kind == Kind::Stop).then(|| payload.background_tasks.clone().unwrap_or_default()),
         })
         .ok()
 }
@@ -158,6 +168,7 @@ fn run_report(store: &Store, accounts: &[Account], kind: Kind, text: &str) -> Ex
         source: Source::Report,
         kind,
         text: Some(text),
+        tasks: None,
     };
     match store.append(&event) {
         Ok(()) => {
@@ -282,6 +293,7 @@ fn run_status(store: &Store, accounts: &[Account]) -> ExitCode {
             Phase::NeedsYou => "🔴",
             Phase::YourTurn => "🟡",
             Phase::Working => "🔵",
+            Phase::Background => "🟣",
             Phase::Ended => "⚫",
         };
         println!(

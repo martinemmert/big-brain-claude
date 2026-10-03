@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::event::Kind;
+use crate::event::{BackgroundTask, Kind};
 
 /// The subset of the Claude Code hook stdin payload Brain cares about.
 #[derive(Debug, Deserialize)]
@@ -18,6 +18,8 @@ pub struct HookPayload {
     pub message: Option<String>,
     /// `Stop`
     pub last_assistant_message: Option<String>,
+    /// `Stop`: background shells, subagents, monitors … still running.
+    pub background_tasks: Option<Vec<BackgroundTask>>,
 }
 
 impl HookPayload {
@@ -115,6 +117,7 @@ mod tests {
             prompt: None,
             message: None,
             last_assistant_message: None,
+            background_tasks: None,
         };
 
         assert_eq!(payload.kind(), Some(Kind::Stop));

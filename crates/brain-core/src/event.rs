@@ -27,6 +27,21 @@ pub enum Kind {
     Done,
 }
 
+/// Work a session left running when its turn ended (Stop hook `background_tasks`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BackgroundTask {
+    pub id: String,
+    /// `shell`, `subagent`, `monitor`, `workflow`, … (see Claude Code's hooks docs).
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+}
+
 /// One line in `~/.claude-brain/events/YYYY-MM-DD.jsonl`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
@@ -42,4 +57,7 @@ pub struct Event {
     pub kind: Kind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// On stop events: what still runs in the background.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<Vec<BackgroundTask>>,
 }
