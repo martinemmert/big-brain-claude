@@ -1,4 +1,5 @@
 mod statusline;
+mod sessions;
 
 use std::io::Read;
 use std::process::ExitCode;
@@ -11,8 +12,10 @@ use brain_core::process::{find_claude_session, pid_alive, ProcessTable};
 use brain_core::sessions::read_session_files;
 use brain_core::state::{Board, Phase};
 use brain_core::store::{Store, Tail};
+use brain_terminal::Outcome;
 use chrono::Utc;
 use clap::{ArgGroup, Parser, Subcommand};
+use sessions::Target;
 
 #[derive(Parser)]
 #[command(name = "brain", about = "Status protocol for the Claude Brain dashboard")]
@@ -49,6 +52,26 @@ enum Command {
         #[arg(long)]
         then: Option<String>,
     },
+    /// List the sessions that have not ended, in triage order.
+    #[command(group(ArgGroup::new("format").required(true).args(["alfred", "json"])))]
+    Sessions {
+        /// As Alfred Script Filter JSON.
+        #[arg(long)]
+        alfred: bool,
+        /// As a JSON array (account, pid, name, phase, headline, cwd).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Bring the terminal of a session to the front.
+    Open {
+        /// The session as <account>:<pid>, e.g. main:4242.
+        session: String,
+    },
+    /// Show a session in Brain.app.
+    Show {
+        /// The session as <account>:<pid>, e.g. main:4242.
+        session: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -78,6 +101,9 @@ fn main() -> ExitCode {
         Command::Uninstall => run_uninstall(&accounts),
         Command::Status => run_status(&store, &accounts),
         Command::Statusline { then } => statusline::run(then, &accounts),
+        Command::Sessions { alfred, json: _ } => run_sessions(&store, &accounts, alfred),
+        Command::Open { session } => run_open(&accounts, &session),
+        Command::Show { session } => run_show(&session),
     }
 }
 
@@ -278,7 +304,8 @@ fn shell_quote(path: &str) -> String {
     }
 }
 
-fn run_status(store: &Store, accounts: &[Account]) -> ExitCode {
+/// The board from today's events and the session files of every account.
+fn load_board(store: &Store, accounts: &[Account]) -> Board {
     let mut board = Board::default();
     for event in Tail::new(store.file_for(chrono::Local::now().date_naive())).read_new() {
         board.apply_event(&event);
@@ -288,6 +315,11 @@ fn run_status(store: &Store, accounts: &[Account]) -> ExitCode {
             board.apply_session_file(&account.id, &file, pid_alive(file.pid));
         }
     }
+    board
+}
+
+fn run_status(store: &Store, accounts: &[Account]) -> ExitCode {
+    let board = load_board(store, accounts);
     for session in board.sorted().into_iter().filter(|s| s.phase() != Phase::Ended) {
         let marker = match session.phase() {
             Phase::NeedsYou => "🔴",
@@ -304,4 +336,52 @@ fn run_status(store: &Store, accounts: &[Account]) -> ExitCode {
         );
     }
     ExitCode::SUCCESS
+}
+
+fn run_sessions(store: &Store, accounts: &[Account], alfred: bool) -> ExitCode {
+    let board = load_board(store, accounts);
+    let open: Vec<_> = board.sorted().into_iter().filter(|s| s.phase() != Phase::Ended).collect();
+    let output = if alfred { sessions::alfred_items(&open) } else { sessions::json_list(&open) };
+    println!("{output}");
+    ExitCode::SUCCESS
+}
+
+fn run_open(accounts: &[Account], session: &str) -> ExitCode {
+    let target = match Target::parse(session) {
+        Ok(target) => target,
+        Err(err) => return fail("brain open", &err),
+    };
+    let Some(account) = accounts.iter().find(|a| a.id == target.account) else {
+        return fail("brain open", &format!("no Claude account {:?}", target.account));
+    };
+    let Some(file) = read_session_files(account).into_iter().find(|f| f.pid == target.pid) else {
+        return fail("brain open", &format!("no session {target}"));
+    };
+    if !pid_alive(file.pid) {
+        return fail("brain open", &format!("session {target} has ended"));
+    }
+    match brain_terminal::focus(file.pid, file.cwd.as_deref()) {
+        Outcome::Done => ExitCode::SUCCESS,
+        Outcome::NoTerminal => fail("brain open", &format!("session {target} has no terminal")),
+        Outcome::Unsupported(msg) | Outcome::Failed(msg) => fail("brain open", &format!("session {target}: {msg}")),
+    }
+}
+
+/// Hands `brain://session/<account>/<pid>` to Brain.app.
+fn run_show(session: &str) -> ExitCode {
+    let target = match Target::parse(session) {
+        Ok(target) => target,
+        Err(err) => return fail("brain show", &err),
+    };
+    let url = format!("brain://session/{}/{}", target.account, target.pid);
+    match std::process::Command::new("open").arg(&url).status() {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(_) => fail("brain show", &format!("could not open {url} (is Brain.app installed?)")),
+        Err(err) => fail("brain show", &format!("could not run open: {err}")),
+    }
+}
+
+fn fail(command: &str, message: &str) -> ExitCode {
+    eprintln!("{command}: {message}");
+    ExitCode::FAILURE
 }

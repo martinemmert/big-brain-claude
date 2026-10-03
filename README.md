@@ -57,6 +57,19 @@ Without hooks Brain still shows a coarse state from Claude Code's own
 
 Requirements: macOS 13+ (Apple Silicon for the release builds).
 
+### With Homebrew
+
+```sh
+brew tap martinemmert/big-brain-claude https://github.com/martinemmert/big-brain-claude
+brew install --cask brain
+brain install
+```
+
+The cask installs `Brain.app` and links the `brain` CLI that ships inside it. The app is
+only ad-hoc signed, not notarized, so macOS blocks the first start: System Settings →
+Privacy & Security → Open Anyway, or `xattr -dr com.apple.quarantine /Applications/Brain.app`.
+`brain install` (once) adds the hooks, see [From source](#from-source).
+
 ### From a release
 
 Download `Brain-<version>-macos-arm64.zip` and `brain-<version>-macos-arm64.tar.gz`
@@ -99,6 +112,18 @@ This
 
 Running sessions pick up the hooks on their own.
 
+### Alfred
+
+Download `Brain.alfredworkflow` from the
+[latest release](https://github.com/martinemmert/big-brain-claude/releases/latest) and
+double-click it. Type `cc` and part of a session's name, path or latest message:
+
+- `⏎` brings the session's terminal to the front (`brain open <account>:<pid>`),
+- `⌥⏎` shows it in Brain (`brain show <account>:<pid>`).
+
+The workflow finds `brain` in `/opt/homebrew/bin`, `/usr/local/bin` or `~/.cargo/bin`.
+Sessions are listed in Brain's order: needs you, your turn, working.
+
 ## Uninstall
 
 ```sh
@@ -108,7 +133,7 @@ brain uninstall
 This removes Brain's hooks, the `Bash(brain report:*)` rule and the protocol section from
 the `settings.json` and `CLAUDE.md` of every `~/.claude*` account, with backups as above.
 Then delete `Brain.app`, the `brain` binary (`~/.cargo/bin/brain` or wherever you put it)
-and `~/.claude-brain`.
+and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` removes all three.
 
 ## Keys
 
@@ -127,7 +152,8 @@ and `~/.claude-brain`.
 | `⇥` | cycle the account filter |
 | `E` | show ended sessions |
 
-`brain status` prints the board in the terminal.
+`brain status` prints the board in the terminal; `brain sessions --json` lists the open
+sessions for scripts (account, pid, name, phase, headline, cwd).
 
 ## Develop
 
@@ -136,15 +162,19 @@ cargo test -p brain-core              # protocol, state, transcript and Markdown
 cargo run -p brain-app                # the app against your real sessions
 BRAIN_DEMO=1 cargo run -p brain-app   # made-up sessions, e.g. for screenshots
 ./scripts/make-icns.sh                # re-render the icon
-./scripts/bundle.sh                   # release build into dist/ (ad-hoc signed Brain.app, brain)
+./scripts/bundle.sh                   # release build into dist/ (ad-hoc signed Brain.app, brain,
+                                      # Brain.alfredworkflow)
 ```
 
 Pushing a `v*` tag that matches the version in `Cargo.toml` builds a GitHub release with
-the zipped app, the `brain` binary and SHA-256 checksums.
+the zipped app, the `brain` binary, the Alfred workflow and SHA-256 checksums, then points
+`Casks/brain.rb` at it (a commit to `main`).
 
 - `crates/brain-core`: event protocol, store, accounts, session discovery, state reducer,
   transcript and Markdown readers
-- `crates/brain-cli`: the `brain` binary (`hook`, `report`, `install`, `uninstall`, `status`)
+- `crates/brain-terminal`: terminal adapters (iTerm2, Terminal.app, tmux, VS Code, Cursor)
+- `crates/brain-cli`: the `brain` binary (`hook`, `report`, `install`, `uninstall`, `status`,
+  `sessions`, `open`, `show`)
 - `crates/brain-app`: the GPUI app
 
 Design notes: [`docs/superpowers/specs/2026-10-02-claude-brain-design.md`](docs/superpowers/specs/2026-10-02-claude-brain-design.md)
