@@ -29,8 +29,10 @@ jobs:
           mkdir release
           ditto -c -k --keepParent dist/Brain.app "release/Brain-$version-macos-arm64.zip"
           tar -czf "release/brain-$version-macos-arm64.tar.gz" -C dist brain
-          (cd release && shasum -a 256 *.zip *.tar.gz > SHA256SUMS.txt)
+          cp dist/Brain.alfredworkflow release/
+          (cd release && shasum -a 256 *.zip *.tar.gz *.alfredworkflow > SHA256SUMS.txt)
           cat release/SHA256SUMS.txt
+          echo "version=$version" >> "$GITHUB_ENV"
 
       - name: Create release
         env:
@@ -38,6 +40,16 @@ jobs:
         run: |
           cat > notes.md <<'NOTES'
           ## Install
+
+          With Homebrew (installs `Brain.app` and the `brain` CLI):
+
+          ```sh
+          brew tap martinemmert/big-brain-claude https://github.com/martinemmert/big-brain-claude
+          brew install --cask brain
+          brain install
+          ```
+
+          Or by hand:
 
           1. Download `Brain-*-macos-arm64.zip` and `brain-*-macos-arm64.tar.gz` (Apple Silicon).
           2. Unzip and move `Brain.app` to `/Applications`.
@@ -47,6 +59,9 @@ jobs:
           4. Unpack `brain`, put it on your `PATH` (e.g. `~/.cargo/bin`) and run `brain install`.
              If macOS blocks it, run `xattr -d com.apple.quarantine brain` first.
 
+          **Alfred:** double-click `Brain.alfredworkflow`. Keyword `cc`; ⏎ opens the session's
+          terminal, ⌥⏎ shows it in Brain.
+
           `SHA256SUMS.txt` lists the checksums.
           NOTES
           gh release create "$GITHUB_REF_NAME" release/* \
@@ -55,3 +70,26 @@ jobs:
             --title "Brain $GITHUB_REF_NAME" \
             --notes-file notes.md \
             --generate-notes
+
+      # Points Casks/brain.rb at the new release. Pushes made with GITHUB_TOKEN start no
+      # workflow runs, and releases only run for v* tags, so this cannot loop.
+      - name: Update the Homebrew cask
+        run: |
+          sha256="$(shasum -a 256 "release/Brain-$version-macos-arm64.zip" | cut -d ' ' -f 1)"
+          # The job runs on the tag; commit on top of the current main.
+          git fetch --depth 1 origin main
+          git checkout -B main FETCH_HEAD
+          sed -i '' -E \
+            -e "s/^  version \"[^\"]*\"$/  version \"$version\"/" \
+            -e "s/^  sha256 \"[^\"]*\"$/  sha256 \"$sha256\"/" \
+            Casks/brain.rb
+          grep -q "^  version \"$version\"$" Casks/brain.rb
+          grep -q "^  sha256 \"$sha256\"$" Casks/brain.rb
+          if git diff --quiet; then
+            echo "Casks/brain.rb is already at $version"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Cask: brain $version" Casks/brain.rb
+          git push origin main

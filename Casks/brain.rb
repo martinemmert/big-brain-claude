@@ -1,0 +1,28 @@
+cask "brain" do
+  version "0.2.0"
+  sha256 "6de4a9596adb1524179391ba32c0129c6f33ba0ef7ac1c6e3fedbec5ea736cbf"
+
+  url "https://github.com/martinemmert/big-brain-claude/releases/download/v#{version}/Brain-#{version}-macos-arm64.zip"
+  name "Brain"
+  desc "Dashboard for Claude Code sessions across accounts"
+  homepage "https://github.com/martinemmert/big-brain-claude"
+
+  depends_on arch: :arm64
+  depends_on macos: :ventura
+
+  app "Brain.app"
+  binary "#{appdir}/Brain.app/Contents/MacOS/brain"
+
+  zap trash: "~/.claude-brain"
+
+  caveats <<~EOS
+    Brain is only ad-hoc signed, not notarized, so macOS blocks its first start.
+    Allow it in System Settings → Privacy & Security → Open Anyway, or run:
+      xattr -dr com.apple.quarantine #{appdir}/Brain.app
+
+    Then run once, to add Brain's hooks to every ~/.claude* account:
+      brain install
+
+    Before uninstalling, run `brain uninstall` to remove them again.
+  EOS
+end

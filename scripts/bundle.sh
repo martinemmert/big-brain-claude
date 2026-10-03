@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Builds the release binaries and packages them into dist/:
-#   - dist/Brain.app (ad-hoc signed)
+#   - dist/Brain.app (ad-hoc signed; the CLI ships inside at Contents/MacOS/brain
+#     for the Homebrew cask)
 #   - dist/brain (the CLI)
+#   - dist/Brain.alfredworkflow (scripts/alfred.sh)
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -26,6 +28,7 @@ rm -rf "$app" "$dist/brain"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/brain "$dist/brain"
 cp target/release/brain-app "$app/Contents/MacOS/brain-app"
+cp target/release/brain "$app/Contents/MacOS/brain"
 cp assets/Brain.icns "$app/Contents/Resources/Brain.icns"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -49,6 +52,9 @@ PLIST
 echo "→ ad-hoc signing"
 codesign --force --deep --sign - "$app"
 codesign --verify --deep --strict "$app"
+
+echo "→ Alfred workflow"
+"$root/scripts/alfred.sh" "$version"
 
 echo "→ $app"
 echo "→ $dist/brain"
