@@ -45,7 +45,31 @@ Without hooks Brain still shows a coarse state from Claude Code's own
 
 ## Install
 
-Requirements: macOS 13+, iTerm2, a recent stable Rust toolchain.
+Requirements: macOS 13+, iTerm2.
+
+### From a release
+
+Download `Brain-<version>-macos-arm64.zip` and `brain-<version>-macos-arm64.tar.gz`
+(Apple Silicon) from [Releases](https://github.com/martinemmert/big-brain-claude/releases).
+
+1. Unzip and move `Brain.app` to `/Applications`. The app is only ad-hoc signed, not
+   notarized, so macOS blocks the first start: right-click → Open (macOS 15: System
+   Settings → Privacy & Security → Open Anyway), or run
+   `xattr -dr com.apple.quarantine /Applications/Brain.app`.
+2. Put `brain` on your `PATH` and run `brain install`. The hooks call `brain` at the path it
+   was installed from, so move it first:
+
+   ```sh
+   tar -xzf brain-*-macos-arm64.tar.gz
+   sudo mv brain /usr/local/bin/   # or any other directory on your PATH
+   brain install
+   ```
+
+   If macOS refuses to run it, `xattr -d com.apple.quarantine /usr/local/bin/brain`.
+
+### From source
+
+Requires a recent stable Rust toolchain.
 
 ```sh
 git clone https://github.com/martinemmert/big-brain-claude.git
@@ -55,20 +79,26 @@ cd big-brain-claude
 
 This
 
+- builds `dist/Brain.app` and `dist/brain` with `scripts/bundle.sh`,
 - installs the `brain` CLI to `~/.cargo/bin`,
-- builds `~/Applications/Brain.app` (open it via Spotlight),
-- adds Brain's hooks, a `Bash(brain report:*)` permission and a short protocol section
-  to the `settings.json` and `CLAUDE.md` of every `~/.claude*` account. Existing files are
-  backed up as `*.brain-backup-<timestamp>`; running it again is safe.
+- installs `~/Applications/Brain.app` (open it via Spotlight),
+- runs `brain install`, which adds Brain's hooks, a `Bash(brain report:*)` permission and a
+  short protocol section to the `settings.json` and `CLAUDE.md` of every `~/.claude*`
+  account. Existing files are backed up as `*.brain-backup-<timestamp>`; running it again
+  is safe.
 
 Running sessions pick up the hooks on their own.
 
-### Uninstall
+## Uninstall
 
-Remove `~/Applications/Brain.app`, `~/.cargo/bin/brain` and `~/.claude-brain`, then delete
-the `brain hook` entries and the `Bash(brain report:*)` rule from each `settings.json` and the
-block between `<!-- brain:start -->` and `<!-- brain:end -->` from each `CLAUDE.md` (or
-restore the backups).
+```sh
+brain uninstall
+```
+
+This removes Brain's hooks, the `Bash(brain report:*)` rule and the protocol section from
+the `settings.json` and `CLAUDE.md` of every `~/.claude*` account, with backups as above.
+Then delete `Brain.app`, the `brain` binary (`~/.cargo/bin/brain` or wherever you put it)
+and `~/.claude-brain`.
 
 ## Keys
 
@@ -92,11 +122,15 @@ cargo test -p brain-core              # protocol, state, transcript and Markdown
 cargo run -p brain-app                # the app against your real sessions
 BRAIN_DEMO=1 cargo run -p brain-app   # made-up sessions, e.g. for screenshots
 ./scripts/make-icns.sh                # re-render the icon
+./scripts/bundle.sh                   # release build into dist/ (ad-hoc signed Brain.app, brain)
 ```
+
+Pushing a `v*` tag that matches the version in `Cargo.toml` builds a GitHub release with
+the zipped app, the `brain` binary and SHA-256 checksums.
 
 - `crates/brain-core`: event protocol, store, accounts, session discovery, state reducer,
   transcript and Markdown readers
-- `crates/brain-cli`: the `brain` binary (`hook`, `report`, `install`, `status`)
+- `crates/brain-cli`: the `brain` binary (`hook`, `report`, `install`, `uninstall`, `status`)
 - `crates/brain-app`: the GPUI app
 
 Design notes: [`docs/superpowers/specs/2026-10-02-claude-brain-design.md`](docs/superpowers/specs/2026-10-02-claude-brain-design.md)

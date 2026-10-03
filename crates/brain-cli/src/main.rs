@@ -37,6 +37,8 @@ enum Command {
     },
     /// Install hooks and the protocol section into every Claude account.
     Install,
+    /// Remove Brain's hooks and protocol section from every Claude account.
+    Uninstall,
     /// Print the current board.
     Status,
 }
@@ -65,6 +67,7 @@ fn main() -> ExitCode {
             run_report(&store, &accounts, kind, &text.join(" "))
         }
         Command::Install => run_install(&accounts),
+        Command::Uninstall => run_uninstall(&accounts),
         Command::Status => run_status(&store, &accounts),
     }
 }
@@ -170,7 +173,7 @@ fn run_install(accounts: &[Account]) -> ExitCode {
         let settings = account.config_dir.join("settings.json");
         let settings_text = std::fs::read_to_string(&settings).unwrap_or_default();
         match install::patch_settings_text(&settings_text, &hook_command) {
-            Ok(patched) => report_change("settings.json", install::rewrite_file(&settings, |_| patched)),
+            Ok(patched) => report_change("settings.json", install::rewrite_file(&settings, |_| patched), UP_TO_DATE),
             Err(err) => {
                 failed = true;
                 println!("  settings.json  ✗ not valid JSON, left untouched: {err}");
@@ -178,7 +181,7 @@ fn run_install(accounts: &[Account]) -> ExitCode {
         }
 
         let claude_md = account.config_dir.join("CLAUDE.md");
-        report_change("CLAUDE.md", install::rewrite_file(&claude_md, install::patch_claude_md));
+        report_change("CLAUDE.md", install::rewrite_file(&claude_md, install::patch_claude_md), UP_TO_DATE);
     }
 
     if accounts.is_empty() {
@@ -189,9 +192,52 @@ fn run_install(accounts: &[Account]) -> ExitCode {
     if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
 
-fn report_change(label: &str, result: std::io::Result<Change>) {
+fn run_uninstall(accounts: &[Account]) -> ExitCode {
+    let mut failed = false;
+
+    for account in accounts {
+        println!("{} ({})", account.id, account.config_dir.display());
+
+        let settings = account.config_dir.join("settings.json");
+        match std::fs::read_to_string(&settings) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => println!("  {:<14} ✓ {NOTHING_TO_REMOVE}", "settings.json"),
+            Err(err) => {
+                failed = true;
+                println!("  settings.json  ✗ {err}");
+            }
+            Ok(text) => match install::unpatch_settings_text(&text) {
+                Ok(patched) => {
+                    report_change("settings.json", install::rewrite_file(&settings, |_| patched), NOTHING_TO_REMOVE)
+                }
+                Err(err) => {
+                    failed = true;
+                    println!("  settings.json  ✗ not valid JSON, left untouched: {err}");
+                }
+            },
+        }
+
+        let claude_md = account.config_dir.join("CLAUDE.md");
+        if claude_md.exists() {
+            report_change("CLAUDE.md", install::rewrite_file(&claude_md, install::unpatch_claude_md), NOTHING_TO_REMOVE);
+        } else {
+            println!("  {:<14} ✓ {NOTHING_TO_REMOVE}", "CLAUDE.md");
+        }
+    }
+
+    if accounts.is_empty() {
+        eprintln!("brain uninstall: no ~/.claude or ~/.claude-* directories found");
+        return ExitCode::FAILURE;
+    }
+    println!("\nBrain.app, the brain binary and ~/.claude-brain are left in place.");
+    if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+}
+
+const UP_TO_DATE: &str = "already up to date";
+const NOTHING_TO_REMOVE: &str = "nothing to remove";
+
+fn report_change(label: &str, result: std::io::Result<Change>, unchanged: &str) {
     match result {
-        Ok(Change::Unchanged) => println!("  {label:<14} ✓ already up to date"),
+        Ok(Change::Unchanged) => println!("  {label:<14} ✓ {unchanged}"),
         Ok(Change::Updated { backup: Some(b) }) => println!("  {label:<14} ✓ updated (backup: {})", b.display()),
         Ok(Change::Updated { backup: None }) => println!("  {label:<14} ✓ created"),
         Err(err) => println!("  {label:<14} ✗ {err}"),

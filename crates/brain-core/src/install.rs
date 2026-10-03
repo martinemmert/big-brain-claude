@@ -96,6 +96,55 @@ pub fn patch_claude_md(content: &str) -> String {
     out
 }
 
+/// Removes Brain's hooks and permission rule from a `settings.json` value,
+/// the reverse of [`patch_settings`]. Containers that only become empty
+/// through this removal are dropped; everything else is left untouched.
+pub fn unpatch_settings(settings: &mut Value) {
+    let Some(root) = settings.as_object_mut() else { return };
+
+    if let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) {
+        let had_events = !hooks.is_empty();
+        hooks.retain(|_, groups| {
+            let Some(groups) = groups.as_array_mut() else { return true };
+            let before = groups.len();
+            groups.retain(|group| !group_is_brain(group));
+            !(groups.is_empty() && before > 0)
+        });
+        if had_events && hooks.is_empty() {
+            root.remove("hooks");
+        }
+    }
+
+    if let Some(permissions) = root.get_mut("permissions").and_then(Value::as_object_mut) {
+        if let Some(allow) = permissions.get_mut("allow").and_then(Value::as_array_mut) {
+            let before = allow.len();
+            allow.retain(|rule| rule != PERMISSION_RULE);
+            if allow.is_empty() && before > 0 {
+                permissions.remove("allow");
+                if permissions.is_empty() {
+                    root.remove("permissions");
+                }
+            }
+        }
+    }
+}
+
+/// Removes the protocol section and the blank line before it, the reverse of
+/// [`patch_claude_md`].
+pub fn unpatch_claude_md(content: &str) -> String {
+    let (Some(start), Some(end)) = (content.find(SECTION_START), content.find(SECTION_END)) else {
+        return content.to_string();
+    };
+    if start > end {
+        return content.to_string();
+    }
+    let before = &content[..start];
+    let before = before.strip_suffix('\n').filter(|b| b.ends_with('\n')).unwrap_or(before);
+    let after = &content[end + SECTION_END.len()..];
+    let after = after.strip_prefix('\n').unwrap_or(after);
+    format!("{before}{after}")
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Change {
     Unchanged,
@@ -113,10 +162,13 @@ pub fn rewrite_file(path: &Path, patch: impl FnOnce(&str) -> String) -> std::io:
     let backup = match &before {
         Some(content) => {
             let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-            let backup = path.with_file_name(format!(
-                "{}.brain-backup-{stamp}",
-                path.file_name().unwrap_or_default().to_string_lossy()
-            ));
+            let name = format!("{}.brain-backup-{stamp}", path.file_name().unwrap_or_default().to_string_lossy());
+            // Never overwrite an earlier backup, e.g. of an install and an
+            // uninstall within the same second.
+            let backup = (1..)
+                .map(|n| path.with_file_name(if n == 1 { name.clone() } else { format!("{name}-{n}") }))
+                .find(|candidate| !candidate.exists())
+                .expect("unbounded range");
             std::fs::write(&backup, content)?;
             Some(backup)
         }
@@ -138,6 +190,23 @@ pub fn patch_settings_text(text: &str, hook_command: &str) -> Result<String, ser
         serde_json::from_str(text)?
     };
     patch_settings(&mut value, hook_command);
+    let mut out = serde_json::to_string_pretty(&value)?;
+    out.push('\n');
+    Ok(out)
+}
+
+/// `settings.json` un-patcher for [`rewrite_file`]. Returns the text as is
+/// when there is nothing to remove, so untouched files keep their formatting.
+pub fn unpatch_settings_text(text: &str) -> Result<String, serde_json::Error> {
+    if text.trim().is_empty() {
+        return Ok(text.to_string());
+    }
+    let original: Value = serde_json::from_str(text)?;
+    let mut value = original.clone();
+    unpatch_settings(&mut value);
+    if value == original {
+        return Ok(text.to_string());
+    }
     let mut out = serde_json::to_string_pretty(&value)?;
     out.push('\n');
     Ok(out)
@@ -188,6 +257,45 @@ mod tests {
     }
 
     #[test]
+    fn settings_unpatch_restores_the_original_and_keeps_foreign_hooks() {
+        let originals = [
+            json!({}),
+            json!({
+                "model": "opus",
+                "hooks": {
+                    "Stop": [{ "hooks": [{ "type": "command", "command": "other-tool" }] }],
+                    "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "guard" }] }]
+                },
+                "permissions": { "allow": ["Bash(ls:*)"], "deny": ["Bash(rm:*)"] }
+            }),
+        ];
+        for original in originals {
+            let mut settings = original.clone();
+            patch_settings(&mut settings, "/bin/brain hook");
+            unpatch_settings(&mut settings);
+            assert_eq!(settings, original);
+            unpatch_settings(&mut settings);
+            assert_eq!(settings, original);
+        }
+
+        let text = "{\n    \"model\": \"opus\"\n}";
+        assert_eq!(unpatch_settings_text(text).unwrap(), text);
+        assert!(unpatch_settings_text("{ broken").is_err());
+    }
+
+    #[test]
+    fn claude_md_unpatch_restores_the_original() {
+        for original in ["", "# Prefs\n\nBe nice.\n"] {
+            let patched = patch_claude_md(original);
+            assert_eq!(unpatch_claude_md(&patched), original);
+            assert_eq!(unpatch_claude_md(original), original);
+        }
+
+        let with_text_after = patch_claude_md("# Prefs\n") + "\n## After\n";
+        assert_eq!(unpatch_claude_md(&with_text_after), "# Prefs\n\n## After\n");
+    }
+
+    #[test]
     fn rewrite_backs_up_changed_files_and_refuses_broken_json() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
@@ -197,10 +305,16 @@ mod tests {
         std::fs::write(&path, "{}").unwrap();
         let change = rewrite_file(&path, |t| patch_settings_text(t, "brain hook").unwrap()).unwrap();
         let Change::Updated { backup: Some(backup) } = change else { panic!("expected backup") };
-        assert_eq!(std::fs::read_to_string(backup).unwrap(), "{}");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "{}");
         assert_eq!(
             rewrite_file(&path, |t| patch_settings_text(t, "brain hook").unwrap()).unwrap(),
             Change::Unchanged
         );
+
+        // An uninstall right after the install keeps the first backup.
+        let change = rewrite_file(&path, |t| unpatch_settings_text(t).unwrap()).unwrap();
+        let Change::Updated { backup: Some(second) } = change else { panic!("expected backup") };
+        assert_ne!(second, backup);
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "{}");
     }
 }
