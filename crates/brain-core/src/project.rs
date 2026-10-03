@@ -11,6 +11,8 @@ pub struct Project {
     pub name: String,
     /// The worktree's directory name when the session runs in a linked worktree.
     pub worktree: Option<String>,
+    /// The checked-out working tree (the worktree's directory, or the repository itself).
+    pub checkout: PathBuf,
 }
 
 pub fn project_of(cwd: &Path) -> Project {
@@ -39,11 +41,11 @@ pub fn from_rev_parse(cwd: &Path, output: &str) -> Project {
         _ => toplevel.clone(), // bare repositories and unusual layouts
     };
     let worktree = (toplevel != root).then(|| file_name(&toplevel));
-    Project { name: file_name(&root), root, worktree }
+    Project { name: file_name(&root), root, worktree, checkout: toplevel }
 }
 
 fn outside_git(cwd: &Path) -> Project {
-    Project { root: cwd.to_path_buf(), name: file_name(cwd), worktree: None }
+    Project { root: cwd.to_path_buf(), name: file_name(cwd), worktree: None, checkout: cwd.to_path_buf() }
 }
 
 fn file_name(path: &Path) -> String {

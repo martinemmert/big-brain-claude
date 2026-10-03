@@ -32,6 +32,11 @@ fn git(cwd: &Path, args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// The checked-out branch, `None` outside git or on a detached HEAD.
+pub fn branch_of(cwd: &Path) -> Option<String> {
+    git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).map(|b| b.trim().to_string()).filter(|b| b != "HEAD")
+}
+
 /// `None` outside a git repository.
 pub fn changes_of(cwd: &Path) -> Option<Changes> {
     let status = git(cwd, &["status", "--porcelain=v1", "--untracked-files=normal"])?;

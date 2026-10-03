@@ -124,6 +124,8 @@ pub struct Insight {
     pub cost_usd: Option<f64>,
     /// Claude Code's generated title (`ai-title`).
     pub title: Option<String>,
+    /// Files this session wrote or edited (Write, Edit, MultiEdit, NotebookEdit), most recent last.
+    pub edited: Vec<String>,
 }
 
 /// Reads the last 512 KiB of a transcript.
@@ -166,6 +168,10 @@ pub fn insight(transcript: &Path) -> Insight {
                 if let Some(model) = message.and_then(|m| m.get("model")).and_then(Value::as_str) {
                     out.model = Some(model.to_string());
                 }
+                for path in edited_paths(message) {
+                    out.edited.retain(|p| *p != path);
+                    out.edited.push(path);
+                }
                 if let Some(usage) = message.and_then(|m| m.get("usage")) {
                     let n = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
                     out.context_tokens = Some(n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens"));
@@ -178,6 +184,21 @@ pub fn insight(transcript: &Path) -> Insight {
         }
     }
     out
+}
+
+/// File paths of the editing tool calls in an assistant message.
+fn edited_paths(message: Option<&Value>) -> Vec<String> {
+    let blocks = message.and_then(|m| m.get("content")).and_then(Value::as_array);
+    blocks
+        .into_iter()
+        .flatten()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .filter(|b| matches!(b.get("name").and_then(Value::as_str), Some("Write" | "Edit" | "MultiEdit" | "NotebookEdit")))
+        .filter_map(|b| {
+            let input = b.get("input")?;
+            input.get("file_path").or_else(|| input.get("notebook_path"))?.as_str().map(str::to_string)
+        })
+        .collect()
 }
 
 /// The text parts of a user entry (a plain string or text blocks).
@@ -402,6 +423,17 @@ mod tests {
         assert_eq!(got.permission_mode.as_deref(), Some("default"));
         assert_eq!(got.cost_usd, Some(0.0474824));
         assert_eq!(got.title.as_deref(), Some("Date output file test"));
+    }
+
+    #[test]
+    fn collects_the_files_a_session_edited() {
+        let lines = [
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/w/a.rs"}},{"type":"tool_use","name":"Read","input":{"file_path":"/w/b.rs"}}]},"timestamp":"2026-10-04T09:00:00Z"}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/w/c.rs"}},{"type":"tool_use","name":"Edit","input":{"file_path":"/w/a.rs"}}]},"timestamp":"2026-10-04T09:01:00Z"}"#,
+        ];
+        let (_dir, path) = transcript(&lines);
+
+        assert_eq!(insight(&path).edited, vec!["/w/c.rs", "/w/a.rs"]);
     }
 
     #[test]

@@ -3,8 +3,10 @@
 
 pub mod account;
 pub mod changes;
+pub mod conflicts;
 pub mod digest;
 pub mod event;
+pub mod github;
 pub mod hook;
 pub mod install;
 pub mod markdown;
