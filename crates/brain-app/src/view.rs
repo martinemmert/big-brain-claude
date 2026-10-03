@@ -1028,7 +1028,8 @@ impl BrainView {
                 }
                 if cost > 0.0 {
                     row = row.child(div().flex_1()).child(
-                        div().flex_none().text_size(px(11.5)).text_color(theme::text_muted()).child(tr!("heute ${cost:.2}", "today ${cost:.2}")),
+                        // Claude Code's per-session totals at API prices: a measure of use, not a bill.
+                        div().flex_none().text_size(px(11.5)).text_color(theme::text_muted()).child(tr!("≈ ${cost:.0} API-Wert", "≈ ${cost:.0} API value")),
                     );
                 }
                 Some(row.into_any_element())

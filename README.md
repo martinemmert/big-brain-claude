@@ -20,14 +20,20 @@ follows your macOS language: English or German.
 ## What it does
 
 - **Triage inbox.** Sessions that wait for you come first, longest wait on top: red when
-  Claude asks a question or needs a permission, amber when a turn finished.
+  Claude asks a question or needs a permission, amber when a turn finished, quiet blue when the
+  turn ended but subagents or background shells still run (from the Stop hook's
+  `background_tasks`; Claude's own `brain report --waiting` still marks it red).
 - **Answer from Brain.** Allow or deny an open permission prompt (`Y` / `N`), or reply to a
   session that waits for you (`T`). Brain only types when the session's state is unambiguous.
 - **All accounts in one place.** `~/.claude`, `~/.claude-second` and any other
   `~/.claude-*` config dir (as used with `CLAUDE_CONFIG_DIR`) are picked up automatically.
 - **Latest messages.** Your prompts, Claude's replies rendered as Markdown, tool calls as
   one-line summaries, read live from the session transcript.
-- **Session details.** Model, context size, Claude Code's own cost total and permission mode.
+- **Session details.** Model, context fill, Claude Code's own cost total and permission mode.
+- **Plan usage.** Five-hour and weekly limits per account with their reset times, from the
+  status line (Brain wraps your status line command and passes its output through unchanged).
+- **Changes.** Branch, ahead/behind and the changed files of the session's working directory.
+- **Today.** What every session reported as done today, per project; copy it as Markdown.
 - **Timeline.** Every hook event and report of a session, plus seven days of history; ended
   sessions can be resumed (`claude --resume`) in a new tab.
 - **Open the terminal.** iTerm2, Terminal.app and tmux (in any terminal) jump to the exact
@@ -36,7 +42,9 @@ follows your macOS language: English or German.
   count as their main repository); **pin** and **mute** sessions.
 - **Rename** a waiting session; Brain types `/rename <name>` into its terminal.
 - **Menu bar count** and native **notifications** with *Open* and *Snooze 15 min*, sound only
-  when a session calls you.
+  when a session calls you; reminders while a session keeps waiting (`remind_after_minutes`
+  in `config.json`, 10 by default, 0 turns them off) and snoozing per session.
+- **New sessions** in a recent folder and any account (`⌘N`).
 - **English or German**, following your macOS language (override with `BRAIN_LANG=de|en` or
   `{"language": "de"}` in `~/.claude-brain/config.json`).
 
@@ -147,8 +155,10 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `R`, click the name | rename (only while the session waits for you) |
 | `/`, `⌘F` | search (`esc` clears) |
 | `P` / `M` | pin / mute notifications |
-| `G` | group by project |
-| `←` `→` | switch between messages and timeline |
+| `S` | snooze: 15 min → 1 h → until tomorrow 9:00 → off |
+| `G` / `D` | group by project / today's digest (`⌘C` copies it) |
+| `⌘N` | start a new session |
+| `←` `→` | switch between messages, timeline and changes |
 | `⇥` | cycle the account filter |
 | `E` | show ended sessions |
 

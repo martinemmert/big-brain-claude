@@ -14,3 +14,11 @@ Date: 2026-10-04. Owner's decisions in brackets.
 | 9 | Homebrew + update notice [cask in this repo] | `Casks/brain.rb` (app + `brain` binary shipped inside the bundle), release workflow updates version and sha256; app checks the latest GitHub release once a day |
 
 URL scheme `brain://session/<account>/<pid>`: `CFBundleURLTypes` in the bundle's Info.plist; the app selects that session and comes forward.
+
+## Outcome
+
+Shipped in 0.3.0. Verified with real data: Stop hook `background_tasks` for a background shell
+and a background subagent (then a task notification and an empty list on the next stop); the
+status line wrapper's output is byte-identical to the wrapped script; plan limits arrived for
+both accounts after install; `brain show` selected the session in Brain. Session costs are
+Claude Code's per-session totals at API prices, so Brain labels them "API value".
