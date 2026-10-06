@@ -981,7 +981,7 @@ impl BrainView {
         if primary(&keystroke.modifiers) && keystroke.key == "c" && self.prefs.layout == Layout::Today {
             let date = chrono::Local::now().format("%d.%m.%Y").to_string();
             let markdown = brain_core::digest::markdown(&tr!("Heute, {date}", "Today, {date}"), &self.today_digest());
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(markdown));
+            crate::clipboard::copy(&markdown, cx);
             self.set_status(t("Tagesübersicht kopiert.", "Copied the day's digest."));
             cx.stop_propagation();
             cx.notify();
@@ -2285,7 +2285,7 @@ impl BrainView {
                     .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).text_color(theme::text_strong()).child(title))
                     .child(div().flex_1())
                     .child(button("copy-digest", t("Als Markdown kopieren", "Copy as Markdown"), &format!("{}C", primary_label()), false, !projects.is_empty(), cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(markdown.clone()));
+                        crate::clipboard::copy(&markdown, cx);
                         this.set_status(t("Tagesübersicht kopiert.", "Copied the day's digest."));
                         cx.notify();
                     }))),

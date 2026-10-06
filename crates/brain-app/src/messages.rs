@@ -5,8 +5,12 @@ use brain_core::markdown::{self, Block, Inline, Span};
 use brain_core::state::Session;
 use brain_core::transcript::{classify_prompt, Message, Prompt, Role};
 use chrono::Local;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
 use gpui::{
-    div, prelude::*, px, relative, AnyElement, FontWeight, HighlightStyle, SharedString, StyledText,
+    div, prelude::*, px, relative, AnyElement, ClickEvent, FontWeight, HighlightStyle, SharedString, StyledText,
 };
 
 use crate::i18n::t;
@@ -15,6 +19,9 @@ use crate::{theme, tr};
 
 /// Consecutive tool calls are shown as one block; long runs are cut to this many rows.
 const TOOL_ROWS_SHOWN: usize = 6;
+
+/// The code block copied last and when, for the "Copied" confirmation.
+static COPIED: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
 
 pub fn conversation(messages: &[Message]) -> Vec<AnyElement> {
     let mut out = Vec::new();
@@ -217,6 +224,7 @@ fn block(block: Block) -> AnyElement {
             )
             .child(div().flex_1().min_w_0().child(styled(&text)))
             .into_any_element(),
+        Block::Code { lang, text } if copyable(lang.as_deref()) => copyable_code(lang, text),
         Block::Code { lang, text } => div()
             .relative()
             .px(px(12.))
@@ -252,6 +260,65 @@ fn block(block: Block) -> AnyElement {
         Block::Table { header, rows } => table(header, rows),
         Block::Rule => div().h(px(1.)).my(px(4.)).bg(theme::line()).into_any_element(),
     }
+}
+
+/// Code blocks that get a copy button; add languages here (or return `true` for all).
+fn copyable(lang: Option<&str>) -> bool {
+    matches!(lang, Some("markdown" | "md"))
+}
+
+/// A code block with its language and a copy button above the text.
+fn copyable_code(lang: Option<String>, text: String) -> AnyElement {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    let id = hasher.finish();
+    let copied = COPIED.lock().unwrap().is_some_and(|(last, at)| last == id && at.elapsed() < Duration::from_secs(2));
+    let button = div()
+        .id(SharedString::from(format!("copy-{id:x}")))
+        .flex_none()
+        .px(px(7.))
+        .py(px(2.))
+        .rounded(px(5.))
+        .border_1()
+        .border_color(theme::line_strong())
+        .font_family(".SystemUIFont")
+        .text_size(px(10.5))
+        .text_color(if copied { theme::done() } else { theme::text_muted() })
+        .cursor_pointer()
+        .hover(|d| d.bg(theme::hover()).text_color(theme::text_strong()))
+        .child(if copied { t("✓ Kopiert", "✓ Copied") } else { t("Kopieren", "Copy") })
+        .on_click({
+            let text = text.clone();
+            move |_: &ClickEvent, _, cx| {
+                crate::clipboard::copy(&text, cx);
+                *COPIED.lock().unwrap() = Some((id, Instant::now()));
+                cx.refresh_windows();
+            }
+        });
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .px(px(12.))
+        .pt(px(6.))
+        .pb(px(10.))
+        .rounded(px(8.))
+        .bg(theme::ink())
+        .border_1()
+        .border_color(theme::line())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap(px(8.))
+                .text_size(px(10.))
+                .text_color(theme::text_faint())
+                .children(lang)
+                .child(button),
+        )
+        .child(div().font_family(theme::MONO).text_size(px(12.)).line_height(relative(1.5)).text_color(theme::text()).child(text))
+        .into_any_element()
 }
 
 fn table(header: Vec<Inline>, rows: Vec<Vec<Inline>>) -> AnyElement {

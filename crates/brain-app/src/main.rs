@@ -1,3 +1,6 @@
+#[cfg_attr(target_os = "linux", path = "clipboard_linux.rs")]
+#[cfg_attr(target_os = "macos", path = "clipboard_macos.rs")]
+mod clipboard;
 mod config;
 mod conversation;
 mod demo;
