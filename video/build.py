@@ -204,7 +204,7 @@ CARDS = {
   <pre class=mono style="font-size:27px; line-height:1.6; padding:34px 44px; color:#d5d9e6;">\
 <span style="color:#5aa9ff">$</span> git clone https://github.com/martinemmert/big-brain-claude.git
 <span style="color:#5aa9ff">$</span> cd big-brain-claude
-<span style="color:#5aa9ff">$</span> ./scripts/install.sh
+<span style="color:#5aa9ff">$</span> ./scripts/install-macos.sh
 <span style="color:#8c93aa">→ brain CLI
 → Brain.app
 → Hooks &amp; Protokoll</span>

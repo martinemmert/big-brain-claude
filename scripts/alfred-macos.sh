@@ -4,10 +4,10 @@
 # ⌥⏎ shows it in Brain (`brain show`).
 #
 # The info.plist follows the structure Alfred 5 exports (objects with uid,
-# connections keyed by source uid, uidata positions). Usage: alfred.sh <version>
+# connections keyed by source uid, uidata positions). Usage: alfred-macos.sh <version>
 set -euo pipefail
 
-version="${1:?usage: alfred.sh <version>}"
+version="${1:?usage: alfred-macos.sh <version>}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 dist="$root/dist"
 out="$dist/Brain.alfredworkflow"

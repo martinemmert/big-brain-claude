@@ -4,11 +4,13 @@ mod demo;
 mod i18n;
 mod input;
 mod links;
-#[cfg_attr(not(target_os = "macos"), path = "menubar_none.rs")]
+#[cfg_attr(target_os = "linux", path = "menubar_linux.rs")]
+#[cfg_attr(target_os = "macos", path = "menubar_macos.rs")]
 mod menubar;
 mod messages;
 mod model;
-#[cfg_attr(not(target_os = "macos"), path = "notify_linux.rs")]
+#[cfg_attr(target_os = "linux", path = "notify_linux.rs")]
+#[cfg_attr(target_os = "macos", path = "notify_macos.rs")]
 mod notify;
 mod prefs;
 mod theme;

@@ -60,7 +60,7 @@ jobs:
           merge-multiple: true
 
       - name: Bundle
-        run: ./scripts/bundle.sh
+        run: ./scripts/bundle-macos.sh
 
       - name: Package
         run: |

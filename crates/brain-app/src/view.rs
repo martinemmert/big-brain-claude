@@ -16,7 +16,7 @@ use crate::menubar::MenuBar;
 use crate::model::Model;
 use crate::notify::{self, Notifier};
 use crate::prefs::{Layout, Prefs};
-use brain_terminal::{self as terminal, Capabilities, Key, Outcome};
+use brain_terminal::{self as terminal, Capabilities, Key, Limit, Outcome};
 use crate::widgets::{
     account_badge, background_summary, caret, chip, clock, dot, kbd, now_ms, phase_color, phase_label, plain, section_title,
 };
@@ -26,6 +26,8 @@ use crate::{messages, theme, tr};
 const RESTING_AFTER_MS: i64 = 2 * 60 * 60 * 1000;
 /// Ended sessions stay listed this long (they are read from the event history).
 const SNOOZE_MS: i64 = 15 * 60 * 1000;
+/// How long a failed terminal action stays on screen unless clicked away.
+const ERROR_SECS: u64 = 30;
 
 pub struct BrainView {
     model: Model,
@@ -38,6 +40,8 @@ pub struct BrainView {
     selected: Option<SessionKey>,
     show_ended: bool,
     status: Option<(String, Instant)>,
+    /// A failed terminal action; stays until clicked away or `ERROR_SECS` pass.
+    error: Option<(String, Instant)>,
     list_scroll: ScrollHandle,
     tab: DetailTab,
     conversation: Option<Conversation>,
@@ -51,7 +55,7 @@ pub struct BrainView {
     /// Reminders sent while a session keeps waiting: since when it waits, and how many.
     reminders: HashMap<SessionKey, (i64, u32)>,
     /// The terminal hosting the selected session and what Brain can do with it.
-    host: Option<(SessionKey, Capabilities)>,
+    host: Option<(SessionKey, Capabilities, Option<Limit>)>,
     /// Project name and worktree per session, refreshed on render.
     projects: HashMap<SessionKey, (String, Option<String>)>,
     /// The checked-out working tree per session (for conflicts and PR lookups).
@@ -188,6 +192,7 @@ impl BrainView {
             selected: None,
             show_ended: false,
             status: None,
+            error: None,
             list_scroll: ScrollHandle::new(),
             tab: DetailTab::Messages,
             conversation: None,
@@ -292,6 +297,9 @@ impl BrainView {
 
         if self.status.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(6)) {
             self.status = None;
+        }
+        if self.error.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(ERROR_SECS)) {
+            self.error = None;
         }
         cx.notify();
     }
@@ -893,8 +901,16 @@ impl BrainView {
             return Capabilities { focus: true, type_text: true, keys: true };
         }
         match &self.host {
-            Some((key, caps)) if Some(key) == self.selected.as_ref() => *caps,
+            Some((key, caps, _)) if Some(key) == self.selected.as_ref() => *caps,
             _ => Capabilities { focus: false, type_text: false, keys: false },
+        }
+    }
+
+    /// What to change so Brain can type into the selected session's terminal.
+    fn typing_help(&self) -> Option<String> {
+        match &self.host {
+            Some((key, _, Some(limit))) if Some(key) == self.selected.as_ref() => Some(limit_help(limit)),
+            _ => None,
         }
     }
 
@@ -1067,6 +1083,10 @@ impl BrainView {
         self.status = Some((message.into(), Instant::now()));
     }
 
+    fn set_error(&mut self, message: impl Into<String>) {
+        self.error = Some((message.into(), Instant::now()));
+    }
+
     /// Demo pids are made up and may belong to unrelated processes: nothing is ever sent.
     fn blocked_in_demo(&mut self) -> bool {
         if self.model.is_demo() {
@@ -1082,12 +1102,17 @@ impl BrainView {
                     self.set_status(message);
                 }
             }
-            Outcome::NoTerminal => self.set_status(t(
+            Outcome::NoTerminal => self.set_error(t(
                 "Kein Terminal zu dieser Session gefunden (beendet oder ohne Terminal gestartet).",
                 "No terminal found for this session (it ended or runs without one).",
             )),
-            Outcome::Unsupported(reason) => self.set_status(reason),
-            Outcome::Failed(reason) => self.set_status(tr!("Fehlgeschlagen: {reason}", "Failed: {reason}")),
+            Outcome::Unsupported(reason) => self.set_error(reason),
+            // macOS asks once whether Brain may control iTerm2; a "no" is error -1743.
+            Outcome::Failed(reason) if reason.contains("-1743") => self.set_error(t(
+                "macOS erlaubt Brain nicht, iTerm2 zu steuern. Systemeinstellungen → Datenschutz & Sicherheit → Automation → Brain → „iTerm“ einschalten.",
+                "macOS doesn't let Brain control iTerm2. System Settings → Privacy & Security → Automation → Brain → turn on “iTerm”.",
+            )),
+            Outcome::Failed(reason) => self.set_error(tr!("Fehlgeschlagen: {reason}", "Failed: {reason}")),
         }
     }
 
@@ -1139,7 +1164,10 @@ impl BrainView {
             return;
         }
         if !self.capabilities().type_text {
-            self.set_status(t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal."));
+            match self.typing_help() {
+                Some(help) => self.set_error(help),
+                None => self.set_status(t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal.")),
+            }
             return;
         }
         self.rename = LineInput::with_text(&session.display_name());
@@ -1165,7 +1193,10 @@ impl BrainView {
             return;
         }
         if !self.capabilities().type_text {
-            self.set_status(t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal."));
+            match self.typing_help() {
+                Some(help) => self.set_error(help),
+                None => self.set_status(t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal.")),
+            }
             return;
         }
         self.reply = LineInput::default();
@@ -1201,7 +1232,10 @@ impl BrainView {
             return;
         }
         if !self.capabilities().keys {
-            self.set_status(t("In diesem Terminal kann Brain keine Freigaben beantworten.", "Brain can't answer permissions in this terminal."));
+            match self.typing_help() {
+                Some(help) => self.set_error(help),
+                None => self.set_status(t("In diesem Terminal kann Brain keine Freigaben beantworten.", "Brain can't answer permissions in this terminal.")),
+            }
             return;
         }
         let pid = session.pid;
@@ -1276,14 +1310,17 @@ impl BrainView {
             self.host = None;
             return;
         };
-        if self.model.is_demo() || self.host.as_ref().is_some_and(|(k, _)| *k == key) {
+        if self.model.is_demo() || self.host.as_ref().is_some_and(|(k, _, _)| *k == key) {
             return;
         }
         let Some(pid) = self.model.board.get(&key).map(|s| s.pid) else { return };
-        let caps = terminal::host_of(pid)
-            .map(|host| terminal::capabilities(&host))
+        let host = terminal::host_of(pid);
+        let caps = host
+            .as_ref()
+            .map(terminal::capabilities)
             .unwrap_or(Capabilities { focus: false, type_text: false, keys: false });
-        self.host = Some((key, caps));
+        let limit = host.as_ref().and_then(terminal::limit);
+        self.host = Some((key, caps, limit));
     }
 
     /// Project names for the sessions (git is asked once per directory).
@@ -1980,7 +2017,10 @@ impl BrainView {
         };
 
         let mut actions: Vec<AnyElement> = Vec::new();
+        // Shown under greyed-out buttons: what to change in the terminal.
+        let mut help = None;
         if s.awaiting_permission() {
+            help = (!caps.keys).then(|| self.typing_help()).flatten();
             actions.push(button("allow", t("Erlauben", "Allow"), "Y", true, caps.keys, cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.answer_permission(true);
                 cx.notify();
@@ -1990,6 +2030,7 @@ impl BrainView {
                 cx.notify();
             })));
         } else if s.accepts_input() && self.mode != Mode::Reply {
+            help = (!caps.type_text).then(|| self.typing_help()).flatten();
             actions.push(button("reply", t("Antworten", "Reply"), "T", false, caps.type_text, cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.start_reply();
                 cx.notify();
@@ -2073,6 +2114,18 @@ impl BrainView {
                 })
             })
             .when(!actions.is_empty(), |d| d.child(div().flex().gap(px(8.)).mt(px(2.)).children(actions)))
+            .when_some(help, |d, help| {
+                d.child(
+                    div()
+                        .flex()
+                        .gap(px(6.))
+                        .text_size(px(11.5))
+                        .line_height(relative(1.5))
+                        .text_color(theme::text_muted())
+                        .child(div().flex_none().text_color(theme::text_faint()).child("ⓘ"))
+                        .child(div().flex_1().min_w_0().child(help)),
+                )
+            })
             .into_any_element()
     }
 
@@ -2296,6 +2349,43 @@ impl BrainView {
     }
 }
 
+impl BrainView {
+    /// The failed action, above the footer at the bottom right; a click dismisses it.
+    fn render_error(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (message, _) = self.error.as_ref()?;
+        let toast = div()
+            .id("error-toast")
+            .absolute()
+            .bottom(px(44.))
+            .right(px(16.))
+            .max_w(px(460.))
+            .flex()
+            .items_start()
+            .gap(px(10.))
+            .px(px(14.))
+            .py(px(10.))
+            .rounded(px(8.))
+            .bg(theme::raised())
+            .border_1()
+            .border_color(theme::calls())
+            .shadow(vec![BoxShadow {
+                color: theme::alpha(theme::calls(), 0x40).into(),
+                offset: gpui::point(px(0.), px(4.)),
+                blur_radius: px(18.),
+                spread_radius: px(0.),
+            }])
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.error = None;
+                cx.notify();
+            }))
+            .child(div().flex_none().text_color(theme::calls()).font_weight(FontWeight::BOLD).child("!"))
+            .child(div().flex_1().min_w_0().text_color(theme::text_strong()).child(message.clone()))
+            .child(div().flex_none().text_color(theme::text_faint()).child("×"));
+        Some(toast.into_any_element())
+    }
+}
+
 impl Render for BrainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = now_ms();
@@ -2367,9 +2457,11 @@ impl Render for BrainView {
             .text_size(px(13.))
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
+            .relative()
             .child(titlebar)
             .child(div().flex().flex_1().min_h_0().child(list).child(detail))
             .child(self.render_footer())
+            .when_some(self.render_error(cx), |d, toast| d.child(toast))
     }
 }
 
@@ -2630,6 +2722,30 @@ fn format_tokens(tokens: u64) -> String {
         0..=999 => tokens.to_string(),
         1_000..=999_999 => format!("{}k", (tokens + 500) / 1000),
         _ => format!("{:.1}M", tokens as f64 / 1_000_000.0),
+    }
+}
+
+/// What to change so Brain can type into a terminal; the alternatives differ per platform.
+fn limit_help(limit: &Limit) -> String {
+    let supported = if cfg!(target_os = "macos") { t("iTerm2 oder tmux", "iTerm2 or tmux") } else { t("Konsole oder tmux", "Konsole or tmux") };
+    match limit {
+        Limit::KonsoleLocked => t(
+            "Konsole lässt Brain nicht tippen. In Konsole: Einstellungen → Konsole einrichten → Allgemein → „Sicherheitsrelevante Teile der D-Bus-Schnittstelle aktivieren“. Danach dieses Konsole-Fenster schließen, neu öffnen und die Session mit claude --resume fortsetzen.",
+            "Konsole doesn't let Brain type. In Konsole: Settings → Configure Konsole → General → “Enable the security sensitive parts of the DBus API”. Then close this Konsole window, open a new one and continue the session with claude --resume.",
+        )
+        .to_string(),
+        Limit::TerminalApp => tr!(
+            "In Terminal.app kann Brain nur das Fenster nach vorne holen. Zum Antworten aus Brain die Session in {supported} starten.",
+            "In Terminal.app Brain can only bring the window forward. To reply from Brain, start the session in {supported}."
+        ),
+        Limit::Editor => tr!(
+            "Ins Terminal von VS Code und Cursor kann Brain nicht tippen. Zum Antworten aus Brain die Session in {supported} starten.",
+            "Brain can't type into the terminal of VS Code or Cursor. To reply from Brain, start the session in {supported}."
+        ),
+        Limit::Unknown(name) => tr!(
+            "Das Terminal „{name}“ kann Brain nicht steuern. Zum Antworten aus Brain die Session in {supported} starten.",
+            "Brain can't control the terminal “{name}”. To reply from Brain, start the session in {supported}."
+        ),
     }
 }
 

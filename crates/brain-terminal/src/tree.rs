@@ -8,6 +8,7 @@ use std::process::Command;
 pub enum Kind {
     ITerm,
     TerminalApp,
+    Konsole,
     Tmux,
     VsCode,
     Cursor,
@@ -77,6 +78,19 @@ impl Tree {
         self.processes.get(&pid)?.tty.as_deref()
     }
 
+    /// The child of `ancestor` on the way up from `pid`.
+    pub fn child_toward(&self, ancestor: u32, pid: u32) -> Option<u32> {
+        let mut current = pid;
+        for _ in 0..self.processes.len() {
+            let parent = self.parent(current)?;
+            if parent == ancestor {
+                return Some(current);
+            }
+            current = parent;
+        }
+        None
+    }
+
     /// Walks from `pid` up to (excluding) launchd, init or a user's `systemd`.
     pub fn classify(&self, pid: u32) -> Option<Found> {
         if !self.contains(pid) {
@@ -110,6 +124,8 @@ fn kind_of(comm: &str) -> Option<Kind> {
         Some(Kind::ITerm)
     } else if comm.contains("/Terminal.app/") {
         Some(Kind::TerminalApp)
+    } else if name == "konsole" {
+        Some(Kind::Konsole)
     } else if comm.contains("/Visual Studio Code.app/") || name == "code" {
         Some(Kind::VsCode)
     } else if comm.contains("/Cursor.app/") || name == "cursor" {
@@ -176,6 +192,9 @@ mod tests {
  800   600 ?        gnome-terminal-
  801   800 pts/3    bash
  802   801 pts/3    claude
+ 900   600 ?        konsole
+ 901   900 pts/4    bash
+ 902   901 pts/4    claude
 ";
 
     #[test]
@@ -186,5 +205,8 @@ mod tests {
         assert_eq!(tree.classify(802), Some(Found::Unknown("gnome-terminal-".into())));
         assert_eq!(tree.tty(165), Some("/dev/pts/0"));
         assert_eq!(tree.tty(163), None);
+        assert_eq!(tree.classify(902), Some(Found::Known(Kind::Konsole, 900)));
+        assert_eq!(tree.child_toward(900, 902), Some(901));
+        assert_eq!(tree.child_toward(900, 165), None);
     }
 }

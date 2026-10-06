@@ -753,6 +753,10 @@ dependencies = [
 [[package]]
 name = "brain-terminal"
 version = "0.6.0"
+dependencies = [
+ "serde",
+ "zbus",
+]
 
 [[package]]
 name = "bstr"

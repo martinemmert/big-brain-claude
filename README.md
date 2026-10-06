@@ -44,8 +44,8 @@ follows your system language: English or German.
   (`cleanupPeriodDays`, 30 days by default), with their name, last message and how many days are
   left. `P` saves one under "Saved to resume" at the top; `⏎` resumes it in a new tab.
 - **Open the terminal.** iTerm2, Terminal.app and tmux (in any terminal) jump to the exact
-  pane; VS Code and Cursor bring the project window forward. On Linux only tmux, VS Code
-  and Cursor so far.
+  pane; VS Code and Cursor bring the project window forward. On Linux: Konsole, tmux, VS Code
+  and Cursor.
 - **Search** by name, path, account or last message; **group by project** (git worktrees
   count as their main repository); **pin** and **mute** sessions.
 - **Rename** a waiting session; Brain types `/rename <name>` into its terminal.
@@ -120,12 +120,12 @@ Requires a recent stable Rust toolchain.
 ```sh
 git clone https://github.com/martinemmert/big-brain-claude.git
 cd big-brain-claude
-./scripts/install.sh
+./scripts/install-macos.sh
 ```
 
 This
 
-- builds `dist/Brain.app` and `dist/brain` with `scripts/bundle.sh`,
+- builds `dist/Brain.app` and `dist/brain` with `scripts/bundle-macos.sh`,
 - installs the `brain` CLI to `~/.cargo/bin`,
 - installs `~/Applications/Brain.app` (open it via Spotlight),
 - runs `brain install`, which adds Brain's hooks, a `Bash(brain report:*)` permission and a
@@ -157,9 +157,12 @@ What differs from macOS:
 - Notifications go through the desktop's notification service, with the same actions.
 - No menu bar count; the window title shows it.
 - Shortcuts use `Ctrl` where macOS uses `⌘`.
-- Answering and jumping to a session work in tmux. Other terminals (Konsole, GNOME
-  Terminal, kitty, …) are recognised but not controlled yet; starting a new session from
-  Brain and `brain show` are not supported yet.
+- Answering and jumping to a session work in Konsole and tmux; new sessions open in a new
+  Konsole tab. For answering in Konsole, turn on *Enable the security sensitive parts of the
+  DBus API* in Konsole's settings (General) and restart Konsole windows that were already
+  open, they keep the old setting; jumping works without it. Other terminals
+  (GNOME Terminal, kitty, …) are recognised but not controlled yet, and `brain show` is not
+  supported yet.
 
 ### Alfred
 
@@ -237,8 +240,8 @@ Every header line is optional. Brain asks for each `{placeholder}` and, if the t
 cargo test -p brain-core              # protocol, state, transcript and Markdown logic
 cargo run -p brain-app                # the app against your real sessions
 BRAIN_DEMO=1 cargo run -p brain-app   # made-up sessions, e.g. for screenshots
-./scripts/make-icns.sh                # re-render the icon
-./scripts/bundle.sh                   # release build into dist/ (ad-hoc signed Brain.app, brain,
+./scripts/make-icns-macos.sh          # re-render the icon
+./scripts/bundle-macos.sh             # release build into dist/ (ad-hoc signed Brain.app, brain,
                                       # Brain.alfredworkflow)
 ```
 
