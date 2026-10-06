@@ -59,6 +59,21 @@ pub fn find_transcript(account: &Account, session_id: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// The ids of every session whose transcript Claude Code still keeps for this account, i.e. the
+/// sessions that can still be resumed.
+pub fn kept_session_ids(account: &Account) -> std::collections::HashSet<String> {
+    std::fs::read_dir(account.config_dir.join("projects"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .flat_map(|project| std::fs::read_dir(project.path()).into_iter().flatten().flatten())
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.strip_suffix(".jsonl").map(str::to_string)
+        })
+        .collect()
+}
+
 /// Copies a session's transcript (and its folder of subagent transcripts and tool output, if any)
 /// into the same project folder of another account, so that account can `claude --resume` it.
 /// Returns the copied transcript's path.

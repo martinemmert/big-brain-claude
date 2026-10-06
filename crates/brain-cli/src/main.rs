@@ -122,6 +122,11 @@ fn run_hook(store: &Store, accounts: &[Account]) -> Option<()> {
         .or_else(|| find_by_session_id(accounts, session_id?))
         .or_else(|| find_in_events(store, accounts, session_id?))?;
 
+    // The status file is read directly by pid: it may already be gone at SessionEnd.
+    let name = std::fs::read(account.session_file(pid))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<brain_core::sessions::SessionFile>(&bytes).ok())
+        .and_then(|file| file.name);
     store
         .append(&Event {
             v: PROTOCOL_VERSION,
@@ -134,6 +139,7 @@ fn run_hook(store: &Store, accounts: &[Account]) -> Option<()> {
             kind,
             text: payload.text(),
             tasks: (kind == Kind::Stop).then(|| payload.background_tasks.clone().unwrap_or_default()),
+            name,
         })
         .ok()
 }
@@ -195,6 +201,7 @@ fn run_report(store: &Store, accounts: &[Account], kind: Kind, text: &str) -> Ex
         kind,
         text: Some(text),
         tasks: None,
+        name: session.as_ref().and_then(|s| s.name.clone()),
     };
     match store.append(&event) {
         Ok(()) => {

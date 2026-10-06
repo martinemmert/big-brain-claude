@@ -30,9 +30,9 @@ pub struct Prefs {
     snoozed: BTreeMap<String, i64>,
 }
 
-/// Sessions are remembered by account and pid: stable for the life of a session.
+/// Sessions are remembered by account and session id, so a pin outlives the process.
 fn id(key: &SessionKey) -> String {
-    format!("{}:{}", key.account, key.pid)
+    format!("{}:{}", key.account, key.id)
 }
 
 impl Prefs {
@@ -79,6 +79,30 @@ impl Prefs {
         self.snoozed.get(&id(key)).copied().filter(|until| *until > now_ms)
     }
 
+    /// Brain 0.5 remembered sessions by account and pid. Entries of running sessions move to
+    /// their session id; the rest no longer point anywhere and are dropped. Returns whether
+    /// anything changed.
+    pub fn migrate_pid_entries(&mut self, live: impl Fn(&str, u32) -> Option<SessionKey>) -> bool {
+        let old = |entry: &str| entry.split_once(':').and_then(|(account, pid)| Some((account.to_string(), pid.parse::<u32>().ok()?)));
+        let renamed = |entry: &str| old(entry).map(|(account, pid)| live(&account, pid).map(|key| id(&key)));
+        let mut changed = false;
+        for set in [&mut self.pinned, &mut self.muted] {
+            for entry in set.iter().filter(|e| old(e).is_some()).cloned().collect::<Vec<_>>() {
+                set.remove(&entry);
+                set.extend(renamed(&entry).flatten());
+                changed = true;
+            }
+        }
+        for entry in self.snoozed.keys().filter(|e| old(e).is_some()).cloned().collect::<Vec<_>>() {
+            let until = self.snoozed.remove(&entry).unwrap_or_default();
+            if let Some(Some(new)) = renamed(&entry) {
+                self.snoozed.entry(new).or_insert(until);
+            }
+            changed = true;
+        }
+        changed
+    }
+
     pub fn snooze(&mut self, key: &SessionKey, until: Option<i64>) {
         match until {
             Some(until) => self.snoozed.insert(id(key), until),
@@ -93,5 +117,23 @@ fn toggle(set: &mut BTreeSet<String>, id: String) -> bool {
     } else {
         set.insert(id);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pid_entries_move_to_the_running_session_or_are_dropped() {
+        let mut prefs = Prefs::default();
+        prefs.pinned.extend(["main:4711".to_string(), "main:9".to_string(), "main:abc-1".to_string()]);
+        prefs.snoozed.insert("main:4711".into(), 5);
+        let live = |account: &str, pid: u32| (pid == 4711).then(|| SessionKey { account: account.into(), id: "abc-2".into() });
+
+        assert!(prefs.migrate_pid_entries(live));
+        assert_eq!(prefs.pinned.iter().map(String::as_str).collect::<Vec<_>>(), vec!["main:abc-1", "main:abc-2"]);
+        assert_eq!(prefs.snoozed.get("main:abc-2"), Some(&5));
+        assert!(!prefs.migrate_pid_entries(live));
     }
 }

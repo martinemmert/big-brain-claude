@@ -13,7 +13,7 @@ use crate::conversation::Conversation;
 use crate::i18n::t;
 use crate::input::{InputAction, LineInput};
 use crate::menubar::MenuBar;
-use crate::model::{Model, HISTORY_DAYS};
+use crate::model::Model;
 use crate::notify::{self, Notifier};
 use crate::prefs::{Layout, Prefs};
 use brain_terminal::{self as terminal, Capabilities, Key, Outcome};
@@ -25,7 +25,6 @@ use crate::{messages, theme, tr};
 /// Sessions on "your turn" for longer than this move to the "resting" section.
 const RESTING_AFTER_MS: i64 = 2 * 60 * 60 * 1000;
 /// Ended sessions stay listed this long (they are read from the event history).
-const ENDED_VISIBLE_MS: i64 = HISTORY_DAYS as i64 * 24 * 60 * 60 * 1000;
 const SNOOZE_MS: i64 = 15 * 60 * 1000;
 
 pub struct BrainView {
@@ -67,8 +66,8 @@ pub struct BrainView {
     changes: Option<ChangesCache>,
     changes_loading: bool,
     new_session: NewSession,
-    /// `A` was pressed once on this session: a second press within 5 s moves it.
-    move_armed: Option<(SessionKey, Instant)>,
+    /// `A` or `X` was pressed once on this session: a second press within 5 s acts.
+    armed: Option<(char, SessionKey, Instant)>,
     /// A newer release on GitHub, if the daily check found one.
     update: Option<crate::links::Update>,
     _update_check: Option<Task<()>>,
@@ -125,6 +124,8 @@ struct ChangesCache {
 
 /// The left column, already filtered and sorted.
 struct Groups<'a> {
+    /// Ended sessions the user marked with `P` to resume later.
+    saved: Vec<&'a Session>,
     pinned: Vec<&'a Session>,
     attention: Vec<&'a Session>,
     working: Vec<&'a Session>,
@@ -135,15 +136,21 @@ struct Groups<'a> {
 
 impl<'a> Groups<'a> {
     fn navigable(&self, include_ended: bool) -> Vec<&'a Session> {
+        let mut all: Vec<&Session> = self.saved.clone();
+        all.extend(self.live());
+        if include_ended {
+            all.extend(&self.ended);
+        }
+        all
+    }
+
+    fn live(&self) -> Vec<&'a Session> {
         let mut all: Vec<&Session> = Vec::new();
         all.extend(&self.pinned);
         all.extend(&self.attention);
         all.extend(&self.working);
         all.extend(&self.resting);
         all.extend(&self.snoozed);
-        if include_ended {
-            all.extend(&self.ended);
-        }
         all
     }
 
@@ -156,6 +163,10 @@ impl BrainView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut model = Model::load();
         model.refresh();
+        let mut prefs = Prefs::load();
+        if prefs.migrate_pid_entries(|account, pid| Some(model.board.live_by_pid(account, pid)?.key.clone())) {
+            prefs.save();
+        }
 
         let focus = cx.focus_handle();
         focus.focus(window);
@@ -169,7 +180,7 @@ impl BrainView {
 
         let mut view = Self {
             model,
-            prefs: Prefs::load(),
+            prefs,
             notifier: Notifier::new(),
             menubar: MenuBar::new(),
             focus,
@@ -197,7 +208,7 @@ impl BrainView {
             changes: None,
             changes_loading: false,
             new_session: NewSession::default(),
-            move_armed: None,
+            armed: None,
             update: None,
             _update_check: None,
             _poll: poll,
@@ -265,7 +276,11 @@ impl BrainView {
         self.remind(now);
         self.notify_conflicts();
         self.load_changes(cx);
-        for key in crate::links::take_sessions() {
+        let linked: Vec<SessionKey> = crate::links::take_sessions()
+            .into_iter()
+            .filter_map(|(account, pid)| Some(self.model.board.live_by_pid(&account, pid)?.key.clone()))
+            .collect();
+        for key in linked {
             self.selected = Some(key.clone());
             self.pending_scroll = Some(key);
             self.mode = Mode::Normal;
@@ -686,8 +701,41 @@ impl BrainView {
             .into_any_element()
     }
 
-    /// `A` twice: moves a waiting session to the next account. The transcript is copied, the copy
-    /// resumed there in a new tab (`--fork-session`), and the original gets `/exit`.
+    /// The first press of a two-press action arms it; returns whether this press is the second,
+    /// within 5 s, on the same session.
+    fn arm(&mut self, action: char, key: &SessionKey) -> bool {
+        let confirmed = self.armed.as_ref().is_some_and(|(a, k, at)| *a == action && k == key && at.elapsed() < Duration::from_secs(5));
+        self.armed = if confirmed { None } else { Some((action, key.clone(), Instant::now())) };
+        confirmed
+    }
+
+    /// `X` twice: ends a waiting session with `/exit`. It stays in the list to resume later.
+    fn end_selected(&mut self) {
+        let Some(session) = self.selected_session() else { return };
+        let key = session.key.clone();
+        if session.phase() == Phase::Ended {
+            self.set_status(t("Die Session ist schon beendet.", "The session has already ended."));
+            return;
+        }
+        if !session.accepts_input() {
+            self.set_status(t(
+                "Beenden geht, sobald die Session fertig ist und auf dich wartet.",
+                "Ending works once the session has finished and waits for you.",
+            ));
+            return;
+        }
+        if !self.arm('x', &key) {
+            self.set_status(t("Nochmal X beendet die Session (fortsetzen mit ⏎).", "Press X again to end the session (⏎ resumes it)."));
+            return;
+        }
+        if self.blocked_in_demo() {
+            return;
+        }
+        self.type_into_selected("/exit", t("Session beendet – ⏎ setzt sie fort, P merkt sie dir.", "Session ended – ⏎ resumes it, P saves it for later.").into());
+    }
+
+    /// `A` twice: continues a session in the next account. The transcript is copied and resumed
+    /// there in a new tab (`--fork-session`); a running original gets `/exit`.
     fn move_to_other_account(&mut self) {
         let Some(session) = self.selected_session() else { return };
         let key = session.key.clone();
@@ -697,22 +745,24 @@ impl BrainView {
             self.set_status(t("Es gibt kein zweites Konto.", "There is no other account."));
             return;
         };
-        if !session.accepts_input() {
+        let ended = session.phase() == Phase::Ended;
+        if !ended && !session.accepts_input() {
             self.set_status(t(
                 "Umziehen geht, sobald die Session fertig ist und auf dich wartet.",
                 "Moving works once the session has finished and waits for you.",
             ));
             return;
         }
-        let (session_id, cwd) = (session.session_id.clone(), session.cwd.clone());
-        let armed = self.move_armed.as_ref().is_some_and(|(k, at)| *k == key && at.elapsed() < Duration::from_secs(5));
-        if !armed {
-            self.move_armed = Some((key, Instant::now()));
+        let (session_id, cwd, pid) = (session.session_id.clone(), session.cwd.clone(), session.pid);
+        if !self.arm('a', &key) {
             let target = target.id.clone();
-            self.set_status(tr!("Nochmal A zieht die Session nach {target} um.", "Press A again to move the session to {target}."));
+            self.set_status(if ended {
+                tr!("Nochmal A setzt die Session in {target} fort.", "Press A again to resume the session in {target}.")
+            } else {
+                tr!("Nochmal A zieht die Session nach {target} um.", "Press A again to move the session to {target}.")
+            });
             return;
         }
-        self.move_armed = None;
         let (Some(session_id), Some(cwd)) = (session_id, cwd) else {
             self.set_status(t("Zu dieser Session fehlt die ID oder der Ordner.", "This session has no id or folder."));
             return;
@@ -735,8 +785,16 @@ impl BrainView {
             self.report(outcome, None);
             return;
         }
-        let closed = matches!(brain_terminal::type_text(key.pid, "/exit"), Outcome::Done);
+        if self.prefs.is_pinned(&key) && ended {
+            self.prefs.toggle_pin(&key);
+            self.prefs.save();
+        }
         let target = target.id;
+        if ended {
+            self.set_status(tr!("In {target} fortgesetzt.", "Resumed in {target}."));
+            return;
+        }
+        let closed = matches!(brain_terminal::type_text(pid, "/exit"), Outcome::Done);
         self.set_status(if closed {
             tr!("Nach {target} umgezogen, das Original ist geschlossen.", "Moved to {target}; the original is closed.")
         } else {
@@ -774,8 +832,7 @@ impl BrainView {
     }
 
     fn groups(&self, now: i64) -> Groups<'_> {
-        let mut groups = Groups { pinned: vec![], attention: vec![], working: vec![], resting: vec![], snoozed: vec![], ended: vec![] };
-        let searching = !self.search.text.is_empty();
+        let mut groups = Groups { saved: vec![], pinned: vec![], attention: vec![], working: vec![], resting: vec![], snoozed: vec![], ended: vec![] };
         let visible = self
             .model
             .board
@@ -784,8 +841,15 @@ impl BrainView {
             .filter(|s| self.filter.as_ref().is_none_or(|f| *f == s.key.account))
             .filter(|s| s.matches(&self.search.text));
         for session in visible {
-            if self.prefs.is_pinned(&session.key) && session.phase() != Phase::Ended {
-                groups.pinned.push(session);
+            if session.phase() == Phase::Ended && !self.model.resumable(session) {
+                continue;
+            }
+            if self.prefs.is_pinned(&session.key) {
+                if session.phase() == Phase::Ended {
+                    groups.saved.push(session);
+                } else {
+                    groups.pinned.push(session);
+                }
                 continue;
             }
             let waiting = matches!(session.phase(), Phase::NeedsYou | Phase::YourTurn);
@@ -798,8 +862,7 @@ impl BrainView {
                 Phase::YourTurn if now - session.phase_since_ms() > RESTING_AFTER_MS => groups.resting.push(session),
                 Phase::YourTurn => groups.attention.push(session),
                 Phase::Working | Phase::Background => groups.working.push(session),
-                Phase::Ended if searching || now - session.last_activity_ms < ENDED_VISIBLE_MS => groups.ended.push(session),
-                Phase::Ended => {}
+                Phase::Ended => groups.ended.push(session),
             }
         }
         // Resting: most recently finished first.
@@ -922,7 +985,12 @@ impl BrainView {
             "j" => self.select_index(&list, next),
             "k" => self.select_index(&list, previous),
             "tab" => self.cycle_filter(keystroke.modifiers.shift),
-            "e" => self.show_ended = !self.show_ended,
+            "e" => {
+                self.show_ended = !self.show_ended;
+                if !self.show_ended && self.selected_session().is_some_and(|s| s.phase() == Phase::Ended) {
+                    self.selected = None;
+                }
+            }
             "r" => self.start_rename(),
             "t" => self.start_reply(),
             "y" => self.answer_permission(true),
@@ -931,6 +999,7 @@ impl BrainView {
             "m" => self.toggle_mute(),
             "s" => self.cycle_snooze(),
             "a" => self.move_to_other_account(),
+            "x" => self.end_selected(),
             "g" => {
                 self.prefs.layout = if self.prefs.layout == Layout::Projects { Layout::Status } else { Layout::Projects };
                 self.prefs.save();
@@ -1025,7 +1094,7 @@ impl BrainView {
             self.resume_selected();
             return;
         }
-        let (pid, cwd) = (session.key.pid, session.cwd.clone());
+        let (pid, cwd) = (session.pid, session.cwd.clone());
         if self.blocked_in_demo() {
             return;
         }
@@ -1035,6 +1104,7 @@ impl BrainView {
 
     fn resume_selected(&mut self) {
         let Some(session) = self.selected_session() else { return };
+        let key = session.key.clone();
         let (Some(session_id), Some(cwd)) = (session.session_id.clone(), session.cwd.clone()) else {
             self.set_status(t("Zu dieser Session fehlt die ID oder der Ordner.", "This session has no id or folder to resume."));
             return;
@@ -1048,6 +1118,10 @@ impl BrainView {
             return;
         }
         let outcome = terminal::open_new(&cwd, config_dir.as_deref(), &format!("claude --resume {session_id}"));
+        if matches!(outcome, Outcome::Done) && self.prefs.is_pinned(&key) {
+            self.prefs.toggle_pin(&key);
+            self.prefs.save();
+        }
         self.report(outcome, Some(t("Session in einem neuen Tab fortgesetzt.", "Resumed the session in a new tab.").into()));
     }
 
@@ -1110,7 +1184,8 @@ impl BrainView {
             self.set_status(t("Die Session arbeitet inzwischen wieder – nichts geschickt.", "The session is working again – nothing sent."));
             return;
         }
-        let outcome = terminal::type_text(key.pid, text);
+        let Some(pid) = self.model.board.get(&key).map(|s| s.pid) else { return };
+        let outcome = terminal::type_text(pid, text);
         self.report(outcome, Some(done));
     }
 
@@ -1125,7 +1200,7 @@ impl BrainView {
             self.set_status(t("In diesem Terminal kann Brain keine Freigaben beantworten.", "Brain can't answer permissions in this terminal."));
             return;
         }
-        let pid = session.key.pid;
+        let pid = session.pid;
         if self.blocked_in_demo() {
             return;
         }
@@ -1140,10 +1215,16 @@ impl BrainView {
 
     fn toggle_pin(&mut self) {
         let Some(key) = self.selected.clone() else { return };
+        let ended = self.model.board.get(&key).is_some_and(|s| s.phase() == Phase::Ended);
         let pinned = self.prefs.toggle_pin(&key);
         self.prefs.save();
         self.pending_scroll = Some(key);
-        self.set_status(if pinned { t("Angeheftet.", "Pinned.") } else { t("Nicht mehr angeheftet.", "Unpinned.") });
+        self.set_status(match (pinned, ended) {
+            (true, true) => t("Zum Fortsetzen gemerkt.", "Saved to resume."),
+            (false, true) => t("Nicht mehr gemerkt.", "No longer saved."),
+            (true, false) => t("Angeheftet.", "Pinned."),
+            (false, false) => t("Nicht mehr angeheftet.", "Unpinned."),
+        });
     }
 
     fn toggle_mute(&mut self) {
@@ -1194,7 +1275,8 @@ impl BrainView {
         if self.model.is_demo() || self.host.as_ref().is_some_and(|(k, _)| *k == key) {
             return;
         }
-        let caps = terminal::host_of(key.pid)
+        let Some(pid) = self.model.board.get(&key).map(|s| s.pid) else { return };
+        let caps = terminal::host_of(pid)
             .map(|host| terminal::capabilities(&host))
             .unwrap_or(Capabilities { focus: false, type_text: false, keys: false });
         self.host = Some((key, caps));
@@ -1313,6 +1395,12 @@ impl BrainView {
         }
 
         let mut nav = 0usize;
+        if !groups.saved.is_empty() {
+            children.push(section_title(t("Zum Fortsetzen gemerkt", "Saved to resume"), groups.saved.len(), false));
+            for session in &groups.saved {
+                self.push_session(session, &mut nav, now, cx, &mut children);
+            }
+        }
         if self.prefs.layout != Layout::Status {
             self.render_by_project(groups, now, cx, &mut nav, &mut children);
         } else {
@@ -1427,7 +1515,7 @@ impl BrainView {
 
     /// Projects ordered by their most urgent session; worktrees count as their main repository.
     fn render_by_project(&self, groups: &Groups, now: i64, cx: &mut Context<Self>, nav: &mut usize, children: &mut Vec<AnyElement>) {
-        let mut live = groups.navigable(false);
+        let mut live = groups.live();
         live.sort_by_key(|s| s.phase());
         let mut projects: Vec<(String, Vec<&Session>)> = Vec::new();
         for session in live {
@@ -1632,10 +1720,14 @@ impl BrainView {
                 let ago = theme::ago(s.phase_since_ms(), now);
                 tr!("fertig seit {ago}", "done for {ago}")
             }
-            _ => {
-                let ago = theme::ago(s.last_activity_ms, now);
-                tr!("vor {ago}", "{ago} ago")
+            Phase::Ended => {
+                let ago = theme::ago_phrase(s.last_activity_ms, now);
+                match self.model.days_left(s, now) {
+                    Some(days) => tr!("{ago} · noch {days} T fortsetzbar", "{ago} · resumable for {days} more days"),
+                    None => ago,
+                }
             }
+            _ => theme::ago_phrase(s.last_activity_ms, now),
         };
 
         div()
@@ -1753,7 +1845,11 @@ impl BrainView {
         if let Some(mode) = info.permission_mode.as_deref().filter(|m| *m != "default") {
             meta.push(chip(mode.to_string(), false).into_any_element());
         }
-        meta.push(chip(format!("pid {}", s.key.pid), false).into_any_element());
+        if s.alive {
+            meta.push(chip(format!("pid {}", s.pid), false).into_any_element());
+        } else if let Some(days) = self.model.days_left(s, now_ms()) {
+            meta.push(chip(tr!("noch {days} Tage fortsetzbar", "resumable for {days} more days"), false).into_any_element());
+        }
         if let Some(started) = s.started_ms {
             let at = clock(started);
             meta.push(chip(tr!("seit {at}", "since {at}"), false).into_any_element());
@@ -2173,7 +2269,7 @@ impl BrainView {
             ("R", t("umbenennen", "rename")),
             ("P M S", t("anheften · stumm · pausieren", "pin · mute · snooze")),
             ("G", t("Projekte", "projects")),
-            ("A", t("Konto wechseln", "move account")),
+            ("X A", t("beenden · Konto wechseln", "end · move account")),
         ];
         div()
             .flex()
@@ -2199,6 +2295,12 @@ impl Render for BrainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = now_ms();
 
+        // A selected session that just ended stays selected: the ended list opens for it, so `P`
+        // or ⏎ right after `/exit` still mean that session.
+        let selected_ended = self.selected_session().is_some_and(|s| s.phase() == Phase::Ended && self.model.resumable(s));
+        if selected_ended && !self.include_ended() {
+            self.show_ended = true;
+        }
         // Keep the selection on a visible session.
         let visible: Vec<SessionKey> =
             self.groups(now).navigable(self.include_ended()).iter().map(|s| s.key.clone()).collect();

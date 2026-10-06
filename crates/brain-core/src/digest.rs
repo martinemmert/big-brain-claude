@@ -93,6 +93,7 @@ mod tests {
             kind,
             text: Some(text.into()),
             tasks: None,
+            name: None,
         }
     }
 
@@ -106,7 +107,7 @@ mod tests {
         board.apply_event(&event(2, today, Source::Hook, Kind::Stop, "Tests are green"));
         board.apply_event(&event(3, yesterday, Source::Hook, Kind::Stop, "nothing today"));
         let sessions = [1, 2, 3].map(|pid| {
-            let s = board.get(&SessionKey { account: "main".into(), pid }).unwrap();
+            let s = board.get(&SessionKey { account: "main".into(), id: format!("pid-{pid}") }).unwrap();
             ("app".to_string(), s)
         });
 

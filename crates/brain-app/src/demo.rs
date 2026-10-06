@@ -146,6 +146,7 @@ pub fn build() -> Demo {
                 kind: *kind,
                 text: (!text.is_empty()).then(|| text.to_string()),
                 tasks,
+                name: None,
             });
         }
         board.apply_session_file(
@@ -188,9 +189,9 @@ pub fn build() -> Demo {
         ),
     ];
     let mut messages = HashMap::new();
-    messages.insert(SessionKey { account: "main".into(), pid: 4101 }, gateway);
+    messages.insert(SessionKey { account: "main".into(), id: "demo-4101".into() }, gateway);
     messages.insert(
-        SessionKey { account: "second".into(), pid: 4102 },
+        SessionKey { account: "second".into(), id: "demo-4102".into() },
         vec![
             msg(20, Role::User, None, "Build the new payment page from the Figma file"),
             msg(4, Role::Assistant, None, "The components are done. Now I want to regenerate the Storybook snapshots."),
@@ -199,7 +200,7 @@ pub fn build() -> Demo {
     );
 
     messages.insert(
-        SessionKey { account: "main".into(), pid: 4104 },
+        SessionKey { account: "main".into(), id: "demo-4104".into() },
         vec![
             msg(9, Role::User, None, "Switch invoice ids to UUIDs without breaking old links."),
             msg(8, Role::Assistant, None, "I'll add a `uuid` column, backfill it for all existing invoices and redirect old numeric URLs with a **301**."),
@@ -216,7 +217,7 @@ pub fn build() -> Demo {
         (4104, "main", "claude-opus-5-5", 97_000, 2.17, "default"),
     ];
     for (pid, account, model, tokens, cost, mode) in insights {
-        let key = SessionKey { account: account.into(), pid };
+        let key = SessionKey { account: account.into(), id: format!("demo-{pid}") };
         board.apply_insight(
             &key,
             Insight {

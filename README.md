@@ -38,8 +38,11 @@ follows your macOS language: English or German.
 - **Conflicts.** A warning (and one notification) when two sessions edit the same files, read
   from their transcripts, and a softer hint when they change files in the same checkout.
 - **Today.** What every session reported as done today, per project; copy it as Markdown.
-- **Timeline.** Every hook event and report of a session, plus seven days of history; ended
-  sessions can be resumed (`claude --resume`) in a new tab.
+- **Timeline.** Every hook event and report of a session.
+- **End now, resume later.** `X` twice ends a waiting session (`/exit`); closing the tab works
+  too. Ended sessions stay in the list as long as Claude Code keeps their transcript
+  (`cleanupPeriodDays`, 30 days by default), with their name, last message and how many days are
+  left. `P` saves one under "Saved to resume" at the top; `⏎` resumes it in a new tab.
 - **Open the terminal.** iTerm2, Terminal.app and tmux (in any terminal) jump to the exact
   pane; VS Code and Cursor bring the project window forward.
 - **Search** by name, path, account or last message; **group by project** (git worktrees
@@ -164,10 +167,11 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `T` | reply to a session that waits for you (then `1`–`9` for a quick reply) |
 | `R`, click the name | rename (only while the session waits for you) |
 | `/`, `⌘F` | search (`esc` clears) |
-| `P` / `M` | pin / mute notifications |
+| `P` / `M` | pin (an ended session: save it to resume) / mute notifications |
 | `S` | snooze: 15 min → 1 h → until tomorrow 9:00 → off |
 | `G` / `D` | group by project / today's digest (`⌘C` copies it) |
-| `A` `A` | move the session to the next account |
+| `X` `X` | end the session (`/exit`); it stays resumable |
+| `A` `A` | move the session to the next account (an ended one resumes there) |
 | `⌘N` | start a new session |
 | `←` `→` | switch between messages, timeline and changes |
 | `⇥` | cycle the account filter |

@@ -104,6 +104,7 @@ mod tests {
             kind: Kind::Doing,
             text: Some(text.into()),
             tasks: None,
+            name: None,
         }
     }
 

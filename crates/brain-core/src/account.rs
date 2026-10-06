@@ -22,6 +22,17 @@ impl Account {
     pub fn session_file(&self, pid: u32) -> PathBuf {
         self.sessions_dir().join(format!("{pid}.json"))
     }
+
+    /// How many days Claude Code keeps this account's transcripts (`cleanupPeriodDays` in
+    /// settings.json; Claude Code's default is 30).
+    pub fn transcript_days(&self) -> u32 {
+        std::fs::read(self.config_dir.join("settings.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|v| v.get("cleanupPeriodDays")?.as_u64())
+            .map(|days| days.clamp(1, 36_500) as u32)
+            .unwrap_or(30)
+    }
 }
 
 fn account_id_for(config_dir: &Path) -> String {

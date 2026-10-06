@@ -36,17 +36,17 @@ pub fn take_responses() -> Vec<Response> {
     std::mem::take(&mut *RESPONSES.lock().unwrap())
 }
 
-/// `brain|<account>|<pid>|<nonce>` — the session travels in the request identifier.
+/// `brain|<account>|<session id>|<nonce>` — the session travels in the request identifier.
 fn identifier(key: &SessionKey) -> String {
-    format!("brain|{}|{}|{}", key.account, key.pid, chrono::Utc::now().timestamp_millis())
+    format!("brain|{}|{}|{}", key.account, key.id, chrono::Utc::now().timestamp_millis())
 }
 
 fn parse_identifier(id: &str) -> Option<SessionKey> {
     let mut parts = id.split('|');
     (parts.next()? == "brain").then_some(())?;
     let account = parts.next()?.to_string();
-    let pid = parts.next()?.parse().ok()?;
-    Some(SessionKey { account, pid })
+    let id = parts.next()?.to_string();
+    Some(SessionKey { account, id })
 }
 
 define_class!(
@@ -157,7 +157,7 @@ impl Notifier {
         content.setSubtitle(&NSString::from_str(subtitle));
         content.setBody(&NSString::from_str(body));
         content.setCategoryIdentifier(&NSString::from_str(CATEGORY));
-        content.setThreadIdentifier(&NSString::from_str(&format!("{}|{}", key.account, key.pid)));
+        content.setThreadIdentifier(&NSString::from_str(&format!("{}|{}", key.account, key.id)));
         if sound {
             content.setSound(Some(&UNNotificationSound::defaultSound()));
         }
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn the_session_survives_the_round_trip_through_the_identifier() {
-        let key = SessionKey { account: "second".into(), pid: 4711 };
+        let key = SessionKey { account: "second".into(), id: "8f3c-41a2".into() };
         assert_eq!(parse_identifier(&identifier(&key)), Some(key));
         assert_eq!(parse_identifier("other|x|1|2"), None);
     }

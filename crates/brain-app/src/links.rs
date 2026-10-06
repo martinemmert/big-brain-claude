@@ -2,7 +2,6 @@
 
 use std::sync::Mutex;
 
-use brain_core::state::SessionKey;
 
 static OPENED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
@@ -11,15 +10,15 @@ pub fn received(urls: Vec<String>) {
     OPENED.lock().unwrap().extend(urls);
 }
 
-/// Sessions asked for since the last call.
-pub fn take_sessions() -> Vec<SessionKey> {
+/// Sessions asked for since the last call, as account and pid of their process.
+pub fn take_sessions() -> Vec<(String, u32)> {
     std::mem::take(&mut *OPENED.lock().unwrap()).iter().filter_map(|u| parse(u)).collect()
 }
 
-fn parse(url: &str) -> Option<SessionKey> {
+fn parse(url: &str) -> Option<(String, u32)> {
     let rest = url.strip_prefix("brain://session/")?;
     let (account, pid) = rest.trim_end_matches('/').split_once('/')?;
-    Some(SessionKey { account: account.to_string(), pid: pid.parse().ok()? })
+    Some((account.to_string(), pid.parse().ok()?))
 }
 
 /// A newer release on GitHub: its version and page.
@@ -58,7 +57,7 @@ mod tests {
 
     #[test]
     fn session_links_and_versions_are_parsed() {
-        assert_eq!(parse("brain://session/second/4711"), Some(SessionKey { account: "second".into(), pid: 4711 }));
+        assert_eq!(parse("brain://session/second/4711"), Some(("second".to_string(), 4711)));
         assert_eq!(parse("brain://other/x"), None);
         assert!(newer("v0.3.0", "0.2.0"));
         assert!(newer("v0.10.0", "0.9.9"));

@@ -54,7 +54,7 @@ mod tests {
     use super::*;
 
     fn key(pid: u32) -> SessionKey {
-        SessionKey { account: "main".into(), pid }
+        SessionKey { account: "main".into(), id: format!("s{pid}") }
     }
 
     #[test]

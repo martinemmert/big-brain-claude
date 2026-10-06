@@ -56,6 +56,15 @@ pub fn ago(ms: i64, now_ms: i64) -> String {
     }
 }
 
+/// "5 min ago", or "just now" in the first minute.
+pub fn ago_phrase(ms: i64, now_ms: i64) -> String {
+    if now_ms - ms < 60_000 {
+        return crate::i18n::t("gerade eben", "just now").into();
+    }
+    let ago = ago(ms, now_ms);
+    crate::tr!("vor {ago}", "{ago} ago")
+}
+
 /// Replaces the home directory with `~`.
 pub fn tilde(path: &str) -> String {
     match std::env::var("HOME") {

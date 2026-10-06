@@ -49,15 +49,27 @@ impl Signal {
     }
 }
 
+/// A session is one conversation: an account and Claude Code's session id. (Process ids are
+/// reused by macOS within days, and one process can hold several conversations after `/clear`.)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionKey {
     pub account: String,
-    pub pid: u32,
+    pub id: String,
+}
+
+impl SessionKey {
+    /// The session id, or `pid-<pid>` for the rare event without one.
+    pub fn for_session(account: &str, session_id: Option<&str>, pid: u32) -> Self {
+        let id = session_id.map(str::to_string).unwrap_or_else(|| format!("pid-{pid}"));
+        Self { account: account.to_string(), id }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Session {
     pub key: SessionKey,
+    /// The Claude Code process, for reaching its terminal.
+    pub pid: u32,
     pub session_id: Option<String>,
     pub name: Option<String>,
     pub cwd: Option<String>,
@@ -90,9 +102,10 @@ pub struct Session {
 const TIMELINE_LIMIT: usize = 200;
 
 impl Session {
-    fn new(key: SessionKey) -> Self {
+    fn new(key: SessionKey, pid: u32) -> Self {
         Self {
             key,
+            pid,
             session_id: None,
             name: None,
             cwd: None,
@@ -123,7 +136,7 @@ impl Session {
             .as_deref()
             .and_then(|c| c.rsplit('/').find(|s| !s.is_empty()))
             .map(str::to_string)
-            .unwrap_or_else(|| format!("pid {}", self.key.pid))
+            .unwrap_or_else(|| format!("pid {}", self.pid))
     }
 
     fn current_signal(&self) -> Option<(Signal, i64)> {
@@ -299,19 +312,29 @@ pub struct Board {
 
 impl Board {
     pub fn apply_event(&mut self, event: &Event) {
-        let key = SessionKey { account: event.account.clone(), pid: event.pid };
-        self.sessions
-            .entry(key.clone())
-            .or_insert_with(|| Session::new(key))
-            .apply(event);
+        let key = SessionKey::for_session(&event.account, event.session_id.as_deref(), event.pid);
+        let session = self.sessions.entry(key.clone()).or_insert_with(|| Session::new(key, event.pid));
+        session.pid = event.pid;
+        if let Some(name) = event.name.clone() {
+            session.name = Some(name);
+        }
+        session.apply(event);
     }
 
-    pub fn apply_session_file(&mut self, account: &str, file: &SessionFile, alive: bool) {
-        let key = SessionKey { account: account.to_string(), pid: file.pid };
+    /// Claude Code's status file of a running process. Returns the session it belongs to; other
+    /// sessions of the same process (before a `/clear`) are no longer running.
+    pub fn apply_session_file(&mut self, account: &str, file: &SessionFile, alive: bool) -> SessionKey {
+        let key = SessionKey::for_session(account, file.session_id.as_deref(), file.pid);
+        for (other, session) in self.sessions.iter_mut() {
+            if other.account == account && session.pid == file.pid && *other != key {
+                session.alive = false;
+            }
+        }
         let session = self
             .sessions
             .entry(key.clone())
-            .or_insert_with(|| Session::new(key));
+            .or_insert_with(|| Session::new(key.clone(), file.pid));
+        session.pid = file.pid;
         session.alive = alive;
         session.name = file.name.clone().or(session.name.take());
         session.cwd = file.cwd.clone().or(session.cwd.take());
@@ -326,6 +349,7 @@ impl Board {
             .as_deref()
             .and_then(Signal::from_file_status)
             .map(|signal| (signal, status_ts));
+        key
     }
 
     /// What the end of the session's transcript says (a third source next to hooks and the
@@ -349,6 +373,11 @@ impl Board {
         if let Some(session) = self.sessions.get_mut(key) {
             session.alive = alive;
         }
+    }
+
+    /// The running session of a process, e.g. for a `brain://session/<account>/<pid>` link.
+    pub fn live_by_pid(&self, account: &str, pid: u32) -> Option<&Session> {
+        self.sessions.values().filter(|s| s.key.account == account && s.pid == pid && s.alive).max_by_key(|s| s.last_activity_ms)
     }
 
     pub fn get(&self, key: &SessionKey) -> Option<&Session> {
@@ -392,11 +421,12 @@ mod tests {
             kind,
             text: text.map(str::to_string),
             tasks: None,
+            name: None,
         }
     }
 
     fn key() -> SessionKey {
-        SessionKey { account: "second".into(), pid: 40461 }
+        SessionKey { account: "second".into(), id: "s1".into() }
     }
 
     fn file(status: &str, secs: i64) -> SessionFile {
@@ -566,6 +596,27 @@ mod tests {
     }
 
     #[test]
+    fn a_reused_pid_or_a_clear_starts_a_new_session_and_ends_the_old_one() {
+        let mut board = Board::default();
+        board.apply_session_file("second", &file("idle", 0), true);
+        // Same process, new conversation (after /clear) — or a reused pid days later.
+        let next = SessionFile { session_id: Some("s2".into()), ..file("busy", 5) };
+        let key2 = board.apply_session_file("second", &next, true);
+
+        assert_eq!(key2, SessionKey { account: "second".into(), id: "s2".into() });
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::Ended);
+        assert_eq!(board.get(&key2).unwrap().phase(), Phase::Working);
+    }
+
+    #[test]
+    fn ended_sessions_keep_the_name_their_events_carried() {
+        let mut board = Board::default();
+        board.apply_event(&Event { name: Some("Checkout flow".into()), ..ev(0, Source::Hook, Kind::Prompt, None) });
+        board.set_alive(&key(), false);
+        assert_eq!(board.get(&key()).unwrap().display_name(), "Checkout flow");
+    }
+
+    #[test]
     fn sessions_without_hooks_get_their_phase_from_the_file() {
         let mut board = Board::default();
         board.apply_session_file("second", &file("waiting", 0), true);
@@ -581,6 +632,7 @@ mod tests {
         let mut board = Board::default();
         let mk = |pid: u32, status: &str, secs: i64| SessionFile {
             pid,
+            session_id: Some(format!("s{pid}")),
             name: Some(format!("s{pid}")),
             ..file(status, secs)
         };
@@ -590,7 +642,7 @@ mod tests {
         board.apply_session_file("main", &mk(4, "waiting", 60), true);
         board.apply_session_file("main", &mk(5, "idle", 0), false);
 
-        let pids: Vec<u32> = board.sorted().iter().map(|s| s.key.pid).collect();
+        let pids: Vec<u32> = board.sorted().iter().map(|s| s.pid).collect();
 
         assert_eq!(pids, vec![4, 3, 2, 1, 5]);
     }

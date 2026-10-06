@@ -86,6 +86,16 @@ pub fn pid_alive(pid: u32) -> bool {
     result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// When a process started (epoch ms), from the kernel's process info.
+pub fn process_started_ms(pid: u32) -> Option<i64> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let read = unsafe {
+        libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size)
+    };
+    (read == size).then(|| info.pbi_start_tvsec as i64 * 1000 + info.pbi_start_tvusec as i64 / 1000)
+}
+
 /// The controlling terminal of a process as a device path, e.g. `/dev/ttys018`.
 pub fn tty_of(pid: u32) -> Option<String> {
     let out = Command::new("ps")

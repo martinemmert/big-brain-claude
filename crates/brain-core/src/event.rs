@@ -60,4 +60,8 @@ pub struct Event {
     /// On stop events: what still runs in the background.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tasks: Option<Vec<BackgroundTask>>,
+    /// The session's name at the time (Claude Code's own or set with `/rename`), so ended
+    /// sessions keep it after their status file is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }

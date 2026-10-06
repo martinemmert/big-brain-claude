@@ -27,7 +27,7 @@ impl Target {
     }
 
     fn of(session: &Session) -> Self {
-        Self { account: session.key.account.clone(), pid: session.key.pid }
+        Self { account: session.key.account.clone(), pid: session.pid }
     }
 }
 
@@ -82,7 +82,7 @@ pub fn json_list(sessions: &[&Session]) -> Value {
         .map(|session| {
             json!({
                 "account": session.key.account,
-                "pid": session.key.pid,
+                "pid": session.pid,
                 "name": session.display_name(),
                 "phase": phase_id(session.phase()),
                 "headline": session.headline(),
@@ -152,6 +152,7 @@ mod tests {
             kind: brain_core::event::Kind::Doing,
             text: Some("Migrating\nthe   store".into()),
             tasks: None,
+            name: None,
         };
         board.apply_event(&event);
 
