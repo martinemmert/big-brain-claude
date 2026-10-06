@@ -10,7 +10,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, relative, AnyElement, ClickEvent, FontWeight, HighlightStyle, SharedString, StyledText,
+    div, point, prelude::*, px, relative, size, AnyElement, App, AvailableSpace, Bounds, ClickEvent, Element, ElementId,
+    FontWeight, GlobalElementId, HighlightStyle, InspectorElementId, LayoutId, Pixels, SharedString, StyledText, Window,
 };
 
 use crate::i18n::t;
@@ -22,6 +23,9 @@ const TOOL_ROWS_SHOWN: usize = 6;
 
 /// The code block copied last and when, for the "Copied" confirmation.
 static COPIED: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
+
+/// Height of a copyable block's header (language and copy button).
+const CODE_HEADER: f32 = 28.;
 
 pub fn conversation(messages: &[Message]) -> Vec<AnyElement> {
     let mut out = Vec::new();
@@ -267,7 +271,8 @@ fn copyable(lang: Option<&str>) -> bool {
     matches!(lang, Some("markdown" | "md"))
 }
 
-/// A code block with its language and a copy button above the text.
+/// A code block with its language and a copy button in a header that sticks to the top of
+/// the scroll area while the block is scrolled past.
 fn copyable_code(lang: Option<String>, text: String) -> AnyElement {
     let mut hasher = DefaultHasher::new();
     text.hash(&mut hasher);
@@ -281,6 +286,7 @@ fn copyable_code(lang: Option<String>, text: String) -> AnyElement {
         .rounded(px(5.))
         .border_1()
         .border_color(theme::line_strong())
+        .bg(theme::ink())
         .font_family(".SystemUIFont")
         .text_size(px(10.5))
         .text_color(if copied { theme::done() } else { theme::text_muted() })
@@ -295,30 +301,100 @@ fn copyable_code(lang: Option<String>, text: String) -> AnyElement {
                 cx.refresh_windows();
             }
         });
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(6.))
+    let block = div()
         .px(px(12.))
-        .pt(px(6.))
+        .pt(px(CODE_HEADER + 4.))
         .pb(px(10.))
         .rounded(px(8.))
         .bg(theme::ink())
         .border_1()
         .border_color(theme::line())
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_end()
-                .gap(px(8.))
-                .text_size(px(10.))
-                .text_color(theme::text_faint())
-                .children(lang)
-                .child(button),
-        )
-        .child(div().font_family(theme::MONO).text_size(px(12.)).line_height(relative(1.5)).text_color(theme::text()).child(text))
-        .into_any_element()
+        .child(div().font_family(theme::MONO).text_size(px(12.)).line_height(relative(1.5)).text_color(theme::text()).child(text));
+    let header = div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .pl(px(6.))
+        .rounded(px(5.))
+        .bg(theme::ink())
+        .text_size(px(10.))
+        .text_color(theme::text_faint())
+        .children(lang)
+        .child(button);
+    StickyHeader { block: block.into_any_element(), header: header.into_any_element() }.into_any_element()
+}
+
+/// A block whose header sits at its top right and, while the block is scrolled past, stays
+/// at the top of the visible area until the block's end (GPUI has no `position: sticky`).
+/// The header is laid out on its own and placed while prepainting, in the same frame.
+struct StickyHeader {
+    block: AnyElement,
+    header: AnyElement,
+}
+
+impl IntoElement for StickyHeader {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for StickyHeader {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.block.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        const INSET: f32 = 6.;
+        self.block.prepaint(window, cx);
+        let header = self.header.layout_as_root(size(AvailableSpace::MinContent, AvailableSpace::MinContent), window, cx);
+        let visible_top = f32::from(window.content_mask().bounds.top());
+        let top = f32::from(bounds.top());
+        let room = (f32::from(bounds.size.height) - f32::from(header.height) - 2. * INSET).max(0.);
+        let offset = (visible_top - top).clamp(0., room);
+        let origin = point(bounds.right() - header.width - px(10.), px(top + INSET + offset));
+        self.header.prepaint_at(origin, window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.block.paint(window, cx);
+        self.header.paint(window, cx);
+    }
 }
 
 fn table(header: Vec<Inline>, rows: Vec<Vec<Inline>>) -> AnyElement {
