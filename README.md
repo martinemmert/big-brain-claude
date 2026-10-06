@@ -157,12 +157,19 @@ What differs from macOS:
 - Notifications go through the desktop's notification service, with the same actions.
 - No menu bar count; the window title shows it.
 - Shortcuts use `Ctrl` where macOS uses `⌘`.
-- Answering and jumping to a session work in Konsole and tmux; new sessions open in a new
-  Konsole tab. For answering in Konsole, turn on *Enable the security sensitive parts of the
-  DBus API* in Konsole's settings (General) and restart Konsole windows that were already
-  open, they keep the old setting; jumping works without it. Other terminals
-  (GNOME Terminal, kitty, …) are recognised but not controlled yet, and `brain show` is not
-  supported yet.
+- Answering and jumping to a session work in Konsole and tmux. For answering in Konsole,
+  turn on *Enable the security sensitive parts of the DBus API* in Konsole's settings
+  (General) and restart Konsole windows that were already open, they keep the old setting;
+  jumping works without it. Other terminals (GNOME Terminal, Ptyxis, kitty, …) are
+  recognised but not controlled; Brain shows what to change when it can't type.
+- New sessions open in a new tab of Konsole, else of Ptyxis, GNOME Terminal or GNOME
+  Console, else in `x-terminal-emulator`.
+- Copying by click needs `wl-copy` (package `wl-clipboard`) on Wayland, except on KDE, where
+  Brain uses Klipper; on X11 `xclip` or `xsel`. On GNOME: `sudo apt install wl-clipboard`.
+- On GNOME (and other desktops that leave the window frame to the app) Brain draws its own:
+  drag the title bar to move, double-click to maximize, right-click for the window menu,
+  the edges to resize.
+- `brain show` is not supported yet.
 
 ### Alfred
 

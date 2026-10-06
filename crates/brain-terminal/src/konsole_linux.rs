@@ -1,9 +1,7 @@
-//! KDE Konsole over D-Bus: every Konsole process registers `org.kde.konsole-<pid>`, its tabs
-//! are `/Sessions/<id>` and know the pid of their shell. Wayland lets no other app raise a
-//! window, so focusing asks KWin through a short script. Typing needs Konsole's setting
-//! "Enable the security sensitive parts of the DBus API"; focusing works without it.
+//! Konsole over D-Bus: each process is `org.kde.konsole-<pid>`, its tabs `/Sessions/<id>`
+//! know their shell's pid. KWin raises the window (Wayland lets no app do that). Typing needs
+//! Konsole's "security sensitive parts of the DBus API" setting.
 
-use std::process::Command;
 use std::time::Duration;
 
 use zbus::blocking::Connection;
@@ -98,19 +96,6 @@ impl Tab {
     }
 }
 
-/// Runs `shell_command` in a new Konsole tab (a new window if no Konsole runs). Starting
-/// Konsole needs none of the D-Bus calls that its settings may block.
-pub fn open_new(cwd: &str, shell_command: &str) -> Outcome {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-    let spawned = Command::new("konsole")
-        .args(["--new-tab", "--workdir", cwd, "-e", &shell, "-lc", &format!("{shell_command}; exec {shell} -l")])
-        .spawn();
-    match spawned {
-        Ok(_) => Outcome::Done,
-        Err(err) => Outcome::Failed(format!("konsole: {err}")),
-    }
-}
-
 /// Object paths of the Konsole windows, e.g. `/Windows/1`.
 fn windows(connection: &Connection, service: &str) -> Vec<String> {
     let xml: String =
@@ -150,6 +135,8 @@ if (w) {{
     );
     match run_kwin_script(&script) {
         Ok(()) => Outcome::Done,
+        // No KWin (e.g. GNOME): the tab is selected, raising the window isn't possible.
+        Err(err) if err.contains("ServiceUnknown") => Outcome::Done,
         Err(err) => Outcome::Failed(format!("KWin: {err}")),
     }
 }

@@ -8,6 +8,9 @@ mod applescript;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[path = "iterm_macos.rs"]
 mod iterm;
+#[cfg(target_os = "linux")]
+#[path = "launch_linux.rs"]
+mod launch;
 #[cfg_attr(target_os = "linux", path = "konsole_linux.rs")]
 #[cfg_attr(target_os = "macos", path = "konsole_macos.rs")]
 mod konsole;
@@ -166,10 +169,10 @@ pub fn open_new(cwd: &str, config_dir: Option<&str>, command: &str) -> Outcome {
     }
 }
 
-/// Runs it in a new Konsole tab (or window).
+/// Runs it in a new tab of Konsole, else of a GNOME terminal or the default terminal.
 #[cfg(target_os = "linux")]
 pub fn open_new(cwd: &str, config_dir: Option<&str>, command: &str) -> Outcome {
-    konsole::open_new(cwd, &script::shell_command(cwd, config_dir, command))
+    launch::open_new(cwd, &script::shell_command(cwd, config_dir, command))
 }
 
 fn locate(tree: &Tree, pid: u32) -> Option<Located> {

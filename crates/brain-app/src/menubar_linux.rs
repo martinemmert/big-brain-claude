@@ -1,4 +1,4 @@
-//! No menu bar item on Linux (yet); the window title bar shows the count.
+//! No menu bar item on Linux yet; the title bar shows the count.
 
 pub struct MenuBar;
 

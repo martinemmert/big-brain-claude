@@ -19,6 +19,9 @@ mod prefs;
 mod theme;
 mod view;
 mod widgets;
+// Used only where the desktop leaves the window frame to the app (GNOME).
+#[path = "window_frame_linux.rs"]
+mod window_frame;
 
 use gpui::{
     actions, point, prelude::*, px, size, App, Application, Bounds, KeyBinding, Menu, MenuItem,

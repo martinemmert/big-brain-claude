@@ -4,8 +4,9 @@ use std::time::{Duration, Instant};
 use brain_core::state::{Phase, Session, SessionKey};
 use brain_core::transcript::Role;
 use gpui::{
-    div, prelude::*, px, relative, AnyElement, BoxShadow, ClickEvent, Context, FocusHandle,
-    FontWeight, KeyDownEvent, ScrollHandle, SharedString, Task, Window,
+    div, prelude::*, px, relative, AnyElement, BoxShadow, ClickEvent, Context, Decorations, FocusHandle,
+    FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollHandle, SharedString,
+    Task, Window, WindowControls,
 };
 
 use crate::config;
@@ -17,6 +18,7 @@ use crate::model::Model;
 use crate::notify::{self, Notifier};
 use crate::prefs::{Layout, Prefs};
 use brain_terminal::{self as terminal, Capabilities, Key, Limit, Outcome};
+use crate::window_frame;
 use crate::widgets::{
     account_badge, background_summary, caret, chip, clock, dot, kbd, now_ms, phase_color, phase_label, plain, section_title,
 };
@@ -42,6 +44,8 @@ pub struct BrainView {
     status: Option<(String, Instant)>,
     /// A failed terminal action; stays until clicked away or `ERROR_SECS` pass.
     error: Option<(String, Instant)>,
+    /// Start of a press in the title bar; dragging moves the window (own frame only).
+    titlebar_press: Option<Point<Pixels>>,
     list_scroll: ScrollHandle,
     tab: DetailTab,
     conversation: Option<Conversation>,
@@ -193,6 +197,7 @@ impl BrainView {
             show_ended: false,
             status: None,
             error: None,
+            titlebar_press: None,
             list_scroll: ScrollHandle::new(),
             tab: DetailTab::Messages,
             conversation: None,
@@ -1343,7 +1348,8 @@ impl BrainView {
 
     // ---- rendering -------------------------------------------------------------
 
-    fn render_titlebar(&self, groups: &Groups, cx: &mut Context<Self>) -> impl IntoElement {
+    /// `own_frame`: Brain draws the window frame, so the title bar moves the window.
+    fn render_titlebar(&self, groups: &Groups, own_frame: Option<WindowControls>, cx: &mut Context<Self>) -> impl IntoElement {
         let total = groups.live_count();
         let waiting = groups
             .attention
@@ -1376,10 +1382,27 @@ impl BrainView {
             .bg(theme::chrome())
             .border_b_1()
             .border_color(theme::line())
-            .on_click(|event: &ClickEvent, window, _| {
-                if event.click_count() == 2 {
-                    window.titlebar_double_click();
-                }
+            .on_click(move |event: &ClickEvent, window, _| match own_frame {
+                Some(_) if event.is_right_click() => window.show_window_menu(event.position()),
+                Some(_) if event.click_count() == 2 => window.zoom_window(),
+                None if event.click_count() == 2 => window.titlebar_double_click(),
+                _ => {}
+            })
+            .when(own_frame.is_some(), |d| {
+                // Move only once the pointer travels, so clicks on title bar controls still work.
+                d.on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, _| {
+                    this.titlebar_press = Some(event.position);
+                }))
+                .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.titlebar_press = None))
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, _| {
+                    let Some(start) = this.titlebar_press else { return };
+                    if !event.dragging() {
+                        this.titlebar_press = None;
+                    } else if (event.position.x - start.x).abs() + (event.position.y - start.y).abs() > px(4.) {
+                        this.titlebar_press = None;
+                        window.start_window_move();
+                    }
+                }))
             })
             .child(brand_mark(calling))
             .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).text_color(theme::text_strong()).child("Brain"))
@@ -1425,6 +1448,7 @@ impl BrainView {
                     cx.notify();
                 }),
             ))
+            .when_some(own_frame, |d, controls| d.child(window_frame::window_buttons(controls)))
     }
 
     fn render_list(&self, groups: &Groups, now: i64, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2418,7 +2442,9 @@ impl Render for BrainView {
         let calling = waiting_sessions.iter().filter(|s| s.phase() == Phase::NeedsYou).count();
         let waiting = waiting_sessions.len();
         window.set_window_title(&if waiting > 0 { tr!("Brain – {waiting} warten", "Brain – {waiting} waiting") } else { "Brain".into() });
-        let titlebar = self.render_titlebar(&groups, cx).into_any_element();
+        let own_frame = matches!(window.window_decorations(), Decorations::Client { .. }).then(|| window.window_controls());
+        let resizable = own_frame.is_some() && !window.is_maximized();
+        let titlebar = self.render_titlebar(&groups, own_frame, cx).into_any_element();
         let list = div()
             .flex()
             .flex_col()
@@ -2462,6 +2488,14 @@ impl Render for BrainView {
             .child(div().flex().flex_1().min_h_0().child(list).child(detail))
             .child(self.render_footer())
             .when_some(self.render_error(cx), |d, toast| d.child(toast))
+            .when(own_frame.is_some() && !window.is_maximized(), |d| d.border_1().border_color(theme::line_strong()))
+            .when(resizable, |d| {
+                d.child(window_frame::resize_cursors()).on_mouse_down(MouseButton::Left, |event: &MouseDownEvent, window, cx| {
+                    if window_frame::start_resize(event.position, window) {
+                        cx.stop_propagation();
+                    }
+                })
+            })
     }
 }
 

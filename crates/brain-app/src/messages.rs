@@ -271,8 +271,7 @@ fn copyable(lang: Option<&str>) -> bool {
     matches!(lang, Some("markdown" | "md"))
 }
 
-/// A code block with its language and a copy button in a header that sticks to the top of
-/// the scroll area while the block is scrolled past.
+/// A code block with a sticky header holding its language and a copy button.
 fn copyable_code(lang: Option<String>, text: String) -> AnyElement {
     let mut hasher = DefaultHasher::new();
     text.hash(&mut hasher);
@@ -324,9 +323,8 @@ fn copyable_code(lang: Option<String>, text: String) -> AnyElement {
     StickyHeader { block: block.into_any_element(), header: header.into_any_element() }.into_any_element()
 }
 
-/// A block whose header sits at its top right and, while the block is scrolled past, stays
-/// at the top of the visible area until the block's end (GPUI has no `position: sticky`).
-/// The header is laid out on its own and placed while prepainting, in the same frame.
+/// Keeps `header` at the block's top right, or at the top of the visible area while the block
+/// is scrolled past (GPUI has no `position: sticky`).
 struct StickyHeader {
     block: AnyElement,
     header: AnyElement,

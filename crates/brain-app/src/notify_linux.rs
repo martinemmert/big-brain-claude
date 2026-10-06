@@ -1,5 +1,4 @@
-//! Notifications through the freedesktop notification service (D-Bus), with Open / Snooze
-//! actions. Each notification waits for its answer on a thread of its own.
+//! Notifications over D-Bus with Open / Snooze; each waits for its answer on its own thread.
 
 use std::sync::Mutex;
 
@@ -33,8 +32,7 @@ impl Notifier {
         Self
     }
 
-    /// `sound` only for sessions that call you (question or permission). The notification
-    /// spec has no subtitle, so it leads the body.
+    /// `sound` only for sessions that call you. The spec has no subtitle; it leads the body.
     pub fn post(&self, key: &SessionKey, title: &str, subtitle: &str, body: &str, sound: bool) {
         let mut notification = Notification::new();
         notification

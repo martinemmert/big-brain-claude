@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
-# Installs Brain on Linux:
-#   - `brain` and `brain-app` into ~/.local/bin
-#   - a desktop entry and the icon, so Brain shows up in the app launcher
-#   - hooks + protocol section into every ~/.claude* account (with backups)
-# From an unpacked release it installs the binaries next to it. In the repository it
-# builds them first, with the host's cargo if there is one, else in Docker (compose.yaml).
+# Installs Brain on Linux: brain and brain-app into ~/.local/bin, a desktop entry with
+# icons, and the hooks (brain install). Uses the binaries next to it in an unpacked
+# release; in the repository it builds them first (cargo, else Docker).
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -63,3 +60,8 @@ case ":$PATH:" in
   *":$bin:"*) ;;
   *) echo "Hinweis: $bin ist nicht im PATH." ;;
 esac
+
+# Copying by click needs a clipboard tool on Wayland; KDE has Klipper.
+if [[ -n "${WAYLAND_DISPLAY:-}" && "${XDG_CURRENT_DESKTOP:-}" != *KDE* ]] && ! command -v wl-copy >/dev/null; then
+  echo "Hinweis: Zum Kopieren per Klick wl-copy installieren: sudo apt install wl-clipboard"
+fi

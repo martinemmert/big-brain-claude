@@ -64,8 +64,7 @@ fn system_language() -> Option<Lang> {
     Some(parse(first).unwrap_or(Lang::En))
 }
 
-/// The locale's language, from the first of `LC_ALL`, `LC_MESSAGES`, `LANG` that is set
-/// (e.g. `de_DE.UTF-8`).
+/// The language of `LC_ALL`, `LC_MESSAGES` or `LANG` (e.g. `de_DE.UTF-8`).
 #[cfg(not(target_os = "macos"))]
 fn system_language() -> Option<Lang> {
     let locale = ["LC_ALL", "LC_MESSAGES", "LANG"].iter().find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()))?;
