@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/icon.png" width="128" alt="Brain icon"></p>
+<p align="center"><img src="assets/icon-1024.png" width="128" alt="Brain icon"></p>
 
 # Brain
 
@@ -185,7 +185,7 @@ Then delete `Brain.app`, the `brain` binary (`~/.cargo/bin/brain` or wherever yo
 and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` removes all three.
 On Linux delete `~/.local/bin/brain`, `~/.local/bin/brain-app`,
 `~/.local/share/applications/brain.desktop`,
-`~/.local/share/icons/hicolor/1024x1024/apps/brain.png` and `~/.claude-brain`.
+`~/.local/share/icons/hicolor/{256x256,512x512}/apps/brain.png` and `~/.claude-brain`.
 
 ## Keys
 

@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent
 BUILD = ROOT / "build"
 OUT = ROOT / "out" / "brain-explainer.mp4"
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-ICON = (ROOT.parent / "assets" / "icon.png").as_uri()
+ICON = (ROOT.parent / "assets" / "icon-1024.png").as_uri()
 
 FPS = 30
 W, H = 3840, 2160          # working canvas (2× of 1080p)

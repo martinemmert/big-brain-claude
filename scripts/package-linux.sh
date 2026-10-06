@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the release binaries and packs dist/brain-<version>-linux-<arch>.tar.gz:
-# brain, brain-app, the icon and install.sh (scripts/install-linux.sh) in one folder.
+# brain, brain-app, the icons and install.sh (scripts/install-linux.sh) in one folder.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -24,7 +24,7 @@ stage="$root/dist/$name"
 rm -rf "$stage" "$stage.tar.gz"
 mkdir -p "$stage"
 cp target/release/brain target/release/brain-app "$stage/"
-cp assets/icon.png "$stage/brain.png"
+cp assets/icon-256.png assets/icon-512.png "$stage/"
 cp scripts/install-linux.sh "$stage/install.sh"
 tar -czf "$stage.tar.gz" -C "$root/dist" "$name"
 rm -rf "$stage"

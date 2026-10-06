@@ -11,7 +11,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 
 if [[ -x "$here/brain" && -x "$here/brain-app" ]]; then
   binaries="$here"
-  icon="$here/brain.png"
+  icons="$here"
 else
   root="$(cd "$here/.." && pwd)"
   cd "$root"
@@ -22,7 +22,7 @@ else
     env UID="$(id -u)" GID="$(id -g)" docker compose run --rm rust cargo build --quiet --release -p brain-app -p brain-cli
   fi
   binaries="$root/target/release"
-  icon="$root/assets/icon.png"
+  icons="$root/assets"
 fi
 
 bin="$HOME/.local/bin"
@@ -37,8 +37,12 @@ for name in brain brain-app; do
 done
 
 echo "→ desktop entry"
-mkdir -p "$data/icons/hicolor/1024x1024/apps" "$data/applications"
-cp "$icon" "$data/icons/hicolor/1024x1024/apps/brain.png"
+# hicolor has no 1024x1024, so the icon comes in sizes the theme knows.
+for size in 256 512; do
+  mkdir -p "$data/icons/hicolor/${size}x${size}/apps"
+  cp "$icons/icon-$size.png" "$data/icons/hicolor/${size}x${size}/apps/brain.png"
+done
+mkdir -p "$data/applications"
 cat > "$data/applications/brain.desktop" <<EOF
 [Desktop Entry]
 Type=Application
@@ -47,9 +51,10 @@ Comment=All your Claude Code sessions, and which ones wait for you
 Exec=$bin/brain-app
 Icon=brain
 Categories=Development;
-StartupWMClass=brain-app
+StartupWMClass=brain
 EOF
 update-desktop-database "$data/applications" 2>/dev/null || true
+gtk-update-icon-cache -q -t "$data/icons/hicolor" 2>/dev/null || true
 
 echo "→ Hooks & Protokoll"
 "$bin/brain" install

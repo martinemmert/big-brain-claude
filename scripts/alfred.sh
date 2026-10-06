@@ -26,7 +26,7 @@ option_modifier=524288
 # `&` and `<` must be written as &amp; and &lt;.
 path_prefix='PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"'
 
-cp "$root/assets/icon.png" "$work/icon.png"
+cp "$root/assets/icon-1024.png" "$work/icon.png"
 cat > "$work/info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

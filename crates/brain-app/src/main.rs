@@ -39,6 +39,8 @@ fn main() {
                 appears_transparent: true,
                 traffic_light_position: Some(point(px(14.), px(14.))),
             }),
+            // Matches brain.desktop, so Linux taskbars show Brain's icon.
+            app_id: Some("brain".into()),
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
                 size(px(1180.), px(760.)),
