@@ -18,7 +18,7 @@ pub enum Kind {
 pub enum Found {
     /// The nearest ancestor (or the process itself) that belongs to a known terminal.
     Known(Kind, u32),
-    /// No known terminal; carries the name of the topmost ancestor below launchd.
+    /// No known terminal; carries the name of the topmost ancestor below launchd or systemd.
     Unknown(String),
 }
 
@@ -43,6 +43,7 @@ impl Tree {
 
     /// Parses `ps -axo pid=,ppid=,tty=,comm=`. On macOS `comm` is the full
     /// executable path and may contain spaces, so it is the rest of the line.
+    /// On Linux it is the process name (e.g. `tmux: server`) and a missing tty is `?`.
     pub fn parse(ps_output: &str) -> Self {
         let processes = ps_output
             .lines()
@@ -56,7 +57,7 @@ impl Tree {
                 let pid = field()?.parse().ok()?;
                 let ppid = field()?.parse().ok()?;
                 let tty = field()?;
-                let tty = (tty != "??").then(|| format!("/dev/{tty}"));
+                let tty = (!tty.chars().all(|c| c == '?')).then(|| format!("/dev/{tty}"));
                 Some((pid, Process { ppid, tty, comm: rest.trim_end().to_string() }))
             })
             .collect();
@@ -71,12 +72,12 @@ impl Tree {
         Some(self.processes.get(&pid)?.ppid)
     }
 
-    /// The controlling terminal as a device path, e.g. `/dev/ttys018`.
+    /// The controlling terminal as a device path, e.g. `/dev/ttys018` or `/dev/pts/3`.
     pub fn tty(&self, pid: u32) -> Option<&str> {
         self.processes.get(&pid)?.tty.as_deref()
     }
 
-    /// Walks from `pid` up to (excluding) launchd.
+    /// Walks from `pid` up to (excluding) launchd, init or a user's `systemd`.
     pub fn classify(&self, pid: u32) -> Option<Found> {
         if !self.contains(pid) {
             return None;
@@ -87,6 +88,9 @@ impl Tree {
         while current > 1 && !seen.contains(&current) {
             seen.push(current);
             let Some(process) = self.processes.get(&current) else { break };
+            if process.comm == "systemd" {
+                break;
+            }
             if let Some(kind) = kind_of(&process.comm) {
                 return Some(Found::Known(kind, current));
             }
@@ -99,15 +103,16 @@ impl Tree {
 
 fn kind_of(comm: &str) -> Option<Kind> {
     let name = basename(comm);
-    if name == "tmux" {
+    // On Linux the server renames itself to `tmux: server`.
+    if name == "tmux" || name.starts_with("tmux: ") {
         Some(Kind::Tmux)
     } else if comm.contains("/iTerm.app/") || name.starts_with("iTermServer") {
         Some(Kind::ITerm)
     } else if comm.contains("/Terminal.app/") {
         Some(Kind::TerminalApp)
-    } else if comm.contains("/Visual Studio Code.app/") {
+    } else if comm.contains("/Visual Studio Code.app/") || name == "code" {
         Some(Kind::VsCode)
-    } else if comm.contains("/Cursor.app/") {
+    } else if comm.contains("/Cursor.app/") || name == "cursor" {
         Some(Kind::Cursor)
     } else {
         None
@@ -156,5 +161,30 @@ mod tests {
         assert_eq!(tree.classify(99999), None);
         assert_eq!(tree.tty(4200), Some("/dev/ttys000"));
         assert_eq!(tree.tty(64104), None);
+    }
+
+    const PS_LINUX: &str = "\
+   1     0 ?        systemd
+ 163     1 ?        tmux: server
+ 164   163 pts/0    bash
+ 165   164 pts/0    claude
+ 700     1 ?        code
+ 710   700 ?        code
+ 711   710 pts/2    bash
+ 712   711 pts/2    claude
+ 600     1 ?        systemd
+ 800   600 ?        gnome-terminal-
+ 801   800 pts/3    bash
+ 802   801 pts/3    claude
+";
+
+    #[test]
+    fn classifies_linux_processes() {
+        let tree = Tree::parse(PS_LINUX);
+        assert_eq!(tree.classify(165), Some(Found::Known(Kind::Tmux, 163)));
+        assert_eq!(tree.classify(712), Some(Found::Known(Kind::VsCode, 710)));
+        assert_eq!(tree.classify(802), Some(Found::Unknown("gnome-terminal-".into())));
+        assert_eq!(tree.tty(165), Some("/dev/pts/0"));
+        assert_eq!(tree.tty(163), None);
     }
 }

@@ -4,9 +4,11 @@ mod demo;
 mod i18n;
 mod input;
 mod links;
+#[cfg_attr(not(target_os = "macos"), path = "menubar_none.rs")]
 mod menubar;
 mod messages;
 mod model;
+#[cfg_attr(not(target_os = "macos"), path = "notify_linux.rs")]
 mod notify;
 mod prefs;
 mod theme;
@@ -25,7 +27,7 @@ fn main() {
     app.on_open_urls(links::received);
     app.run(|cx: &mut App| {
         cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+        cx.bind_keys([KeyBinding::new(if cfg!(target_os = "macos") { "cmd-q" } else { "ctrl-q" }, Quit, None)]);
         cx.set_menus(vec![Menu {
             name: "Brain".into(),
             items: vec![MenuItem::action("Quit Brain", Quit)],

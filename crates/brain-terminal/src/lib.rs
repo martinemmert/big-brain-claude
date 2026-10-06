@@ -1,8 +1,11 @@
 //! Terminal adapters: find the terminal hosting a Claude Code process and
 //! focus it, type into it or open a new tab.
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod iterm;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod script;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod terminal_app;
 mod tmux;
 mod tree;
@@ -20,7 +23,7 @@ pub enum Host {
     Tmux { target: String, client_tty: Option<String> },
     VsCode,
     Cursor,
-    /// No known terminal; the name of the topmost ancestor below launchd.
+    /// No known terminal; the name of the topmost ancestor below launchd or systemd.
     Unknown(String),
 }
 
@@ -117,6 +120,7 @@ pub fn send_key(pid: u32, key: Key) -> Outcome {
 /// Runs `cd <cwd> && CLAUDE_CONFIG_DIR=<dir> <command>` in a new iTerm2 tab if
 /// iTerm2 is installed, else in a new Terminal.app window. `command` is passed
 /// to the shell as is.
+#[cfg(target_os = "macos")]
 pub fn open_new(cwd: &str, config_dir: Option<&str>, command: &str) -> Outcome {
     let shell_command = script::shell_command(cwd, config_dir, command);
     if iterm::is_installed() {
@@ -124,6 +128,11 @@ pub fn open_new(cwd: &str, config_dir: Option<&str>, command: &str) -> Outcome {
     } else {
         terminal_app::open_new(&shell_command)
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn open_new(_cwd: &str, _config_dir: Option<&str>, _command: &str) -> Outcome {
+    Outcome::Unsupported("opening a new terminal is not supported on Linux yet".into())
 }
 
 fn locate(tree: &Tree, pid: u32) -> Option<Located> {
@@ -161,8 +170,8 @@ fn focus_in(tree: &Tree, pid: u32, cwd: Option<&str>, depth: usize) -> Outcome {
                 None => Outcome::Failed(format!("no tmux client is attached to session {}", pane.session)),
             }
         }
-        Located::VsCode => open_app("Visual Studio Code", cwd),
-        Located::Cursor => open_app("Cursor", cwd),
+        Located::VsCode => open_app("Visual Studio Code", "code", cwd),
+        Located::Cursor => open_app("Cursor", "cursor", cwd),
         other => unsupported(&other, "focusing"),
     }
 }
@@ -174,10 +183,16 @@ fn with_tty(tree: &Tree, pid: u32, action: impl FnOnce(&str) -> Outcome) -> Outc
     }
 }
 
-/// `open -a <app> <cwd>` brings the window with that folder forward (or opens one).
-fn open_app(app: &str, cwd: Option<&str>) -> Outcome {
-    let mut command = Command::new("open");
-    command.args(["-a", app]);
+/// `open -a <app> <cwd>` (macOS) or `<cli> <cwd>` (Linux) brings the window
+/// with that folder forward (or opens one).
+fn open_app(app: &str, cli: &str, cwd: Option<&str>) -> Outcome {
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = Command::new("open");
+        command.args(["-a", app]);
+        command
+    } else {
+        Command::new(cli)
+    };
     command.args(cwd);
     match command.output() {
         Ok(out) if out.status.success() => Outcome::Done,

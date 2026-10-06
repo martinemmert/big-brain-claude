@@ -381,10 +381,11 @@ fn run_show(session: &str) -> ExitCode {
         Err(err) => return fail("brain show", &err),
     };
     let url = format!("brain://session/{}/{}", target.account, target.pid);
-    match std::process::Command::new("open").arg(&url).status() {
+    let open = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    match std::process::Command::new(open).arg(&url).status() {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(_) => fail("brain show", &format!("could not open {url} (is Brain.app installed?)")),
-        Err(err) => fail("brain show", &format!("could not run open: {err}")),
+        Err(err) => fail("brain show", &format!("could not run {open}: {err}")),
     }
 }
 

@@ -144,7 +144,7 @@ fn tool_row(call: &Message) -> AnyElement {
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .font_family("Menlo")
+                .font_family(theme::MONO)
                 .text_size(px(11.5))
                 .text_color(theme::text())
                 .child(theme::tilde(&note(&call.text))),
@@ -225,7 +225,7 @@ fn block(block: Block) -> AnyElement {
             .bg(theme::ink())
             .border_1()
             .border_color(theme::line())
-            .font_family("Menlo")
+            .font_family(theme::MONO)
             .text_size(px(12.))
             .line_height(relative(1.5))
             .text_color(theme::text())

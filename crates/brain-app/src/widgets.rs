@@ -222,7 +222,7 @@ pub fn chip(content: impl Into<String>, mono: bool) -> impl IntoElement {
         .border_color(theme::line())
         .text_size(px(11.5))
         .text_color(theme::text_muted())
-        .when(mono, |d| d.font_family("Menlo").text_size(px(11.)))
+        .when(mono, |d| d.font_family(theme::MONO).text_size(px(11.)))
         .child(content.into())
 }
 

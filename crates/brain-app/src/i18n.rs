@@ -56,9 +56,18 @@ fn parse(value: &str) -> Option<Lang> {
 }
 
 /// The first entry of macOS's preferred languages (`defaults read -g AppleLanguages`).
+#[cfg(target_os = "macos")]
 fn system_language() -> Option<Lang> {
     let out = std::process::Command::new("defaults").args(["read", "-g", "AppleLanguages"]).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     let first = text.lines().map(|l| l.trim().trim_matches(|c| c == '"' || c == ',')).find(|l| l.len() >= 2 && l.chars().next().is_some_and(char::is_alphabetic))?;
     Some(parse(first).unwrap_or(Lang::En))
+}
+
+/// The locale's language, from the first of `LC_ALL`, `LC_MESSAGES`, `LANG` that is set
+/// (e.g. `de_DE.UTF-8`).
+#[cfg(not(target_os = "macos"))]
+fn system_language() -> Option<Lang> {
+    let locale = ["LC_ALL", "LC_MESSAGES", "LANG"].iter().find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()))?;
+    Some(parse(&locale).unwrap_or(Lang::En))
 }

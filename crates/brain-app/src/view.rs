@@ -11,7 +11,7 @@ use gpui::{
 use crate::config;
 use crate::conversation::Conversation;
 use crate::i18n::t;
-use crate::input::{InputAction, LineInput};
+use crate::input::{primary, primary_label, shift_label, InputAction, LineInput};
 use crate::menubar::MenuBar;
 use crate::model::Model;
 use crate::notify::{self, Notifier};
@@ -489,13 +489,13 @@ impl BrainView {
 
     fn on_new_session_key(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) {
         let m = &keystroke.modifiers;
-        if m.platform && keystroke.key == "e" {
+        if primary(m) && keystroke.key == "e" {
             if let Some(Choice::Template(i)) = self.new_session_choices().get(self.new_session.pick).cloned() {
                 open_in_editor(&self.new_session.templates[i].path);
             }
             return;
         }
-        if m.platform && m.shift && keystroke.key == "n" {
+        if primary(m) && m.shift && keystroke.key == "n" {
             let dir = brain_core::templates::templates_dir(&brain_core::account::home_dir());
             let prompt = t(
                 "Beschreibe hier die Aufgabe. Platzhalter wie {ticket} fragt Brain beim Start ab.",
@@ -504,7 +504,8 @@ impl BrainView {
             match brain_core::templates::create(&dir, t("Neue Vorlage", "New template"), prompt) {
                 Ok(path) => {
                     open_in_editor(&path);
-                    self.set_status(t("Vorlage angelegt – nach dem Speichern ⌘N erneut öffnen.", "Template created – reopen ⌘N after saving it."));
+                    let cmd = primary_label();
+                    self.set_status(tr!("Vorlage angelegt – nach dem Speichern {cmd}N erneut öffnen.", "Template created – reopen {cmd}N after saving it."));
                     self.mode = Mode::Normal;
                 }
                 Err(err) => self.set_status(err.to_string()),
@@ -688,16 +689,19 @@ impl BrainView {
                         row.child(div().flex_none().text_color(theme::turn()).child("▸"))
                             .child(div().font_weight(FontWeight::SEMIBOLD).child(template.name.clone()))
                             .when_some(template.folder.clone(), |d, f| {
-                                d.child(div().text_color(theme::text_faint()).font_family("Menlo").text_size(px(11.5)).child(f))
+                                d.child(div().text_color(theme::text_faint()).font_family(theme::MONO).text_size(px(11.5)).child(f))
                             })
                     }
-                    Choice::Folder(folder) => row.font_family("Menlo").text_size(px(12.)).child(theme::tilde(&folder)),
+                    Choice::Folder(folder) => row.font_family(theme::MONO).text_size(px(12.)).child(theme::tilde(&folder)),
                 }
             })))
-            .child(div().text_size(px(11.5)).text_color(theme::text_faint()).child(t(
-                "⏎ wählen/starten · ↑↓ · ⇥ Konto · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc",
-                "⏎ pick/start · ↑↓ · ⇥ account · ⌘E edit template · ⌘⇧N new template · esc",
-            )))
+            .child(div().text_size(px(11.5)).text_color(theme::text_faint()).child({
+                let (cmd, shift) = (primary_label(), shift_label());
+                tr!(
+                    "⏎ wählen/starten · ↑↓ · ⇥ Konto · {cmd}E Vorlage bearbeiten · {cmd}{shift}N neue Vorlage · esc",
+                    "⏎ pick/start · ↑↓ · ⇥ account · {cmd}E edit template · {cmd}{shift}N new template · esc"
+                )
+            }))
             .into_any_element()
     }
 
@@ -907,7 +911,7 @@ impl BrainView {
                 cx.notify();
                 return;
             }
-            Mode::Reply if self.reply.text.is_empty() && keystroke.key.len() == 1 && ('1'..='9').contains(&keystroke.key.chars().next().unwrap()) && !keystroke.modifiers.platform => {
+            Mode::Reply if self.reply.text.is_empty() && keystroke.key.len() == 1 && ('1'..='9').contains(&keystroke.key.chars().next().unwrap()) && !primary(&keystroke.modifiers) => {
                 let index = keystroke.key.parse::<usize>().unwrap() - 1;
                 if let Some(reply) = config::quick_replies().get(index).cloned() {
                     self.reply = LineInput::with_text(&reply);
@@ -946,19 +950,19 @@ impl BrainView {
             _ => {}
         }
 
-        if keystroke.modifiers.platform && keystroke.key == "f" {
+        if primary(&keystroke.modifiers) && keystroke.key == "f" {
             self.mode = Mode::Search;
             cx.stop_propagation();
             cx.notify();
             return;
         }
-        if keystroke.modifiers.platform && keystroke.key == "n" {
+        if primary(&keystroke.modifiers) && keystroke.key == "n" {
             self.open_new_session_dialog();
             cx.stop_propagation();
             cx.notify();
             return;
         }
-        if keystroke.modifiers.platform && keystroke.key == "c" && self.prefs.layout == Layout::Today {
+        if primary(&keystroke.modifiers) && keystroke.key == "c" && self.prefs.layout == Layout::Today {
             let date = chrono::Local::now().format("%d.%m.%Y").to_string();
             let markdown = brain_core::digest::markdown(&tr!("Heute, {date}", "Today, {date}"), &self.today_digest());
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(markdown));
@@ -1328,7 +1332,8 @@ impl BrainView {
             .flex_none()
             .items_center()
             .h(px(48.))
-            .pl(px(86.))
+            // Room for the traffic lights on macOS.
+            .pl(px(if cfg!(target_os = "macos") { 86. } else { 14. }))
             .pr(px(14.))
             .gap(px(12.))
             .bg(theme::chrome())
@@ -2226,7 +2231,7 @@ impl BrainView {
                     .items_center()
                     .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).text_color(theme::text_strong()).child(title))
                     .child(div().flex_1())
-                    .child(button("copy-digest", t("Als Markdown kopieren", "Copy as Markdown"), "⌘C", false, !projects.is_empty(), cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    .child(button("copy-digest", t("Als Markdown kopieren", "Copy as Markdown"), &format!("{}C", primary_label()), false, !projects.is_empty(), cx.listener(move |this, _: &ClickEvent, _, cx| {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(markdown.clone()));
                         this.set_status(t("Tagesübersicht kopiert.", "Copied the day's digest."));
                         cx.notify();
@@ -2497,8 +2502,8 @@ fn change_row(file: &brain_core::changes::FileChange) -> AnyElement {
         .gap(px(10.))
         .py(px(3.))
         .text_size(px(12.))
-        .child(div().flex_none().w(px(22.)).font_family("Menlo").text_color(color).child(if code.is_empty() { "M".to_string() } else { code.to_string() }))
-        .child(div().flex_1().min_w_0().truncate().font_family("Menlo").text_size(px(11.5)).text_color(theme::text()).child(file.path.clone()))
+        .child(div().flex_none().w(px(22.)).font_family(theme::MONO).text_color(color).child(if code.is_empty() { "M".to_string() } else { code.to_string() }))
+        .child(div().flex_1().min_w_0().truncate().font_family(theme::MONO).text_size(px(11.5)).text_color(theme::text()).child(file.path.clone()))
         .when_some(file.added.filter(|a| *a > 0), |d, a| d.child(div().flex_none().text_color(theme::done()).child(format!("+{a}"))))
         .when_some(file.removed.filter(|r| *r > 0), |d, r| d.child(div().flex_none().text_color(theme::calls()).child(format!("−{r}"))))
         .into_any_element()
@@ -2578,9 +2583,10 @@ fn lookup_prs(sessions: Vec<(SessionKey, String)>) -> HashMap<SessionKey, brain_
     out
 }
 
-/// Opens a file with the app macOS uses for its type (your Markdown editor for templates).
+/// Opens a file with the app the system uses for its type (your Markdown editor for templates).
 fn open_in_editor(path: &std::path::Path) {
-    let _ = std::process::Command::new("open").arg(path).spawn();
+    let open = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let _ = std::process::Command::new(open).arg(path).spawn();
 }
 
 /// Single-quotes a word for `sh`.

@@ -8,13 +8,56 @@ permissions:
   contents: write
 
 jobs:
+  # ubuntu-22.04: its glibc (2.35) keeps the binaries running on older distributions.
+  linux:
+    strategy:
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-22.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: GPUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config cmake clang \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-dev libx11-xcb-dev libxcb1-dev \
+            libvulkan-dev libfontconfig-dev libfreetype-dev \
+            libssl-dev libzstd-dev libasound2-dev
+      - run: cargo test -p brain-core
+
+      - name: Package
+        run: |
+          ./scripts/package-linux.sh
+          archive="$(ls dist/brain-*-linux-*.tar.gz)"
+          case "$archive" in
+            "dist/brain-${GITHUB_REF_NAME#v}-linux-"*) ;;
+            *) echo "Tag $GITHUB_REF_NAME does not match $archive" >&2; exit 1 ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.runner }}
+          path: dist/brain-*-linux-*.tar.gz
+          if-no-files-found: error
+
   release:
+    needs: linux
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p brain-core
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: linux-*
+          path: release
+          merge-multiple: true
 
       - name: Bundle
         run: ./scripts/bundle.sh
@@ -26,7 +69,7 @@ jobs:
             echo "Tag $GITHUB_REF_NAME does not match version $version in Cargo.toml" >&2
             exit 1
           fi
-          mkdir release
+          mkdir -p release
           ditto -c -k --keepParent dist/Brain.app "release/Brain-$version-macos-arm64.zip"
           tar -czf "release/brain-$version-macos-arm64.tar.gz" -C dist brain
           cp dist/Brain.alfredworkflow release/
@@ -58,6 +101,16 @@ jobs:
              or run `xattr -dr com.apple.quarantine /Applications/Brain.app`.
           4. Unpack `brain`, put it on your `PATH` (e.g. `~/.cargo/bin`) and run `brain install`.
              If macOS blocks it, run `xattr -d com.apple.quarantine brain` first.
+
+          **Linux** (x86_64 or aarch64, glibc 2.35+):
+
+          ```sh
+          tar -xzf brain-*-linux-$(uname -m).tar.gz
+          ./brain-*-linux-$(uname -m)/install.sh
+          ```
+
+          It installs `brain` and `brain-app` to `~/.local/bin`, adds Brain to the app
+          launcher and runs `brain install`.
 
           **Alfred:** double-click `Brain.alfredworkflow`. Keyword `cc`; ⏎ opens the session's
           terminal, ⌥⏎ shows it in Brain.

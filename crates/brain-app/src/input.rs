@@ -1,7 +1,22 @@
 //! A minimal single-line text field driven by key-down events.
 //! GPUI 0.2.2 ships no text input; Brain only needs typing, deleting and pasting.
 
-use gpui::Keystroke;
+use gpui::{Keystroke, Modifiers};
+
+use crate::i18n::t;
+
+/// ⌘ on macOS, Ctrl elsewhere.
+pub fn primary(m: &Modifiers) -> bool {
+    if cfg!(target_os = "macos") { m.platform } else { m.control }
+}
+
+pub fn primary_label() -> &'static str {
+    if cfg!(target_os = "macos") { "⌘" } else { t("Strg+", "Ctrl+") }
+}
+
+pub fn shift_label() -> &'static str {
+    if cfg!(target_os = "macos") { "⇧" } else { "Shift+" }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum InputAction {
@@ -22,15 +37,15 @@ impl LineInput {
         Self { text: text.to_string() }
     }
 
-    /// `clipboard` is only read for ⌘V.
+    /// `clipboard` is only read for ⌘V (Ctrl+V outside macOS).
     pub fn handle(&mut self, keystroke: &Keystroke, clipboard: impl FnOnce() -> Option<String>) -> InputAction {
         let m = &keystroke.modifiers;
         match keystroke.key.as_str() {
             "enter" => return InputAction::Submit,
             "escape" => return InputAction::Cancel,
-            "backspace" if m.platform || m.alt => {
+            "backspace" if primary(m) || m.alt => {
                 // ⌘⌫ clears, ⌥⌫ removes the last word.
-                if m.platform {
+                if primary(m) {
                     self.text.clear();
                 } else {
                     let trimmed = self.text.trim_end();
@@ -43,7 +58,7 @@ impl LineInput {
                 self.text.pop();
                 return InputAction::Changed;
             }
-            "v" if m.platform => {
+            "v" if primary(m) => {
                 if let Some(pasted) = clipboard() {
                     self.text.push_str(&pasted.replace(['\n', '\r'], " "));
                     return InputAction::Changed;
