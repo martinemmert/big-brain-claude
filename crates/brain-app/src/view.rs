@@ -6,7 +6,7 @@ use brain_core::transcript::Role;
 use gpui::{
     div, prelude::*, px, relative, AnyElement, BoxShadow, ClickEvent, Context, Decorations, FocusHandle,
     FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollHandle, SharedString,
-    Task, Window, WindowControls,
+    Div, Stateful, Task, Window, WindowControls,
 };
 
 use crate::config;
@@ -50,6 +50,12 @@ pub struct BrainView {
     tab: DetailTab,
     conversation: Option<Conversation>,
     messages_scroll: ScrollHandle,
+    timeline_scroll: ScrollHandle,
+    /// Session and newest event the timeline last showed, to follow new events.
+    timeline_seen: Option<(SessionKey, Option<chrono::DateTime<chrono::Utc>>)>,
+    changes_scroll: ScrollHandle,
+    /// Where the scrollbar thumb was grabbed, measured from its top, while it is dragged.
+    thumb_grab: Option<Pixels>,
     mode: Mode,
     search: LineInput,
     rename: LineInput,
@@ -202,6 +208,10 @@ impl BrainView {
             tab: DetailTab::Messages,
             conversation: None,
             messages_scroll: ScrollHandle::new(),
+            timeline_scroll: ScrollHandle::new(),
+            timeline_seen: None,
+            changes_scroll: ScrollHandle::new(),
+            thumb_grab: None,
             mode: Mode::Normal,
             search: LineInput::default(),
             rename: LineInput::default(),
@@ -1297,16 +1307,29 @@ impl BrainView {
             return;
         }
         let session_id = self.model.board.get(&key).and_then(|s| s.session_id.clone());
-        let at_bottom = {
-            let offset = self.messages_scroll.offset().y;
-            let max = self.messages_scroll.max_offset().height;
-            -offset >= max - px(24.)
-        };
+        let at_bottom = at_bottom(&self.messages_scroll);
         let conversation = self.conversation.get_or_insert_with(|| Conversation::empty(key.clone()));
         let changed = conversation.sync(&key, session_id.as_deref(), &self.model.accounts);
         if switched || (changed && at_bottom) {
             self.messages_scroll.scroll_to_bottom();
         }
+    }
+
+    /// Like `sync_conversation`: the timeline runs oldest to newest and follows new
+    /// events unless the user scrolled up.
+    fn sync_timeline(&mut self) {
+        let seen = self.selected.as_ref().map(|key| {
+            let newest = self.model.board.get(key).and_then(|s| s.timeline.last()).map(|e| e.ts);
+            (key.clone(), newest)
+        });
+        if seen == self.timeline_seen {
+            return;
+        }
+        let switched = self.timeline_seen.as_ref().map(|(k, _)| k) != seen.as_ref().map(|(k, _)| k);
+        if switched || at_bottom(&self.timeline_scroll) {
+            self.timeline_scroll.scroll_to_bottom();
+        }
+        self.timeline_seen = seen;
     }
 
     /// Looks up the terminal of a newly selected session (one `ps` call per selection).
@@ -1988,19 +2011,19 @@ impl BrainView {
             .child(self.render_callout(s, now, caps, cx))
             .child(self.render_tabs(s, cx))
             .child(match self.tab {
-                DetailTab::Messages => self.render_messages(),
-                DetailTab::Timeline => div()
-                    .id("timeline")
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .pt(px(12.))
-                    .pb(px(20.))
-                    .overflow_y_scroll()
-                    .children(messages::timeline(s))
-                    .into_any_element(),
-                DetailTab::Changes => self.render_changes(s),
+                DetailTab::Messages => self.scroll_area(self.render_messages(), &self.messages_scroll, cx),
+                DetailTab::Timeline => self.scroll_area(
+                    div()
+                        .id("timeline")
+                        .flex()
+                        .flex_col()
+                        .pt(px(12.))
+                        .pb(px(20.))
+                        .children(messages::timeline(s)),
+                    &self.timeline_scroll,
+                    cx,
+                ),
+                DetailTab::Changes => self.scroll_area(self.render_changes(s), &self.changes_scroll, cx),
             })
             .into_any_element()
     }
@@ -2197,7 +2220,105 @@ impl BrainView {
             }))
     }
 
-    fn render_changes(&self, s: &Session) -> AnyElement {
+    /// Wraps a tab's content in a scrolling area with a scrollbar and, while not at the
+    /// bottom, a button that jumps there.
+    fn scroll_area(&self, content: Stateful<Div>, handle: &ScrollHandle, cx: &mut Context<Self>) -> AnyElement {
+        let thumb = thumb(handle);
+        div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(content.flex_1().min_h_0().pr(px(14.)).overflow_y_scroll().track_scroll(handle))
+            .when_some(thumb, |d, (top, height)| {
+                let dragging = self.thumb_grab.is_some();
+                d.child(
+                    div()
+                        .id("scrollbar")
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right(px(-6.))
+                        .w(px(10.))
+                        .on_mouse_down(MouseButton::Left, cx.listener({
+                            let handle = handle.clone();
+                            move |this, event: &MouseDownEvent, _, cx| {
+                                let y = event.position.y - handle.bounds().top();
+                                let grab = if y >= top && y <= top + height { y - top } else { height / 2. };
+                                this.thumb_grab = Some(grab);
+                                drag_thumb(&handle, y - grab, height);
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }))
+                        .child(
+                            div()
+                                .absolute()
+                                .top(top)
+                                .h(height)
+                                .right(px(2.))
+                                .w(px(6.))
+                                .rounded(px(3.))
+                                .bg(if dragging { theme::text_faint() } else { theme::line_strong() })
+                                .hover(|d| d.bg(theme::text_faint())),
+                        ),
+                )
+                // On the area, not the bar, so the drag goes on when the pointer leaves the bar.
+                .on_mouse_move(cx.listener({
+                    let handle = handle.clone();
+                    move |this, event: &MouseMoveEvent, _, cx| {
+                        let Some(grab) = this.thumb_grab else { return };
+                        if !event.dragging() {
+                            this.thumb_grab = None;
+                        } else {
+                            drag_thumb(&handle, event.position.y - handle.bounds().top() - grab, height);
+                        }
+                        cx.notify();
+                    }
+                }))
+                .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                    this.thumb_grab = None;
+                    cx.notify();
+                }))
+            })
+            .when(!at_bottom(handle), |d| {
+                let handle = handle.clone();
+                d.child(
+                    div()
+                        .id("to-bottom")
+                        .absolute()
+                        .bottom(px(16.))
+                        .right(px(22.))
+                        .size(px(32.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(theme::raised())
+                        .border_1()
+                        .border_color(theme::line_strong())
+                        .shadow(vec![BoxShadow {
+                            color: theme::alpha(theme::ink(), 0xc0).into(),
+                            offset: gpui::point(px(0.), px(4.)),
+                            blur_radius: px(12.),
+                            spread_radius: px(0.),
+                        }])
+                        .text_size(px(15.))
+                        .text_color(theme::text_muted())
+                        .cursor_pointer()
+                        .hover(|d| d.bg(theme::hover()).text_color(theme::text_strong()))
+                        .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                            handle.scroll_to_bottom();
+                            cx.notify();
+                        }))
+                        .child("↓"),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn render_changes(&self, s: &Session) -> Stateful<Div> {
         let cache = self.changes.as_ref().filter(|c| c.key == s.key);
         let body: Vec<AnyElement> = match cache.map(|c| c.changes.as_ref()) {
             None => vec![hint(t("Lade Änderungen …", "Loading changes …").into())],
@@ -2221,18 +2342,7 @@ impl BrainView {
                 out
             }
         };
-        div()
-            .id("changes")
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .pt(px(14.))
-            .pb(px(20.))
-            .overflow_y_scroll()
-            .children(body)
-            .into_any_element()
+        div().id("changes").flex().flex_col().gap(px(2.)).pt(px(14.)).pb(px(20.)).children(body)
     }
 
     /// The day's digest: what each session reported as done, per project.
@@ -2318,27 +2428,14 @@ impl BrainView {
             .into_any_element()
     }
 
-    fn render_messages(&self) -> AnyElement {
+    fn render_messages(&self) -> Stateful<Div> {
         let messages = self.conversation.as_ref().map(|c| c.messages.as_slice()).unwrap_or_default();
         let children = if messages.is_empty() {
             vec![hint(t("Diese Session hat noch keine Nachrichten.", "This session has no messages yet.").into())]
         } else {
             messages::conversation(messages)
         };
-        div()
-            .id("messages")
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .gap(px(16.))
-            .pt(px(16.))
-            .pb(px(24.))
-            .pr(px(4.))
-            .overflow_y_scroll()
-            .track_scroll(&self.messages_scroll)
-            .children(children)
-            .into_any_element()
+        div().id("messages").flex().flex_col().gap(px(16.)).pt(px(16.)).pb(px(24.)).children(children)
     }
 
     fn render_footer(&self) -> impl IntoElement {
@@ -2427,6 +2524,7 @@ impl Render for BrainView {
             self.selected = visible.first().cloned();
         }
         self.sync_conversation();
+        self.sync_timeline();
         self.sync_host();
         self.sync_projects();
         self.conflicts = self.compute_conflicts();
@@ -2795,4 +2893,32 @@ mod tests {
         assert_eq!(format_tokens(1_340_000), "1.3M");
         assert_eq!(format_tokens(812), "812");
     }
+}
+
+/// Whether a scroll area shows its end (or has nothing to scroll).
+fn at_bottom(handle: &ScrollHandle) -> bool {
+    -handle.offset().y >= handle.max_offset().height - px(24.)
+}
+
+/// Top and height of the scrollbar thumb, relative to the area; `None` if nothing scrolls.
+fn thumb(handle: &ScrollHandle) -> Option<(Pixels, Pixels)> {
+    let max = handle.max_offset().height;
+    let view = handle.bounds().size.height;
+    if max <= px(1.) || view <= px(0.) {
+        return None;
+    }
+    let height = (view * (view / (view + max))).max(px(28.)).min(view);
+    let progress = (-handle.offset().y / max).clamp(0., 1.);
+    Some(((view - height) * progress, height))
+}
+
+/// Scrolls so the thumb's top lands at `top` (relative to the area).
+fn drag_thumb(handle: &ScrollHandle, top: Pixels, height: Pixels) {
+    let track = handle.bounds().size.height - height;
+    if track <= px(0.) {
+        return;
+    }
+    let progress = (top / track).clamp(0., 1.);
+    let offset = handle.offset();
+    handle.set_offset(gpui::point(offset.x, -handle.max_offset().height * progress));
 }

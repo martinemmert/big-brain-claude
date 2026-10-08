@@ -455,7 +455,7 @@ pub fn timeline(s: &Session) -> Vec<AnyElement> {
             ))
             .into_any_element()];
     }
-    s.timeline.iter().rev().take(80).map(timeline_entry).collect()
+    s.timeline[s.timeline.len().saturating_sub(80)..].iter().map(timeline_entry).collect()
 }
 
 fn timeline_entry(event: &Event) -> AnyElement {
