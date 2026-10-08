@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use super::script::{applescript_string, run_osascript};
+use super::applescript::{applescript_string, run_osascript};
 use super::{Key, Outcome};
 
 pub fn is_installed() -> bool {

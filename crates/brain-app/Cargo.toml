@@ -14,8 +14,13 @@ gpui = "0.2.2"
 chrono.workspace = true
 serde_json.workspace = true
 serde.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSBundle", "NSString", "NSArray", "NSSet", "NSError", "NSObject"] }
 objc2-user-notifications = { version = "0.3", features = ["block2", "UNNotification", "UNNotificationAction", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSView", "NSResponder"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+notify-rust = "4"

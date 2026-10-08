@@ -3,7 +3,7 @@
 #   - dist/Brain.app (ad-hoc signed; the CLI ships inside at Contents/MacOS/brain
 #     for the Homebrew cask)
 #   - dist/brain (the CLI)
-#   - dist/Brain.alfredworkflow (scripts/alfred.sh)
+#   - dist/Brain.alfredworkflow (scripts/alfred-macos.sh)
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -15,7 +15,7 @@ version="$(awk '
   section == "[workspace.package]" && $1 == "version" { gsub(/"/, "", $3); print $3; exit }
 ' Cargo.toml)"
 if [[ -z "$version" ]]; then
-  echo "bundle.sh: no version in [workspace.package] of Cargo.toml" >&2
+  echo "bundle-macos.sh: no version in [workspace.package] of Cargo.toml" >&2
   exit 1
 fi
 
@@ -61,7 +61,7 @@ codesign --force --deep --sign - "$app"
 codesign --verify --deep --strict "$app"
 
 echo "→ Alfred workflow"
-"$root/scripts/alfred.sh" "$version"
+"$root/scripts/alfred-macos.sh" "$version"
 
 echo "→ $app"
 echo "→ $dist/brain"

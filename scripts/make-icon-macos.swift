@@ -1,5 +1,5 @@
 // Draws Brain's app icon: a grid of sessions on ink blue, one of them calling.
-// Usage: swift scripts/make-icon.swift <out.png> [size]
+// Usage: swift scripts/make-icon-macos.swift <out.png> [size]
 import AppKit
 
 let args = CommandLine.arguments

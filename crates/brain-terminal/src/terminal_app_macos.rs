@@ -1,6 +1,6 @@
 //! Terminal.app via AppleScript; tabs carry a `tty` property.
 
-use super::script::{applescript_string, run_osascript};
+use super::applescript::{applescript_string, run_osascript};
 use super::Outcome;
 
 /// Activates Terminal.app, selects the tab and raises its window. Raising only

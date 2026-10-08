@@ -4,19 +4,22 @@ use std::time::{Duration, Instant};
 use brain_core::state::{Phase, Session, SessionKey};
 use brain_core::transcript::Role;
 use gpui::{
-    div, prelude::*, px, relative, AnyElement, BoxShadow, ClickEvent, Context, FocusHandle,
-    FontWeight, KeyDownEvent, ScrollHandle, SharedString, Task, Window,
+    div, prelude::*, px, relative, AnyElement, BoxShadow, ClickEvent, Context, Decorations, FocusHandle,
+    FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollHandle, SharedString,
+    Div, Stateful, Task, Window, WindowControls,
 };
 
 use crate::config;
 use crate::conversation::Conversation;
 use crate::i18n::t;
-use crate::input::{InputAction, LineInput};
+use crate::input::{primary, primary_label, shift_label, InputAction, LineInput};
 use crate::menubar::MenuBar;
 use crate::model::Model;
 use crate::notify::{self, Notifier};
 use crate::prefs::{Layout, Prefs};
-use brain_terminal::{self as terminal, Capabilities, Key, Outcome};
+use crate::selection;
+use brain_terminal::{self as terminal, Capabilities, Key, Limit, Outcome};
+use crate::window_frame;
 use crate::widgets::{
     account_badge, background_summary, caret, chip, clock, dot, kbd, now_ms, phase_color, phase_label, plain, section_title,
 };
@@ -26,6 +29,8 @@ use crate::{messages, theme, tr};
 const RESTING_AFTER_MS: i64 = 2 * 60 * 60 * 1000;
 /// Ended sessions stay listed this long (they are read from the event history).
 const SNOOZE_MS: i64 = 15 * 60 * 1000;
+/// How long a failed terminal action stays on screen unless clicked away.
+const ERROR_SECS: u64 = 30;
 
 pub struct BrainView {
     model: Model,
@@ -38,10 +43,21 @@ pub struct BrainView {
     selected: Option<SessionKey>,
     show_ended: bool,
     status: Option<(String, Instant)>,
+    /// A failed terminal action; stays until clicked away or `ERROR_SECS` pass.
+    error: Option<(String, Instant)>,
+    /// Start of a press in the title bar; dragging moves the window (own frame only).
+    titlebar_press: Option<Point<Pixels>>,
     list_scroll: ScrollHandle,
     tab: DetailTab,
     conversation: Option<Conversation>,
     messages_scroll: ScrollHandle,
+    timeline_scroll: ScrollHandle,
+    /// Session and newest event the timeline last showed, to follow new events.
+    timeline_seen: Option<(SessionKey, Option<chrono::DateTime<chrono::Utc>>)>,
+    changes_scroll: ScrollHandle,
+    today_scroll: ScrollHandle,
+    /// Where the scrollbar thumb was grabbed, measured from its top, while it is dragged.
+    thumb_grab: Option<Pixels>,
     mode: Mode,
     search: LineInput,
     rename: LineInput,
@@ -51,7 +67,7 @@ pub struct BrainView {
     /// Reminders sent while a session keeps waiting: since when it waits, and how many.
     reminders: HashMap<SessionKey, (i64, u32)>,
     /// The terminal hosting the selected session and what Brain can do with it.
-    host: Option<(SessionKey, Capabilities)>,
+    host: Option<(SessionKey, Capabilities, Option<Limit>)>,
     /// Project name and worktree per session, refreshed on render.
     projects: HashMap<SessionKey, (String, Option<String>)>,
     /// The checked-out working tree per session (for conflicts and PR lookups).
@@ -108,7 +124,7 @@ enum Choice {
     Folder(String),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DetailTab {
     Messages,
     Timeline,
@@ -188,10 +204,17 @@ impl BrainView {
             selected: None,
             show_ended: false,
             status: None,
+            error: None,
+            titlebar_press: None,
             list_scroll: ScrollHandle::new(),
             tab: DetailTab::Messages,
             conversation: None,
             messages_scroll: ScrollHandle::new(),
+            timeline_scroll: ScrollHandle::new(),
+            timeline_seen: None,
+            changes_scroll: ScrollHandle::new(),
+            today_scroll: ScrollHandle::new(),
+            thumb_grab: None,
             mode: Mode::Normal,
             search: LineInput::default(),
             rename: LineInput::default(),
@@ -292,6 +315,9 @@ impl BrainView {
 
         if self.status.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(6)) {
             self.status = None;
+        }
+        if self.error.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(ERROR_SECS)) {
+            self.error = None;
         }
         cx.notify();
     }
@@ -489,13 +515,13 @@ impl BrainView {
 
     fn on_new_session_key(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) {
         let m = &keystroke.modifiers;
-        if m.platform && keystroke.key == "e" {
+        if primary(m) && keystroke.key == "e" {
             if let Some(Choice::Template(i)) = self.new_session_choices().get(self.new_session.pick).cloned() {
                 open_in_editor(&self.new_session.templates[i].path);
             }
             return;
         }
-        if m.platform && m.shift && keystroke.key == "n" {
+        if primary(m) && m.shift && keystroke.key == "n" {
             let dir = brain_core::templates::templates_dir(&brain_core::account::home_dir());
             let prompt = t(
                 "Beschreibe hier die Aufgabe. Platzhalter wie {ticket} fragt Brain beim Start ab.",
@@ -504,7 +530,8 @@ impl BrainView {
             match brain_core::templates::create(&dir, t("Neue Vorlage", "New template"), prompt) {
                 Ok(path) => {
                     open_in_editor(&path);
-                    self.set_status(t("Vorlage angelegt – nach dem Speichern ⌘N erneut öffnen.", "Template created – reopen ⌘N after saving it."));
+                    let cmd = primary_label();
+                    self.set_status(tr!("Vorlage angelegt – nach dem Speichern {cmd}N erneut öffnen.", "Template created – reopen {cmd}N after saving it."));
                     self.mode = Mode::Normal;
                 }
                 Err(err) => self.set_status(err.to_string()),
@@ -688,16 +715,19 @@ impl BrainView {
                         row.child(div().flex_none().text_color(theme::turn()).child("▸"))
                             .child(div().font_weight(FontWeight::SEMIBOLD).child(template.name.clone()))
                             .when_some(template.folder.clone(), |d, f| {
-                                d.child(div().text_color(theme::text_faint()).font_family("Menlo").text_size(px(11.5)).child(f))
+                                d.child(div().text_color(theme::text_faint()).font_family(theme::MONO).text_size(px(11.5)).child(f))
                             })
                     }
-                    Choice::Folder(folder) => row.font_family("Menlo").text_size(px(12.)).child(theme::tilde(&folder)),
+                    Choice::Folder(folder) => row.font_family(theme::MONO).text_size(px(12.)).child(theme::tilde(&folder)),
                 }
             })))
-            .child(div().text_size(px(11.5)).text_color(theme::text_faint()).child(t(
-                "⏎ wählen/starten · ↑↓ · ⇥ Konto · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc",
-                "⏎ pick/start · ↑↓ · ⇥ account · ⌘E edit template · ⌘⇧N new template · esc",
-            )))
+            .child(div().text_size(px(11.5)).text_color(theme::text_faint()).child({
+                let (cmd, shift) = (primary_label(), shift_label());
+                tr!(
+                    "⏎ wählen/starten · ↑↓ · ⇥ Konto · {cmd}E Vorlage bearbeiten · {cmd}{shift}N neue Vorlage · esc",
+                    "⏎ pick/start · ↑↓ · ⇥ account · {cmd}E edit template · {cmd}{shift}N new template · esc"
+                )
+            }))
             .into_any_element()
     }
 
@@ -889,8 +919,16 @@ impl BrainView {
             return Capabilities { focus: true, type_text: true, keys: true };
         }
         match &self.host {
-            Some((key, caps)) if Some(key) == self.selected.as_ref() => *caps,
+            Some((key, caps, _)) if Some(key) == self.selected.as_ref() => *caps,
             _ => Capabilities { focus: false, type_text: false, keys: false },
+        }
+    }
+
+    /// What to change so Brain can type into the selected session's terminal.
+    fn typing_help(&self) -> Option<String> {
+        match &self.host {
+            Some((key, _, Some(limit))) if Some(key) == self.selected.as_ref() => Some(limit_help(limit)),
+            _ => None,
         }
     }
 
@@ -907,7 +945,7 @@ impl BrainView {
                 cx.notify();
                 return;
             }
-            Mode::Reply if self.reply.text.is_empty() && keystroke.key.len() == 1 && ('1'..='9').contains(&keystroke.key.chars().next().unwrap()) && !keystroke.modifiers.platform => {
+            Mode::Reply if self.reply.text.is_empty() && keystroke.key.len() == 1 && ('1'..='9').contains(&keystroke.key.chars().next().unwrap()) && !primary(&keystroke.modifiers) => {
                 let index = keystroke.key.parse::<usize>().unwrap() - 1;
                 if let Some(reply) = config::quick_replies().get(index).cloned() {
                     self.reply = LineInput::with_text(&reply);
@@ -946,22 +984,31 @@ impl BrainView {
             _ => {}
         }
 
-        if keystroke.modifiers.platform && keystroke.key == "f" {
+        if primary(&keystroke.modifiers) && keystroke.key == "f" {
             self.mode = Mode::Search;
             cx.stop_propagation();
             cx.notify();
             return;
         }
-        if keystroke.modifiers.platform && keystroke.key == "n" {
+        if primary(&keystroke.modifiers) && keystroke.key == "n" {
             self.open_new_session_dialog();
             cx.stop_propagation();
             cx.notify();
             return;
         }
-        if keystroke.modifiers.platform && keystroke.key == "c" && self.prefs.layout == Layout::Today {
+        if primary(&keystroke.modifiers) && keystroke.key == "c" {
+            if let Some(text) = selection::selected_text() {
+                crate::clipboard::copy(&text, cx);
+                self.set_status(t("Markierung kopiert.", "Copied the selection."));
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
+        }
+        if primary(&keystroke.modifiers) && keystroke.key == "c" && self.prefs.layout == Layout::Today {
             let date = chrono::Local::now().format("%d.%m.%Y").to_string();
             let markdown = brain_core::digest::markdown(&tr!("Heute, {date}", "Today, {date}"), &self.today_digest());
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(markdown));
+            crate::clipboard::copy(&markdown, cx);
             self.set_status(t("Tagesübersicht kopiert.", "Copied the day's digest."));
             cx.stop_propagation();
             cx.notify();
@@ -1063,6 +1110,10 @@ impl BrainView {
         self.status = Some((message.into(), Instant::now()));
     }
 
+    fn set_error(&mut self, message: impl Into<String>) {
+        self.error = Some((message.into(), Instant::now()));
+    }
+
     /// Demo pids are made up and may belong to unrelated processes: nothing is ever sent.
     fn blocked_in_demo(&mut self) -> bool {
         if self.model.is_demo() {
@@ -1078,12 +1129,17 @@ impl BrainView {
                     self.set_status(message);
                 }
             }
-            Outcome::NoTerminal => self.set_status(t(
+            Outcome::NoTerminal => self.set_error(t(
                 "Kein Terminal zu dieser Session gefunden (beendet oder ohne Terminal gestartet).",
                 "No terminal found for this session (it ended or runs without one).",
             )),
-            Outcome::Unsupported(reason) => self.set_status(reason),
-            Outcome::Failed(reason) => self.set_status(tr!("Fehlgeschlagen: {reason}", "Failed: {reason}")),
+            Outcome::Unsupported(reason) => self.set_error(reason),
+            // macOS asks once whether Brain may control iTerm2; a "no" is error -1743.
+            Outcome::Failed(reason) if reason.contains("-1743") => self.set_error(t(
+                "macOS erlaubt Brain nicht, iTerm2 zu steuern. Systemeinstellungen → Datenschutz & Sicherheit → Automation → Brain → „iTerm“ einschalten.",
+                "macOS doesn't let Brain control iTerm2. System Settings → Privacy & Security → Automation → Brain → turn on “iTerm”.",
+            )),
+            Outcome::Failed(reason) => self.set_error(tr!("Fehlgeschlagen: {reason}", "Failed: {reason}")),
         }
     }
 
@@ -1135,7 +1191,10 @@ impl BrainView {
             return;
         }
         if !self.capabilities().type_text {
-            self.set_status(t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal."));
+            match self.typing_help() {
+                Some(help) => self.set_error(help),
+                None => self.set_status(t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal.")),
+            }
             return;
         }
         self.rename = LineInput::with_text(&session.display_name());
@@ -1161,7 +1220,10 @@ impl BrainView {
             return;
         }
         if !self.capabilities().type_text {
-            self.set_status(t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal."));
+            match self.typing_help() {
+                Some(help) => self.set_error(help),
+                None => self.set_status(t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal.")),
+            }
             return;
         }
         self.reply = LineInput::default();
@@ -1197,7 +1259,10 @@ impl BrainView {
             return;
         }
         if !self.capabilities().keys {
-            self.set_status(t("In diesem Terminal kann Brain keine Freigaben beantworten.", "Brain can't answer permissions in this terminal."));
+            match self.typing_help() {
+                Some(help) => self.set_error(help),
+                None => self.set_status(t("In diesem Terminal kann Brain keine Freigaben beantworten.", "Brain can't answer permissions in this terminal.")),
+            }
             return;
         }
         let pid = session.pid;
@@ -1254,16 +1319,29 @@ impl BrainView {
             return;
         }
         let session_id = self.model.board.get(&key).and_then(|s| s.session_id.clone());
-        let at_bottom = {
-            let offset = self.messages_scroll.offset().y;
-            let max = self.messages_scroll.max_offset().height;
-            -offset >= max - px(24.)
-        };
+        let at_bottom = at_bottom(&self.messages_scroll);
         let conversation = self.conversation.get_or_insert_with(|| Conversation::empty(key.clone()));
         let changed = conversation.sync(&key, session_id.as_deref(), &self.model.accounts);
         if switched || (changed && at_bottom) {
             self.messages_scroll.scroll_to_bottom();
         }
+    }
+
+    /// Like `sync_conversation`: the timeline runs oldest to newest and follows new
+    /// events unless the user scrolled up.
+    fn sync_timeline(&mut self) {
+        let seen = self.selected.as_ref().map(|key| {
+            let newest = self.model.board.get(key).and_then(|s| s.timeline.last()).map(|e| e.ts);
+            (key.clone(), newest)
+        });
+        if seen == self.timeline_seen {
+            return;
+        }
+        let switched = self.timeline_seen.as_ref().map(|(k, _)| k) != seen.as_ref().map(|(k, _)| k);
+        if switched || at_bottom(&self.timeline_scroll) {
+            self.timeline_scroll.scroll_to_bottom();
+        }
+        self.timeline_seen = seen;
     }
 
     /// Looks up the terminal of a newly selected session (one `ps` call per selection).
@@ -1272,14 +1350,17 @@ impl BrainView {
             self.host = None;
             return;
         };
-        if self.model.is_demo() || self.host.as_ref().is_some_and(|(k, _)| *k == key) {
+        if self.model.is_demo() || self.host.as_ref().is_some_and(|(k, _, _)| *k == key) {
             return;
         }
         let Some(pid) = self.model.board.get(&key).map(|s| s.pid) else { return };
-        let caps = terminal::host_of(pid)
-            .map(|host| terminal::capabilities(&host))
+        let host = terminal::host_of(pid);
+        let caps = host
+            .as_ref()
+            .map(terminal::capabilities)
             .unwrap_or(Capabilities { focus: false, type_text: false, keys: false });
-        self.host = Some((key, caps));
+        let limit = host.as_ref().and_then(terminal::limit);
+        self.host = Some((key, caps, limit));
     }
 
     /// Project names for the sessions (git is asked once per directory).
@@ -1302,7 +1383,8 @@ impl BrainView {
 
     // ---- rendering -------------------------------------------------------------
 
-    fn render_titlebar(&self, groups: &Groups, cx: &mut Context<Self>) -> impl IntoElement {
+    /// `own_frame`: Brain draws the window frame, so the title bar moves the window.
+    fn render_titlebar(&self, groups: &Groups, own_frame: Option<WindowControls>, cx: &mut Context<Self>) -> impl IntoElement {
         let total = groups.live_count();
         let waiting = groups
             .attention
@@ -1328,16 +1410,34 @@ impl BrainView {
             .flex_none()
             .items_center()
             .h(px(48.))
-            .pl(px(86.))
+            // Room for the traffic lights on macOS.
+            .pl(px(if cfg!(target_os = "macos") { 86. } else { 14. }))
             .pr(px(14.))
             .gap(px(12.))
             .bg(theme::chrome())
             .border_b_1()
             .border_color(theme::line())
-            .on_click(|event: &ClickEvent, window, _| {
-                if event.click_count() == 2 {
-                    window.titlebar_double_click();
-                }
+            .on_click(move |event: &ClickEvent, window, _| match own_frame {
+                Some(_) if event.is_right_click() => window.show_window_menu(event.position()),
+                Some(_) if event.click_count() == 2 => window.zoom_window(),
+                None if event.click_count() == 2 => window.titlebar_double_click(),
+                _ => {}
+            })
+            .when(own_frame.is_some(), |d| {
+                // Move only once the pointer travels, so clicks on title bar controls still work.
+                d.on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, _| {
+                    this.titlebar_press = Some(event.position);
+                }))
+                .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.titlebar_press = None))
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, _| {
+                    let Some(start) = this.titlebar_press else { return };
+                    if !event.dragging() {
+                        this.titlebar_press = None;
+                    } else if (event.position.x - start.x).abs() + (event.position.y - start.y).abs() > px(4.) {
+                        this.titlebar_press = None;
+                        window.start_window_move();
+                    }
+                }))
             })
             .child(brand_mark(calling))
             .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).text_color(theme::text_strong()).child("Brain"))
@@ -1383,6 +1483,7 @@ impl BrainView {
                     cx.notify();
                 }),
             ))
+            .when_some(own_frame, |d, controls| d.child(window_frame::window_buttons(controls)))
     }
 
     fn render_list(&self, groups: &Groups, now: i64, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1874,6 +1975,7 @@ impl BrainView {
                 )))
                 .into_any_element();
         };
+        selection::begin(format!("{:?} {:?}", s.key, self.tab));
         let phase = s.phase();
         let caps = self.capabilities();
         let primary = if phase == Phase::Ended {
@@ -1922,19 +2024,19 @@ impl BrainView {
             .child(self.render_callout(s, now, caps, cx))
             .child(self.render_tabs(s, cx))
             .child(match self.tab {
-                DetailTab::Messages => self.render_messages(),
-                DetailTab::Timeline => div()
-                    .id("timeline")
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .pt(px(12.))
-                    .pb(px(20.))
-                    .overflow_y_scroll()
-                    .children(messages::timeline(s))
-                    .into_any_element(),
-                DetailTab::Changes => self.render_changes(s),
+                DetailTab::Messages => self.scroll_area(self.render_messages(), &self.messages_scroll, cx),
+                DetailTab::Timeline => self.scroll_area(
+                    div()
+                        .id("timeline")
+                        .flex()
+                        .flex_col()
+                        .pt(px(12.))
+                        .pb(px(20.))
+                        .children(messages::timeline(s)),
+                    &self.timeline_scroll,
+                    cx,
+                ),
+                DetailTab::Changes => self.scroll_area(self.render_changes(s), &self.changes_scroll, cx),
             })
             .into_any_element()
     }
@@ -1975,7 +2077,10 @@ impl BrainView {
         };
 
         let mut actions: Vec<AnyElement> = Vec::new();
+        // Shown under greyed-out buttons: what to change in the terminal.
+        let mut help = None;
         if s.awaiting_permission() {
+            help = (!caps.keys).then(|| self.typing_help()).flatten();
             actions.push(button("allow", t("Erlauben", "Allow"), "Y", true, caps.keys, cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.answer_permission(true);
                 cx.notify();
@@ -1985,6 +2090,7 @@ impl BrainView {
                 cx.notify();
             })));
         } else if s.accepts_input() && self.mode != Mode::Reply {
+            help = (!caps.type_text).then(|| self.typing_help()).flatten();
             actions.push(button("reply", t("Antworten", "Reply"), "T", false, caps.type_text, cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.start_reply();
                 cx.notify();
@@ -2068,6 +2174,18 @@ impl BrainView {
                 })
             })
             .when(!actions.is_empty(), |d| d.child(div().flex().gap(px(8.)).mt(px(2.)).children(actions)))
+            .when_some(help, |d, help| {
+                d.child(
+                    div()
+                        .flex()
+                        .gap(px(6.))
+                        .text_size(px(11.5))
+                        .line_height(relative(1.5))
+                        .text_color(theme::text_muted())
+                        .child(div().flex_none().text_color(theme::text_faint()).child("ⓘ"))
+                        .child(div().flex_1().min_w_0().child(help)),
+                )
+            })
             .into_any_element()
     }
 
@@ -2115,7 +2233,115 @@ impl BrainView {
             }))
     }
 
-    fn render_changes(&self, s: &Session) -> AnyElement {
+    /// Wraps a tab's content in a scrolling area with a scrollbar and, while not at the
+    /// bottom, a button that jumps there.
+    fn scroll_area(&self, content: Stateful<Div>, handle: &ScrollHandle, cx: &mut Context<Self>) -> AnyElement {
+        let thumb = thumb(handle);
+        div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(content.flex_1().min_h_0().pr(px(14.)).overflow_y_scroll().track_scroll(handle).cursor_text())
+            .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, _, cx| {
+                selection::press(event.position, event.click_count);
+                cx.notify();
+            }))
+            .on_mouse_move(cx.listener(|_, event: &MouseMoveEvent, _, cx| {
+                if event.dragging() && selection::drag(event.position) {
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|_, _, _, _| selection::release()))
+            .when_some(thumb, |d, (top, height)| {
+                let dragging = self.thumb_grab.is_some();
+                d.child(
+                    div()
+                        .id("scrollbar")
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right(px(-6.))
+                        .w(px(10.))
+                        .on_mouse_down(MouseButton::Left, cx.listener({
+                            let handle = handle.clone();
+                            move |this, event: &MouseDownEvent, _, cx| {
+                                let y = event.position.y - handle.bounds().top();
+                                let grab = if y >= top && y <= top + height { y - top } else { height / 2. };
+                                this.thumb_grab = Some(grab);
+                                drag_thumb(&handle, y - grab, height);
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }))
+                        .child(
+                            div()
+                                .absolute()
+                                .top(top)
+                                .h(height)
+                                .right(px(2.))
+                                .w(px(6.))
+                                .rounded(px(3.))
+                                .bg(if dragging { theme::text_faint() } else { theme::line_strong() })
+                                .hover(|d| d.bg(theme::text_faint())),
+                        ),
+                )
+                // On the area, not the bar, so the drag goes on when the pointer leaves the bar.
+                .on_mouse_move(cx.listener({
+                    let handle = handle.clone();
+                    move |this, event: &MouseMoveEvent, _, cx| {
+                        let Some(grab) = this.thumb_grab else { return };
+                        if !event.dragging() {
+                            this.thumb_grab = None;
+                        } else {
+                            drag_thumb(&handle, event.position.y - handle.bounds().top() - grab, height);
+                        }
+                        cx.notify();
+                    }
+                }))
+                .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                    this.thumb_grab = None;
+                    cx.notify();
+                }))
+            })
+            .when(!at_bottom(handle), |d| {
+                let handle = handle.clone();
+                d.child(
+                    div()
+                        .id("to-bottom")
+                        .absolute()
+                        .bottom(px(16.))
+                        .right(px(22.))
+                        .size(px(32.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(theme::raised())
+                        .border_1()
+                        .border_color(theme::line_strong())
+                        .shadow(vec![BoxShadow {
+                            color: theme::alpha(theme::ink(), 0xc0).into(),
+                            offset: gpui::point(px(0.), px(4.)),
+                            blur_radius: px(12.),
+                            spread_radius: px(0.),
+                        }])
+                        .text_size(px(15.))
+                        .text_color(theme::text_muted())
+                        .cursor_pointer()
+                        .hover(|d| d.bg(theme::hover()).text_color(theme::text_strong()))
+                        .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                            handle.scroll_to_bottom();
+                            cx.notify();
+                        }))
+                        .child("↓"),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn render_changes(&self, s: &Session) -> Stateful<Div> {
         let cache = self.changes.as_ref().filter(|c| c.key == s.key);
         let body: Vec<AnyElement> = match cache.map(|c| c.changes.as_ref()) {
             None => vec![hint(t("Lade Änderungen …", "Loading changes …").into())],
@@ -2139,18 +2365,7 @@ impl BrainView {
                 out
             }
         };
-        div()
-            .id("changes")
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .pt(px(14.))
-            .pb(px(20.))
-            .overflow_y_scroll()
-            .children(body)
-            .into_any_element()
+        div().id("changes").flex().flex_col().gap(px(2.)).pt(px(14.)).pb(px(20.)).children(body)
     }
 
     /// The day's digest: what each session reported as done, per project.
@@ -2170,6 +2385,7 @@ impl BrainView {
     }
 
     fn render_today(&self, cx: &mut Context<Self>) -> AnyElement {
+        selection::begin("today".into());
         let projects = self.today_digest();
         let date = chrono::Local::now().format("%d.%m.%Y").to_string();
         let title = tr!("Heute, {date}", "Today, {date}");
@@ -2182,7 +2398,7 @@ impl BrainView {
         }
         for project in &projects {
             body.push(
-                div().mt(px(14.)).text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::text_strong()).child(project.project.clone()).into_any_element(),
+                div().mt(px(14.)).text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::text_strong()).child(selection::plain(project.project.clone())).into_any_element(),
             );
             for session in &project.sessions {
                 body.push(
@@ -2191,7 +2407,7 @@ impl BrainView {
                         .items_center()
                         .gap(px(8.))
                         .mt(px(6.))
-                        .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::text()).child(session.name.clone()))
+                        .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::text()).child(selection::plain(session.name.clone())))
                         .child(account_badge(&session.account, self.account_index(&session.account)))
                         .into_any_element(),
                 );
@@ -2202,8 +2418,8 @@ impl BrainView {
                             .gap(px(10.))
                             .pl(px(2.))
                             .text_size(px(12.5))
-                            .child(div().flex_none().w(px(40.)).text_color(theme::text_faint()).child(entry.at.format("%H:%M").to_string()))
-                            .child(div().flex_1().min_w_0().line_height(relative(1.45)).text_color(theme::text()).child(plain(&entry.text)))
+                            .child(div().flex_none().w(px(40.)).text_color(theme::text_faint()).child(selection::plain(entry.at.format("%H:%M").to_string())))
+                            .child(div().flex_1().min_w_0().line_height(relative(1.45)).text_color(theme::text()).child(selection::plain(plain(&entry.text))))
                             .into_any_element(),
                     );
                 }
@@ -2226,37 +2442,24 @@ impl BrainView {
                     .items_center()
                     .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).text_color(theme::text_strong()).child(title))
                     .child(div().flex_1())
-                    .child(button("copy-digest", t("Als Markdown kopieren", "Copy as Markdown"), "⌘C", false, !projects.is_empty(), cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(markdown.clone()));
+                    .child(button("copy-digest", t("Als Markdown kopieren", "Copy as Markdown"), &format!("{}C", primary_label()), false, !projects.is_empty(), cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        crate::clipboard::copy(&markdown, cx);
                         this.set_status(t("Tagesübersicht kopiert.", "Copied the day's digest."));
                         cx.notify();
                     }))),
             )
-            .child(div().id("today-body").flex_1().min_h_0().flex().flex_col().gap(px(2.)).pb(px(24.)).overflow_y_scroll().children(body))
+            .child(self.scroll_area(div().id("today-body").flex().flex_col().gap(px(2.)).pb(px(24.)).children(body), &self.today_scroll, cx))
             .into_any_element()
     }
 
-    fn render_messages(&self) -> AnyElement {
+    fn render_messages(&self) -> Stateful<Div> {
         let messages = self.conversation.as_ref().map(|c| c.messages.as_slice()).unwrap_or_default();
         let children = if messages.is_empty() {
             vec![hint(t("Diese Session hat noch keine Nachrichten.", "This session has no messages yet.").into())]
         } else {
             messages::conversation(messages)
         };
-        div()
-            .id("messages")
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .gap(px(16.))
-            .pt(px(16.))
-            .pb(px(24.))
-            .pr(px(4.))
-            .overflow_y_scroll()
-            .track_scroll(&self.messages_scroll)
-            .children(children)
-            .into_any_element()
+        div().id("messages").flex().flex_col().gap(px(16.)).pt(px(16.)).pb(px(24.)).children(children)
     }
 
     fn render_footer(&self) -> impl IntoElement {
@@ -2291,6 +2494,43 @@ impl BrainView {
     }
 }
 
+impl BrainView {
+    /// The failed action, above the footer at the bottom right; a click dismisses it.
+    fn render_error(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (message, _) = self.error.as_ref()?;
+        let toast = div()
+            .id("error-toast")
+            .absolute()
+            .bottom(px(44.))
+            .right(px(16.))
+            .max_w(px(460.))
+            .flex()
+            .items_start()
+            .gap(px(10.))
+            .px(px(14.))
+            .py(px(10.))
+            .rounded(px(8.))
+            .bg(theme::raised())
+            .border_1()
+            .border_color(theme::calls())
+            .shadow(vec![BoxShadow {
+                color: theme::alpha(theme::calls(), 0x40).into(),
+                offset: gpui::point(px(0.), px(4.)),
+                blur_radius: px(18.),
+                spread_radius: px(0.),
+            }])
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.error = None;
+                cx.notify();
+            }))
+            .child(div().flex_none().text_color(theme::calls()).font_weight(FontWeight::BOLD).child("!"))
+            .child(div().flex_1().min_w_0().text_color(theme::text_strong()).child(message.clone()))
+            .child(div().flex_none().text_color(theme::text_faint()).child("×"));
+        Some(toast.into_any_element())
+    }
+}
+
 impl Render for BrainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = now_ms();
@@ -2308,6 +2548,7 @@ impl Render for BrainView {
             self.selected = visible.first().cloned();
         }
         self.sync_conversation();
+        self.sync_timeline();
         self.sync_host();
         self.sync_projects();
         self.conflicts = self.compute_conflicts();
@@ -2323,7 +2564,9 @@ impl Render for BrainView {
         let calling = waiting_sessions.iter().filter(|s| s.phase() == Phase::NeedsYou).count();
         let waiting = waiting_sessions.len();
         window.set_window_title(&if waiting > 0 { tr!("Brain – {waiting} warten", "Brain – {waiting} waiting") } else { "Brain".into() });
-        let titlebar = self.render_titlebar(&groups, cx).into_any_element();
+        let own_frame = matches!(window.window_decorations(), Decorations::Client { .. }).then(|| window.window_controls());
+        let resizable = own_frame.is_some() && !window.is_maximized();
+        let titlebar = self.render_titlebar(&groups, own_frame, cx).into_any_element();
         let list = div()
             .flex()
             .flex_col()
@@ -2362,9 +2605,19 @@ impl Render for BrainView {
             .text_size(px(13.))
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
+            .relative()
             .child(titlebar)
             .child(div().flex().flex_1().min_h_0().child(list).child(detail))
             .child(self.render_footer())
+            .when_some(self.render_error(cx), |d, toast| d.child(toast))
+            .when(own_frame.is_some() && !window.is_maximized(), |d| d.border_1().border_color(theme::line_strong()))
+            .when(resizable, |d| {
+                d.child(window_frame::resize_cursors()).on_mouse_down(MouseButton::Left, |event: &MouseDownEvent, window, cx| {
+                    if window_frame::start_resize(event.position, window) {
+                        cx.stop_propagation();
+                    }
+                })
+            })
     }
 }
 
@@ -2497,8 +2750,8 @@ fn change_row(file: &brain_core::changes::FileChange) -> AnyElement {
         .gap(px(10.))
         .py(px(3.))
         .text_size(px(12.))
-        .child(div().flex_none().w(px(22.)).font_family("Menlo").text_color(color).child(if code.is_empty() { "M".to_string() } else { code.to_string() }))
-        .child(div().flex_1().min_w_0().truncate().font_family("Menlo").text_size(px(11.5)).text_color(theme::text()).child(file.path.clone()))
+        .child(div().flex_none().w(px(22.)).font_family(theme::MONO).text_color(color).child(if code.is_empty() { "M".to_string() } else { code.to_string() }))
+        .child(div().flex_1().min_w_0().truncate().font_family(theme::MONO).text_size(px(11.5)).text_color(theme::text()).child(selection::plain(file.path.clone())))
         .when_some(file.added.filter(|a| *a > 0), |d, a| d.child(div().flex_none().text_color(theme::done()).child(format!("+{a}"))))
         .when_some(file.removed.filter(|r| *r > 0), |d, r| d.child(div().flex_none().text_color(theme::calls()).child(format!("−{r}"))))
         .into_any_element()
@@ -2578,9 +2831,10 @@ fn lookup_prs(sessions: Vec<(SessionKey, String)>) -> HashMap<SessionKey, brain_
     out
 }
 
-/// Opens a file with the app macOS uses for its type (your Markdown editor for templates).
+/// Opens a file with the app the system uses for its type (your Markdown editor for templates).
 fn open_in_editor(path: &std::path::Path) {
-    let _ = std::process::Command::new("open").arg(path).spawn();
+    let open = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let _ = std::process::Command::new(open).arg(path).spawn();
 }
 
 /// Single-quotes a word for `sh`.
@@ -2627,6 +2881,30 @@ fn format_tokens(tokens: u64) -> String {
     }
 }
 
+/// What to change so Brain can type into a terminal; the alternatives differ per platform.
+fn limit_help(limit: &Limit) -> String {
+    let supported = if cfg!(target_os = "macos") { t("iTerm2 oder tmux", "iTerm2 or tmux") } else { t("Konsole oder tmux", "Konsole or tmux") };
+    match limit {
+        Limit::KonsoleLocked => t(
+            "Konsole lässt Brain nicht tippen. In Konsole: Einstellungen → Konsole einrichten → Allgemein → „Sicherheitsrelevante Teile der D-Bus-Schnittstelle aktivieren“. Danach dieses Konsole-Fenster schließen, neu öffnen und die Session mit claude --resume fortsetzen.",
+            "Konsole doesn't let Brain type. In Konsole: Settings → Configure Konsole → General → “Enable the security sensitive parts of the DBus API”. Then close this Konsole window, open a new one and continue the session with claude --resume.",
+        )
+        .to_string(),
+        Limit::TerminalApp => tr!(
+            "In Terminal.app kann Brain nur das Fenster nach vorne holen. Zum Antworten aus Brain die Session in {supported} starten.",
+            "In Terminal.app Brain can only bring the window forward. To reply from Brain, start the session in {supported}."
+        ),
+        Limit::Editor => tr!(
+            "Ins Terminal von VS Code und Cursor kann Brain nicht tippen. Zum Antworten aus Brain die Session in {supported} starten.",
+            "Brain can't type into the terminal of VS Code or Cursor. To reply from Brain, start the session in {supported}."
+        ),
+        Limit::Unknown(name) => tr!(
+            "Das Terminal „{name}“ kann Brain nicht steuern. Zum Antworten aus Brain die Session in {supported} starten.",
+            "Brain can't control the terminal “{name}”. To reply from Brain, start the session in {supported}."
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2639,4 +2917,32 @@ mod tests {
         assert_eq!(format_tokens(1_340_000), "1.3M");
         assert_eq!(format_tokens(812), "812");
     }
+}
+
+/// Whether a scroll area shows its end (or has nothing to scroll).
+fn at_bottom(handle: &ScrollHandle) -> bool {
+    -handle.offset().y >= handle.max_offset().height - px(24.)
+}
+
+/// Top and height of the scrollbar thumb, relative to the area; `None` if nothing scrolls.
+fn thumb(handle: &ScrollHandle) -> Option<(Pixels, Pixels)> {
+    let max = handle.max_offset().height;
+    let view = handle.bounds().size.height;
+    if max <= px(1.) || view <= px(0.) {
+        return None;
+    }
+    let height = (view * (view / (view + max))).max(px(28.)).min(view);
+    let progress = (-handle.offset().y / max).clamp(0., 1.);
+    Some(((view - height) * progress, height))
+}
+
+/// Scrolls so the thumb's top lands at `top` (relative to the area).
+fn drag_thumb(handle: &ScrollHandle, top: Pixels, height: Pixels) {
+    let track = handle.bounds().size.height - height;
+    if track <= px(0.) {
+        return;
+    }
+    let progress = (top / track).clamp(0., 1.);
+    let offset = handle.offset();
+    handle.set_offset(gpui::point(offset.x, -handle.max_offset().height * progress));
 }

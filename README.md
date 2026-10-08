@@ -1,8 +1,8 @@
-<p align="center"><img src="assets/icon.png" width="128" alt="Brain icon"></p>
+<p align="center"><img src="assets/icon-1024.png" width="128" alt="Brain icon"></p>
 
 # Brain
 
-A native macOS window for everyone running many [Claude Code](https://claude.com/claude-code)
+A native macOS and Linux window for everyone running many [Claude Code](https://claude.com/claude-code)
 sessions at once. Brain shows every session across all your Claude accounts, what each one
 is doing, and above all **which ones are waiting for you**. Answer them right there, or jump
 to the session's terminal with one key.
@@ -15,7 +15,7 @@ sessions here.*
 ![Brain with demo data](docs/screenshot.png)
 
 Built with [GPUI](https://gpui.rs), the GPU-accelerated UI framework from Zed. The interface
-follows your macOS language: English or German.
+follows your system language: English or German.
 
 ## What it does
 
@@ -44,11 +44,12 @@ follows your macOS language: English or German.
   (`cleanupPeriodDays`, 30 days by default), with their name, last message and how many days are
   left. `P` saves one under "Saved to resume" at the top; `⏎` resumes it in a new tab.
 - **Open the terminal.** iTerm2, Terminal.app and tmux (in any terminal) jump to the exact
-  pane; VS Code and Cursor bring the project window forward.
+  pane; VS Code and Cursor bring the project window forward. On Linux: Konsole, tmux, VS Code
+  and Cursor.
 - **Search** by name, path, account or last message; **group by project** (git worktrees
   count as their main repository); **pin** and **mute** sessions.
 - **Rename** a waiting session; Brain types `/rename <name>` into its terminal.
-- **Menu bar count** and native **notifications** with *Open* and *Snooze 15 min*, sound only
+- **Menu bar count** (macOS) and native **notifications** with *Open* and *Snooze 15 min*, sound only
   when a session calls you; reminders while a session keeps waiting (`remind_after_minutes`
   in `config.json`, 10 by default, 0 turns them off) and snoozing per session.
 - **New sessions** in a recent folder and any account (`⌘N`), or from a **template**: a
@@ -58,7 +59,7 @@ follows your macOS language: English or German.
   closes the original.
 - **Quick replies.** `T`, then `1`–`9` sends a canned reply; set your own with
   `"quick_replies": ["…", "…"]` in `~/.claude-brain/config.json`.
-- **English or German**, following your macOS language (override with `BRAIN_LANG=de|en` or
+- **English or German**, following your macOS language or, on Linux, your locale (override with `BRAIN_LANG=de|en` or
   `{"language": "de"}` in `~/.claude-brain/config.json`).
 
 ## How sessions report
@@ -76,7 +77,8 @@ Without hooks Brain still shows a coarse state from Claude Code's own
 
 ## Install
 
-Requirements: macOS 13+ (Apple Silicon for the release builds).
+Requirements: macOS 13+ (Apple Silicon for the release builds), or Linux with glibc 2.35+
+(x86_64 or aarch64; see [On Linux](#on-linux)).
 
 ### With Homebrew
 
@@ -118,12 +120,12 @@ Requires a recent stable Rust toolchain.
 ```sh
 git clone https://github.com/martinemmert/big-brain-claude.git
 cd big-brain-claude
-./scripts/install.sh
+./scripts/install-macos.sh
 ```
 
 This
 
-- builds `dist/Brain.app` and `dist/brain` with `scripts/bundle.sh`,
+- builds `dist/Brain.app` and `dist/brain` with `scripts/bundle-macos.sh`,
 - installs the `brain` CLI to `~/.cargo/bin`,
 - installs `~/Applications/Brain.app` (open it via Spotlight),
 - runs `brain install`, which adds Brain's hooks, a `Bash(brain report:*)` permission and a
@@ -132,6 +134,42 @@ This
   is safe.
 
 Running sessions pick up the hooks on their own.
+
+### On Linux
+
+From a release: download `brain-<version>-linux-x86_64.tar.gz` (or `-aarch64`) from
+[Releases](https://github.com/martinemmert/big-brain-claude/releases), then
+
+```sh
+tar -xzf brain-*-linux-$(uname -m).tar.gz
+./brain-*-linux-$(uname -m)/install.sh
+```
+
+From source: `./scripts/install-linux.sh` in the repository. It builds with `cargo`, or in
+Docker (`compose.yaml`) when Rust is not installed; with Docker, `docker compose run --rm
+rust cargo …` runs any other cargo command.
+
+Both install `brain` and `brain-app` to `~/.local/bin`, add Brain to the app launcher
+(`~/.local/share/applications/brain.desktop`) and run `brain install` as above.
+
+What differs from macOS:
+
+- Notifications go through the desktop's notification service, with the same actions.
+- No menu bar count; the window title shows it.
+- Shortcuts use `Ctrl` where macOS uses `⌘`.
+- Answering and jumping to a session work in Konsole and tmux. For answering in Konsole,
+  turn on *Enable the security sensitive parts of the DBus API* in Konsole's settings
+  (General) and restart Konsole windows that were already open, they keep the old setting;
+  jumping works without it. Other terminals (GNOME Terminal, Ptyxis, kitty, …) are
+  recognised but not controlled; Brain shows what to change when it can't type.
+- New sessions open in a new tab of Konsole, else of Ptyxis, GNOME Terminal or GNOME
+  Console, else in `x-terminal-emulator`.
+- Copying by click needs `wl-copy` (package `wl-clipboard`) on Wayland, except on KDE, where
+  Brain uses Klipper; on X11 `xclip` or `xsel`. On GNOME: `sudo apt install wl-clipboard`.
+- On GNOME (and other desktops that leave the window frame to the app) Brain draws its own:
+  drag the title bar to move, double-click to maximize, right-click for the window menu,
+  the edges to resize.
+- `brain show` is not supported yet.
 
 ### Alfred
 
@@ -155,6 +193,9 @@ This removes Brain's hooks, the `Bash(brain report:*)` rule and the protocol sec
 the `settings.json` and `CLAUDE.md` of every `~/.claude*` account, with backups as above.
 Then delete `Brain.app`, the `brain` binary (`~/.cargo/bin/brain` or wherever you put it)
 and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` removes all three.
+On Linux delete `~/.local/bin/brain`, `~/.local/bin/brain-app`,
+`~/.local/share/applications/brain.desktop`,
+`~/.local/share/icons/hicolor/{256x256,512x512}/apps/brain.png` and `~/.claude-brain`.
 
 ## Keys
 
@@ -176,6 +217,8 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `←` `→` | switch between messages, timeline and changes |
 | `⇥` | cycle the account filter |
 | `E` | show ended sessions |
+
+On Linux, `Ctrl` takes the place of `⌘`.
 
 `brain status` prints the board in the terminal; `brain sessions --json` lists the open
 sessions for scripts (account, pid, name, phase, headline, cwd).
@@ -204,8 +247,8 @@ Every header line is optional. Brain asks for each `{placeholder}` and, if the t
 cargo test -p brain-core              # protocol, state, transcript and Markdown logic
 cargo run -p brain-app                # the app against your real sessions
 BRAIN_DEMO=1 cargo run -p brain-app   # made-up sessions, e.g. for screenshots
-./scripts/make-icns.sh                # re-render the icon
-./scripts/bundle.sh                   # release build into dist/ (ad-hoc signed Brain.app, brain,
+./scripts/make-icns-macos.sh          # re-render the icon
+./scripts/bundle-macos.sh             # release build into dist/ (ad-hoc signed Brain.app, brain,
                                       # Brain.alfredworkflow)
 ```
 

@@ -5,16 +5,28 @@ use brain_core::markdown::{self, Block, Inline, Span};
 use brain_core::state::Session;
 use brain_core::transcript::{classify_prompt, Message, Prompt, Role};
 use chrono::Local;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
 use gpui::{
-    div, prelude::*, px, relative, AnyElement, FontWeight, HighlightStyle, SharedString, StyledText,
+    div, point, prelude::*, px, relative, size, AnyElement, App, AvailableSpace, Bounds, ClickEvent, Element, ElementId,
+    FontWeight, GlobalElementId, HighlightStyle, InspectorElementId, LayoutId, Pixels, SharedString, Window,
 };
 
 use crate::i18n::t;
+use crate::selection;
 use crate::widgets::{note, plain};
 use crate::{theme, tr};
 
 /// Consecutive tool calls are shown as one block; long runs are cut to this many rows.
 const TOOL_ROWS_SHOWN: usize = 6;
+
+/// The code block copied last and when, for the "Copied" confirmation.
+static COPIED: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
+
+/// Height of a copyable block's header (language and copy button).
+const CODE_HEADER: f32 = 28.;
 
 pub fn conversation(messages: &[Message]) -> Vec<AnyElement> {
     let mut out = Vec::new();
@@ -62,7 +74,7 @@ fn user_bubble(message: &Message) -> AnyElement {
                 .text_color(theme::text_strong())
                 .line_height(relative(1.5))
                 .line_clamp(14)
-                .child(message.text.clone()),
+                .child(selection::plain(message.text.clone())),
         )
         .into_any_element()
 }
@@ -95,7 +107,7 @@ fn system_note(text: &str) -> AnyElement {
         .text_size(px(11.5))
         .text_color(theme::text_faint())
         .child(div().h(px(1.)).w(px(14.)).bg(theme::line_strong()))
-        .child(div().flex_1().min_w_0().truncate().child(note(text)))
+        .child(div().flex_1().min_w_0().truncate().child(selection::plain(note(text))))
         .into_any_element()
 }
 
@@ -137,17 +149,17 @@ fn tool_row(call: &Message) -> AnyElement {
                 .flex_none()
                 .text_color(theme::text_muted())
                 .font_weight(FontWeight::MEDIUM)
-                .child(short_tool_name(&tool)),
+                .child(selection::plain(short_tool_name(&tool))),
         )
         .child(
             div()
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .font_family("Menlo")
+                .font_family(theme::MONO)
                 .text_size(px(11.5))
                 .text_color(theme::text())
-                .child(theme::tilde(&note(&call.text))),
+                .child(selection::plain(theme::tilde(&note(&call.text)))),
         )
         .into_any_element()
 }
@@ -217,6 +229,7 @@ fn block(block: Block) -> AnyElement {
             )
             .child(div().flex_1().min_w_0().child(styled(&text)))
             .into_any_element(),
+        Block::Code { lang, text } if copyable(lang.as_deref()) => copyable_code(lang, text),
         Block::Code { lang, text } => div()
             .relative()
             .px(px(12.))
@@ -225,11 +238,11 @@ fn block(block: Block) -> AnyElement {
             .bg(theme::ink())
             .border_1()
             .border_color(theme::line())
-            .font_family("Menlo")
+            .font_family(theme::MONO)
             .text_size(px(12.))
             .line_height(relative(1.5))
             .text_color(theme::text())
-            .child(text)
+            .child(selection::plain(text))
             .when_some(lang, |d, lang| {
                 d.child(
                     div()
@@ -251,6 +264,135 @@ fn block(block: Block) -> AnyElement {
             .into_any_element(),
         Block::Table { header, rows } => table(header, rows),
         Block::Rule => div().h(px(1.)).my(px(4.)).bg(theme::line()).into_any_element(),
+    }
+}
+
+/// Code blocks that get a copy button; add languages here (or return `true` for all).
+fn copyable(lang: Option<&str>) -> bool {
+    matches!(lang, Some("markdown" | "md"))
+}
+
+/// A code block with a sticky header holding its language and a copy button.
+fn copyable_code(lang: Option<String>, text: String) -> AnyElement {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    let id = hasher.finish();
+    let copied = COPIED.lock().unwrap().is_some_and(|(last, at)| last == id && at.elapsed() < Duration::from_secs(2));
+    let button = div()
+        .id(SharedString::from(format!("copy-{id:x}")))
+        .flex_none()
+        .px(px(7.))
+        .py(px(2.))
+        .rounded(px(5.))
+        .border_1()
+        .border_color(theme::line_strong())
+        .bg(theme::ink())
+        .font_family(".SystemUIFont")
+        .text_size(px(10.5))
+        .text_color(if copied { theme::done() } else { theme::text_muted() })
+        .cursor_pointer()
+        .hover(|d| d.bg(theme::hover()).text_color(theme::text_strong()))
+        .child(if copied { t("✓ Kopiert", "✓ Copied") } else { t("Kopieren", "Copy") })
+        .on_click({
+            let text = text.clone();
+            move |_: &ClickEvent, _, cx| {
+                crate::clipboard::copy(&text, cx);
+                *COPIED.lock().unwrap() = Some((id, Instant::now()));
+                cx.refresh_windows();
+            }
+        });
+    let block = div()
+        .px(px(12.))
+        .pt(px(CODE_HEADER + 4.))
+        .pb(px(10.))
+        .rounded(px(8.))
+        .bg(theme::ink())
+        .border_1()
+        .border_color(theme::line())
+        .child(div().font_family(theme::MONO).text_size(px(12.)).line_height(relative(1.5)).text_color(theme::text()).child(selection::plain(text)));
+    let header = div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .pl(px(6.))
+        .rounded(px(5.))
+        .bg(theme::ink())
+        .text_size(px(10.))
+        .text_color(theme::text_faint())
+        .children(lang)
+        .child(button);
+    StickyHeader { block: block.into_any_element(), header: header.into_any_element() }.into_any_element()
+}
+
+/// Keeps `header` at the block's top right, or at the top of the visible area while the block
+/// is scrolled past (GPUI has no `position: sticky`).
+struct StickyHeader {
+    block: AnyElement,
+    header: AnyElement,
+}
+
+impl IntoElement for StickyHeader {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for StickyHeader {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.block.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        const INSET: f32 = 6.;
+        self.block.prepaint(window, cx);
+        let header = self.header.layout_as_root(size(AvailableSpace::MinContent, AvailableSpace::MinContent), window, cx);
+        let visible_top = f32::from(window.content_mask().bounds.top());
+        let top = f32::from(bounds.top());
+        let room = (f32::from(bounds.size.height) - f32::from(header.height) - 2. * INSET).max(0.);
+        let offset = (visible_top - top).clamp(0., room);
+        let origin = point(bounds.right() - header.width - px(10.), px(top + INSET + offset));
+        self.header.prepaint_at(origin, window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.block.paint(window, cx);
+        self.header.paint(window, cx);
     }
 }
 
@@ -276,7 +418,7 @@ fn table(header: Vec<Inline>, rows: Vec<Vec<Inline>>) -> AnyElement {
         .into_any_element()
 }
 
-fn styled(inline: &Inline) -> StyledText {
+fn styled(inline: &Inline) -> AnyElement {
     let highlights: Vec<_> = inline
         .spans
         .iter()
@@ -297,7 +439,7 @@ fn styled(inline: &Inline) -> StyledText {
             (range.clone(), style)
         })
         .collect();
-    StyledText::new(SharedString::from(inline.text.clone())).with_highlights(highlights)
+    selection::text(inline.text.clone(), highlights)
 }
 
 // ---- Timeline ------------------------------------------------------------------------
@@ -314,7 +456,7 @@ pub fn timeline(s: &Session) -> Vec<AnyElement> {
             ))
             .into_any_element()];
     }
-    s.timeline.iter().rev().take(80).map(timeline_entry).collect()
+    s.timeline[s.timeline.len().saturating_sub(80)..].iter().map(timeline_entry).collect()
 }
 
 fn timeline_entry(event: &Event) -> AnyElement {
@@ -341,7 +483,7 @@ fn timeline_entry(event: &Event) -> AnyElement {
         .items_start()
         .gap(px(12.))
         .py(px(6.))
-        .child(div().flex_none().w(px(36.)).text_size(px(11.5)).text_color(theme::text_faint()).pt(px(1.)).child(time))
+        .child(div().flex_none().w(px(36.)).text_size(px(11.5)).text_color(theme::text_faint()).pt(px(1.)).child(selection::plain(time)))
         .child(div().flex_none().mt(px(6.)).size(px(7.)).rounded_full().bg(color))
         .child(
             div()
@@ -350,7 +492,7 @@ fn timeline_entry(event: &Event) -> AnyElement {
                 .line_clamp(3)
                 .line_height(relative(1.45))
                 .text_color(if reported { theme::text_strong() } else { theme::text() })
-                .child(label),
+                .child(selection::plain(label)),
         )
         .when(reported, |d| {
             d.child(

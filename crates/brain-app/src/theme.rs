@@ -3,6 +3,8 @@
 
 use gpui::{rgb, rgba, Rgba};
 
+pub const MONO: &str = if cfg!(target_os = "macos") { "Menlo" } else { "DejaVu Sans Mono" };
+
 // Surfaces, darkest to lightest.
 pub fn ink() -> Rgba { rgb(0x0f1322) }
 pub fn chrome() -> Rgba { rgb(0x121728) }

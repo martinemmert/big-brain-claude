@@ -1,17 +1,28 @@
+#[cfg_attr(target_os = "linux", path = "clipboard_linux.rs")]
+#[cfg_attr(target_os = "macos", path = "clipboard_macos.rs")]
+mod clipboard;
 mod config;
 mod conversation;
 mod demo;
 mod i18n;
 mod input;
 mod links;
+#[cfg_attr(target_os = "linux", path = "menubar_linux.rs")]
+#[cfg_attr(target_os = "macos", path = "menubar_macos.rs")]
 mod menubar;
 mod messages;
 mod model;
+#[cfg_attr(target_os = "linux", path = "notify_linux.rs")]
+#[cfg_attr(target_os = "macos", path = "notify_macos.rs")]
 mod notify;
 mod prefs;
+mod selection;
 mod theme;
 mod view;
 mod widgets;
+// Used only where the desktop leaves the window frame to the app (GNOME).
+#[path = "window_frame_linux.rs"]
+mod window_frame;
 
 use gpui::{
     actions, point, prelude::*, px, size, App, Application, Bounds, KeyBinding, Menu, MenuItem,
@@ -25,7 +36,7 @@ fn main() {
     app.on_open_urls(links::received);
     app.run(|cx: &mut App| {
         cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+        cx.bind_keys([KeyBinding::new(if cfg!(target_os = "macos") { "cmd-q" } else { "ctrl-q" }, Quit, None)]);
         cx.set_menus(vec![Menu {
             name: "Brain".into(),
             items: vec![MenuItem::action("Quit Brain", Quit)],
@@ -37,6 +48,8 @@ fn main() {
                 appears_transparent: true,
                 traffic_light_position: Some(point(px(14.), px(14.))),
             }),
+            // Matches brain.desktop, so Linux taskbars show Brain's icon.
+            app_id: Some("brain".into()),
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
                 size(px(1180.), px(760.)),

@@ -4,10 +4,10 @@
 # ⌥⏎ shows it in Brain (`brain show`).
 #
 # The info.plist follows the structure Alfred 5 exports (objects with uid,
-# connections keyed by source uid, uidata positions). Usage: alfred.sh <version>
+# connections keyed by source uid, uidata positions). Usage: alfred-macos.sh <version>
 set -euo pipefail
 
-version="${1:?usage: alfred.sh <version>}"
+version="${1:?usage: alfred-macos.sh <version>}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 dist="$root/dist"
 out="$dist/Brain.alfredworkflow"
@@ -26,7 +26,7 @@ option_modifier=524288
 # `&` and `<` must be written as &amp; and &lt;.
 path_prefix='PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"'
 
-cp "$root/assets/icon.png" "$work/icon.png"
+cp "$root/assets/icon-1024.png" "$work/icon.png"
 cat > "$work/info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

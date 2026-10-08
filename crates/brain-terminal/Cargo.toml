@@ -4,3 +4,7 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+serde.workspace = true
+zbus = "5"

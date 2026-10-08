@@ -8,7 +8,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
-./scripts/bundle.sh
+./scripts/bundle-macos.sh
 
 echo "→ brain CLI"
 mkdir -p "$HOME/.cargo/bin"
