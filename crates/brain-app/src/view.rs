@@ -17,6 +17,7 @@ use crate::menubar::MenuBar;
 use crate::model::Model;
 use crate::notify::{self, Notifier};
 use crate::prefs::{Layout, Prefs};
+use crate::selection;
 use brain_terminal::{self as terminal, Capabilities, Key, Limit, Outcome};
 use crate::window_frame;
 use crate::widgets::{
@@ -54,6 +55,7 @@ pub struct BrainView {
     /// Session and newest event the timeline last showed, to follow new events.
     timeline_seen: Option<(SessionKey, Option<chrono::DateTime<chrono::Utc>>)>,
     changes_scroll: ScrollHandle,
+    today_scroll: ScrollHandle,
     /// Where the scrollbar thumb was grabbed, measured from its top, while it is dragged.
     thumb_grab: Option<Pixels>,
     mode: Mode,
@@ -122,7 +124,7 @@ enum Choice {
     Folder(String),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DetailTab {
     Messages,
     Timeline,
@@ -211,6 +213,7 @@ impl BrainView {
             timeline_scroll: ScrollHandle::new(),
             timeline_seen: None,
             changes_scroll: ScrollHandle::new(),
+            today_scroll: ScrollHandle::new(),
             thumb_grab: None,
             mode: Mode::Normal,
             search: LineInput::default(),
@@ -992,6 +995,15 @@ impl BrainView {
             cx.stop_propagation();
             cx.notify();
             return;
+        }
+        if primary(&keystroke.modifiers) && keystroke.key == "c" {
+            if let Some(text) = selection::selected_text() {
+                crate::clipboard::copy(&text, cx);
+                self.set_status(t("Markierung kopiert.", "Copied the selection."));
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
         }
         if primary(&keystroke.modifiers) && keystroke.key == "c" && self.prefs.layout == Layout::Today {
             let date = chrono::Local::now().format("%d.%m.%Y").to_string();
@@ -1963,6 +1975,7 @@ impl BrainView {
                 )))
                 .into_any_element();
         };
+        selection::begin(format!("{:?} {:?}", s.key, self.tab));
         let phase = s.phase();
         let caps = self.capabilities();
         let primary = if phase == Phase::Ended {
@@ -2230,7 +2243,17 @@ impl BrainView {
             .min_h_0()
             .flex()
             .flex_col()
-            .child(content.flex_1().min_h_0().pr(px(14.)).overflow_y_scroll().track_scroll(handle))
+            .child(content.flex_1().min_h_0().pr(px(14.)).overflow_y_scroll().track_scroll(handle).cursor_text())
+            .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, _, cx| {
+                selection::press(event.position, event.click_count);
+                cx.notify();
+            }))
+            .on_mouse_move(cx.listener(|_, event: &MouseMoveEvent, _, cx| {
+                if event.dragging() && selection::drag(event.position) {
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|_, _, _, _| selection::release()))
             .when_some(thumb, |d, (top, height)| {
                 let dragging = self.thumb_grab.is_some();
                 d.child(
@@ -2362,6 +2385,7 @@ impl BrainView {
     }
 
     fn render_today(&self, cx: &mut Context<Self>) -> AnyElement {
+        selection::begin("today".into());
         let projects = self.today_digest();
         let date = chrono::Local::now().format("%d.%m.%Y").to_string();
         let title = tr!("Heute, {date}", "Today, {date}");
@@ -2374,7 +2398,7 @@ impl BrainView {
         }
         for project in &projects {
             body.push(
-                div().mt(px(14.)).text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::text_strong()).child(project.project.clone()).into_any_element(),
+                div().mt(px(14.)).text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::text_strong()).child(selection::plain(project.project.clone())).into_any_element(),
             );
             for session in &project.sessions {
                 body.push(
@@ -2383,7 +2407,7 @@ impl BrainView {
                         .items_center()
                         .gap(px(8.))
                         .mt(px(6.))
-                        .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::text()).child(session.name.clone()))
+                        .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::text()).child(selection::plain(session.name.clone())))
                         .child(account_badge(&session.account, self.account_index(&session.account)))
                         .into_any_element(),
                 );
@@ -2394,8 +2418,8 @@ impl BrainView {
                             .gap(px(10.))
                             .pl(px(2.))
                             .text_size(px(12.5))
-                            .child(div().flex_none().w(px(40.)).text_color(theme::text_faint()).child(entry.at.format("%H:%M").to_string()))
-                            .child(div().flex_1().min_w_0().line_height(relative(1.45)).text_color(theme::text()).child(plain(&entry.text)))
+                            .child(div().flex_none().w(px(40.)).text_color(theme::text_faint()).child(selection::plain(entry.at.format("%H:%M").to_string())))
+                            .child(div().flex_1().min_w_0().line_height(relative(1.45)).text_color(theme::text()).child(selection::plain(plain(&entry.text))))
                             .into_any_element(),
                     );
                 }
@@ -2424,7 +2448,7 @@ impl BrainView {
                         cx.notify();
                     }))),
             )
-            .child(div().id("today-body").flex_1().min_h_0().flex().flex_col().gap(px(2.)).pb(px(24.)).overflow_y_scroll().children(body))
+            .child(self.scroll_area(div().id("today-body").flex().flex_col().gap(px(2.)).pb(px(24.)).children(body), &self.today_scroll, cx))
             .into_any_element()
     }
 
@@ -2727,7 +2751,7 @@ fn change_row(file: &brain_core::changes::FileChange) -> AnyElement {
         .py(px(3.))
         .text_size(px(12.))
         .child(div().flex_none().w(px(22.)).font_family(theme::MONO).text_color(color).child(if code.is_empty() { "M".to_string() } else { code.to_string() }))
-        .child(div().flex_1().min_w_0().truncate().font_family(theme::MONO).text_size(px(11.5)).text_color(theme::text()).child(file.path.clone()))
+        .child(div().flex_1().min_w_0().truncate().font_family(theme::MONO).text_size(px(11.5)).text_color(theme::text()).child(selection::plain(file.path.clone())))
         .when_some(file.added.filter(|a| *a > 0), |d, a| d.child(div().flex_none().text_color(theme::done()).child(format!("+{a}"))))
         .when_some(file.removed.filter(|r| *r > 0), |d, r| d.child(div().flex_none().text_color(theme::calls()).child(format!("−{r}"))))
         .into_any_element()

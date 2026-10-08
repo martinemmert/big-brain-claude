@@ -16,6 +16,7 @@ mod model;
 #[cfg_attr(target_os = "macos", path = "notify_macos.rs")]
 mod notify;
 mod prefs;
+mod selection;
 mod theme;
 mod view;
 mod widgets;

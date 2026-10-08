@@ -11,10 +11,11 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     div, point, prelude::*, px, relative, size, AnyElement, App, AvailableSpace, Bounds, ClickEvent, Element, ElementId,
-    FontWeight, GlobalElementId, HighlightStyle, InspectorElementId, LayoutId, Pixels, SharedString, StyledText, Window,
+    FontWeight, GlobalElementId, HighlightStyle, InspectorElementId, LayoutId, Pixels, SharedString, Window,
 };
 
 use crate::i18n::t;
+use crate::selection;
 use crate::widgets::{note, plain};
 use crate::{theme, tr};
 
@@ -73,7 +74,7 @@ fn user_bubble(message: &Message) -> AnyElement {
                 .text_color(theme::text_strong())
                 .line_height(relative(1.5))
                 .line_clamp(14)
-                .child(message.text.clone()),
+                .child(selection::plain(message.text.clone())),
         )
         .into_any_element()
 }
@@ -106,7 +107,7 @@ fn system_note(text: &str) -> AnyElement {
         .text_size(px(11.5))
         .text_color(theme::text_faint())
         .child(div().h(px(1.)).w(px(14.)).bg(theme::line_strong()))
-        .child(div().flex_1().min_w_0().truncate().child(note(text)))
+        .child(div().flex_1().min_w_0().truncate().child(selection::plain(note(text))))
         .into_any_element()
 }
 
@@ -148,7 +149,7 @@ fn tool_row(call: &Message) -> AnyElement {
                 .flex_none()
                 .text_color(theme::text_muted())
                 .font_weight(FontWeight::MEDIUM)
-                .child(short_tool_name(&tool)),
+                .child(selection::plain(short_tool_name(&tool))),
         )
         .child(
             div()
@@ -158,7 +159,7 @@ fn tool_row(call: &Message) -> AnyElement {
                 .font_family(theme::MONO)
                 .text_size(px(11.5))
                 .text_color(theme::text())
-                .child(theme::tilde(&note(&call.text))),
+                .child(selection::plain(theme::tilde(&note(&call.text)))),
         )
         .into_any_element()
 }
@@ -241,7 +242,7 @@ fn block(block: Block) -> AnyElement {
             .text_size(px(12.))
             .line_height(relative(1.5))
             .text_color(theme::text())
-            .child(text)
+            .child(selection::plain(text))
             .when_some(lang, |d, lang| {
                 d.child(
                     div()
@@ -308,7 +309,7 @@ fn copyable_code(lang: Option<String>, text: String) -> AnyElement {
         .bg(theme::ink())
         .border_1()
         .border_color(theme::line())
-        .child(div().font_family(theme::MONO).text_size(px(12.)).line_height(relative(1.5)).text_color(theme::text()).child(text));
+        .child(div().font_family(theme::MONO).text_size(px(12.)).line_height(relative(1.5)).text_color(theme::text()).child(selection::plain(text)));
     let header = div()
         .flex()
         .items_center()
@@ -417,7 +418,7 @@ fn table(header: Vec<Inline>, rows: Vec<Vec<Inline>>) -> AnyElement {
         .into_any_element()
 }
 
-fn styled(inline: &Inline) -> StyledText {
+fn styled(inline: &Inline) -> AnyElement {
     let highlights: Vec<_> = inline
         .spans
         .iter()
@@ -438,7 +439,7 @@ fn styled(inline: &Inline) -> StyledText {
             (range.clone(), style)
         })
         .collect();
-    StyledText::new(SharedString::from(inline.text.clone())).with_highlights(highlights)
+    selection::text(inline.text.clone(), highlights)
 }
 
 // ---- Timeline ------------------------------------------------------------------------
@@ -482,7 +483,7 @@ fn timeline_entry(event: &Event) -> AnyElement {
         .items_start()
         .gap(px(12.))
         .py(px(6.))
-        .child(div().flex_none().w(px(36.)).text_size(px(11.5)).text_color(theme::text_faint()).pt(px(1.)).child(time))
+        .child(div().flex_none().w(px(36.)).text_size(px(11.5)).text_color(theme::text_faint()).pt(px(1.)).child(selection::plain(time)))
         .child(div().flex_none().mt(px(6.)).size(px(7.)).rounded_full().bg(color))
         .child(
             div()
@@ -491,7 +492,7 @@ fn timeline_entry(event: &Event) -> AnyElement {
                 .line_clamp(3)
                 .line_height(relative(1.45))
                 .text_color(if reported { theme::text_strong() } else { theme::text() })
-                .child(label),
+                .child(selection::plain(label)),
         )
         .when(reported, |d| {
             d.child(
