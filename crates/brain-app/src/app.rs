@@ -81,6 +81,7 @@ pub enum PaletteCommand {
     Split,
     Overview,
     Composer,
+    Shell,
 }
 
 /// Slash commands the palette offers for the selected session.
@@ -255,6 +256,10 @@ pub enum Message {
     MouseReleased,
     /// A terminal's request to put text on the clipboard, and whether it has the keyboard.
     TerminalCopy(SessionKey, String, bool),
+    /// Whether this session's shell has the keyboard (asked after a click).
+    ShellFocused(SessionKey, bool),
+    /// ⌘T: show or hide the session's shell.
+    ToggleShell,
     /// Whether this session's terminal has the keyboard (asked after a click).
     TermFocused(SessionKey, bool),
     /// ⌘D: the current terminal stays on the left, the next selected session opens beside it.
@@ -498,6 +503,11 @@ pub struct Brain {
     /// Whether the selected session's terminal has the keyboard (drawn as a ring).
     /// The terminal that has the keyboard (Brain's shortcuts are off while one has it).
     pub focused_terminal: Option<SessionKey>,
+    /// ⌘T: a login shell per session, in its folder, below its Claude terminal.
+    pub shells: HashMap<SessionKey, iced_term::Terminal>,
+    pub shell_visible: bool,
+    /// The session whose shell has the keyboard.
+    pub focused_shell: Option<SessionKey>,
     /// The terminal the user last typed into, and when.
     last_terminal_input: Option<(SessionKey, Instant)>,
     /// The terminal the user last released the mouse in (the end of a selection), and when.
@@ -600,6 +610,9 @@ impl Brain {
             terminals: HashMap::new(),
             next_terminal: 1,
             focused_terminal: None,
+            shells: HashMap::new(),
+            shell_visible: false,
+            focused_shell: None,
             last_terminal_input: None,
             last_terminal_release: None,
             file_hover: false,
@@ -659,6 +672,7 @@ impl Brain {
             }));
         }
         subscriptions.extend(self.terminals.values().map(|term| term.subscription().map(Message::Term)));
+        subscriptions.extend(self.shells.values().map(|term| term.subscription().map(Message::Term)));
         if !self.model.is_demo() {
             subscriptions.push(iced::time::every(Duration::from_secs(120)).map(|_| Message::CheckPrs));
             subscriptions.push(iced::time::every(Duration::from_secs(24 * 60 * 60)).map(|_| Message::CheckUpdate));
@@ -943,6 +957,17 @@ impl Brain {
             Message::ZoomWindow => window::latest().and_then(window::toggle_maximize),
             Message::Term(event) => {
                 let iced_term::Event::BackendCall(id, command) = event;
+                // A shell's event: its own map; it ends by itself (exit), nothing else to do.
+                if let Some(key) = self.shells.iter().find(|(_, term)| term.id == id).map(|(key, _)| key.clone()) {
+                    let action = self.shells.get_mut(&key).map(|term| term.handle(iced_term::Command::ProxyToBackend(command)));
+                    if action == Some(iced_term::actions::Action::Shutdown) {
+                        self.shells.remove(&key);
+                        if self.focused_shell.as_ref() == Some(&key) {
+                            self.focused_shell = None;
+                        }
+                    }
+                    return Task::none();
+                }
                 let key = self.terminals.iter().find(|(_, term)| term.id == id).map(|(key, _)| key.clone());
                 let mut task = Task::none();
                 if let Some(key) = key {
@@ -1000,7 +1025,7 @@ impl Brain {
             },
             Message::MousePressed => {
                 // Clicks move the keyboard in or out of a terminal; ask each shown one.
-                let asks: Vec<Task<Message>> = self
+                let mut asks: Vec<Task<Message>> = self
                     .shown_terminals
                     .iter()
                     .filter_map(|key| {
@@ -1009,8 +1034,20 @@ impl Brain {
                         Some(operation::is_focused(term.widget_id().clone()).map(move |focused| Message::TermFocused(key.clone(), focused)))
                     })
                     .collect();
+                if let Some((key, shell)) = self.selected.as_ref().filter(|_| self.shell_visible).and_then(|k| Some((k.clone(), self.shells.get(k)?))) {
+                    asks.push(operation::is_focused(shell.widget_id().clone()).map(move |focused| Message::ShellFocused(key.clone(), focused)));
+                }
                 Task::batch(asks)
             }
+            Message::ShellFocused(key, focused) => {
+                if focused {
+                    self.focused_shell = Some(key);
+                } else if self.focused_shell.as_ref() == Some(&key) {
+                    self.focused_shell = None;
+                }
+                Task::none()
+            }
+            Message::ToggleShell => self.toggle_shell(),
             Message::QuickTerminal => self.quick_terminal(),
             Message::ScreenshotTo(into_terminal) => {
                 let Some(path) = self.screenshot_offer.take() else { return Task::none() };
@@ -1469,6 +1506,50 @@ impl Brain {
         Task::batch([self.bring_forward(), self.open_composer()])
     }
 
+    /// ⌘T: a login shell in the selected session's folder, below its Claude terminal; again
+    /// hides it (the shell keeps running).
+    fn toggle_shell(&mut self) -> Task<Message> {
+        if self.shell_visible {
+            self.shell_visible = false;
+            self.focused_shell = None;
+            return unfocus();
+        }
+        let Some(key) = self.selected.clone() else { return Task::none() };
+        if self.model.is_demo() {
+            return Task::none();
+        }
+        if !self.shells.contains_key(&key) {
+            let cwd = self.selected_session().and_then(|s| s.cwd.clone()).unwrap_or_else(|| brain_core::account::home_dir().display().to_string());
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+            let mut env = HashMap::new();
+            env.insert("TERM".to_string(), "xterm-256color".to_string());
+            let font = crate::chat_font::get();
+            let settings = iced_term::settings::Settings {
+                font: iced_term::settings::FontSettings { size: font.size, font_type: font.regular, scale_factor: 1.3 },
+                theme: iced_term::settings::ThemeSettings::new(Box::new(crate::style::terminal_palette())),
+                backend: iced_term::settings::BackendSettings { program: shell, args: vec!["-l".into()], env, working_directory: Some(cwd.into()) },
+            };
+            match iced_term::Terminal::new(self.next_terminal, settings) {
+                Ok(term) => {
+                    self.next_terminal += 1;
+                    self.shells.insert(key.clone(), term);
+                }
+                Err(err) => {
+                    self.set_status(tr!("Shell startet nicht: {err}", "Shell didn't start: {err}"));
+                    return Task::none();
+                }
+            }
+        }
+        self.shell_visible = true;
+        self.tab = DetailTab::Terminal;
+        self.focused_terminal = None;
+        self.focused_shell = Some(key.clone());
+        match self.shells.get(&key) {
+            Some(shell) => iced_term::TerminalView::focus(shell.widget_id().clone()),
+            None => Task::none(),
+        }
+    }
+
     /// ⌘E: the composer for the selected session.
     fn open_composer(&mut self) -> Task<Message> {
         if self.selected.is_none() {
@@ -1544,6 +1625,7 @@ impl Brain {
             all.push((tr!("Längeren Prompt an „{name}“ schreiben", "Write a longer prompt for “{name}”"), "⌘E", PaletteCommand::Composer));
             all.push((t("Letzte Antwort kopieren", "Copy the last answer").to_string(), "⌘⇧C", PaletteCommand::Act(Action::CopyAnswer)));
             all.push((t("Gespräch als Markdown öffnen", "Open the conversation as Markdown").to_string(), "", PaletteCommand::Act(Action::Export)));
+            all.push((t("Shell im Projektordner", "Shell in the project folder").to_string(), "⌘T", PaletteCommand::Shell));
             all.push((t("In der Session suchen", "Find in the session").to_string(), "⌘F", PaletteCommand::Find));
             all.push((t("Dateien der Session", "The session's files").to_string(), "", PaletteCommand::Tab(DetailTab::Files)));
             all.push((t("Änderungen (git)", "Changes (git)").to_string(), "", PaletteCommand::Tab(DetailTab::Changes)));
@@ -1641,6 +1723,7 @@ impl Brain {
             }
             PaletteCommand::Overview => self.update(Message::ToggleOverview),
             PaletteCommand::Composer => self.open_composer(),
+            PaletteCommand::Shell => self.update(Message::ToggleShell),
         }
     }
 
@@ -2299,7 +2382,10 @@ impl Brain {
         // A focused terminal keeps Esc (it interrupts Claude); ⌘[ leaves it.
         // Esc always leaves a dialog or view on top (clean-up, new session, palette, overview);
         // only in the normal view does a terminal with the keyboard keep it (it interrupts Claude).
-        let terminal_keeps_keys = self.mode == Mode::Normal && !self.overview && self.tab == DetailTab::Terminal && self.focused_terminal.is_some();
+        let terminal_keeps_keys = self.mode == Mode::Normal
+            && !self.overview
+            && self.tab == DetailTab::Terminal
+            && (self.focused_terminal.is_some() || (self.shell_visible && self.focused_shell.is_some()));
         if named == Some(Named::Escape) && !terminal_keeps_keys {
             return self.escape();
         }
@@ -2333,6 +2419,10 @@ impl Brain {
         }
         if cmd && modifiers.shift() && character.as_deref() == Some("a") {
             return self.update(Message::ToggleOverview);
+        }
+        // ⌘T: the session's shell, also from inside a terminal.
+        if cmd && character.as_deref() == Some("t") && self.mode == Mode::Normal {
+            return self.toggle_shell();
         }
         // ⌘K: the command palette, ⌘E: the composer, also from inside the terminal.
         if cmd && character.as_deref() == Some("k") {
@@ -2369,6 +2459,7 @@ impl Brain {
         }
         if cmd && matches!(character.as_deref(), Some("1") | Some("[")) {
             self.focused_terminal = None;
+            self.focused_shell = None;
             if self.mode == Mode::Search {
                 self.mode = Mode::Normal;
             }
@@ -2376,7 +2467,7 @@ impl Brain {
         }
         // While the terminal has the keyboard, Brain's shortcuts are off: everything is Claude's.
         // A dialog on top (clean-up, new session) has the keys, though.
-        if terminal_keeps_keys && self.has_terminal() {
+        if terminal_keeps_keys && (self.has_terminal() || self.focused_shell.is_some()) {
             return Task::none();
         }
         if captured {

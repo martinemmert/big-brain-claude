@@ -1001,7 +1001,29 @@ fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
 /// The Terminal tab; split (⌘D), the kept session's terminal beside it; an open file shows
 /// in the reader (also once the terminal ended).
 fn terminal<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
-    with_reader(brain, terminal_or_hint(brain, s))
+    let main = terminal_or_hint(brain, s);
+    let main = match brain.shells.get(&s.key).filter(|_| brain.shell_visible) {
+        Some(shell) => column![container(main).height(Length::FillPortion(3)), shell_pane(brain, s, shell)].spacing(8).height(Fill).into(),
+        None => main,
+    };
+    with_reader(brain, main)
+}
+
+/// ⌘T: the session's shell, below its Claude terminal.
+fn shell_pane<'a>(brain: &'a Brain, s: &Session, shell: &'a iced_term::Terminal) -> Element<'a, Message> {
+    let focused = brain.focused_shell.as_ref() == Some(&s.key);
+    let edge = if focused { alpha(WORKING, 0x88) } else { LINE };
+    let head = row![
+        text(t("Shell", "Shell")).size(12).color(TEXT_MUTED).font(style::semibold()),
+        text(s.cwd.as_deref().map(tilde).unwrap_or_default()).size(11).color(TEXT_FAINT).font(MONO),
+        Space::new().width(Fill),
+        kbd("⌘T"),
+        text(t("ausblenden", "hide")).size(11).color(TEXT_FAINT).font(UI),
+    ]
+    .spacing(8)
+    .align_y(iced::Center);
+    let screen = container(iced_term::TerminalView::show(shell).map(Message::Term)).padding([10, 14]).width(Fill).height(Fill).style(move |_| boxed(INK, edge, 10.0));
+    column![head, screen].spacing(6).height(Length::FillPortion(2)).padding(Padding { bottom: 12.0, ..Padding::ZERO }).into()
 }
 
 /// ⌘⇧A: every session that runs in Brain as a live preview; a click opens it.
@@ -1735,10 +1757,12 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
 // ---- footer -----------------------------------------------------------------------
 
 fn footer(brain: &Brain) -> Element<'_, Message> {
-    let terminal_hints: [(&str, &str); 8] = [
+    let terminal_hints: [(&str, &str); 10] = [
         ("⏎ ⌘2", t("ins Terminal", "into terminal")),
         ("⌘1", t("zur Liste", "to the list")),
         ("⌘K", t("Befehle", "commands")),
+        ("⌘E", t("Composer", "composer")),
+        ("⌘T", t("Shell", "shell")),
         ("⌘D", t("teilen", "split")),
         ("⌘-Klick", t("Pfad öffnen", "open path")),
         ("⌘V", t("Screenshot einfügen", "paste screenshot")),
