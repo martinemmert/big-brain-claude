@@ -123,6 +123,8 @@ pub enum Message {
     Term(iced_term::Event),
     /// A background session Brain started or took over: its account and short id, or why not.
     Started(String, Result<String, String>),
+    /// A Markdown file was handed to YAMV (`true`), or to the text editor because YAMV is missing.
+    MarkdownOpened(String, bool),
     MousePressed,
     TermFocused(bool),
     FileHover(bool),
@@ -147,7 +149,6 @@ pub struct Reader {
 }
 
 pub enum ReaderKind {
-    Markdown(String),
     Code(iced::widget::text_editor::Content, String),
     Image(iced::widget::image::Handle),
     Unreadable(String),
@@ -624,6 +625,15 @@ impl Brain {
                 self.terminal_focused = focused;
                 Task::none()
             }
+            Message::MarkdownOpened(name, in_yamv) => {
+                if !in_yamv {
+                    self.set_status(tr!(
+                        "YAMV ist nicht installiert – {name} ist im Texteditor offen.",
+                        "YAMV isn't installed – {name} opened in the text editor."
+                    ));
+                }
+                Task::none()
+            }
             Message::FileHover(hovering) => {
                 self.file_hover = hovering;
                 Task::none()
@@ -968,6 +978,9 @@ impl Brain {
             self.set_status(tr!("Datei nicht gefunden: {link}", "File not found: {link}"));
             return Task::none();
         };
+        if is_markdown(&path) {
+            return open_markdown(path);
+        }
         self.reader = Some(read_file(path));
         Task::none()
     }
@@ -2407,7 +2420,7 @@ fn open_reader_file(reader: &Reader) {
     let extension = reader.path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
     let mut command = std::process::Command::new("open");
     match &reader.kind {
-        ReaderKind::Markdown(_) | ReaderKind::Code(..) => command.arg("-t"),
+        ReaderKind::Code(..) => command.arg("-t"),
         ReaderKind::Image(_) => command.args(["-a", "Preview"]),
         ReaderKind::Unreadable(_) if extension == "pdf" => command.args(["-a", "Preview"]),
         ReaderKind::Unreadable(_) => return,
@@ -2444,6 +2457,27 @@ fn resolve_path(link: &str, cwd: &str) -> Option<std::path::PathBuf> {
 }
 
 /// Loads a file for the reader: Markdown rendered, images shown, other text highlighted.
+/// Markdown is read in YAMV (Yet Another Markdown Viewer): math, Mermaid, footnotes and the
+/// rest of extended Markdown, which Brain's own reader doesn't draw.
+const YAMV: &str = "de.martinemmert.projects.yamv";
+
+fn is_markdown(path: &std::path::Path) -> bool {
+    path.extension().is_some_and(|e| matches!(e.to_string_lossy().to_lowercase().as_str(), "md" | "markdown"))
+}
+
+/// Opens a Markdown file in YAMV; without YAMV, in the default text editor.
+fn open_markdown(path: std::path::PathBuf) -> Task<Message> {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let opened = off_thread(move || {
+        let in_yamv = std::process::Command::new("open").args(["-b", YAMV]).arg(&path).status().is_ok_and(|s| s.success());
+        if !in_yamv {
+            let _ = std::process::Command::new("open").arg("-t").arg(&path).status();
+        }
+        in_yamv
+    });
+    Task::perform(opened, move |in_yamv| Message::MarkdownOpened(name.clone(), in_yamv))
+}
+
 fn read_file(path: std::path::PathBuf) -> Reader {
     const LIMIT: u64 = 2 * 1024 * 1024;
     let extension = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
@@ -2453,7 +2487,6 @@ fn read_file(path: std::path::PathBuf) -> Reader {
         ReaderKind::Unreadable(t("Die Datei ist zu groß für den Reader.", "The file is too large for the reader.").into())
     } else {
         match std::fs::read_to_string(&path) {
-            Ok(text) if matches!(extension.as_str(), "md" | "markdown") => ReaderKind::Markdown(text),
             Ok(text) => ReaderKind::Code(iced::widget::text_editor::Content::with_text(&text), extension),
             Err(_) if extension == "pdf" => ReaderKind::Unreadable(t("Ein PDF – ⌘⏎ öffnet es in der Vorschau.", "A PDF – ⌘⏎ opens it in Preview.").into()),
             Err(_) => ReaderKind::Unreadable(t("Keine Textdatei – der Reader zeigt sie nicht.", "Not a text file – the reader can't show it.").into()),

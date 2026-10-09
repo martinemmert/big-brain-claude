@@ -847,7 +847,6 @@ fn reader_pane(reader: &crate::app::Reader) -> Element<'_, Message> {
     .align_y(iced::Center);
     let font = crate::chat_font::get();
     let body: Element<'_, Message> = match &reader.kind {
-        ReaderKind::Markdown(source) => scrollable(container(markdown::document(source)).padding(Padding { right: 12.0, ..Padding::ZERO })).height(Fill).style(scrollbar).into(),
         ReaderKind::Code(content, extension) => iced::widget::text_editor(content)
             .highlight(extension, iced::highlighter::Theme::Base16Ocean)
             .font(font.regular)

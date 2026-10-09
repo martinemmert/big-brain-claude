@@ -27,8 +27,10 @@ interface follows your macOS language: English or German.
   into Brain without losing its conversation (`/exit` there, `claude --bg --resume` here).
 - **Screenshots and files in.** Drag files onto the terminal or paste a copied screenshot with
   `⌘V`: Brain inserts the path, and Claude reads the picture. `⌘`-click a path or URL in the
-  output: files open in a reader beside the terminal (Markdown rendered, code highlighted,
-  images shown; `⌘⏎` opens it in your editor), URLs in the browser.
+  output: Markdown opens in [YAMV](https://github.com/martinemmert/yet-another-markdown-viewer)
+  (math, Mermaid, extended Markdown; the text editor if YAMV isn't installed), other files in a
+  reader beside the terminal (code highlighted, images shown; `⌘⏎` opens it in your editor),
+  URLs in the browser.
 
 - **Triage inbox.** Sessions that wait for you come first, longest wait on top: red when
   Claude asks a question or needs a permission, amber when a turn finished, quiet blue when the
@@ -188,7 +190,7 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `⌥⏎` | open it in iTerm instead |
 | `⌘J` / `⌘[` | keyboard into the terminal / back to the list |
 | `I` `I` | move a session from its iTerm tab into Brain |
-| `⌘`-click | open a path (reader) or URL from the terminal output |
+| `⌘`-click | open a path (Markdown in YAMV, else the reader) or URL from the terminal output |
 | `1`–`9` | open the n-th session |
 | `Y` / `N` | allow / deny an open permission prompt |
 | `T` | reply to a session that waits for you (then `1`–`9` for a quick reply) |
