@@ -71,9 +71,9 @@ pub fn session_files(account: &Account, session_id: &str) -> Vec<PathBuf> {
     files
 }
 
-/// The ids of every session whose transcript Claude Code still keeps for this account, i.e. the
-/// sessions that can still be resumed.
-pub fn kept_session_ids(account: &Account) -> std::collections::HashSet<String> {
+/// Every session whose transcript Claude Code still keeps for this account (the sessions that
+/// can still be resumed), by id, with the transcript's path.
+pub fn kept_transcripts(account: &Account) -> std::collections::HashMap<String, PathBuf> {
     std::fs::read_dir(account.config_dir.join("projects"))
         .into_iter()
         .flatten()
@@ -81,9 +81,22 @@ pub fn kept_session_ids(account: &Account) -> std::collections::HashSet<String> 
         .flat_map(|project| std::fs::read_dir(project.path()).into_iter().flatten().flatten())
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
-            name.strip_suffix(".jsonl").map(str::to_string)
+            Some((name.strip_suffix(".jsonl")?.to_string(), entry.path()))
         })
         .collect()
+}
+
+/// How a session was started (`entrypoint` of its first entries, see [`Insight::entrypoint`]);
+/// reads only the start of the transcript.
+pub fn entrypoint_of(transcript: &Path) -> Option<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(transcript).ok()?;
+    std::io::BufReader::new(file)
+        .lines()
+        .take(60)
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+        .find_map(|entry| entry.get("entrypoint")?.as_str().map(str::to_string))
 }
 
 /// Copies a session's transcript (and its folder of subagent transcripts and tool output, if any)
@@ -191,6 +204,16 @@ pub struct Insight {
     pub title: Option<String>,
     /// Files this session wrote or edited (Write, Edit, MultiEdit, NotebookEdit), most recent last.
     pub edited: Vec<String>,
+    /// How the session was started: `cli` (a terminal), `claude-desktop`, or `sdk-py`,
+    /// `sdk-ts`, `sdk-cli` for sessions a program started (reviews, `claude -p` scripts).
+    pub entrypoint: Option<String>,
+}
+
+impl Insight {
+    /// Started by a program through the Agent SDK or `claude -p`, not by the user.
+    pub fn is_automated(&self) -> bool {
+        self.entrypoint.as_deref().is_some_and(|e| e.starts_with("sdk-"))
+    }
 }
 
 /// The folder a session ran in: the `cwd` of its first entry that has one.
@@ -243,6 +266,9 @@ pub fn insight(transcript: &Path) -> Insight {
             .and_then(|t| t.parse::<DateTime<Utc>>().ok())
             .map(|t| t.timestamp_millis());
         let field = |key: &str| entry.get(key).and_then(Value::as_str).map(str::to_string);
+        if out.entrypoint.is_none() {
+            out.entrypoint = field("entrypoint");
+        }
         match entry.get("type").and_then(Value::as_str).unwrap_or_default() {
             "system" if field("subtype").as_deref() == Some("turn_duration") => {
                 if let Some(ts) = ts {
@@ -449,6 +475,18 @@ mod tests {
         let path = dir.path().join("s.jsonl");
         std::fs::write(&path, lines.join("\n")).unwrap();
         (dir, path)
+    }
+
+    #[test]
+    fn sessions_started_through_the_sdk_are_automated() {
+        let review = [r#"{"type":"user","entrypoint":"sdk-py","message":{"role":"user","content":"Review this change"},"timestamp":"2026-10-09T20:00:00Z"}"#];
+        let (_dir, path) = transcript(&review);
+        assert!(insight(&path).is_automated());
+
+        let mine = [r#"{"type":"user","entrypoint":"cli","message":{"role":"user","content":"Fix it"},"timestamp":"2026-10-09T20:00:00Z"}"#];
+        let (_dir, path) = transcript(&mine);
+        assert_eq!(insight(&path).entrypoint.as_deref(), Some("cli"));
+        assert!(!insight(&path).is_automated());
     }
 
     #[test]

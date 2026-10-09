@@ -229,6 +229,7 @@ pub fn build() -> Demo {
                 cost_usd: Some(cost),
                 title: None,
                 edited: Vec::new(),
+                entrypoint: Some("cli".into()),
             },
         );
     }

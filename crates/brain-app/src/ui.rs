@@ -285,6 +285,11 @@ fn titlebar(brain: &Brain) -> Element<'_, Message> {
         let label = if brain.prefs.show_background { t("◌ Hintergrund an", "◌ Background on").to_string() } else { tr!("◌ {count} im Hintergrund", "◌ {count} in background") };
         bar = bar.push(style::text_button(label, brain.prefs.show_background, Message::ToggleBackground));
     }
+    if brain.prefs.show_automated || groups.automated > 0 {
+        let count = groups.automated;
+        let label = if brain.prefs.show_automated { t("⚙ Automatisch an", "⚙ Automated on").to_string() } else { tr!("⚙ {count} automatisch", "⚙ {count} automated") };
+        bar = bar.push(style::text_button(label, brain.prefs.show_automated, Message::ToggleAutomated));
+    }
     let mut accounts = vec![(t("Alle", "All").to_string(), brain.filter.is_none(), Message::Filter(None))];
     accounts.extend(brain.model.accounts.iter().map(|a| (a.id.clone(), brain.filter.as_deref() == Some(&a.id), Message::Filter(Some(a.id.clone())))));
     bar = bar.push(segmented(accounts));
@@ -387,6 +392,9 @@ fn scrollbar(theme: &iced::Theme, status: scrollable::Status) -> scrollable::Sty
 /// Small markers after a session's name: worktree, PR, conflict, background, pinned, muted …
 fn markers<'a>(brain: &'a Brain, s: &Session) -> Vec<Element<'a, Message>> {
     let mut out = Vec::new();
+    if s.insight.is_automated() {
+        out.push(marker(t("⚙ automatisch", "⚙ automated"), TEXT_FAINT));
+    }
     if brain.bells.contains(&s.key) {
         out.push(marker(t("● klingelt", "● rang"), CALLS));
     }

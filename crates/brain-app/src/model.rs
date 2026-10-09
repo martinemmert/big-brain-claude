@@ -13,7 +13,7 @@ use brain_core::project::{project_of, Project};
 use brain_core::sessions::read_session_files;
 use brain_core::state::{Board, Phase, Session, SessionKey};
 use brain_core::store::{Store, Tail};
-use brain_core::transcript::{find_transcript, insight, kept_session_ids, Message};
+use brain_core::transcript::{entrypoint_of, find_transcript, insight, kept_transcripts, Message};
 use brain_core::usage::{self, Snapshot};
 use chrono::{Days, Local, NaiveDate};
 
@@ -61,7 +61,9 @@ pub struct Model {
     transcripts: HashMap<SessionKey, TranscriptCache>,
     projects: HashMap<String, Project>,
     /// Per account: ids of the sessions whose transcripts still exist (resumable).
-    kept: HashMap<String, HashSet<String>>,
+    kept: HashMap<String, HashMap<String, PathBuf>>,
+    /// Sessions whose transcript start was read for how they were started.
+    entrypoints_read: HashSet<SessionKey>,
     kept_age: u32,
     /// The `claude agents` run in flight, and when the last one started.
     agents_pending: Option<Receiver<AgentLists>>,
@@ -88,6 +90,7 @@ impl Model {
             transcripts: HashMap::new(),
             projects: HashMap::new(),
             kept: HashMap::new(),
+            entrypoints_read: HashSet::new(),
             kept_age: 0,
             agents_pending: None,
             agents_asked: None,
@@ -129,7 +132,7 @@ impl Model {
             return true;
         }
         match (self.kept.get(&session.key.account), &session.session_id) {
-            (Some(ids), Some(id)) => ids.contains(id),
+            (Some(ids), Some(id)) => ids.contains_key(id),
             (Some(_), None) => false,
             (None, _) => true,
         }
@@ -195,8 +198,9 @@ impl Model {
             self.board.set_alive(&key, alive);
         }
         if self.kept_age == 0 {
-            self.kept = self.accounts.iter().map(|a| (a.id.clone(), kept_session_ids(a))).collect();
+            self.kept = self.accounts.iter().map(|a| (a.id.clone(), kept_transcripts(a))).collect();
         }
+        self.read_entrypoints();
         self.kept_age = (self.kept_age + 1) % KEPT_EVERY;
         self.refresh_agents();
         self.refresh_transcripts(&seen);
@@ -241,7 +245,7 @@ impl Model {
                     let owner = self
                         .accounts
                         .iter()
-                        .find(|a| self.kept.get(&a.id).is_some_and(|ids| ids.contains(&agent.session_id)))
+                        .find(|a| self.kept.get(&a.id).is_some_and(|ids| ids.contains_key(&agent.session_id)))
                         .map_or(listed_by.clone(), |a| a.id.clone());
                     owned.entry(owner).or_default().push(agent.clone());
                 }
@@ -276,6 +280,28 @@ impl Model {
         });
         self.agents_pending = Some(rx);
         self.agents_asked = Some(Instant::now());
+    }
+
+    /// Learns how sessions without a transcript reading were started (a program, or the user):
+    /// once per session, from the start of its transcript.
+    fn read_entrypoints(&mut self) {
+        let unread: Vec<(SessionKey, PathBuf)> = self
+            .board
+            .keys()
+            .filter(|k| !self.entrypoints_read.contains(*k))
+            .filter_map(|k| {
+                let session = self.board.get(k)?;
+                if session.insight.entrypoint.is_some() {
+                    return None;
+                }
+                let path = self.kept.get(&k.account)?.get(session.session_id.as_ref()?)?;
+                Some((k.clone(), path.clone()))
+            })
+            .collect();
+        for (key, path) in unread {
+            self.board.set_entrypoint(&key, entrypoint_of(&path));
+            self.entrypoints_read.insert(key);
+        }
     }
 
     /// Re-reads a live session's transcript tail when the file grew.

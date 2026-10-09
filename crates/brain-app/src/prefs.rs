@@ -28,6 +28,9 @@ pub struct Prefs {
     /// Show Claude Code's background sessions (`claude --bg`); off by default.
     #[serde(default)]
     pub show_background: bool,
+    /// Show sessions programs started (SDK reviews, `claude -p`); off by default.
+    #[serde(default)]
+    pub show_automated: bool,
     /// Width of the session list in points, as dragged.
     #[serde(default)]
     pub sidebar_width: Option<f32>,

@@ -70,6 +70,8 @@ pub enum PaletteCommand {
     ToggleProjects,
     ToggleToday,
     ToggleBackground,
+    /// Show or hide sessions programs started (SDK reviews, `claude -p`).
+    ToggleAutomated,
     Split,
     Overview,
 }
@@ -174,6 +176,7 @@ pub enum Message {
     Layout(Layout),
     Filter(Option<String>),
     ToggleBackground,
+    ToggleAutomated,
     ToggleResting,
     ToggleEnded,
     Tab(DetailTab),
@@ -302,6 +305,8 @@ pub struct Groups<'a> {
     pub hidden: usize,
     /// Background sessions left out while the filter is off.
     pub background: usize,
+    /// Sessions programs started (SDK reviews, `claude -p`), left out while the filter is off.
+    pub automated: usize,
 }
 
 impl<'a> Groups<'a> {
@@ -685,6 +690,10 @@ impl Brain {
             }
             Message::ToggleBackground => {
                 self.toggle_background();
+                Task::none()
+            }
+            Message::ToggleAutomated => {
+                self.toggle_automated();
                 Task::none()
             }
             Message::ToggleResting => {
@@ -1294,6 +1303,7 @@ impl Brain {
         all.push((t("Nach Projekten gruppieren", "Group by project").to_string(), "G", PaletteCommand::ToggleProjects));
         all.push((t("Heute", "Today").to_string(), "D", PaletteCommand::ToggleToday));
         all.push((t("Hintergrund-Sessions zeigen / verbergen", "Show / hide background sessions").to_string(), "B", PaletteCommand::ToggleBackground));
+        all.push((t("Automatische Sessions (Reviews, Skripte) zeigen / verbergen", "Show / hide automated sessions (reviews, scripts)").to_string(), "U", PaletteCommand::ToggleAutomated));
 
         let query = self.palette.trim().to_lowercase();
         let words: Vec<&str> = query.split_whitespace().collect();
@@ -1356,6 +1366,10 @@ impl Brain {
             }
             PaletteCommand::ToggleBackground => {
                 self.toggle_background();
+                Task::none()
+            }
+            PaletteCommand::ToggleAutomated => {
+                self.toggle_automated();
                 Task::none()
             }
             PaletteCommand::Split => {
@@ -1656,6 +1670,7 @@ impl Brain {
             older_ended: 0,
             hidden: 0,
             background: 0,
+            automated: 0,
         };
         let visible = self
             .model
@@ -1673,6 +1688,12 @@ impl Brain {
             // activity) only with the filter on.
             if session.agent.is_some() && !self.prefs.show_background && now - session.last_activity_ms > ENDED_RECENT_MS {
                 groups.background += 1;
+                continue;
+            }
+            // Sessions a program started (a security review after each commit, scripts with
+            // `claude -p`) only with their filter on, or when pinned.
+            if session.insight.is_automated() && !self.prefs.show_automated && !self.prefs.is_pinned(&session.key) {
+                groups.automated += 1;
                 continue;
             }
             if self.prefs.is_hidden(&session.key, session.last_activity_ms) && !searching {
@@ -1842,10 +1863,22 @@ impl Brain {
         Task::none()
     }
 
-    /// A background session while the background filter is off: not listed, not announced.
+    /// A background or automated session while its filter is off: not listed, not announced.
     fn filtered_background(&self, key: &SessionKey) -> bool {
-        !self.prefs.show_background
-            && self.model.board.get(key).is_some_and(|s| s.agent.is_some() && now_ms() - s.last_activity_ms > ENDED_RECENT_MS)
+        let Some(s) = self.model.board.get(key) else { return false };
+        let background = !self.prefs.show_background && s.agent.is_some() && now_ms() - s.last_activity_ms > ENDED_RECENT_MS;
+        let automated = !self.prefs.show_automated && s.insight.is_automated() && !self.prefs.is_pinned(key);
+        background || automated
+    }
+
+    fn toggle_automated(&mut self) {
+        self.prefs.show_automated = !self.prefs.show_automated;
+        self.prefs.save();
+        self.set_status(if self.prefs.show_automated {
+            t("Automatische Sessions (Reviews, Skripte) werden angezeigt.", "Showing automated sessions (reviews, scripts).")
+        } else {
+            t("Automatische Sessions ausgeblendet.", "Automated sessions hidden.")
+        });
     }
 
     fn toggle_background(&mut self) {
@@ -2080,6 +2113,7 @@ impl Brain {
             "i" => return self.act(Action::TakeOver),
             "h" => self.show_resting = !self.show_resting,
             "b" => self.toggle_background(),
+            "u" => self.toggle_automated(),
             "g" => {
                 self.prefs.layout = if self.prefs.layout == Layout::Projects { Layout::Status } else { Layout::Projects };
                 self.prefs.save();

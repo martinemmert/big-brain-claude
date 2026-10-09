@@ -380,6 +380,14 @@ impl Board {
 
     /// What the end of the session's transcript says (a third source next to hooks and the
     /// status file; it sees denied permissions and interruptions that fire no hook).
+    /// How an ended session was started, read from its transcript's start (live sessions get it
+    /// with their insight).
+    pub fn set_entrypoint(&mut self, key: &SessionKey, entrypoint: Option<String>) {
+        if let Some(session) = self.sessions.get_mut(key) {
+            session.insight.entrypoint = entrypoint;
+        }
+    }
+
     pub fn apply_insight(&mut self, key: &SessionKey, insight: Insight) {
         let Some(session) = self.sessions.get_mut(key) else { return };
         session.transcript_signal = insight.turn.map(|(turn, ts)| {
