@@ -2458,7 +2458,8 @@ impl Brain {
         if cmd && character.as_deref() == Some("k") {
             return self.open_palette();
         }
-        if cmd && character.as_deref() == Some("e") && self.mode != Mode::Composer {
+        // Only from the normal view: in the new-session dialog ⌘E opens the template in an editor.
+        if cmd && character.as_deref() == Some("e") && self.mode == Mode::Normal {
             return self.open_composer();
         }
         if self.mode == Mode::Composer {
