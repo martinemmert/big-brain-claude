@@ -15,6 +15,7 @@ use iced::widget::canvas::{Path, Text};
 use iced::widget::container;
 use iced::{Color, Element, Length, Point, Rectangle, Size, Theme};
 use iced_core::clipboard::Kind as ClipboardKind;
+use iced_core::input_method::{self, InputMethod, Purpose};
 use iced_core::keyboard::{Key, Modifiers};
 use iced_core::mouse::{self, Click};
 use iced_core::text::{Alignment, LineHeight, Shaping};
@@ -260,7 +261,14 @@ impl<'a> TerminalView<'a> {
         // Handle command or selection update based on terminal mode and modifiers
         if state.is_dragged {
             let terminal_mode = terminal_content.terminal_mode;
-            let cmd = if terminal_mode.intersects(TermMode::MOUSE_MOTION) {
+            // Report drags when the app requested button-motion (1002) or
+            // any-motion (1003) tracking. Checking only MOUSE_MOTION left
+            // 1002-mode apps (e.g. tmux with `mouse on`) seeing press and
+            // release but never the drag, while the widget drew its own
+            // selection over the app's — two selection systems at once.
+            let cmd = if terminal_mode
+                .intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION)
+            {
                 Command::MouseReport(
                     MouseButton::LeftMove,
                     state.keyboard_modifiers,
@@ -329,7 +337,7 @@ impl<'a> TerminalView<'a> {
                 commands.push(Command::Scroll(lines as i32));
             },
             ScrollDelta::Pixels { y, .. } => {
-                state.scroll_pixels -= y;
+                state.scroll_pixels += y;
                 let line_height = font_measure.height; // Assume this method exists and gives the height of a line
                 let lines = (state.scroll_pixels / line_height).trunc();
                 state.scroll_pixels %= line_height;
@@ -379,13 +387,17 @@ impl<'a> TerminalView<'a> {
                     }
                     binding_action = self.term.bindings.get_action(
                         InputKind::Char(lower),
-                        state.keyboard_modifiers,
+                        *modifiers,
                         last_content.terminal_mode,
                     );
 
-                    // If no binding matched, only write printable text (when provided).
+                    // If no binding matched, only write printable text (when provided); while an
+                    // input method composes (dead keys, dictation), its commit writes the text.
+                    // Brain: gated on a shown composition, not on the input method being open:
+                    // macOS opens it at the first composition and only closes it when the input
+                    // source changes, so plain typing after the first composed character was lost.
                     // Brain: ⌘ combinations are shortcuts on macOS, never text (⌘[ must not type "[").
-                    if binding_action == BindingAction::Ignore && !modifiers.command() {
+                    if binding_action == BindingAction::Ignore && state.ime_preedit.is_none() && !modifiers.command() {
                         if let Some(c) = text {
                             return Some(Command::Write(c.as_bytes().to_vec()));
                         }
@@ -423,7 +435,12 @@ impl<'a> TerminalView<'a> {
             BindingAction::Paste => {
                 if let Some(data) = clipboard.read(ClipboardKind::Standard) {
                     let input: Vec<u8> = data.bytes().collect();
-                    return Some(Command::Write(input));
+                    let bracketed = last_content
+                        .terminal_mode
+                        .contains(TermMode::BRACKETED_PASTE);
+                    return Some(Command::Write(wrap_bracketed_paste(
+                        input, bracketed,
+                    )));
                 }
             },
             BindingAction::Copy => {
@@ -436,6 +453,67 @@ impl<'a> TerminalView<'a> {
         };
 
         None
+    }
+
+    fn handle_input_method_event(
+        &self,
+        state: &mut TerminalViewState,
+        event: &input_method::Event,
+    ) -> Option<Command> {
+        match event {
+            input_method::Event::Opened => {
+                state.ime_preedit = None;
+                None
+            },
+            input_method::Event::Preedit(content, selection) => {
+                state.ime_preedit = if content.is_empty() {
+                    None
+                } else {
+                    Some(input_method::Preedit {
+                        content: content.clone(),
+                        selection: selection.clone(),
+                        text_size: Some(iced_core::Pixels(self.term.font.size)),
+                    })
+                };
+                None
+            },
+            input_method::Event::Commit(text) => {
+                state.ime_preedit = None;
+                Some(Command::Write(text.as_bytes().to_vec()))
+            },
+            input_method::Event::Closed => {
+                state.ime_preedit = None;
+                None
+            },
+        }
+    }
+
+    fn input_method<'b>(
+        &self,
+        state: &'b TerminalViewState,
+        layout: iced::advanced::Layout<'_>,
+    ) -> InputMethod<&'b str> {
+        if !state.is_focused() {
+            return InputMethod::Disabled;
+        }
+
+        let content = self.term.backend.renderable_content();
+        let terminal_size = content.terminal_size;
+        let cursor_point = content.grid.cursor.point;
+        let display_offset = content.grid.display_offset() as f32;
+        let cell_width = terminal_size.cell_width as f32;
+        let cell_height = terminal_size.cell_height as f32;
+        let x = layout.position().x + (cursor_point.column.0 as f32 * cell_width);
+        let y = layout.position().y + ((cursor_point.line.0 as f32 + display_offset) * cell_height);
+
+        InputMethod::Enabled {
+            cursor: Rectangle::new(
+                Point::new(x, y),
+                Size::new(cell_width.max(1.0), cell_height.max(1.0)),
+            ),
+            purpose: Purpose::Terminal,
+            preedit: state.ime_preedit.as_ref().map(input_method::Preedit::as_ref),
+        }
     }
 }
 
@@ -452,7 +530,14 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(TerminalViewState::new())
+        tree::State::new(TerminalViewState::new(self.term.id))
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        let state = tree.state.downcast_mut::<TerminalViewState>();
+        if state.terminal_id != self.term.id {
+            tree.state = self.state();
+        }
     }
 
     fn layout(
@@ -523,11 +608,23 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
                 let y = layout_offset_y
                     + (((line as f32) + display_offset) * cell_height);
                 let cell_center_y = y + half_h;
-                let cell_center_x = x + half_w;
+                let cell_center_x = if indexed
+                    .cell
+                    .flags
+                    .contains(cell::Flags::WIDE_CHAR)
+                {
+                    x + cell_width
+                } else {
+                    x + half_w
+                };
 
                 // Resolve colors for this cell
                 let mut fg = self.term.theme.get_color(indexed.fg);
                 let mut bg = self.term.theme.get_color(indexed.bg);
+                // Pre-swap background: the block cursor is painted in the
+                // cell's (pre-swap) fg, so this is the contrasting color
+                // for the glyph under it regardless of INVERSE/selection.
+                let cell_bg = bg;
 
                 // If the new line was detected,
                 // need to flush pending background rect and init the new one
@@ -629,10 +726,16 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
 
                 // Draw text
                 if indexed.c != ' ' && indexed.c != '\t' {
+                    // The glyph under the block cursor must contrast with
+                    // the cursor rect (painted above in the cell's pre-swap
+                    // fg). Using the post-swap bg — or gating this on
+                    // APP_CURSOR, a keypad mode unrelated to rendering —
+                    // made the glyph invisible whenever the cell was
+                    // INVERSE or inside a selection.
                     if content.grid.cursor.point == indexed.point
-                        && content.terminal_mode.contains(TermMode::APP_CURSOR)
+                        && content.terminal_mode.contains(TermMode::SHOW_CURSOR)
                     {
-                        fg = bg;
+                        fg = cell_bg;
                     }
                     // Resolve font style (bold/italic) from cell flags
                     let mut font = self.term.font.font_type;
@@ -692,6 +795,10 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
         let is_cursor_in_layout = self.is_cursor_in_layout(cursor, layout);
         self.handle_focus(event, state, is_cursor_in_layout);
 
+        if matches!(event, iced::Event::Window(iced::window::Event::RedrawRequested(_))) {
+            shell.request_input_method(&self.input_method(state, layout));
+        }
+
         let commands = match event {
             iced::Event::Mouse(mouse_event) if is_cursor_in_layout => self
                 .handle_mouse_event(
@@ -706,6 +813,15 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
                 }
 
                 self.handle_keyboard_event(state, clipboard, keyboard_event)
+                    .into_iter()
+                    .collect()
+            },
+            iced::Event::InputMethod(input_method_event) => {
+                if !state.is_focused() {
+                    return;
+                }
+
+                self.handle_input_method_event(state, input_method_event)
                     .into_iter()
                     .collect()
             },
@@ -762,10 +878,12 @@ struct TerminalViewState {
     keyboard_modifiers: Modifiers,
     size: Size<f32>,
     mouse_position_on_grid: TerminalGridPoint,
+    terminal_id: u64,
+    ime_preedit: Option<input_method::Preedit>,
 }
 
 impl TerminalViewState {
-    fn new() -> Self {
+    fn new(terminal_id: u64) -> Self {
         Self {
             focus: false,
             is_dragged: false,
@@ -774,13 +892,9 @@ impl TerminalViewState {
             keyboard_modifiers: Modifiers::empty(),
             size: Size::from([0.0, 0.0]),
             mouse_position_on_grid: TerminalGridPoint::default(),
+            terminal_id,
+            ime_preedit: None,
         }
-    }
-}
-
-impl Default for TerminalViewState {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -869,9 +983,57 @@ impl BackgroundRect {
     }
 }
 
+// Wrap pasted text in bracketed paste when the target application has enabled the mode. The markers
+// `\x1b[200~` / `\x1b[201~` make the application (readline, TUIs) receive the paste as a single BLOCK, so
+// inner newlines are not interpreted as Enter (a multi-line paste is not submitted line by line). When
+// the mode is off, the bytes are written unchanged (historical behavior).
+//
+// ESC (0x1b) and Ctrl-C (0x03) are stripped from the pasted text first, mirroring Alacritty: otherwise a
+// clipboard that itself contains `\x1b[201~` would close the bracketed paste early (the rest would be
+// interpreted as keystrokes), and some shells terminate bracketed paste on 0x03.
+fn wrap_bracketed_paste(input: Vec<u8>, bracketed: bool) -> Vec<u8> {
+    if !bracketed {
+        return input;
+    }
+    let filtered: Vec<u8> = input
+        .into_iter()
+        .filter(|&b| b != 0x1b && b != 0x03)
+        .collect();
+    let mut out = Vec::with_capacity(filtered.len() + 12);
+    out.extend_from_slice(b"\x1b[200~");
+    out.extend_from_slice(&filtered);
+    out.extend_from_slice(b"\x1b[201~");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod wrap_bracketed_paste_tests {
+        use super::*;
+
+        #[test]
+        fn wraps_only_when_active() {
+            let input = b"line 1\nline 2".to_vec();
+            assert_eq!(wrap_bracketed_paste(input.clone(), false), input);
+            let wrapped = wrap_bracketed_paste(input.clone(), true);
+            assert!(wrapped.starts_with(b"\x1b[200~"));
+            assert!(wrapped.ends_with(b"\x1b[201~"));
+            assert_eq!(&wrapped[6..wrapped.len() - 6], input.as_slice());
+        }
+
+        #[test]
+        fn filters_escape_and_ctrl_c() {
+            // A clipboard containing `\x1b[201~` must not be able to close the bracketed paste early.
+            let wrapped =
+                wrap_bracketed_paste(b"a\x1b[201~b\x03c".to_vec(), true);
+            let body = &wrapped[6..wrapped.len() - 6];
+            assert_eq!(body, b"a[201~bc");
+            assert!(!body.contains(&0x1b));
+            assert!(!body.contains(&0x03));
+        }
+    }
 
     mod handle_left_button_pressed_tests {
         use super::*;
@@ -879,7 +1041,7 @@ mod tests {
 
         #[test]
         fn handles_mouse_mode_with_left_click() {
-            let mut state = TerminalViewState::new();
+            let mut state = TerminalViewState::new(0);
             let terminal_mode = TermMode::MOUSE_MODE;
             let layout_position = Point { x: 5.0, y: 5.0 };
             let cursor_position = Point { x: 100.0, y: 150.0 };
@@ -923,7 +1085,7 @@ mod tests {
             ];
 
             for _selection_type in cases {
-                let mut state = TerminalViewState::new();
+                let mut state = TerminalViewState::new(0);
                 state.keyboard_modifiers = Modifiers::SHIFT;
                 let mut commands = Vec::new();
 
@@ -952,7 +1114,7 @@ mod tests {
 
         #[test]
         fn updates_mouse_position_on_grid() {
-            let mut state = TerminalViewState::new();
+            let mut state = TerminalViewState::new(0);
             let terminal_content = RenderableContent::default();
             let mut commands = Vec::new();
             let cases = vec![
@@ -1013,7 +1175,7 @@ mod tests {
 
         #[test]
         fn generates_drag_update_command_when_dragged() {
-            let mut state = TerminalViewState::new();
+            let mut state = TerminalViewState::new(0);
             state.is_dragged = true; // Simulate an ongoing drag operation
             let terminal_content = RenderableContent::default();
             let layout_position = Point { x: 5.0, y: 5.0 };
@@ -1037,7 +1199,7 @@ mod tests {
 
         #[test]
         fn generates_drag_update_command_when_dragged_in_mouse_motion_mode() {
-            let mut state = TerminalViewState::new();
+            let mut state = TerminalViewState::new(0);
             state.is_dragged = true; // Simulate an ongoing drag operation
             let mut terminal_content = RenderableContent::default();
             terminal_content.terminal_mode = TermMode::MOUSE_MOTION;
@@ -1070,9 +1232,46 @@ mod tests {
         }
 
         #[test]
+        fn reports_drag_when_dragged_in_mouse_drag_mode() {
+            // Button-motion tracking (1002) — what e.g. tmux with `mouse on`
+            // requests — must also report drags, not fall back to the
+            // widget's own selection.
+            let mut state = TerminalViewState::new(0);
+            state.is_dragged = true;
+            let mut terminal_content = RenderableContent::default();
+            terminal_content.terminal_mode = TermMode::MOUSE_DRAG;
+            let layout_position = Point { x: 5.0, y: 5.0 };
+            let cursor_position = Point { x: 100.0, y: 150.0 };
+            let mut commands = Vec::new();
+            let _modifiers = Modifiers::empty();
+
+            TerminalView::handle_cursor_moved(
+                &mut state,
+                &terminal_content,
+                &cursor_position,
+                layout_position,
+                &mut commands,
+            );
+
+            assert_eq!(commands.len(), 1);
+            assert!(matches!(
+                commands[0],
+                Command::MouseReport(
+                    MouseButton::LeftMove,
+                    _modifiers,
+                    TerminalGridPoint {
+                        line: Line(49),
+                        column: Column(79),
+                    },
+                    true,
+                )
+            ));
+        }
+
+        #[test]
         fn generates_drag_update_command_when_dragged_in_srg_mode_with_key_mods(
         ) {
-            let mut state = TerminalViewState::new();
+            let mut state = TerminalViewState::new(0);
             state.keyboard_modifiers = Modifiers::SHIFT;
             state.is_dragged = true; // Simulate an ongoing drag operation
             let mut terminal_content = RenderableContent::default();
@@ -1098,7 +1297,7 @@ mod tests {
 
         #[test]
         fn generates_drag_update_and_link_open() {
-            let mut state = TerminalViewState::new();
+            let mut state = TerminalViewState::new(0);
             state.keyboard_modifiers = Modifiers::COMMAND;
             state.is_dragged = true; // Simulate an ongoing drag operation
             let mut terminal_content = RenderableContent::default();
@@ -1139,7 +1338,7 @@ mod tests {
 
         #[test]
         fn mouse_mode_activated() {
-            let mut state = TerminalViewState::new();
+            let mut state = TerminalViewState::new(0);
             let terminal_mode = TermMode::MOUSE_MODE;
             let bindings = BindingsLayout::new();
             let mut commands = Vec::new();
@@ -1169,7 +1368,7 @@ mod tests {
 
         #[test]
         fn link_open_on_button_release() {
-            let mut state = TerminalViewState::new();
+            let mut state = TerminalViewState::new(0);
             state.keyboard_modifiers = Modifiers::COMMAND;
             let terminal_mode = TermMode::MOUSE_MODE;
             let bindings = BindingsLayout::new();
@@ -1212,7 +1411,7 @@ mod tests {
 
         #[test]
         fn link_open_on_button_release_in_non_mouse_mode() {
-            let mut state = TerminalViewState::new();
+            let mut state = TerminalViewState::new(0);
             state.keyboard_modifiers = Modifiers::COMMAND;
             state.mouse_position_on_grid = TerminalGridPoint {
                 line: Line(4),
@@ -1244,6 +1443,123 @@ mod tests {
         }
     }
 
+    mod handle_input_method_event_tests {
+        use super::*;
+
+        #[test]
+        fn opens_and_closes_ime_state() {
+            let terminal = Terminal::new(0, crate::settings::Settings::default())
+                .expect("terminal created");
+            let view = TerminalView { term: &terminal };
+            let mut state = TerminalViewState::new(0);
+
+            assert!(state.ime_preedit.is_none());
+
+            let opened = view.handle_input_method_event(
+                &mut state,
+                &input_method::Event::Opened,
+            );
+            assert!(opened.is_none());
+
+            let closed = view.handle_input_method_event(
+                &mut state,
+                &input_method::Event::Closed,
+            );
+            assert!(closed.is_none());
+            assert!(state.ime_preedit.is_none());
+        }
+
+        #[test]
+        fn stores_preedit_without_writing() {
+            let terminal = Terminal::new(0, crate::settings::Settings::default())
+                .expect("terminal created");
+            let view = TerminalView { term: &terminal };
+            let mut state = TerminalViewState::new(0);
+
+            let result = view.handle_input_method_event(
+                &mut state,
+                &input_method::Event::Preedit("ni".into(), Some(0..2)),
+            );
+
+            assert!(result.is_none());
+            let preedit = state.ime_preedit.expect("preedit stored");
+            assert_eq!(preedit.content, "ni");
+            assert_eq!(preedit.selection, Some(0..2));
+            assert_eq!(preedit.text_size, Some(iced_core::Pixels(terminal.font.size)));
+        }
+
+        #[test]
+        fn clears_preedit_on_empty_preedit() {
+            let terminal = Terminal::new(0, crate::settings::Settings::default())
+                .expect("terminal created");
+            let view = TerminalView { term: &terminal };
+            let mut state = TerminalViewState::new(0);
+            state.ime_preedit = Some(input_method::Preedit {
+                content: "ni".into(),
+                selection: Some(0..2),
+                text_size: Some(iced_core::Pixels(terminal.font.size)),
+            });
+
+            let result = view.handle_input_method_event(
+                &mut state,
+                &input_method::Event::Preedit(String::new(), None),
+            );
+
+            assert!(result.is_none());
+            assert!(state.ime_preedit.is_none());
+        }
+
+        #[test]
+        fn commits_utf8_text_once() {
+            let terminal = Terminal::new(0, crate::settings::Settings::default())
+                .expect("terminal created");
+            let view = TerminalView { term: &terminal };
+            let mut state = TerminalViewState::new(0);
+            state.ime_preedit = Some(input_method::Preedit {
+                content: "ni".into(),
+                selection: Some(0..2),
+                text_size: Some(iced_core::Pixels(terminal.font.size)),
+            });
+
+            let result = view.handle_input_method_event(
+                &mut state,
+                &input_method::Event::Commit("你".into()),
+            );
+
+            assert!(matches!(result, Some(Command::Write(bytes)) if bytes == "你".as_bytes().to_vec()));
+            assert!(state.ime_preedit.is_none());
+        }
+
+        #[test]
+        fn typing_after_a_composition_still_writes() {
+            // macOS: the input method opens at the first composition and stays open.
+            let terminal = Terminal::new(0, crate::settings::Settings::default())
+                .expect("terminal created");
+            let view = TerminalView { term: &terminal };
+            let mut state = TerminalViewState::new(0);
+            state.focus = true;
+            view.handle_input_method_event(&mut state, &input_method::Event::Opened);
+            view.handle_input_method_event(&mut state, &input_method::Event::Preedit("´".into(), Some(0..2)));
+            view.handle_input_method_event(&mut state, &input_method::Event::Commit("é".into()));
+
+            let mut clipboard = iced_core::clipboard::Null;
+            let typed = view.handle_keyboard_event(
+                &mut state,
+                &mut clipboard,
+                &iced::keyboard::Event::KeyPressed {
+                    key: Key::Character("a".into()),
+                    modified_key: Key::Character("a".into()),
+                    physical_key: iced_core::keyboard::key::Physical::Code(iced_core::keyboard::key::Code::KeyA),
+                    location: iced_core::keyboard::Location::Standard,
+                    modifiers: Modifiers::empty(),
+                    text: Some("a".into()),
+                    repeat: false,
+                },
+            );
+            assert!(matches!(typed, Some(Command::Write(bytes)) if bytes == b"a".to_vec()));
+        }
+    }
+
     mod handle_wheel_scrolled_tests {
         use super::*;
         use crate::font::TermFont;
@@ -1251,7 +1567,7 @@ mod tests {
 
         #[test]
         fn scroll_with_lines_downward() {
-            let mut state = TerminalViewState::new();
+            let mut state = TerminalViewState::new(0);
             let font = TermFont::new(FontSettings::default());
             let mut commands = Vec::new();
 
@@ -1268,7 +1584,7 @@ mod tests {
 
         #[test]
         fn scroll_with_lines_upward() {
-            let mut state = TerminalViewState::new();
+            let mut state = TerminalViewState::new(0);
             let font = TermFont::new(FontSettings::default());
             let mut commands = Vec::new();
 
@@ -1285,7 +1601,7 @@ mod tests {
 
         #[test]
         fn scroll_with_pixels_accumulating_downward() {
-            let mut state = TerminalViewState::new();
+            let mut state = TerminalViewState::new(0);
             let font = TermFont::new(FontSettings::default());
             let mut commands = Vec::new();
 
@@ -1297,13 +1613,13 @@ mod tests {
             );
 
             assert_eq!(commands.len(), 1);
-            assert!(matches!(commands[0], Command::Scroll(-2)));
-            assert_eq!(state.scroll_pixels, -8.600002);
+            assert!(matches!(commands[0], Command::Scroll(2)));
+            assert_eq!(state.scroll_pixels, 8.600002);
         }
 
         #[test]
         fn scroll_with_pixels_accumulating_upward() {
-            let mut state = TerminalViewState::new();
+            let mut state = TerminalViewState::new(0);
             let font = TermFont::new(FontSettings::default());
             let mut commands = Vec::new();
 
@@ -1315,8 +1631,8 @@ mod tests {
             );
 
             assert_eq!(commands.len(), 1);
-            assert!(matches!(commands[0], Command::Scroll(3)));
-            assert_eq!(state.scroll_pixels, 5.4000034);
+            assert!(matches!(commands[0], Command::Scroll(-3)));
+            assert_eq!(state.scroll_pixels, -5.4000034);
         }
     }
 }

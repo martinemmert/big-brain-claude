@@ -1810,7 +1810,7 @@ dependencies = [
 
 [[package]]
 name = "iced_term"
-version = "0.8.0-brain.1"
+version = "0.8.0-brain.2"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
