@@ -25,8 +25,9 @@ pub const RESTING_AFTER_MS: i64 = 2 * 60 * 60 * 1000;
 /// Ended sessions show in the list for a day; older ones through the search.
 pub const ENDED_RECENT_MS: i64 = 24 * 60 * 60 * 1000;
 const SNOOZE_MS: i64 = 15 * 60 * 1000;
-/// How long after typing into a terminal its program may still write the clipboard (OSC 52):
-/// long enough for `/copy` and its picker, too short for output that arrives later.
+/// How long after typing or clicking into a terminal its program may still write the clipboard
+/// (OSC 52): long enough for `/copy` and a mouse selection, too short for output that arrives
+/// later.
 const CLIPBOARD_AFTER_TYPING: Duration = Duration::from_secs(10);
 
 /// Ages the clean-up dialog offers, in days.
@@ -140,6 +141,8 @@ pub enum Action {
     Snooze,
     /// Claude's last answer to the clipboard (⌘⇧C).
     CopyAnswer,
+    /// Open the session's terminal beside the one that was on screen (split).
+    OpenBeside,
     /// The whole conversation as a Markdown file, opened in YAMV.
     Export,
     OtherAccount,
@@ -426,6 +429,8 @@ pub struct Brain {
     armed: Option<(char, SessionKey, Instant)>,
     /// The session whose context menu is open, and where it opens.
     pub context_menu: Option<(SessionKey, iced::Point)>,
+    /// The session selected before a right click selected another one: "open beside" keeps it.
+    pub before_menu: Option<SessionKey>,
     pointer: iced::Point,
     pub window_size: iced::Size,
     /// A newer release on GitHub, if the daily check found one.
@@ -519,6 +524,7 @@ impl Brain {
             new_session: NewSession::default(),
             armed: None,
             context_menu: None,
+            before_menu: None,
             pointer: iced::Point::ORIGIN,
             window_size: iced::Size::new(1180.0, 760.0),
             update: None,
@@ -613,6 +619,7 @@ impl Brain {
                 self.act(Action::Open)
             }
             Message::ContextMenu(key) => {
+                self.before_menu = self.selected.clone().filter(|k| *k != key);
                 self.selected = Some(key.clone());
                 self.context_menu = Some((key, self.pointer));
                 Task::none()
@@ -897,6 +904,9 @@ impl Brain {
             }
             Message::TermFocused(key, focused) => {
                 if focused {
+                    // A click or a mouse selection in a terminal counts as using it, like typing:
+                    // Claude Code copies a mouse selection with a clipboard request (OSC 52).
+                    self.last_terminal_input = Some((key.clone(), Instant::now()));
                     self.focused_terminal = Some(key);
                 } else if self.focused_terminal.as_ref() == Some(&key) {
                     self.focused_terminal = None;
@@ -2285,6 +2295,15 @@ impl Brain {
             Action::OpenInITerm => self.open_selected(),
             Action::TakeOver => self.take_over(confirmed),
             Action::Pin => self.toggle_pin(),
+            Action::OpenBeside => {
+                // The terminal that was on screen stays on the left, this one opens beside it.
+                if let Some(kept) = self.before_menu.take().filter(|k| self.terminals.contains_key(k)) {
+                    self.split = Some(kept);
+                }
+                self.overview = false;
+                self.tab = DetailTab::Terminal;
+                return self.open_terminal(true);
+            }
             Action::CopyAnswer => {
                 let answer = self.conversation.as_ref().and_then(|c| brain_core::history::last_answer(&c.messages)).map(|m| m.text.clone());
                 return match answer {

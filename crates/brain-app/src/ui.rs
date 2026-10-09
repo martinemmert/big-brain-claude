@@ -136,6 +136,11 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
     if s.agent.is_none() && (ended || s.accepts_input()) {
         open.push((t("Nach Brain holen", "Move into Brain").to_string(), "I", Action::TakeOver, false));
     }
+    // Beside the terminal that's on screen: two sessions side by side.
+    let beside = brain.before_menu.as_ref().is_some_and(|k| brain.terminals.contains_key(k));
+    if beside && (s.agent.is_some() || ended || brain.terminals.contains_key(&s.key)) {
+        open.push((t("Daneben öffnen (geteilt)", "Open beside (split)").to_string(), "⌘D", Action::OpenBeside, false));
+    }
     groups.push(open);
 
     let mut talk = Vec::new();
