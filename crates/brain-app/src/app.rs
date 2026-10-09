@@ -43,6 +43,7 @@ pub const LIST: &str = "session-list";
 pub const MESSAGES: &str = "messages";
 pub const FIND: &str = "find";
 pub const PALETTE: &str = "palette";
+pub const COMPOSER: &str = "composer";
 
 /// Where typed keys go.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +56,8 @@ pub enum Mode {
     Cleanup,
     /// The command palette (⌘K).
     Palette,
+    /// The composer (⌘E): a longer prompt for the selected session.
+    Composer,
 }
 
 /// What a line of the command palette does.
@@ -77,6 +80,7 @@ pub enum PaletteCommand {
     ToggleAutomated,
     Split,
     Overview,
+    Composer,
 }
 
 /// Slash commands the palette offers for the selected session.
@@ -211,6 +215,11 @@ pub enum Message {
     QaLoaded(SessionKey, u64, Vec<brain_core::qa::Exchange>),
     Palette(String),
     PaletteRun(PaletteCommand),
+    ComposerEdit(iced::widget::text_editor::Action),
+    /// A template's prompt into the composer.
+    ComposerTemplate(usize),
+    ComposerRemoveImage(usize),
+    ComposerSend,
     /// Text typed into a session and submitted (e.g. `/compact` from the context gauge).
     SendTo(SessionKey, String),
     PaletteClose,
@@ -412,6 +421,10 @@ pub struct Brain {
     pub qa: Option<QaCache>,
     qa_loading: bool,
     pub palette: String,
+    /// The composer's text, the screenshots pasted into it, and the templates it offers.
+    pub composer: iced::widget::text_editor::Content,
+    pub composer_images: Vec<std::path::PathBuf>,
+    pub composer_templates: Vec<brain_core::templates::Template>,
     pub palette_index: usize,
     /// Text to find in the selected session's whole conversation (⌘F).
     pub find: String,
@@ -545,6 +558,9 @@ impl Brain {
             qa_loading: false,
             find: String::new(),
             palette: String::new(),
+            composer: iced::widget::text_editor::Content::new(),
+            composer_images: Vec::new(),
+            composer_templates: Vec::new(),
             palette_index: 0,
             prompts_only: false,
             history: None,
@@ -789,6 +805,24 @@ impl Brain {
                 Task::batch([unfocus(), task])
             }
             Message::SendTo(key, text) => self.send_text(&key, &text),
+            Message::ComposerEdit(action) => {
+                self.composer.perform(action);
+                Task::none()
+            }
+            Message::ComposerTemplate(index) => {
+                if let Some(template) = self.composer_templates.get(index) {
+                    let prompt = template.prompt.clone();
+                    self.composer.perform(iced::widget::text_editor::Action::Edit(iced::widget::text_editor::Edit::Paste(std::sync::Arc::new(prompt))));
+                }
+                operation::focus(COMPOSER)
+            }
+            Message::ComposerRemoveImage(index) => {
+                if index < self.composer_images.len() {
+                    self.composer_images.remove(index);
+                }
+                Task::none()
+            }
+            Message::ComposerSend => self.send_composer(),
             Message::PaletteClose => {
                 self.mode = Mode::Normal;
                 unfocus()
@@ -1342,6 +1376,60 @@ impl Brain {
         Task::perform(exported, Message::Exported)
     }
 
+    /// ⌘E: the composer for the selected session.
+    fn open_composer(&mut self) -> Task<Message> {
+        if self.selected.is_none() {
+            return Task::none();
+        }
+        self.mode = Mode::Composer;
+        self.focused_terminal = None;
+        self.composer_templates = brain_core::templates::load_all(&brain_core::templates::templates_dir(&brain_core::account::home_dir()));
+        operation::focus(COMPOSER)
+    }
+
+    /// ⌘⏎ in the composer: the text and the screenshots' paths into the session. Into Brain's
+    /// terminal as one paste (line breaks stay inside the prompt), then Return; into an iTerm tab
+    /// as one line, where a line break would send it early.
+    fn send_composer(&mut self) -> Task<Message> {
+        let Some(key) = self.selected.clone() else { return Task::none() };
+        let mut text = self.composer.text().trim_end().to_string();
+        for image in &self.composer_images {
+            text.push(' ');
+            text.push_str(&escape_path(&image.display().to_string()));
+        }
+        if text.trim().is_empty() {
+            return Task::none();
+        }
+        if self.blocked_in_demo() {
+            return Task::none();
+        }
+        let task = if let Some(term) = self.terminals.get_mut(&key) {
+            let mut bytes = Vec::new();
+            let bracketed = term.bracketed_paste();
+            if bracketed {
+                bytes.extend_from_slice(b"\x1b[200~");
+            }
+            bytes.extend_from_slice(text.as_bytes());
+            if bracketed {
+                bytes.extend_from_slice(b"\x1b[201~");
+            }
+            term.handle(iced_term::Command::ProxyToBackend(iced_term::BackendCommand::Write(bytes)));
+            let enter_key = key.clone();
+            Task::perform(off_thread(|| std::thread::sleep(Duration::from_millis(150))), move |_| Message::TerminalKeys(enter_key.clone(), b"\r".to_vec()))
+        } else if self.model.board.get(&key).is_some_and(|s| s.accepts_input()) {
+            let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            self.send_text(&key, &line)
+        } else {
+            self.set_status(t("Die Session nimmt gerade keine Eingabe an – der Text bleibt im Composer.", "The session doesn't take input right now – the text stays in the composer."));
+            return Task::none();
+        };
+        self.composer = iced::widget::text_editor::Content::new();
+        self.composer_images.clear();
+        self.mode = Mode::Normal;
+        self.set_status(t("Gesendet.", "Sent."));
+        Task::batch([task, self.focus_terminal()])
+    }
+
     /// ⌘K.
     fn open_palette(&mut self) -> Task<Message> {
         self.mode = Mode::Palette;
@@ -1369,6 +1457,7 @@ impl Brain {
                     all.push((tr!("{command} an „{name}“ – {what}", "{command} to “{name}” – {what}"), "", PaletteCommand::Send(command.to_string())));
                 }
             }
+            all.push((tr!("Längeren Prompt an „{name}“ schreiben", "Write a longer prompt for “{name}”"), "⌘E", PaletteCommand::Composer));
             all.push((t("Letzte Antwort kopieren", "Copy the last answer").to_string(), "⌘⇧C", PaletteCommand::Act(Action::CopyAnswer)));
             all.push((t("Gespräch als Markdown öffnen", "Open the conversation as Markdown").to_string(), "", PaletteCommand::Act(Action::Export)));
             all.push((t("In der Session suchen", "Find in the session").to_string(), "⌘F", PaletteCommand::Find));
@@ -1467,6 +1556,7 @@ impl Brain {
                 self.update(Message::ToggleSplit)
             }
             PaletteCommand::Overview => self.update(Message::ToggleOverview),
+            PaletteCommand::Composer => self.open_composer(),
         }
     }
 
@@ -2150,9 +2240,24 @@ impl Brain {
         if cmd && modifiers.shift() && character.as_deref() == Some("a") {
             return self.update(Message::ToggleOverview);
         }
-        // ⌘K: the command palette, also from inside the terminal.
+        // ⌘K: the command palette, ⌘E: the composer, also from inside the terminal.
         if cmd && character.as_deref() == Some("k") {
             return self.open_palette();
+        }
+        if cmd && character.as_deref() == Some("e") && self.mode != Mode::Composer {
+            return self.open_composer();
+        }
+        if self.mode == Mode::Composer {
+            if cmd && named == Some(Named::Enter) {
+                return self.send_composer();
+            }
+            // A copied screenshot goes in as a picture; text pastes into the editor itself.
+            if cmd && character.as_deref() == Some("v") {
+                if let Some(path) = crate::clipboard::save_image() {
+                    self.composer_images.push(path);
+                }
+            }
+            return Task::none();
         }
         if self.mode == Mode::Palette {
             let count = self.palette_entries().len();
@@ -2337,7 +2442,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette => {
+            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer => {
                 self.mode = Mode::Normal;
                 unfocus()
             }

@@ -121,6 +121,11 @@ impl Terminal {
         }
     }
 
+    /// Brain: whether the program asked for pastes to be marked (bracketed paste mode).
+    pub fn bracketed_paste(&self) -> bool {
+        self.backend.renderable_content().terminal_mode.contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
+    }
+
     /// Brain: copies the current screen for drawing (after [`Self::handle_quiet`]).
     pub fn refresh(&mut self) {
         self.sync_and_redraw();

@@ -58,10 +58,73 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
     if brain.mode == Mode::Palette {
         return stack![window, palette(brain)].into();
     }
+    if brain.mode == Mode::Composer {
+        return stack![window, composer(brain)].into();
+    }
     match context_menu(brain) {
         Some(menu) => stack![window, menu].into(),
         None => window.into(),
     }
+}
+
+/// ⌘E: a longer prompt for the selected session, with templates and pasted screenshots.
+fn composer(brain: &Brain) -> Element<'_, Message> {
+    let name = brain.selected_session().map(|s| s.display_name()).unwrap_or_default();
+    let editor = iced::widget::text_editor(&brain.composer)
+        .id(app::COMPOSER)
+        .on_action(Message::ComposerEdit)
+        .placeholder(t("Prompt schreiben … (⌘V fügt einen Screenshot ein)", "Write the prompt … (⌘V adds a screenshot)"))
+        .height(260)
+        .padding(12)
+        .size(14)
+        .font(UI)
+        .style(|_, _| iced::widget::text_editor::Style {
+            background: Background::Color(INK),
+            border: Border { color: LINE_STRONG, width: 1.0, radius: 8.0.into() },
+            placeholder: TEXT_FAINT,
+            value: TEXT,
+            selection: alpha(WORKING, 0x55),
+        });
+    let mut body = column![
+        row![
+            text(tr!("Prompt an „{name}“", "Prompt for “{name}”")).size(16).color(TEXT_STRONG).font(style::semibold()),
+            Space::new().width(Fill),
+            action(t("Schließen", "Close"), "esc", false, Some(Message::Close)),
+        ]
+        .align_y(iced::Center),
+        editor,
+    ]
+    .spacing(12);
+    if !brain.composer_images.is_empty() {
+        let thumbs = brain.composer_images.iter().enumerate().map(|(i, path)| -> Element<'_, Message> {
+            mouse_area(
+                container(iced::widget::image(iced::widget::image::Handle::from_path(path)).height(64))
+                    .padding(3)
+                    .style(|_| boxed(SURFACE, LINE, 6.0)),
+            )
+            .on_press(Message::ComposerRemoveImage(i))
+            .interaction(iced::mouse::Interaction::Pointer)
+            .into()
+        });
+        body = body.push(column![
+            row(thumbs).spacing(8),
+            text(t("Klick auf ein Bild entfernt es.", "Click a picture to remove it.")).size(11).color(TEXT_FAINT).font(UI),
+        ].spacing(4));
+    }
+    if !brain.composer_templates.is_empty() {
+        let buttons = brain.composer_templates.iter().enumerate().take(8).map(|(i, template)| style::text_button(template.name.clone(), false, Message::ComposerTemplate(i)));
+        body = body.push(row![text(t("Vorlagen", "Templates")).size(11.5).color(TEXT_FAINT).font(UI)].push(row(buttons).spacing(6).wrap()).spacing(8).align_y(iced::Center));
+    }
+    body = body.push(row![Space::new().width(Fill), action(t("Senden", "Send"), "⌘⏎", true, Some(Message::ComposerSend))]);
+    let panel = container(body)
+        .padding(18)
+        .width(760)
+        .style(|_| container::Style {
+            shadow: iced::Shadow { color: Color { a: 0.5, ..Color::BLACK }, offset: iced::Vector::new(0.0, 10.0), blur_radius: 30.0 },
+            ..boxed(RAISED, LINE_STRONG, 12.0)
+        });
+    let backdrop = mouse_area(container(Space::new().width(Fill).height(Fill)).style(|_| style::fill(Color { a: 0.35, ..Color::BLACK }))).interaction(iced::mouse::Interaction::Idle);
+    stack![backdrop, container(panel).padding(Padding { top: 80.0, ..Padding::ZERO }).center_x(Fill)].into()
 }
 
 /// ⌘K: a field and the matching commands; ↑↓ choose, ⏎ runs, esc closes.
