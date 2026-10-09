@@ -8,6 +8,12 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
+# Sign with the first Apple Development identity in the keychain (or $BRAIN_SIGN_IDENTITY), so
+# macOS keeps Brain's permissions across updates. Without one, the build stays ad-hoc signed.
+if [ -z "${BRAIN_SIGN_IDENTITY:-}" ]; then
+  BRAIN_SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -n 1)"
+fi
+export BRAIN_SIGN_IDENTITY
 ./scripts/bundle.sh
 
 echo "→ brain CLI"

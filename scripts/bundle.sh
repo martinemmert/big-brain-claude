@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the release binaries and packages them into dist/:
-#   - dist/Brain.app (ad-hoc signed; the CLI ships inside at Contents/MacOS/brain
-#     for the Homebrew cask)
+#   - dist/Brain.app (signed with $BRAIN_SIGN_IDENTITY when set, else ad-hoc; the CLI
+#     ships inside at Contents/MacOS/brain for the Homebrew cask)
 #   - dist/brain (the CLI)
 #   - dist/Brain.alfredworkflow (scripts/alfred.sh)
 set -euo pipefail
@@ -56,8 +56,15 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "→ ad-hoc signing"
-codesign --force --deep --sign - "$app"
+# A fixed identity keeps macOS permissions (accessibility, data of other apps, …) across
+# updates; an ad-hoc signature is a new app to macOS with every build.
+if [ -n "${BRAIN_SIGN_IDENTITY:-}" ]; then
+  echo "→ signing as $BRAIN_SIGN_IDENTITY"
+  codesign --force --deep --sign "$BRAIN_SIGN_IDENTITY" "$app"
+else
+  echo "→ ad-hoc signing"
+  codesign --force --deep --sign - "$app"
+fi
 codesign --verify --deep --strict "$app"
 
 echo "→ Alfred workflow"
