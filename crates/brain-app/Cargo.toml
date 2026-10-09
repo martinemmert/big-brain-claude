@@ -11,6 +11,7 @@ path = "src/main.rs"
 brain-core.workspace = true
 brain-terminal.workspace = true
 iced = { version = "0.14", features = ["tokio", "advanced"] }
+iced_term = "0.8"
 chrono.workspace = true
 serde_json.workspace = true
 serde.workspace = true

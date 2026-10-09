@@ -103,6 +103,27 @@ pub fn glow(color: Color) -> Shadow {
     Shadow { color: alpha(color, 0x30), offset: Vector::new(0.0, 0.0), blur_radius: 18.0 }
 }
 
+/// The embedded terminal's colours: Brain's ink background, the usual ANSI hues in Brain's tones.
+pub fn terminal_palette() -> iced_term::ColorPalette {
+    let hex = |c: Color| format!("#{:02x}{:02x}{:02x}", (c.r * 255.0).round() as u8, (c.g * 255.0).round() as u8, (c.b * 255.0).round() as u8);
+    iced_term::ColorPalette {
+        foreground: hex(TEXT),
+        background: hex(INK),
+        black: hex(INK),
+        red: hex(CALLS),
+        green: hex(DONE),
+        yellow: hex(TURN),
+        blue: hex(WORKING),
+        magenta: hex(BACKGROUND),
+        white: hex(TEXT),
+        bright_black: hex(TEXT_FAINT),
+        bright_red: hex(CALLS_SOFT),
+        bright_white: hex(TEXT_STRONG),
+        dim_foreground: hex(TEXT_MUTED),
+        ..iced_term::ColorPalette::default()
+    }
+}
+
 /// A key cap like `⏎` or `/`.
 pub fn kbd<'a, M: 'a>(label: impl Into<String>) -> Element<'a, M> {
     container(text(label.into()).size(10.5).color(TEXT_MUTED).font(UI))

@@ -440,6 +440,7 @@ fn detail(brain: &Brain, now: i64) -> Element<'_, Message> {
         DetailTab::Messages => messages(brain),
         DetailTab::Timeline => scrollable(column(markdown::timeline(s)).padding(Padding { top: 12.0, right: 8.0, bottom: 20.0, left: 0.0 })).height(Fill).style(scrollbar).into(),
         DetailTab::Changes => changes(brain, s),
+        DetailTab::Terminal => terminal(brain, s),
     };
     column![
         header,
@@ -602,16 +603,17 @@ fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     let message_count = brain.conversation.as_ref().map_or(0, |c| c.messages.len());
     let change_count = brain.changes.as_ref().filter(|c| c.key == s.key).and_then(|c| c.changes.as_ref()).map_or(0, |c| c.files.len());
     let tabs = [
-        (DetailTab::Messages, t("Nachrichten", "Messages"), message_count),
-        (DetailTab::Timeline, t("Verlauf", "Timeline"), s.timeline.len()),
-        (DetailTab::Changes, t("Änderungen", "Changes"), change_count),
+        (DetailTab::Messages, t("Nachrichten", "Messages"), Some(message_count)),
+        (DetailTab::Timeline, t("Verlauf", "Timeline"), Some(s.timeline.len())),
+        (DetailTab::Changes, t("Änderungen", "Changes"), Some(change_count)),
+        (DetailTab::Terminal, "Terminal", None),
     ];
     let buttons = tabs.into_iter().map(|(tab, label, count)| {
         let active = brain.tab == tab;
         let content = column![
             row![
                 text(label).size(13).font(if active { style::semibold() } else { style::medium() }).color(if active { TEXT_STRONG } else { TEXT_MUTED }),
-                text(count.to_string()).size(11.5).color(TEXT_FAINT).font(UI),
+                text(count.map(|c| c.to_string()).unwrap_or_default()).size(11.5).color(TEXT_FAINT).font(UI),
             ]
             .spacing(6)
             .align_y(iced::Center),
@@ -622,6 +624,31 @@ fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
         mouse_area(content).on_press(Message::Tab(tab)).interaction(iced::mouse::Interaction::Pointer).into()
     });
     column![row(buttons).spacing(18), divider()].into()
+}
+
+/// A real terminal running the session inside Brain, or why there is none.
+fn terminal<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
+    if let Some(term) = brain.terminals.get(&s.key) {
+        return container(iced_term::TerminalView::show(term).map(Message::Term)).padding(Padding { top: 6.0, bottom: 12.0, ..Padding::ZERO }).height(Fill).into();
+    }
+    let why = if brain.model.is_demo() {
+        t("Im Demo-Modus startet Brain keine Terminals.", "In demo mode Brain starts no terminals.")
+    } else if brain.terminal_command().is_none() {
+        t(
+            "Diese Session läuft in einem iTerm-Tab – dort kann sich Brain nicht einklinken. Hier laufen Hintergrund-Sessions (claude attach) und beendete Sessions (claude --resume).",
+            "This session runs in an iTerm tab, which Brain can't join. Background sessions (claude attach) and ended sessions (claude --resume) run here.",
+        )
+    } else {
+        let command = if s.agent.is_some() { "claude attach" } else { "claude --resume" };
+        return column![
+            hint(tr!("Startet die Session hier mit {command}.", "Runs the session here with {command}.")),
+            action(t("Hier starten", "Run here"), "⏎", false, Some(Message::Do(Action::StartTerminal))),
+        ]
+        .spacing(6)
+        .padding(Padding { top: 8.0, ..Padding::ZERO })
+        .into();
+    };
+    hint(why)
 }
 
 fn messages(brain: &Brain) -> Element<'_, Message> {

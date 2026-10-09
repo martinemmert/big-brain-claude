@@ -51,6 +51,8 @@ pub enum DetailTab {
     Messages,
     Timeline,
     Changes,
+    /// A real terminal running the session inside Brain (`claude attach` / `claude --resume`).
+    Terminal,
 }
 
 /// Buttons in the detail pane.
@@ -63,6 +65,7 @@ pub enum Action {
     StartReply,
     StartRename,
     CopyDigest,
+    StartTerminal,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +103,7 @@ pub enum Message {
     UpdateFound(Option<crate::links::Update>),
     DragWindow,
     ZoomWindow,
+    Term(iced_term::Event),
 }
 
 /// The "new session" dialog: a folder (picked from recent ones or typed) and an account.
@@ -250,6 +254,10 @@ pub struct Brain {
     /// What the list and the message pane show, to keep the selection and new messages in view.
     list_viewport: Option<(f32, f32)>,
     messages_at_bottom: bool,
+    /// Terminals running sessions inside Brain, per session; they keep running while another
+    /// session is selected.
+    pub terminals: HashMap<SessionKey, iced_term::Terminal>,
+    next_terminal: u64,
     /// The native title bar is set up once the window exists.
     titlebar_ready: bool,
     /// What the detail pane showed last; when it changes, the message list is built anew and
@@ -298,6 +306,8 @@ impl Brain {
             update: None,
             list_viewport: None,
             messages_at_bottom: true,
+            terminals: HashMap::new(),
+            next_terminal: 1,
             titlebar_ready: false,
             detail_shape: (Layout::Status, Mode::Normal, DetailTab::Messages),
         };
@@ -320,6 +330,7 @@ impl Brain {
             _ => None,
         });
         let mut subscriptions = vec![keys, iced::time::every(Duration::from_millis(800)).map(|_| Message::Tick)];
+        subscriptions.extend(self.terminals.values().map(|term| term.subscription().map(Message::Term)));
         if !self.model.is_demo() {
             subscriptions.push(iced::time::every(Duration::from_secs(120)).map(|_| Message::CheckPrs));
             subscriptions.push(iced::time::every(Duration::from_secs(24 * 60 * 60)).map(|_| Message::CheckUpdate));
@@ -418,7 +429,7 @@ impl Brain {
             }
             Message::Tab(tab) => {
                 self.tab = tab;
-                self.load_changes()
+                Task::batch([self.load_changes(), self.focus_terminal()])
             }
             Message::Do(action) => self.act(action),
             Message::CleanupAge(index) => {
@@ -457,6 +468,17 @@ impl Brain {
             }
             Message::DragWindow => window::latest().and_then(window::drag),
             Message::ZoomWindow => window::latest().and_then(window::toggle_maximize),
+            Message::Term(event) => {
+                let iced_term::Event::BackendCall(id, command) = event;
+                let key = self.terminals.iter().find(|(_, term)| term.id == id).map(|(key, _)| key.clone());
+                if let Some(key) = key {
+                    let action = self.terminals.get_mut(&key).map(|term| term.handle(iced_term::Command::ProxyToBackend(command)));
+                    if action == Some(iced_term::actions::Action::Shutdown) {
+                        self.terminals.remove(&key);
+                    }
+                }
+                Task::none()
+            }
         };
         let synced = self.sync();
         Task::batch([task, synced])
@@ -643,6 +665,71 @@ impl Brain {
         Task::perform(off_thread(move || brain_core::changes::changes_of(std::path::Path::new(&cwd))), move |changes| {
             Message::ChangesLoaded(key.clone(), changes)
         })
+    }
+
+    /// What the Terminal tab would run for the selected session: `claude attach` for a
+    /// background session, `claude --resume` for an ended one. Sessions running in an iTerm tab
+    /// can't be joined from outside, so they get none.
+    pub fn terminal_command(&self) -> Option<(Vec<String>, String)> {
+        let session = self.selected_session()?;
+        let cwd = session.cwd.clone().unwrap_or_else(|| brain_core::account::home_dir().display().to_string());
+        if let Some(agent) = &session.agent {
+            return Some((vec!["attach".into(), agent.id.clone()], cwd));
+        }
+        if session.phase() == Phase::Ended {
+            return Some((vec!["--resume".into(), session.session_id.clone()?], cwd));
+        }
+        None
+    }
+
+    /// Gives a running terminal the keyboard when its tab is shown; starts nothing.
+    fn focus_terminal(&self) -> Task<Message> {
+        match self.selected.as_ref().and_then(|k| self.terminals.get(k)) {
+            Some(term) if self.tab == DetailTab::Terminal => iced_term::TerminalView::focus(term.widget_id().clone()),
+            _ => Task::none(),
+        }
+    }
+
+    /// Starts the selected session's terminal on the Terminal tab (⏎ or the button), and
+    /// focuses it.
+    fn open_terminal(&mut self) -> Task<Message> {
+        if self.tab != DetailTab::Terminal || self.model.is_demo() {
+            return Task::none();
+        }
+        let Some(key) = self.selected.clone() else { return Task::none() };
+        if !self.terminals.contains_key(&key) {
+            let Some((args, cwd)) = self.terminal_command() else { return Task::none() };
+            let mut env = HashMap::new();
+            if let Some(account) = self.model.account(&key.account).filter(|a| a.id != "main") {
+                env.insert("CLAUDE_CONFIG_DIR".to_string(), account.config_dir.display().to_string());
+            }
+            env.insert("TERM".to_string(), "xterm-256color".to_string());
+            let font = crate::chat_font::get();
+            let settings = iced_term::settings::Settings {
+                font: iced_term::settings::FontSettings { size: font.size, font_type: font.regular, ..Default::default() },
+                theme: iced_term::settings::ThemeSettings::new(Box::new(crate::style::terminal_palette())),
+                backend: iced_term::settings::BackendSettings {
+                    program: "claude".into(),
+                    args,
+                    env,
+                    working_directory: Some(std::path::PathBuf::from(cwd)),
+                },
+            };
+            match iced_term::Terminal::new(self.next_terminal, settings) {
+                Ok(term) => {
+                    self.next_terminal += 1;
+                    self.terminals.insert(key.clone(), term);
+                }
+                Err(err) => {
+                    self.set_status(tr!("Terminal startet nicht: {err}", "Terminal didn't start: {err}"));
+                    return Task::none();
+                }
+            }
+        }
+        match self.terminals.get(&key) {
+            Some(term) => iced_term::TerminalView::focus(term.widget_id().clone()),
+            None => Task::none(),
+        }
     }
 
     /// Keeps the message list in step with the selected session. New messages scroll into view
@@ -987,6 +1074,20 @@ impl Brain {
             _ => {}
         }
 
+        // On the Terminal tab, typing belongs to the terminal even when a click elsewhere took
+        // its focus: text, ⏎ and ⌫ go there (and give it the focus back), never to shortcuts.
+        if self.tab == DetailTab::Terminal && !cmd && !modifiers.control() {
+            let bytes = match named {
+                Some(Named::Enter) => Some(b"\r".to_vec()),
+                Some(Named::Backspace) => Some(vec![0x7f]),
+                Some(Named::ArrowUp | Named::ArrowDown) => None,
+                _ => text.as_ref().map(|t| t.as_bytes().to_vec()),
+            };
+            if let (Some(bytes), Some(term)) = (bytes, self.selected.as_ref().and_then(|k| self.terminals.get_mut(k))) {
+                term.handle(iced_term::Command::ProxyToBackend(iced_term::BackendCommand::Write(bytes)));
+                return iced_term::TerminalView::focus(term.widget_id().clone());
+            }
+        }
         if cmd && character.as_deref() == Some("f") {
             return self.start_search();
         }
@@ -1012,6 +1113,8 @@ impl Brain {
         match named {
             Some(Named::ArrowDown) => return self.select_index(&list, next),
             Some(Named::ArrowUp) => return self.select_index(&list, previous),
+            // On the Terminal tab ⏎ runs the session here instead of in iTerm.
+            Some(Named::Enter) if self.tab == DetailTab::Terminal && self.terminal_command().is_some() => return self.open_terminal(),
             Some(Named::Enter) => {
                 self.open_selected();
                 return Task::none();
@@ -1028,17 +1131,19 @@ impl Brain {
                 self.tab = match self.tab {
                     DetailTab::Messages => DetailTab::Timeline,
                     DetailTab::Timeline => DetailTab::Changes,
-                    DetailTab::Changes => DetailTab::Messages,
+                    DetailTab::Changes => DetailTab::Terminal,
+                    DetailTab::Terminal => DetailTab::Messages,
                 };
-                return self.load_changes();
+                return Task::batch([self.load_changes(), self.focus_terminal()]);
             }
             Some(Named::ArrowLeft) => {
                 self.tab = match self.tab {
-                    DetailTab::Messages => DetailTab::Changes,
+                    DetailTab::Messages => DetailTab::Terminal,
                     DetailTab::Timeline => DetailTab::Messages,
                     DetailTab::Changes => DetailTab::Timeline,
+                    DetailTab::Terminal => DetailTab::Changes,
                 };
-                return self.load_changes();
+                return Task::batch([self.load_changes(), self.focus_terminal()]);
             }
             _ => {}
         }
@@ -1182,6 +1287,7 @@ impl Brain {
             Action::Deny => self.answer_permission(false),
             Action::StartReply => return self.start_reply(),
             Action::StartRename => return self.start_rename(),
+            Action::StartTerminal => return self.open_terminal(),
             Action::CopyDigest => {
                 let date = chrono::Local::now().format("%d.%m.%Y").to_string();
                 let markdown = brain_core::digest::markdown(&tr!("Heute, {date}", "Today, {date}"), &self.today_digest());
