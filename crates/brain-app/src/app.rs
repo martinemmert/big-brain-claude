@@ -35,6 +35,7 @@ pub const NEW_SESSION: &str = "new-session";
 pub const LIST: &str = "session-list";
 pub const MESSAGES: &str = "messages";
 pub const FIND: &str = "find";
+pub const PALETTE: &str = "palette";
 
 /// Where typed keys go.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,7 +46,37 @@ pub enum Mode {
     Reply,
     NewSession,
     Cleanup,
+    /// The command palette (⌘K).
+    Palette,
 }
+
+/// What a line of the command palette does.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PaletteCommand {
+    Act(Action),
+    Tab(DetailTab),
+    /// Text (a slash command, a prompt) typed into the selected session.
+    Send(String),
+    /// A prompt typed into every session that waits for its turn.
+    Broadcast(String),
+    NewSession,
+    Find,
+    Cleanup,
+    ToggleEnded,
+    ToggleProjects,
+    ToggleToday,
+    ToggleBackground,
+}
+
+/// Slash commands the palette offers for the selected session.
+const SLASH_COMMANDS: [(&str, &str, &str); 6] = [
+    ("/compact", "Kontext zusammenfassen", "summarise the context"),
+    ("/context", "Kontext-Belegung zeigen", "show what fills the context"),
+    ("/model", "Modell wechseln", "switch the model"),
+    ("/usage", "Verbrauch zeigen", "show usage"),
+    ("/review", "Änderungen reviewen", "review the changes"),
+    ("/clear", "Gespräch leeren", "clear the conversation"),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetailTab {
@@ -149,6 +180,11 @@ pub enum Message {
     PrsLoaded(HashMap<SessionKey, brain_core::github::PullRequest>),
     ChangesLoaded(SessionKey, Option<brain_core::changes::Changes>),
     FilesLoaded(SessionKey, u64, Vec<brain_core::files::SessionFile>),
+    Palette(String),
+    PaletteRun(PaletteCommand),
+    PaletteClose,
+    /// Bytes for a session's terminal, sent a moment after its text (the Return that submits).
+    TerminalKeys(SessionKey, Vec<u8>),
     /// The find field in the Messages tab.
     Find(String),
     PromptsOnly(bool),
@@ -321,6 +357,8 @@ pub struct Brain {
     pub tab: DetailTab,
     pub conversation: Option<Conversation>,
     pub files: Option<FilesCache>,
+    pub palette: String,
+    pub palette_index: usize,
     /// Text to find in the selected session's whole conversation (⌘F).
     pub find: String,
     /// The Messages tab lists only the user's prompts, all of them.
@@ -435,6 +473,8 @@ impl Brain {
             shown_terminal: None,
             files: None,
             find: String::new(),
+            palette: String::new(),
+            palette_index: 0,
             prompts_only: false,
             history: None,
             history_loading: false,
@@ -646,6 +686,26 @@ impl Brain {
             }
             Message::PrsLoaded(prs) => {
                 self.prs = prs;
+                Task::none()
+            }
+            Message::Palette(text) => {
+                self.palette = text;
+                self.palette_index = 0;
+                Task::none()
+            }
+            Message::PaletteRun(command) => {
+                self.mode = Mode::Normal;
+                let task = self.run_palette(command);
+                Task::batch([unfocus(), task])
+            }
+            Message::PaletteClose => {
+                self.mode = Mode::Normal;
+                unfocus()
+            }
+            Message::TerminalKeys(key, bytes) => {
+                if let Some(term) = self.terminals.get_mut(&key) {
+                    term.handle(iced_term::Command::ProxyToBackend(iced_term::BackendCommand::Write(bytes)));
+                }
                 Task::none()
             }
             Message::Find(text) => {
@@ -1091,6 +1151,161 @@ impl Brain {
             Ok(file)
         });
         Task::perform(exported, Message::Exported)
+    }
+
+    /// ⌘K.
+    fn open_palette(&mut self) -> Task<Message> {
+        self.mode = Mode::Palette;
+        self.palette.clear();
+        self.palette_index = 0;
+        self.terminal_focused = false;
+        operation::focus(PALETTE)
+    }
+
+    /// The palette's lines for what's typed: commands whose label has every typed word, then,
+    /// for text that isn't a command, sending it to the session or to all waiting ones.
+    pub fn palette_entries(&self) -> Vec<(String, &'static str, PaletteCommand)> {
+        let mut all: Vec<(String, &'static str, PaletteCommand)> = Vec::new();
+        if let Some(session) = self.selected_session() {
+            let name = session.display_name();
+            let reachable = self.can_send(&session.key);
+            let ended = session.phase() == Phase::Ended;
+            if session.agent.is_some() || ended {
+                all.push((tr!("„{name}“ hier im Terminal öffnen", "Open “{name}” here in the terminal"), "⏎", PaletteCommand::Act(Action::Open)));
+            }
+            all.push((tr!("„{name}“ in iTerm öffnen", "Open “{name}” in iTerm"), "⌥⏎", PaletteCommand::Act(Action::OpenInITerm)));
+            if reachable {
+                for (command, de, en) in SLASH_COMMANDS {
+                    let what = t(de, en);
+                    all.push((tr!("{command} an „{name}“ – {what}", "{command} to “{name}” – {what}"), "", PaletteCommand::Send(command.to_string())));
+                }
+            }
+            all.push((t("Letzte Antwort kopieren", "Copy the last answer").to_string(), "⌘⇧C", PaletteCommand::Act(Action::CopyAnswer)));
+            all.push((t("Gespräch als Markdown öffnen", "Open the conversation as Markdown").to_string(), "", PaletteCommand::Act(Action::Export)));
+            all.push((t("In der Session suchen", "Find in the session").to_string(), "⌘F", PaletteCommand::Find));
+            all.push((t("Dateien der Session", "The session's files").to_string(), "", PaletteCommand::Tab(DetailTab::Files)));
+            all.push((t("Änderungen (git)", "Changes (git)").to_string(), "", PaletteCommand::Tab(DetailTab::Changes)));
+            all.push((t("Umbenennen", "Rename").to_string(), "R", PaletteCommand::Act(Action::StartRename)));
+            all.push((t("Anheften / lösen", "Pin / unpin").to_string(), "P", PaletteCommand::Act(Action::Pin)));
+            all.push((t("Stumm / laut", "Mute / unmute").to_string(), "M", PaletteCommand::Act(Action::Mute)));
+            all.push((t("Pausieren", "Snooze").to_string(), "S", PaletteCommand::Act(Action::Snooze)));
+            if self.model.accounts.len() > 1 {
+                all.push((t("Im anderen Konto fortsetzen", "Continue in the other account").to_string(), "A", PaletteCommand::Act(Action::OtherAccount)));
+            }
+            all.push((t("Beenden / Hintergrund-Session stoppen", "End / stop the background session").to_string(), "X", PaletteCommand::Act(Action::End)));
+            all.push((t("Ausblenden", "Hide").to_string(), "⌫", PaletteCommand::Act(Action::Hide)));
+            all.push((t("In den Papierkorb", "Move to Trash").to_string(), "⌘⌫", PaletteCommand::Act(Action::Trash)));
+        }
+        all.push((t("Neue Session", "New session").to_string(), "⌘N", PaletteCommand::NewSession));
+        all.push((t("Aufräumen", "Clean up").to_string(), "C", PaletteCommand::Cleanup));
+        all.push((t("Beendete Sessions zeigen / verbergen", "Show / hide ended sessions").to_string(), "E", PaletteCommand::ToggleEnded));
+        all.push((t("Nach Projekten gruppieren", "Group by project").to_string(), "G", PaletteCommand::ToggleProjects));
+        all.push((t("Heute", "Today").to_string(), "D", PaletteCommand::ToggleToday));
+        all.push((t("Hintergrund-Sessions zeigen / verbergen", "Show / hide background sessions").to_string(), "B", PaletteCommand::ToggleBackground));
+
+        let query = self.palette.trim().to_lowercase();
+        let words: Vec<&str> = query.split_whitespace().collect();
+        let mut shown: Vec<_> = all.into_iter().filter(|(label, _, _)| {
+            let label = label.to_lowercase();
+            words.iter().all(|w| label.contains(w))
+        }).collect();
+        let text = self.palette.trim();
+        if !text.is_empty() {
+            if let Some(session) = self.selected_session().filter(|s| self.can_send(&s.key)) {
+                let name = session.display_name();
+                shown.push((tr!("An „{name}“ senden: {text}", "Send to “{name}”: {text}"), "", PaletteCommand::Send(text.to_string())));
+            }
+            let waiting = self.broadcast_targets().len();
+            if waiting > 0 {
+                shown.push((tr!("An alle {waiting} wartenden Sessions senden: {text}", "Send to all {waiting} waiting sessions: {text}"), "", PaletteCommand::Broadcast(text.to_string())));
+            }
+        }
+        shown
+    }
+
+    fn run_palette(&mut self, command: PaletteCommand) -> Task<Message> {
+        match command {
+            PaletteCommand::Act(action) => self.act(action),
+            PaletteCommand::Tab(tab) => {
+                self.tab = tab;
+                Task::batch([self.load_changes(), self.load_files()])
+            }
+            PaletteCommand::Send(text) => match self.selected.clone() {
+                Some(key) => self.send_text(&key, &text),
+                None => Task::none(),
+            },
+            PaletteCommand::Broadcast(text) => {
+                let targets = self.broadcast_targets();
+                let count = targets.len();
+                let tasks: Vec<Task<Message>> = targets.iter().map(|key| self.send_text(key, &text)).collect();
+                self.set_status(tr!("An {count} Sessions gesendet.", "Sent to {count} sessions."));
+                Task::batch(tasks)
+            }
+            PaletteCommand::NewSession => self.open_new_session_dialog(),
+            PaletteCommand::Find => self.start_find(),
+            PaletteCommand::Cleanup => {
+                self.armed = None;
+                self.mode = Mode::Cleanup;
+                Task::none()
+            }
+            PaletteCommand::ToggleEnded => {
+                self.toggle_ended();
+                Task::none()
+            }
+            PaletteCommand::ToggleProjects => {
+                self.prefs.layout = if self.prefs.layout == Layout::Projects { Layout::Status } else { Layout::Projects };
+                self.prefs.save();
+                Task::none()
+            }
+            PaletteCommand::ToggleToday => {
+                self.prefs.layout = if self.prefs.layout == Layout::Today { Layout::Status } else { Layout::Today };
+                self.prefs.save();
+                Task::none()
+            }
+            PaletteCommand::ToggleBackground => {
+                self.toggle_background();
+                Task::none()
+            }
+        }
+    }
+
+    /// Whether Brain can type into the session: its terminal runs in Brain, or it waits in an
+    /// iTerm tab Brain can type into.
+    fn can_send(&self, key: &SessionKey) -> bool {
+        self.terminals.contains_key(key) || self.model.board.get(key).is_some_and(|s| s.accepts_input())
+    }
+
+    /// Sessions whose turn it is and that Brain can type into. Sessions with a permission
+    /// dialog open are left out: typed text would answer the dialog.
+    fn broadcast_targets(&self) -> Vec<SessionKey> {
+        let groups = self.groups(now_ms());
+        groups
+            .attention
+            .iter()
+            .chain(&groups.pinned)
+            .filter(|s| s.phase() == Phase::YourTurn && !s.awaiting_permission() && self.can_send(&s.key))
+            .map(|s| s.key.clone())
+            .collect()
+    }
+
+    /// Types `text` into a session and submits it: into Brain's terminal (Return a moment later,
+    /// so Claude Code doesn't take it for a pasted newline), or into its iTerm tab.
+    fn send_text(&mut self, key: &SessionKey, text: &str) -> Task<Message> {
+        if self.blocked_in_demo() {
+            return Task::none();
+        }
+        if let Some(term) = self.terminals.get_mut(key) {
+            term.handle(iced_term::Command::ProxyToBackend(iced_term::BackendCommand::Write(text.as_bytes().to_vec())));
+            let key = key.clone();
+            return Task::perform(off_thread(|| std::thread::sleep(Duration::from_millis(150))), move |_| Message::TerminalKeys(key.clone(), b"\r".to_vec()));
+        }
+        let Some(session) = self.model.board.get(key).filter(|s| s.accepts_input()) else {
+            self.set_status(t("Die Session nimmt gerade keine Eingabe an.", "The session doesn't take input right now."));
+            return Task::none();
+        };
+        let outcome = terminal::type_text(session.pid, text);
+        self.report(outcome, Some(t("Gesendet.", "Sent.").into()));
+        Task::none()
     }
 
     /// ⌘F: find in the selected session's conversation.
@@ -1610,6 +1825,24 @@ impl Brain {
                 Task::none()
             };
         }
+        // ⌘K: the command palette, also from inside the terminal.
+        if cmd && character.as_deref() == Some("k") {
+            return self.open_palette();
+        }
+        if self.mode == Mode::Palette {
+            let count = self.palette_entries().len();
+            match named {
+                Some(Named::ArrowDown) => self.palette_index = (self.palette_index + 1).min(count.saturating_sub(1)),
+                Some(Named::ArrowUp) => self.palette_index = self.palette_index.saturating_sub(1),
+                Some(Named::Enter) => {
+                    if let Some((_, _, command)) = self.palette_entries().into_iter().nth(self.palette_index) {
+                        return self.update(Message::PaletteRun(command));
+                    }
+                }
+                _ => {}
+            }
+            return Task::none();
+        }
         if cmd && matches!(character.as_deref(), Some("1") | Some("[")) {
             self.terminal_focused = false;
             if self.mode == Mode::Search {
@@ -1767,7 +2000,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup => {
+            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette => {
                 self.mode = Mode::Normal;
                 unfocus()
             }

@@ -54,10 +54,53 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         .width(Fill)
         .height(Fill)
         .style(|_| container::Style { background: Some(Background::Color(INK)), text_color: Some(TEXT), ..container::Style::default() });
+    if brain.mode == Mode::Palette {
+        return stack![window, palette(brain)].into();
+    }
     match context_menu(brain) {
         Some(menu) => stack![window, menu].into(),
         None => window.into(),
     }
+}
+
+/// ⌘K: a field and the matching commands; ↑↓ choose, ⏎ runs, esc closes.
+fn palette(brain: &Brain) -> Element<'_, Message> {
+    const SHOWN: usize = 12;
+    let entries = brain.palette_entries();
+    let field = text_input(t("Befehl oder Text für die Session …", "A command, or text for the session …"), &brain.palette)
+        .id(app::PALETTE)
+        .on_input(Message::Palette)
+        .size(15)
+        .font(UI)
+        .padding([10, 4])
+        .style(|theme, status| text_input::Style { border: Border::default(), background: Background::Color(Color::TRANSPARENT), ..field_style(theme, status) });
+    // Keep the chosen line in the window of shown lines.
+    let first = brain.palette_index.saturating_sub(SHOWN - 1);
+    let rows = entries.into_iter().enumerate().skip(first).take(SHOWN).map(|(i, (label, keys, command))| -> Element<'_, Message> {
+        let chosen = i == brain.palette_index;
+        button(row![text(label).size(13).color(if chosen { TEXT_STRONG } else { TEXT }).font(UI).width(Fill), text(keys).size(11.5).color(TEXT_FAINT).font(UI)].spacing(12).align_y(iced::Center))
+            .padding([7, 12])
+            .width(Fill)
+            .on_press(Message::PaletteRun(command))
+            .style(move |_, status| button::Style {
+                background: (chosen || matches!(status, button::Status::Hovered)).then(|| Background::Color(alpha(WORKING, if chosen { 0x33 } else { 0x1a }))),
+                border: Border { radius: 6.0.into(), ..Border::default() },
+                ..button::Style::default()
+            })
+            .into()
+    });
+    let list = column(rows).spacing(1);
+    let panel = container(column![container(row![text("⌘K").size(12).color(TEXT_FAINT), field].spacing(10).align_y(iced::Center)).padding([0, 8]), divider(), list].spacing(6))
+        .padding(8)
+        .width(620)
+        .style(|_| container::Style {
+            shadow: iced::Shadow { color: Color { a: 0.5, ..Color::BLACK }, offset: iced::Vector::new(0.0, 10.0), blur_radius: 30.0 },
+            ..boxed(RAISED, LINE_STRONG, 12.0)
+        });
+    let backdrop = mouse_area(container(Space::new().width(Fill).height(Fill)).style(|_| style::fill(Color { a: 0.35, ..Color::BLACK })))
+        .on_press(Message::PaletteClose)
+        .interaction(iced::mouse::Interaction::Idle);
+    stack![backdrop, container(panel).padding(Padding { top: 90.0, ..Padding::ZERO }).center_x(Fill)].into()
 }
 
 // ---- context menu -----------------------------------------------------------------
