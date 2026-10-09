@@ -202,6 +202,11 @@ pub enum Message {
     CheckPrs,
     PrsLoaded(HashMap<SessionKey, brain_core::github::PullRequest>),
     ChangesLoaded(SessionKey, Option<brain_core::changes::Changes>),
+    /// A changed file clicked in the Changes tab: show its diff (again: hide it).
+    ShowDiff(String),
+    DiffLoaded(SessionKey, String, Option<String>),
+    /// Discard a file's change (twice): its current version goes to the Trash first.
+    DiscardChange(String),
     FilesLoaded(SessionKey, u64, Vec<brain_core::files::SessionFile>),
     QaLoaded(SessionKey, u64, Vec<brain_core::qa::Exchange>),
     Palette(String),
@@ -402,6 +407,8 @@ pub struct Brain {
     pub tab: DetailTab,
     pub conversation: Option<Conversation>,
     pub files: Option<FilesCache>,
+    /// The changed file whose diff is open: session, path, and the diff once loaded.
+    pub diff: Option<(SessionKey, String, Option<Vec<(brain_core::changes::DiffKind, String)>>)>,
     pub qa: Option<QaCache>,
     qa_loading: bool,
     pub palette: String,
@@ -449,6 +456,7 @@ pub struct Brain {
     pub new_session: NewSession,
     /// `A`, `X`, `⌫` or `⌘⌫` was pressed once on this session: a second press within 5 s acts.
     armed: Option<(char, SessionKey, Instant)>,
+    armed_path: Option<(String, SessionKey, Instant)>,
     /// The session whose context menu is open, and where it opens.
     pub context_menu: Option<(SessionKey, iced::Point)>,
     /// The session selected before a right click selected another one: "open beside" keeps it.
@@ -532,6 +540,7 @@ impl Brain {
             split: None,
             overview: false,
             files: None,
+            diff: None,
             qa: None,
             qa_loading: false,
             find: String::new(),
@@ -549,6 +558,7 @@ impl Brain {
             changes_loading: false,
             new_session: NewSession::default(),
             armed: None,
+            armed_path: None,
             context_menu: None,
             before_menu: None,
             pointer: iced::Point::ORIGIN,
@@ -844,6 +854,31 @@ impl Brain {
                 }
                 self.reader = Some(read_file(path));
                 Task::none()
+            }
+            Message::ShowDiff(path) => {
+                let Some(key) = self.selected.clone() else { return Task::none() };
+                if self.diff.as_ref().is_some_and(|(k, p, _)| *k == key && *p == path) {
+                    self.diff = None;
+                    return Task::none();
+                }
+                let (Some(cwd), Some(change)) = (self.selected_session().and_then(|s| s.cwd.clone()), self.change_of(&path)) else {
+                    return Task::none();
+                };
+                self.diff = Some((key.clone(), path.clone(), None));
+                Task::perform(off_thread(move || brain_core::changes::diff_of(std::path::Path::new(&cwd), &change)), move |diff| {
+                    Message::DiffLoaded(key.clone(), path.clone(), diff)
+                })
+            }
+            Message::DiffLoaded(key, path, diff) => {
+                if self.diff.as_ref().is_some_and(|(k, p, _)| *k == key && *p == path) {
+                    let lines = diff.map(|d| brain_core::changes::diff_lines(&d)).unwrap_or_default();
+                    self.diff = Some((key, path, Some(lines)));
+                }
+                Task::none()
+            }
+            Message::DiscardChange(path) => {
+                self.discard_change(&path);
+                self.load_changes()
             }
             Message::ChangesLoaded(key, changes) => {
                 self.changes = Some(ChangesCache { key, loaded: Instant::now(), changes });
@@ -1478,6 +1513,50 @@ impl Brain {
     fn start_find(&mut self) -> Task<Message> {
         self.tab = DetailTab::Messages;
         Task::batch([operation::focus(FIND), self.load_history()])
+    }
+
+    /// The selected session's change of `path`, from the Changes tab's last reading.
+    fn change_of(&self, path: &str) -> Option<brain_core::changes::FileChange> {
+        let key = self.selected.as_ref()?;
+        let cache = self.changes.as_ref().filter(|c| c.key == *key)?;
+        cache.changes.as_ref()?.files.iter().find(|f| f.path == path).cloned()
+    }
+
+    /// Twice: the file's current version goes to the Trash, then git brings back HEAD's (or
+    /// unstages a new file). Nothing is lost for good.
+    fn discard_change(&mut self, path: &str) {
+        let Some(session) = self.selected_session() else { return };
+        let key = session.key.clone();
+        let Some(cwd) = session.cwd.clone() else { return };
+        let Some(change) = self.change_of(path).filter(brain_core::changes::discardable) else { return };
+        if !self.arm_path(path, &key) {
+            self.set_status(tr!("Nochmal klicken verwirft die Änderung an {path} (die jetzige Fassung kommt in den Papierkorb).", "Click again to discard the change to {path} (the current version goes to the Trash)."));
+            return;
+        }
+        if self.blocked_in_demo() {
+            return;
+        }
+        let file = std::path::Path::new(&cwd).join(path);
+        if file.exists() {
+            if let Err(err) = crate::trash::move_to_trash(&file) {
+                self.set_status(tr!("Konnte {path} nicht in den Papierkorb legen: {err}", "Couldn't move {path} to the Trash: {err}"));
+                return;
+            }
+        }
+        match brain_core::changes::restore_from_head(std::path::Path::new(&cwd), &change) {
+            Ok(()) => self.set_status(tr!("Änderung an {path} verworfen – die alte Fassung liegt im Papierkorb.", "Discarded the change to {path} – the old version is in the Trash.")),
+            Err(err) => self.set_status(tr!("Verwerfen fehlgeschlagen: {err}", "Discarding failed: {err}")),
+        }
+        self.diff = None;
+        self.changes = None;
+        self.changes_loading = false;
+    }
+
+    /// Like `arm`, for a file of a session: the second click within 5 seconds confirms.
+    fn arm_path(&mut self, path: &str, key: &SessionKey) -> bool {
+        let confirmed = self.armed_path.as_ref().is_some_and(|(p, k, at)| p == path && k == key && at.elapsed() < Duration::from_secs(5));
+        self.armed_path = if confirmed { None } else { Some((path.to_string(), key.clone(), Instant::now())) };
+        confirmed
     }
 
     /// Reads the selected session's questions when their tab shows and the transcript grew.

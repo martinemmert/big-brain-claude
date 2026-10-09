@@ -1334,11 +1334,70 @@ fn changes<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
             if changes.files.is_empty() {
                 out.push(hint(t("Keine offenen Änderungen.", "No uncommitted changes.")));
             }
-            out.extend(changes.files.iter().map(change_row));
+            for file in &changes.files {
+                let open = brain.diff.as_ref().filter(|(k, p, _)| *k == s.key && *p == file.path);
+                out.push(
+                    button(change_row(file))
+                        .padding([0, 6])
+                        .width(Fill)
+                        .on_press(Message::ShowDiff(file.path.clone()))
+                        .style(move |_, status| button::Style {
+                            background: (open.is_some() || matches!(status, button::Status::Hovered)).then_some(Background::Color(style::HOVER)),
+                            border: Border { radius: 5.0.into(), ..Border::default() },
+                            ..button::Style::default()
+                        })
+                        .into(),
+                );
+                if let Some((_, _, lines)) = open {
+                    out.push(diff_view(file, lines.as_deref()));
+                }
+            }
             out
         }
     };
     scrollable(column(body).spacing(2).padding(Padding { top: 4.0, right: 8.0, bottom: 20.0, left: 0.0 })).height(Fill).style(scrollbar).into()
+}
+
+/// A file's diff, colored by line; long ones are cut. Below it, discarding the change.
+fn diff_view<'a>(file: &brain_core::changes::FileChange, lines: Option<&[(brain_core::changes::DiffKind, String)]>) -> Element<'a, Message> {
+    use brain_core::changes::DiffKind;
+    const SHOWN: usize = 400;
+    let Some(lines) = lines else { return container(hint(t("Lade Diff …", "Loading diff …"))).padding([4, 10]).into() };
+    if lines.is_empty() {
+        return container(hint(t("Kein Diff (binär oder unverändert).", "No diff (binary or unchanged)."))).padding([4, 10]).into();
+    }
+    let mut rows: Vec<Element<'a, Message>> = lines
+        .iter()
+        .take(SHOWN)
+        .map(|(kind, line)| {
+            let color = match kind {
+                DiffKind::Added => DONE,
+                DiffKind::Removed => CALLS_SOFT,
+                DiffKind::Hunk => WORKING,
+                DiffKind::Meta => TEXT_FAINT,
+                DiffKind::Context => TEXT_MUTED,
+            };
+            let background = match kind {
+                DiffKind::Added => Some(alpha(DONE, 0x14)),
+                DiffKind::Removed => Some(alpha(CALLS, 0x14)),
+                _ => None,
+            };
+            container(text(line.clone()).size(11.5).color(color).font(MONO).wrapping(text::Wrapping::None))
+                .width(Fill)
+                .padding([0, 8])
+                .style(move |_| container::Style { background: background.map(Background::Color), ..container::Style::default() })
+                .into()
+        })
+        .collect();
+    if lines.len() > SHOWN {
+        let more = lines.len() - SHOWN;
+        rows.push(hint(tr!("… {more} weitere Zeilen", "… {more} more lines")));
+    }
+    let mut body = column![container(column(rows)).padding([6, 0]).width(Fill).clip(true).style(|_| boxed(INK, LINE, 6.0))].spacing(6);
+    if brain_core::changes::discardable(file) {
+        body = body.push(row![action(t("Änderung verwerfen", "Discard change"), "", false, Some(Message::DiscardChange(file.path.clone())))]);
+    }
+    container(body).padding(Padding { top: 2.0, right: 0.0, bottom: 10.0, left: 6.0 }).into()
 }
 
 /// One changed file: status code, path, added and removed lines.
