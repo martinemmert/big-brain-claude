@@ -729,6 +729,31 @@ fn name<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
         .into()
 }
 
+/// How full the context is, as a bar: amber from 80 %, red from 90 %, with a button that
+/// sends `/compact` once it's getting full.
+fn context_gauge<'a>(brain: &'a Brain, s: &Session, percent: f64) -> Element<'a, Message> {
+    const WIDTH: f32 = 72.0;
+    let color = if percent >= 90.0 {
+        CALLS
+    } else if percent >= 80.0 {
+        TURN
+    } else {
+        WORKING
+    };
+    let filled = (WIDTH * (percent.clamp(0.0, 100.0) / 100.0) as f32).max(2.0);
+    let bar = container(container(Space::new().width(filled).height(5)).style(move |_| boxed(color, Color::TRANSPARENT, 2.5)))
+        .width(WIDTH)
+        .height(5)
+        .style(|_| boxed(RAISED, Color::TRANSPARENT, 2.5));
+    let mut line = row![bar, text(tr!("{percent:.0}% Kontext", "{percent:.0}% context")).size(11.5).color(if percent >= 80.0 { color } else { TEXT_MUTED }).font(UI)]
+        .spacing(7)
+        .align_y(iced::Center);
+    if percent >= 80.0 && brain.can_send(&s.key) {
+        line = line.push(style::text_button("/compact", false, Message::SendTo(s.key.clone(), "/compact".to_string())));
+    }
+    container(line).padding([2, 8]).style(|_| boxed(SURFACE, LINE, 6.0)).into()
+}
+
 /// Path, model, context, cost, permission mode, pid, start.
 fn meta_chips<'a>(brain: &'a Brain, s: &Session) -> Vec<Element<'a, Message>> {
     if brain.mode == Mode::Rename {
@@ -742,7 +767,7 @@ fn meta_chips<'a>(brain: &'a Brain, s: &Session) -> Vec<Element<'a, Message>> {
     }
     // The status line knows the real fill level; the transcript only the token count.
     if let Some(percent) = status.and_then(|s| s.context_percent) {
-        meta.push(chip(tr!("{percent:.0}% Kontext", "{percent:.0}% context"), false));
+        meta.push(context_gauge(brain, s, percent));
     } else if let Some(tokens) = info.context_tokens {
         let tokens = format_tokens(tokens);
         meta.push(chip(tr!("{tokens} Kontext", "{tokens} context"), false));

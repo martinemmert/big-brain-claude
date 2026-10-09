@@ -206,6 +206,8 @@ pub enum Message {
     QaLoaded(SessionKey, u64, Vec<brain_core::qa::Exchange>),
     Palette(String),
     PaletteRun(PaletteCommand),
+    /// Text typed into a session and submitted (e.g. `/compact` from the context gauge).
+    SendTo(SessionKey, String),
     PaletteClose,
     /// Bytes for a session's terminal, sent a moment after its text (the Return that submits).
     TerminalKeys(SessionKey, Vec<u8>),
@@ -776,6 +778,7 @@ impl Brain {
                 let task = self.run_palette(command);
                 Task::batch([unfocus(), task])
             }
+            Message::SendTo(key, text) => self.send_text(&key, &text),
             Message::PaletteClose => {
                 self.mode = Mode::Normal;
                 unfocus()
@@ -1434,7 +1437,7 @@ impl Brain {
 
     /// Whether Brain can type into the session: its terminal runs in Brain, or it waits in an
     /// iTerm tab Brain can type into.
-    fn can_send(&self, key: &SessionKey) -> bool {
+    pub fn can_send(&self, key: &SessionKey) -> bool {
         self.terminals.contains_key(key) || self.model.board.get(key).is_some_and(|s| s.accepts_input())
     }
 
