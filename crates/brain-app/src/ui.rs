@@ -1382,8 +1382,15 @@ fn today(brain: &Brain) -> Element<'_, Message> {
 
 // ---- dialogs ----------------------------------------------------------------------
 
+/// A dialog's title with a close button (esc does the same).
 fn dialog_title<'a>(label: impl Into<String>) -> Element<'a, Message> {
-    text(label.into()).size(20).color(TEXT_STRONG).font(style::bold()).into()
+    row![
+        text(label.into()).size(20).color(TEXT_STRONG).font(style::bold()),
+        Space::new().width(Fill),
+        action(t("Schließen", "Close"), "esc", false, Some(Message::Close)),
+    ]
+    .align_y(iced::Center)
+    .into()
 }
 
 fn new_session(brain: &Brain) -> Element<'_, Message> {

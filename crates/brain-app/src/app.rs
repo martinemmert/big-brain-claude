@@ -232,6 +232,8 @@ pub enum Message {
     ToggleSplit,
     /// A click on the split's other pane: its session becomes the active one.
     ActivatePane,
+    /// Close the dialog or view on top, like esc.
+    Close,
     /// ⌘⇧A: live previews of every session that runs in Brain.
     ToggleOverview,
     /// A preview clicked in the overview: open that session's terminal.
@@ -945,6 +947,7 @@ impl Brain {
                 };
                 Task::none()
             }
+            Message::Close => self.escape(),
             Message::ActivatePane => {
                 self.activate_split_pane();
                 Task::none()
@@ -1991,7 +1994,10 @@ impl Brain {
         }
 
         // A focused terminal keeps Esc (it interrupts Claude); ⌘[ leaves it.
-        if named == Some(Named::Escape) && !(self.tab == DetailTab::Terminal && self.focused_terminal.is_some()) {
+        // Esc always leaves a dialog or view on top (clean-up, new session, palette, overview);
+        // only in the normal view does a terminal with the keyboard keep it (it interrupts Claude).
+        let terminal_keeps_keys = self.mode == Mode::Normal && !self.overview && self.tab == DetailTab::Terminal && self.focused_terminal.is_some();
+        if named == Some(Named::Escape) && !terminal_keeps_keys {
             return self.escape();
         }
         if cmd && self.tab == DetailTab::Terminal && self.focused_terminal.is_some() && character.as_deref() == Some("v") {
@@ -2051,7 +2057,8 @@ impl Brain {
             return unfocus();
         }
         // While the terminal has the keyboard, Brain's shortcuts are off: everything is Claude's.
-        if self.tab == DetailTab::Terminal && self.focused_terminal.is_some() && self.has_terminal() {
+        // A dialog on top (clean-up, new session) has the keys, though.
+        if terminal_keeps_keys && self.has_terminal() {
             return Task::none();
         }
         if captured {
@@ -2185,6 +2192,10 @@ impl Brain {
 
     /// Esc: leaves whatever is open — search (cleared), reply, rename, a dialog.
     fn escape(&mut self) -> Task<Message> {
+        // A dialog takes the keyboard from any terminal.
+        if self.mode != Mode::Normal {
+            self.focused_terminal = None;
+        }
         if self.overview {
             self.overview = false;
             return Task::none();
