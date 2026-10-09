@@ -618,7 +618,13 @@ impl Brain {
                             self.set_status(tr!("„{name}“ klingelt.", "“{name}” rang the bell."));
                             self.bells.insert(key);
                         }
-                        Some(iced_term::actions::Action::CopyToClipboard(text)) => task = iced::clipboard::write(text),
+                        // Output can carry clipboard requests too (a printed file, a fetched page):
+                        // only the terminal you're typing in may write the clipboard, and it says so.
+                        Some(iced_term::actions::Action::CopyToClipboard(text)) if self.terminal_focused && self.selected.as_ref() == Some(&key) => {
+                            let chars = text.chars().count();
+                            self.set_status(tr!("Die Session hat {chars} Zeichen in die Zwischenablage kopiert.", "The session copied {chars} characters to the clipboard."));
+                            task = iced::clipboard::write(text);
+                        }
                         _ => {}
                     }
                 }
