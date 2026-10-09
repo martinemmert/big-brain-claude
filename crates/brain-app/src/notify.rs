@@ -7,14 +7,15 @@ use std::sync::Mutex;
 use block2::RcBlock;
 use brain_core::state::SessionKey;
 use objc2::rc::Retained;
-use objc2::runtime::{Bool, ProtocolObject};
+use objc2::runtime::{AnyObject, Bool, ProtocolObject};
 use objc2::{define_class, msg_send, AnyThread};
 use objc2_foundation::{NSArray, NSBundle, NSError, NSObject, NSObjectProtocol, NSSet, NSString};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotification, UNNotificationAction,
     UNNotificationActionOptions, UNNotificationCategory, UNNotificationCategoryOptions,
     UNNotificationDefaultActionIdentifier, UNNotificationPresentationOptions, UNNotificationRequest,
-    UNNotificationResponse, UNNotificationSound, UNUserNotificationCenter, UNUserNotificationCenterDelegate,
+    UNNotificationResponse, UNNotificationSound, UNTextInputNotificationAction, UNTextInputNotificationResponse,
+    UNUserNotificationCenter, UNUserNotificationCenterDelegate,
 };
 
 use crate::i18n::t;
@@ -22,12 +23,15 @@ use crate::i18n::t;
 const CATEGORY: &str = "brain.session";
 const ACTION_OPEN: &str = "open";
 const ACTION_SNOOZE: &str = "snooze";
+const ACTION_REPLY: &str = "reply";
 
 /// What the user did with a notification; drained by the view on every tick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Response {
     Open(SessionKey),
     Snooze(SessionKey),
+    /// Text typed into the notification's reply field.
+    Reply(SessionKey, String),
 }
 
 static RESPONSES: Mutex<Vec<Response>> = Mutex::new(Vec::new());
@@ -83,7 +87,11 @@ define_class!(
             let action = response.actionIdentifier().to_string();
             if let Some(key) = parse_identifier(&id) {
                 let default = unsafe { UNNotificationDefaultActionIdentifier }.to_string();
-                let event = if action == ACTION_SNOOZE {
+                let any: &AnyObject = response;
+                let typed = any.downcast_ref::<UNTextInputNotificationResponse>().map(|r| r.userText().to_string());
+                let event = if action == ACTION_REPLY {
+                    typed.filter(|t| !t.trim().is_empty()).map(|text| Response::Reply(key, text))
+                } else if action == ACTION_SNOOZE {
                     Some(Response::Snooze(key))
                 } else if action == ACTION_OPEN || action == default {
                     Some(Response::Open(key))
@@ -130,9 +138,18 @@ impl Notifier {
             &NSString::from_str(t("15 Min. pausieren", "Snooze 15 min")),
             UNNotificationActionOptions::empty(),
         );
+        // Answer without opening Brain: the text goes into the session.
+        let reply = UNTextInputNotificationAction::actionWithIdentifier_title_options_textInputButtonTitle_textInputPlaceholder(
+            &NSString::from_str(ACTION_REPLY),
+            &NSString::from_str(t("Antworten", "Reply")),
+            UNNotificationActionOptions::empty(),
+            &NSString::from_str(t("Senden", "Send")),
+            &NSString::from_str(t("Antwort an die Session …", "Reply to the session …")),
+        );
+        let reply: Retained<UNNotificationAction> = Retained::into_super(reply);
         let category = UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
             &NSString::from_str(CATEGORY),
-            &NSArray::from_retained_slice(&[open, snooze]),
+            &NSArray::from_retained_slice(&[reply, open, snooze]),
             &NSArray::new(),
             UNNotificationCategoryOptions::empty(),
         );

@@ -1175,6 +1175,7 @@ impl Brain {
                     self.prefs.snooze(&key, Some(now + SNOOZE_MS));
                     self.prefs.save();
                 }
+                notify::Response::Reply(key, text) => tasks.push(self.reply_from_notification(key, text)),
             }
         }
         self.remind(now);
@@ -1450,6 +1451,22 @@ impl Brain {
             .chain(&groups.pinned)
             .find(|s| self.terminals.contains_key(&s.key))
             .map(|s| s.key.clone())
+    }
+
+    /// A reply typed into a notification: straight into the session when Brain can type into it
+    /// and no permission dialog is open; otherwise Brain comes forward with the text in the
+    /// composer, so nothing typed is lost.
+    fn reply_from_notification(&mut self, key: SessionKey, text: String) -> Task<Message> {
+        let permission_open = self.model.board.get(&key).is_some_and(|s| s.awaiting_permission());
+        if self.can_send(&key) && !permission_open {
+            let name = self.model.board.get(&key).map(|s| s.display_name()).unwrap_or_default();
+            let task = self.send_text(&key, &text);
+            self.set_status(tr!("Antwort an „{name}“ gesendet.", "Reply sent to “{name}”."));
+            return task;
+        }
+        self.selected = Some(key);
+        self.composer = iced::widget::text_editor::Content::with_text(&text);
+        Task::batch([self.bring_forward(), self.open_composer()])
     }
 
     /// ⌘E: the composer for the selected session.
