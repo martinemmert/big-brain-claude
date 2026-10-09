@@ -3,6 +3,7 @@
 
 pub mod account;
 pub mod agents;
+pub mod brief;
 pub mod changes;
 pub mod conflicts;
 pub mod digest;

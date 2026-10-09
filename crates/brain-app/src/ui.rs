@@ -1245,15 +1245,80 @@ fn terminal_or_hint<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
         )
     } else {
         let command = if s.agent.is_some() { "claude attach" } else { "claude --resume" };
-        return column![
-            hint(tr!("Startet die Session hier mit {command}.", "Runs the session here with {command}.")),
-            action(t("Hier starten", "Run here"), "⏎", false, Some(Message::Do(Action::StartTerminal))),
-        ]
-        .spacing(6)
-        .padding(Padding { top: 8.0, ..Padding::ZERO })
+        let mut body = column![].spacing(10);
+        if let Some((_, brief)) = brain.brief.as_ref().filter(|(k, _)| *k == s.key) {
+            body = body.push(brief_card(brief));
+        }
+        return scrollable(
+            body.push(hint(tr!("Startet die Session hier mit {command}.", "Runs the session here with {command}.")))
+                .push(action(t("Hier fortsetzen", "Resume here"), "⏎", false, Some(Message::Do(Action::StartTerminal))))
+                .padding(Padding { top: 8.0, right: 12.0, bottom: 20.0, left: 0.0 }),
+        )
+        .height(Fill)
+        .style(scrollbar)
         .into();
     };
     hint(why)
+}
+
+/// An ended session in a few lines: how it began and ended, an open question, what it changed.
+fn brief_card<'a>(brief: &brain_core::brief::Brief) -> Element<'a, Message> {
+    let now = now_ms();
+    let line = |label: &str, value: String| -> Element<'a, Message> {
+        row![
+            container(text(label.to_string()).size(11.5).color(TEXT_FAINT).font(UI)).width(110),
+            text(value).size(12.5).color(TEXT).font(UI).width(Fill),
+        ]
+        .spacing(8)
+        .into()
+    };
+    let mut card = column![].spacing(8);
+    if let Some(title) = &brief.title {
+        card = card.push(text(title.clone()).size(14).color(TEXT_STRONG).font(style::semibold()));
+    }
+    let span = match (brief.started, brief.last) {
+        (Some(start), Some(last)) => {
+            let prompts = brief.prompts;
+            let when = ago(last.timestamp_millis(), now);
+            let since = start.with_timezone(&chrono::Local).format("%d.%m. %H:%M").to_string();
+            tr!("{prompts} Prompts, seit {since} · zuletzt {when}", "{prompts} prompts since {since} · last {when}")
+        }
+        _ => {
+            let prompts = brief.prompts;
+            tr!("{prompts} Prompts", "{prompts} prompts")
+        }
+    };
+    card = card.push(text(span).size(11.5).color(TEXT_MUTED).font(UI));
+    if let Some(first) = &brief.first_prompt {
+        card = card.push(line(t("Begonnen mit", "Began with"), clip(first, 220)));
+    }
+    if let Some(last) = brief.last_prompt.as_ref().filter(|l| Some(*l) != brief.first_prompt.as_ref()) {
+        card = card.push(line(t("Zuletzt gefragt", "Last asked"), clip(last, 220)));
+    }
+    if let Some(reply) = &brief.last_reply {
+        card = card.push(line(t("Letzte Antwort", "Last answer"), clip(reply, 320)));
+    }
+    if let Some(question) = &brief.open_question {
+        card = card.push(row![
+            container(text(t("Offen", "Open")).size(11.5).color(TURN).font(style::semibold())).width(110),
+            text(clip(question, 260)).size(12.5).color(TEXT_STRONG).font(UI).width(Fill),
+        ].spacing(8));
+    }
+    if !brief.changed.is_empty() {
+        let names: Vec<String> = brief
+            .changed
+            .iter()
+            .take(8)
+            .map(|p| std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.clone()))
+            .collect();
+        let more = brief.changed.len().saturating_sub(8);
+        let mut list = names.join(", ");
+        if more > 0 {
+            list.push_str(&tr!(" und {more} weitere", " and {more} more"));
+        }
+        card = card.push(line(t("Geändert", "Changed"), list));
+    }
+    container(card).padding([12, 14]).width(Fill).style(|_| boxed(SURFACE, LINE, 10.0)).into()
 }
 
 /// The file opened from a path in the terminal: Markdown rendered, code highlighted, images.

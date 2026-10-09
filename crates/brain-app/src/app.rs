@@ -214,6 +214,7 @@ pub enum Message {
     DiscardChange(String),
     FilesLoaded(SessionKey, u64, Vec<brain_core::files::SessionFile>),
     QaLoaded(SessionKey, u64, Vec<brain_core::qa::Exchange>),
+    BriefLoaded(SessionKey, brain_core::brief::Brief),
     Palette(String),
     PaletteRun(PaletteCommand),
     ComposerEdit(iced::widget::text_editor::Action),
@@ -427,6 +428,9 @@ pub struct Brain {
     /// The changed file whose diff is open: session, path, and the diff once loaded.
     pub diff: Option<(SessionKey, String, Option<Vec<(brain_core::changes::DiffKind, String)>>)>,
     pub qa: Option<QaCache>,
+    /// The selected ended session in a few lines (shown before resuming it).
+    pub brief: Option<(SessionKey, brain_core::brief::Brief)>,
+    brief_loading: Option<SessionKey>,
     qa_loading: bool,
     pub palette: String,
     /// The composer's text, the screenshots pasted into it, and the templates it offers.
@@ -575,6 +579,8 @@ impl Brain {
             files: None,
             diff: None,
             qa: None,
+            brief: None,
+            brief_loading: None,
             qa_loading: false,
             find: String::new(),
             palette: String::new(),
@@ -892,6 +898,11 @@ impl Brain {
                     Task::none()
                 }
             },
+            Message::BriefLoaded(key, brief) => {
+                self.brief_loading = None;
+                self.brief = Some((key, brief));
+                Task::none()
+            }
             Message::QaLoaded(key, len, exchanges) => {
                 self.qa = Some(QaCache { key, len, exchanges });
                 self.qa_loading = false;
@@ -1275,7 +1286,8 @@ impl Brain {
         let files = self.load_files();
         let history = self.load_history();
         let qa = self.load_qa();
-        Task::batch([scroll, attach, files, history, qa])
+        let brief = self.load_brief();
+        Task::batch([scroll, attach, files, history, qa, brief])
     }
 
     /// Background sessions open in Brain's terminal: when one gets selected (or Brain started it
@@ -1823,6 +1835,24 @@ impl Brain {
         let confirmed = self.armed_path.as_ref().is_some_and(|(p, k, at)| p == path && k == key && at.elapsed() < Duration::from_secs(5));
         self.armed_path = if confirmed { None } else { Some((path.to_string(), key.clone(), Instant::now())) };
         confirmed
+    }
+
+    /// Sums up the selected session once it has ended, for the Terminal tab before resuming.
+    fn load_brief(&mut self) -> Task<Message> {
+        let Some(session) = self.selected_session() else { return Task::none() };
+        if session.phase() != Phase::Ended || self.tab != DetailTab::Terminal || self.has_terminal() {
+            return Task::none();
+        }
+        let key = session.key.clone();
+        if self.brief.as_ref().is_some_and(|(k, _)| *k == key) || self.brief_loading.as_ref() == Some(&key) {
+            return Task::none();
+        }
+        let Some((path, _)) = self.conversation.as_ref().filter(|c| c.key == key).and_then(|c| c.transcript()) else {
+            return Task::none();
+        };
+        let path = path.to_path_buf();
+        self.brief_loading = Some(key.clone());
+        Task::perform(off_thread(move || brain_core::brief::brief(&path)), move |brief| Message::BriefLoaded(key.clone(), brief))
     }
 
     /// Reads the selected session's questions when their tab shows and the transcript grew.
