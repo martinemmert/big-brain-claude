@@ -1,56 +1,41 @@
+mod app;
+mod chrome;
 mod config;
 mod conversation;
 mod demo;
+mod format;
 mod i18n;
-mod input;
 mod links;
+mod markdown;
 mod menubar;
-mod messages;
 mod model;
 mod notify;
 mod prefs;
 mod shell_env;
-mod theme;
+mod style;
 mod trash;
-mod view;
-mod widgets;
+mod ui;
 
-use gpui::{
-    actions, point, prelude::*, px, size, App, Application, Bounds, KeyBinding, Menu, MenuItem,
-    SharedString, TitlebarOptions, WindowBounds, WindowOptions,
-};
-
-actions!(brain, [Quit]);
-
-fn main() {
+fn main() -> iced::Result {
     shell_env::adopt_login_path();
-    let app = Application::new();
-    app.on_open_urls(links::received);
-    app.run(|cx: &mut App| {
-        cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-        cx.set_menus(vec![Menu {
-            name: "Brain".into(),
-            items: vec![MenuItem::action("Quit Brain", Quit)],
-        }]);
-
-        let options = WindowOptions {
-            titlebar: Some(TitlebarOptions {
-                title: Some(SharedString::from("Brain")),
-                appears_transparent: true,
-                traffic_light_position: Some(point(px(14.), px(14.))),
-            }),
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                None,
-                size(px(1180.), px(760.)),
-                cx,
-            ))),
-            ..Default::default()
-        };
-
-        cx.open_window(options, |window, cx| cx.new(|cx| view::BrainView::new(window, cx)))
-            .expect("failed to open window");
-        cx.on_window_closed(|cx| cx.quit()).detach();
-        cx.activate(true);
-    });
+    // The app menu ("About …", "Quit …") is named after the process.
+    objc2_foundation::NSProcessInfo::processInfo().setProcessName(&objc2_foundation::NSString::from_str("Brain"));
+    links::listen_for_urls();
+    iced::application(app::Brain::new, app::Brain::update, ui::view)
+        .title(app::Brain::title)
+        .subscription(app::Brain::subscription)
+        .theme(|_: &app::Brain| style::theme())
+        .default_font(style::UI)
+        .window(iced::window::Settings {
+            size: iced::Size::new(1180.0, 760.0),
+            min_size: Some(iced::Size::new(900.0, 520.0)),
+            platform_specific: iced::window::settings::PlatformSpecific {
+                title_hidden: true,
+                titlebar_transparent: true,
+                fullsize_content_view: true,
+            },
+            ..iced::window::Settings::default()
+        })
+        .centered()
+        .run()
 }

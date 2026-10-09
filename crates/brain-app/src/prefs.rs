@@ -47,13 +47,20 @@ impl Prefs {
     }
 
     pub fn load() -> Self {
+        if crate::demo::enabled() {
+            return Self::default();
+        }
         std::fs::read(Self::path())
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default()
     }
 
+    /// Writes the choices back; the demo never touches the user's real file.
     pub fn save(&self) {
+        if crate::demo::enabled() {
+            return;
+        }
         let path = Self::path();
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);

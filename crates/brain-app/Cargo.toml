@@ -10,12 +10,12 @@ path = "src/main.rs"
 [dependencies]
 brain-core.workspace = true
 brain-terminal.workspace = true
-gpui = "0.2.2"
+iced = { version = "0.14", features = ["tokio", "advanced"] }
 chrono.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSBundle", "NSString", "NSArray", "NSSet", "NSError", "NSObject", "NSFileManager", "NSURL"] }
+objc2-foundation = { version = "0.3", features = ["NSBundle", "NSString", "NSArray", "NSSet", "NSError", "NSObject", "NSFileManager", "NSURL", "NSProcessInfo"] }
 objc2-user-notifications = { version = "0.3", features = ["block2", "UNNotification", "UNNotificationAction", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 block2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSView", "NSResponder"] }
+objc2-app-kit = { version = "0.3", features = ["NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSView", "NSResponder", "NSApplication", "NSRunningApplication", "NSToolbar", "NSWindow"] }

@@ -2,12 +2,61 @@
 
 use std::sync::Mutex;
 
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2::{define_class, msg_send, sel, AnyThread};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
 
 static OPENED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// Called by the platform when macOS hands Brain a `brain://` URL.
-pub fn received(urls: Vec<String>) {
-    OPENED.lock().unwrap().extend(urls);
+/// `'GURL'`: the Apple Event class and id macOS sends for a URL the app is registered for.
+const GET_URL: u32 = u32::from_be_bytes(*b"GURL");
+/// `'----'`: the event's direct object, here the URL.
+const DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSObject))]
+    #[name = "BrainURLHandler"]
+    #[ivars = ()]
+    struct Handler;
+
+    unsafe impl NSObjectProtocol for Handler {}
+
+    impl Handler {
+        #[unsafe(method(handleGetURLEvent:withReplyEvent:))]
+        fn handle(&self, event: &AnyObject, _reply: &AnyObject) {
+            // SAFETY: `event` is an NSAppleEventDescriptor; both methods exist on it.
+            let url: Option<Retained<NSString>> = unsafe {
+                let descriptor: Option<Retained<AnyObject>> = msg_send![event, paramDescriptorForKeyword: DIRECT_OBJECT];
+                match descriptor {
+                    Some(descriptor) => msg_send![&*descriptor, stringValue],
+                    None => None,
+                }
+            };
+            if let Some(url) = url {
+                OPENED.lock().unwrap().push(url.to_string());
+            }
+        }
+    }
+);
+
+/// Asks macOS to hand `brain://` URLs (registered in Info.plist) to Brain. The handler object
+/// lives for the whole run.
+pub fn listen_for_urls() {
+    let handler: Retained<Handler> = unsafe { msg_send![super(Handler::alloc().set_ivars(())), init] };
+    // SAFETY: the shared manager exists in every process; the selector matches `handle`.
+    unsafe {
+        let manager: Retained<AnyObject> = msg_send![objc2::class!(NSAppleEventManager), sharedAppleEventManager];
+        let _: () = msg_send![
+            &*manager,
+            setEventHandler: &*handler,
+            andSelector: sel!(handleGetURLEvent:withReplyEvent:),
+            forEventClass: GET_URL,
+            andEventID: GET_URL
+        ];
+    }
+    std::mem::forget(handler);
 }
 
 /// Sessions asked for since the last call, as account and pid of their process.

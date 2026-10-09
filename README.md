@@ -14,8 +14,9 @@ sessions here.*
 
 ![Brain with demo data](docs/screenshot.png)
 
-Built with [GPUI](https://gpui.rs), the GPU-accelerated UI framework from Zed. The interface
-follows your macOS language: English or German.
+Built in Rust with [Iced](https://iced.rs) (native text input with dead keys and input methods,
+undo, selection) and AppKit for the menu bar item, notifications and `brain://` links. The
+interface follows your macOS language: English or German.
 
 ## What it does
 
@@ -232,7 +233,7 @@ the zipped app, the `brain` binary, the Alfred workflow and SHA-256 checksums, t
 - `crates/brain-terminal`: terminal adapters (iTerm2, Terminal.app, tmux, VS Code, Cursor)
 - `crates/brain-cli`: the `brain` binary (`hook`, `report`, `install`, `uninstall`, `status`,
   `sessions`, `open`, `show`)
-- `crates/brain-app`: the GPUI app
+- `crates/brain-app`: the Iced app
 
 Design notes: [`docs/superpowers/specs/2026-10-02-claude-brain-design.md`](docs/superpowers/specs/2026-10-02-claude-brain-design.md)
 
