@@ -25,10 +25,12 @@ pub const RESTING_AFTER_MS: i64 = 2 * 60 * 60 * 1000;
 /// Ended sessions show in the list for a day; older ones through the search.
 pub const ENDED_RECENT_MS: i64 = 24 * 60 * 60 * 1000;
 const SNOOZE_MS: i64 = 15 * 60 * 1000;
-/// How long after typing or clicking into a terminal its program may still write the clipboard
-/// (OSC 52): long enough for `/copy` and a mouse selection, too short for output that arrives
-/// later.
+/// How long after typing into a terminal its program may still write the clipboard (OSC 52):
+/// long enough for `/copy` and its picker, too short for output that arrives later.
 const CLIPBOARD_AFTER_TYPING: Duration = Duration::from_secs(10);
+/// How long after releasing the mouse in a terminal: Claude Code copies a mouse selection the
+/// moment the button goes up. A click only to focus the terminal opens no longer window.
+const CLIPBOARD_AFTER_SELECTING: Duration = Duration::from_secs(2);
 
 /// Ages the clean-up dialog offers, in days.
 pub const CLEANUP_DAYS: [i64; 4] = [1, 3, 7, 14];
@@ -220,6 +222,8 @@ pub enum Message {
     MousePressed,
     /// The quick-terminal hotkey was pressed (from anywhere).
     QuickTerminal,
+    /// The left mouse button went up (a selection may have ended).
+    MouseReleased,
     /// A terminal's request to put text on the clipboard, and whether it has the keyboard.
     TerminalCopy(SessionKey, String, bool),
     /// Whether this session's terminal has the keyboard (asked after a click).
@@ -447,6 +451,8 @@ pub struct Brain {
     pub focused_terminal: Option<SessionKey>,
     /// The terminal the user last typed into, and when.
     last_terminal_input: Option<(SessionKey, Instant)>,
+    /// The terminal the user last released the mouse in (the end of a selection), and when.
+    last_terminal_release: Option<(SessionKey, Instant)>,
     /// A file is being dragged over the window.
     pub file_hover: bool,
     /// The file the reader beside the terminal shows.
@@ -534,6 +540,7 @@ impl Brain {
             next_terminal: 1,
             focused_terminal: None,
             last_terminal_input: None,
+            last_terminal_release: None,
             file_hover: false,
             reader: None,
             pending_attach: None,
@@ -570,6 +577,7 @@ impl Brain {
                 Some(Message::Key(event, status == iced::event::Status::Captured))
             }
             iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => Some(Message::MousePressed),
+            iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => Some(Message::MouseReleased),
             iced::Event::Window(window::Event::Opened { size, .. } | window::Event::Resized(size)) => Some(Message::WindowSized(size)),
             iced::Event::Window(window::Event::FileHovered(_)) => Some(Message::FileHover(true)),
             iced::Event::Window(window::Event::FilesHoveredLeft) => Some(Message::FileHover(false)),
@@ -855,7 +863,8 @@ impl Brain {
                         // only a terminal you typed into a moment ago may write the clipboard, and
                         // only if it really has the keyboard now (asked below), and it says so.
                         Some(iced_term::actions::Action::CopyToClipboard(text))
-                            if self.last_terminal_input.as_ref().is_some_and(|(k, at)| *k == key && at.elapsed() < CLIPBOARD_AFTER_TYPING) =>
+                            if self.last_terminal_input.as_ref().is_some_and(|(k, at)| *k == key && at.elapsed() < CLIPBOARD_AFTER_TYPING)
+                                || self.last_terminal_release.as_ref().is_some_and(|(k, at)| *k == key && at.elapsed() < CLIPBOARD_AFTER_SELECTING) =>
                         {
                             if let Some(term) = self.terminals.get(&key) {
                                 let key = key.clone();
@@ -893,6 +902,12 @@ impl Brain {
                 Task::batch(asks)
             }
             Message::QuickTerminal => self.quick_terminal(),
+            Message::MouseReleased => {
+                if let Some(key) = self.focused_terminal.clone() {
+                    self.last_terminal_release = Some((key, Instant::now()));
+                }
+                Task::none()
+            }
             Message::TerminalCopy(key, text, focused) => {
                 if !focused {
                     return Task::none();
@@ -904,9 +919,6 @@ impl Brain {
             }
             Message::TermFocused(key, focused) => {
                 if focused {
-                    // A click or a mouse selection in a terminal counts as using it, like typing:
-                    // Claude Code copies a mouse selection with a clipboard request (OSC 52).
-                    self.last_terminal_input = Some((key.clone(), Instant::now()));
                     self.focused_terminal = Some(key);
                 } else if self.focused_terminal.as_ref() == Some(&key) {
                     self.focused_terminal = None;
