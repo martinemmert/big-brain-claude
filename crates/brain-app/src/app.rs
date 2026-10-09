@@ -292,6 +292,10 @@ pub struct Brain {
     pub prs: HashMap<SessionKey, brain_core::github::PullRequest>,
     /// Sessions editing the same files or checkout.
     pub conflicts: HashMap<SessionKey, brain_core::conflicts::Conflict>,
+    /// The title each terminal's program set (Claude Code names its current task there).
+    pub terminal_titles: HashMap<SessionKey, String>,
+    /// Sessions whose terminal rang the bell while another session was selected.
+    pub bells: HashSet<SessionKey>,
     /// Pairs already notified about shared files.
     conflicts_notified: HashSet<(SessionKey, SessionKey)>,
     pub changes: Option<ChangesCache>,
@@ -370,6 +374,8 @@ impl Brain {
             checkouts: HashMap::new(),
             prs: HashMap::new(),
             conflicts: HashMap::new(),
+            terminal_titles: HashMap::new(),
+            bells: HashSet::new(),
             conflicts_notified: HashSet::new(),
             changes: None,
             changes_loading: false,
@@ -596,8 +602,23 @@ impl Brain {
                     match self.terminals.get_mut(&key).map(|term| term.handle(iced_term::Command::ProxyToBackend(command))) {
                         Some(iced_term::actions::Action::Shutdown) => {
                             self.terminals.remove(&key);
+                            self.terminal_titles.remove(&key);
                         }
                         Some(iced_term::actions::Action::OpenLink(link)) => task = self.open_link(&key, &link),
+                        Some(iced_term::actions::Action::ChangeTitle(title)) => {
+                            let title = title.trim().to_string();
+                            if title.is_empty() {
+                                self.terminal_titles.remove(&key);
+                            } else {
+                                self.terminal_titles.insert(key, title);
+                            }
+                        }
+                        Some(iced_term::actions::Action::Bell) if self.selected.as_ref() != Some(&key) => {
+                            let name = self.model.board.get(&key).map(|s| s.display_name()).unwrap_or_default();
+                            self.set_status(tr!("„{name}“ klingelt.", "“{name}” rang the bell."));
+                            self.bells.insert(key);
+                        }
+                        Some(iced_term::actions::Action::CopyToClipboard(text)) => task = iced::clipboard::write(text),
                         _ => {}
                     }
                 }
@@ -743,6 +764,9 @@ impl Brain {
         let visible: Vec<SessionKey> = self.groups(now).navigable(self.include_ended()).iter().map(|s| s.key.clone()).collect();
         if self.selected.as_ref().is_none_or(|k| !visible.contains(k)) {
             self.selected = visible.first().cloned();
+        }
+        if let Some(key) = &self.selected {
+            self.bells.remove(key);
         }
         let mut scroll = self.sync_conversation();
         let attach = self.sync_terminal();

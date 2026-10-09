@@ -343,6 +343,12 @@ fn scrollbar(theme: &iced::Theme, status: scrollable::Status) -> scrollable::Sty
 /// Small markers after a session's name: worktree, PR, conflict, background, pinned, muted …
 fn markers<'a>(brain: &'a Brain, s: &Session) -> Vec<Element<'a, Message>> {
     let mut out = Vec::new();
+    if brain.bells.contains(&s.key) {
+        out.push(marker(t("● klingelt", "● rang"), CALLS));
+    }
+    if let Some(title) = brain.terminal_titles.get(&s.key) {
+        out.push(marker(format!("▸ {}", clip(title, 40)), TEXT_MUTED));
+    }
     if let Some((_, Some(worktree))) = brain.projects.get(&s.key) {
         out.push(marker(format!("⑂ {}", clip(worktree, 18)), TEXT_FAINT));
     }

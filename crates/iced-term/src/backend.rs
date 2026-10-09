@@ -205,6 +205,15 @@ impl Backend {
                     Event::Title(title) => {
                         action = Action::ChangeTitle(title);
                     },
+                    Event::ResetTitle => {
+                        action = Action::ChangeTitle(String::new());
+                    },
+                    Event::Bell => {
+                        action = Action::Bell;
+                    },
+                    Event::ClipboardStore(_, text) => {
+                        action = Action::CopyToClipboard(text);
+                    },
                     Event::PtyWrite(pty) => {
                         self.notifier.notify(pty.into_bytes())
                     },
