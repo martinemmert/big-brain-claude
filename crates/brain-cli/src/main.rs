@@ -28,9 +28,11 @@ struct Cli {
 enum Command {
     /// Called by Claude Code hooks; reads the hook JSON from stdin.
     Hook {
-        /// The hook JSON as an argument instead (Brain's mod, which can't write to stdin).
+        /// The hook JSON in a file of `~/.claude-brain/inbox/` instead (Brain's mod, which can't
+        /// write to stdin); the file is deleted after reading. A file, not an argument: arguments
+        /// show in the process list, and the JSON holds prompts and answers.
         #[arg(long)]
-        json: Option<String>,
+        json_file: Option<std::path::PathBuf>,
     },
     /// Report what this Claude session is doing or waiting for.
     #[command(group(ArgGroup::new("kind").required(true).args(["doing", "waiting", "done"])))]
@@ -55,9 +57,10 @@ enum Command {
         /// The status line command to run afterwards, with the same input.
         #[arg(long)]
         then: Option<String>,
-        /// The status line JSON as an argument instead of stdin (Brain's mod); runs nothing after.
+        /// The status line JSON in a file of `~/.claude-brain/inbox/` instead of stdin (Brain's
+        /// mod); the file is deleted after reading, and nothing runs after.
         #[arg(long)]
-        json: Option<String>,
+        json_file: Option<std::path::PathBuf>,
     },
     /// List the sessions that have not ended, in triage order.
     #[command(group(ArgGroup::new("format").required(true).args(["alfred", "json"])))]
@@ -88,13 +91,16 @@ fn main() -> ExitCode {
     let accounts = discover_accounts(&home);
 
     match cli.command {
-        Command::Hook { json } => {
+        Command::Hook { json_file } => {
             // Hooks must never disturb Claude: no output, always success.
-            let source = if json.is_some() { Source::Mod } else { Source::Hook };
-            let input = json.or_else(|| {
-                let mut input = String::new();
-                std::io::stdin().read_to_string(&mut input).ok().map(|_| input)
-            });
+            let source = if json_file.is_some() { Source::Mod } else { Source::Hook };
+            let input = match json_file {
+                Some(file) => take_inbox_file(&file),
+                None => {
+                    let mut input = String::new();
+                    std::io::stdin().read_to_string(&mut input).ok().map(|_| input)
+                }
+            };
             if let Some(input) = input {
                 let _ = run_hook(&store, &accounts, &input, source);
             }
@@ -114,7 +120,7 @@ fn main() -> ExitCode {
         Command::Install => run_install(&accounts),
         Command::Uninstall => run_uninstall(&accounts),
         Command::Status => run_status(&store, &accounts),
-        Command::Statusline { then, json } => statusline::run(then, json, &accounts),
+        Command::Statusline { then, json_file } => statusline::run(then, json_file.and_then(|f| take_inbox_file(&f)), &accounts),
         Command::Sessions { alfred, json: _ } => run_sessions(&store, &accounts, alfred),
         Command::Open { session } => run_open(&accounts, &session),
         Command::Show { session } => run_show(&session),
@@ -227,6 +233,32 @@ fn run_report(store: &Store, accounts: &[Account], kind: Kind, text: &str) -> Ex
     }
 }
 
+/// Where Brain's mod hands over its events: a folder only the user can open.
+fn inbox_dir() -> std::path::PathBuf {
+    home_dir().join(".claude-brain/inbox")
+}
+
+/// Reads and deletes a file the mod left in the inbox. Any other path is refused, so the CLI
+/// never reads or deletes files elsewhere.
+fn take_inbox_file(file: &std::path::Path) -> Option<String> {
+    let inbox = inbox_dir().canonicalize().ok()?;
+    let file = file.canonicalize().ok()?;
+    if file.parent() != Some(inbox.as_path()) || file.extension().is_none_or(|e| e != "json") {
+        return None;
+    }
+    let text = std::fs::read_to_string(&file).ok();
+    let _ = std::fs::remove_file(&file);
+    text
+}
+
+/// Creates the inbox, readable only by the user.
+fn create_inbox() -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = inbox_dir();
+    std::fs::create_dir_all(&dir)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+}
+
 /// Brain's Claude Code mod, built into the CLI so every install has the matching version.
 const MOD_FILES: [(&str, &str); 3] = [
     (".claude-plugin/plugin.json", include_str!("../../../mod/brain/.claude-plugin/plugin.json")),
@@ -236,6 +268,7 @@ const MOD_FILES: [(&str, &str); 3] = [
 
 /// Writes the mod to `~/.claude-brain/mod/brain` and returns that directory.
 fn install_mod() -> std::io::Result<std::path::PathBuf> {
+    create_inbox()?;
     let dir = home_dir().join(".claude-brain/mod/brain");
     for (path, content) in MOD_FILES {
         let file = dir.join(path);
