@@ -394,6 +394,11 @@ impl Brain {
         };
         brain.selected = brain.groups(now_ms()).navigable(false).first().map(|s| s.key.clone());
         let synced = brain.sync();
+        // For screenshots of the reader: `BRAIN_DEMO=1 BRAIN_DEMO_READER=notes.md`.
+        if let Some(path) = std::env::var_os("BRAIN_DEMO_READER").filter(|_| demo) {
+            brain.reader = Some(read_file(std::path::PathBuf::from(path)));
+            brain.tab = DetailTab::Terminal;
+        }
         let checks = if demo { Task::none() } else { Task::batch([Task::done(Message::CheckPrs), Task::done(Message::CheckUpdate)]) };
         (brain, Task::batch([synced, checks]))
     }

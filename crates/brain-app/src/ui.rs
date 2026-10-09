@@ -776,7 +776,16 @@ fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
 }
 
 /// A real terminal running the session inside Brain, or why there is none.
+/// The Terminal tab; an open file shows in the reader beside it (also once the terminal ended).
 fn terminal<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
+    let main = terminal_or_hint(brain, s);
+    match &brain.reader {
+        Some(reader) => row![container(main).width(Length::FillPortion(11)).height(Fill), reader_pane(reader)].spacing(12).height(Fill).into(),
+        None => main,
+    }
+}
+
+fn terminal_or_hint<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     if let Some(term) = brain.terminals.get(&s.key) {
         let focused = brain.terminal_focused;
         let hovering = brain.file_hover;
@@ -798,11 +807,7 @@ fn terminal<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
                 .center(Fill),
             );
         }
-        let main = container(layers).padding(Padding { top: 6.0, bottom: 12.0, ..Padding::ZERO }).height(Fill);
-        return match &brain.reader {
-            Some(reader) => row![main.width(Length::FillPortion(11)), reader_pane(reader)].spacing(12).height(Fill).into(),
-            None => main.width(Fill).into(),
-        };
+        return container(layers).padding(Padding { top: 6.0, bottom: 12.0, ..Padding::ZERO }).width(Fill).height(Fill).into();
     }
     let why = if brain.model.is_demo() {
         t("Im Demo-Modus startet Brain keine Terminals.", "In demo mode Brain starts no terminals.")

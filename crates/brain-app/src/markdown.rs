@@ -6,8 +6,8 @@ use brain_core::markdown::{self, Block, Inline, Span};
 use brain_core::state::Session;
 use brain_core::transcript::{classify_prompt, Message, Prompt, Role};
 use chrono::Local;
-use iced::widget::{column, container, rich_text, row, span, text, Space};
-use iced::{Border, Color, Element, Fill, Length, Padding};
+use iced::widget::{column, container, rich_text, row, scrollable, span, text, Space};
+use iced::{Color, Element, Fill, Font, Length, Padding};
 
 use crate::chat_font::{self, ChatFont};
 use crate::format::{clip, note, plain, tilde};
@@ -42,7 +42,7 @@ pub fn conversation<'a, M: 'a>(messages: &[Message]) -> Vec<Element<'a, M>> {
         }
         out.push(match message.role {
             Role::User => prompt(font, message),
-            Role::Assistant => gutter(font, DOT, TEXT, body_in(font, &message.text)),
+            Role::Assistant => gutter(font, DOT, TEXT, body_in(Look::chat(font), &message.text)),
             Role::System => note_line(font, &message.text),
             Role::Tool => unreachable!(),
         });
@@ -118,62 +118,155 @@ fn short_tool_name(tool: &str) -> String {
 
 // ---- Markdown ------------------------------------------------------------------------
 
-/// A Markdown file for the reader, in the chat font.
+/// How Markdown is set. The chat looks like Claude Code in the terminal: one font, one size.
+/// The reader sets a document: proportional text, a heading scale, code in the terminal's font.
+#[derive(Clone, Copy)]
+struct Look {
+    text: Font,
+    bold: Font,
+    code: Font,
+    size: f32,
+    line_height: f32,
+    document: bool,
+}
+
+impl Look {
+    fn chat(font: &ChatFont) -> Self {
+        Self { text: font.regular, bold: font.bold, code: font.regular, size: font.size, line_height: 1.45, document: false }
+    }
+
+    fn document() -> Self {
+        Self { text: UI, bold: style::semibold(), code: chat_font::get().regular, size: 14.0, line_height: 1.55, document: true }
+    }
+
+    /// Width of one character of the code font (monospaced: about 0.6 em).
+    fn cell(&self) -> f32 {
+        self.size * 0.62
+    }
+}
+
+/// A Markdown file for the reader.
 pub fn document<'a, M: 'a>(source: &str) -> Element<'a, M> {
-    body_in(chat_font::get(), source)
+    body_in(Look::document(), source)
 }
 
-fn body_in<'a, M: 'a>(font: &ChatFont, source: &str) -> Element<'a, M> {
-    column(markdown::parse(source).into_iter().map(|b| block(font, b))).spacing(font.size * 0.6).into()
-}
-
-fn block<'a, M: 'a>(font: &ChatFont, block: Block) -> Element<'a, M> {
-    match block {
-        // The terminal has one size: headings are bold, the first levels also brighter.
-        Block::Heading { level, text: heading } => styled(font, &heading, if level <= 2 { TEXT_STRONG } else { TEXT }, true),
-        Block::Paragraph(paragraph) => styled(font, &paragraph, TEXT, false),
-        Block::Item { indent, marker, text: item } => {
-            let marker = if marker == "•" { "-".to_string() } else { marker };
-            let width = font.size * 0.62 * (marker.chars().count() as f32 + 1.0);
-            row![
-                container(text(marker).size(font.size).color(TEXT_MUTED).font(font.regular)).width(Length::Fixed(width)),
-                container(styled(font, &item, TEXT, false)).width(Fill),
-            ]
-            .padding(Padding { left: indent as f32 * font.size * 0.62 * 2.0, ..Padding::ZERO })
-            .into()
-        }
-        Block::Code { text: code, .. } => container(text(code).size(font.size).color(style::CODE).font(font.regular).line_height(1.45))
-            .padding(Padding { left: font.size * 0.62 * 2.0, ..Padding::ZERO })
-            .into(),
-        Block::Quote(quote) => row![
-            text("│ ").size(font.size).color(TEXT_FAINT).font(font.regular),
-            styled(font, &quote, TEXT_MUTED, false),
-        ]
-        .into(),
-        Block::Table { header, rows } => table(font, header, rows),
-        Block::Rule => text("─".repeat(40)).size(font.size).color(TEXT_FAINT).font(font.regular).into(),
-    }
-}
-
-fn table<'a, M: 'a>(font: &ChatFont, header: Vec<Inline>, rows: Vec<Vec<Inline>>) -> Element<'a, M> {
-    let line = |cells: Vec<Inline>, head: bool| -> Element<'a, M> {
-        let cells = cells.into_iter().map(|cell| container(styled(font, &cell, if head { TEXT_STRONG } else { TEXT }, head)).padding([3, 8]).width(Fill).into());
-        container(row(cells)).width(Fill).style(move |_| if head { style::fill(SURFACE) } else { container::Style::default() }).into()
-    };
-    let mut lines = vec![line(header, true)];
-    for cells in rows {
-        lines.push(container(Space::new().width(Fill).height(1)).style(|_| style::fill(LINE)).into());
-        lines.push(line(cells, false));
-    }
-    container(column(lines))
-        .style(|_| container::Style { border: Border { color: LINE, width: 1.0, radius: 4.0.into() }, ..container::Style::default() })
-        .clip(true)
+fn body_in<'a, M: 'a>(look: Look, source: &str) -> Element<'a, M> {
+    let blocks = markdown::parse(source);
+    let first = blocks.first().map(|b| matches!(b, Block::Heading { .. })).unwrap_or(false);
+    let spacing = if look.document { look.size * 0.8 } else { look.size * 0.6 };
+    column(blocks.into_iter().enumerate().map(|(i, b)| block(look, b, i == 0 && first)))
+        .spacing(spacing)
         .into()
 }
 
-/// Text with bold, code and link ranges drawn as spans, all in the chat font.
-fn styled<'a, M: 'a>(font: &ChatFont, inline: &Inline, color: Color, strong: bool) -> Element<'a, M> {
-    let base = if strong { font.bold } else { font.regular };
+fn block<'a, M: 'a>(look: Look, block: Block, at_top: bool) -> Element<'a, M> {
+    match block {
+        Block::Heading { level, text: heading } if look.document => document_heading(look, level, &heading, at_top),
+        // The terminal has one size: headings are bold, the first levels also brighter.
+        Block::Heading { level, text: heading } => styled(look, &heading, if level <= 2 { TEXT_STRONG } else { TEXT }, true, look.size),
+        Block::Paragraph(paragraph) => styled(look, &paragraph, TEXT, false, look.size),
+        Block::Item { indent, marker, text: item } => {
+            let bullet = marker == "•";
+            let marker = match (bullet, look.document) {
+                (true, true) => "•".to_string(),
+                (true, false) => "-".to_string(),
+                (false, _) => marker,
+            };
+            // Numbers line up on their dot; a bullet gets a fixed narrow column.
+            let width = if bullet && look.document { look.size * 1.3 } else { look.cell() * (marker.chars().count() as f32 + 1.0) };
+            let step = if look.document { look.size * 1.3 } else { look.cell() * 2.0 };
+            row![
+                container(text(marker).size(look.size).color(TEXT_MUTED).font(if bullet { look.text } else { look.code }).line_height(look.line_height)).width(Length::Fixed(width)),
+                container(styled(look, &item, TEXT, false, look.size)).width(Fill),
+            ]
+            .padding(Padding { left: indent as f32 * step, ..Padding::ZERO })
+            .into()
+        }
+        Block::Code { text: code, .. } if look.document => {
+            // Code keeps its lines: long ones scroll sideways instead of wrapping.
+            let lines = text(code).size(look.size - 1.5).color(style::CODE).font(look.code).line_height(1.5).wrapping(text::Wrapping::None);
+            container(scrollable(container(lines).padding(Padding { bottom: 6.0, ..Padding::ZERO })).direction(sideways()))
+                .padding(Padding { top: 10.0, right: 12.0, bottom: 4.0, left: 12.0 })
+                .width(Fill)
+                .style(|_| boxed(SURFACE, LINE, 6.0))
+                .into()
+        }
+        Block::Code { text: code, .. } => container(text(code).size(look.size).color(style::CODE).font(look.code).line_height(look.line_height))
+            .padding(Padding { left: look.cell() * 2.0, ..Padding::ZERO })
+            .into(),
+        Block::Quote(quote) if look.document => container(styled(look, &quote, TEXT_MUTED, false, look.size))
+            .padding([8, 14])
+            .width(Fill)
+            .style(|_| boxed(alpha(SURFACE, 0xaa), LINE, 6.0))
+            .into(),
+        Block::Quote(quote) => row![
+            text("│ ").size(look.size).color(TEXT_FAINT).font(look.code),
+            styled(look, &quote, TEXT_MUTED, false, look.size),
+        ]
+        .into(),
+        Block::Table { header, rows } => table(look, header, rows),
+        Block::Rule if look.document => container(container(Space::new().width(Fill).height(1)).style(|_| style::fill(LINE))).padding([6, 0]).into(),
+        Block::Rule => text("─".repeat(40)).size(look.size).color(TEXT_FAINT).font(look.code).into(),
+    }
+}
+
+/// A scale of sizes with room above; the top two levels get a line under them.
+fn document_heading<'a, M: 'a>(look: Look, level: u8, heading: &Inline, at_top: bool) -> Element<'a, M> {
+    let (scale, color, above) = match level {
+        1 => (1.6, TEXT_STRONG, 1.4),
+        2 => (1.3, TEXT_STRONG, 1.2),
+        3 => (1.1, TEXT_STRONG, 0.8),
+        _ => (1.0, TEXT_MUTED, 0.5),
+    };
+    let title = styled(look, heading, color, true, look.size * scale);
+    let content: Element<'a, M> = if level <= 2 {
+        column![title, container(Space::new().width(Fill).height(1)).style(|_| style::fill(LINE))].spacing(look.size * 0.4).into()
+    } else {
+        title
+    };
+    let top = if at_top { 0.0 } else { look.size * above };
+    container(content).padding(Padding { top, ..Padding::ZERO }).into()
+}
+
+fn sideways() -> scrollable::Direction {
+    scrollable::Direction::Horizontal(scrollable::Scrollbar::new().width(4).scroller_width(4).spacing(2))
+}
+
+/// Columns of short values keep their width; columns of prose share the rest of the line in
+/// proportion to their longest cell, so wide tables wrap inside the pane instead of overflowing.
+fn table<'a, M: 'a>(look: Look, header: Vec<Inline>, rows: Vec<Vec<Inline>>) -> Element<'a, M> {
+    /// Up to this many characters a column is sized to its content.
+    const SHORT: usize = 22;
+    let size = if look.document { look.size - 1.0 } else { look.size };
+    let longest = |column: usize| {
+        std::iter::once(&header)
+            .chain(rows.iter())
+            .filter_map(|cells| cells.get(column))
+            .map(|cell| cell.text.chars().count())
+            .max()
+            .unwrap_or(0)
+    };
+    let widths: Vec<Length> = (0..header.len())
+        .map(|column| match longest(column) {
+            chars if chars <= SHORT => Length::Shrink,
+            chars => Length::FillPortion(chars.min(120) as u16),
+        })
+        .collect();
+    let columns = header.into_iter().zip(widths).enumerate().map(move |(index, (head, width))| {
+        iced::widget::table::column(styled(look, &head, TEXT_STRONG, true, size), move |cells: Vec<Inline>| {
+            let cell = cells.get(index).cloned().unwrap_or_default();
+            styled(look, &cell, TEXT, false, size)
+        })
+        .width(width)
+    });
+    iced::widget::table(columns, rows).width(Fill).padding_x(10).padding_y(6).into()
+}
+
+/// Text with bold, code and link ranges drawn as spans.
+fn styled<'a, M: 'a>(look: Look, inline: &Inline, color: Color, strong: bool, size: f32) -> Element<'a, M> {
+    let base = if strong { look.bold } else { look.text };
+    // In a document, code sits in prose set in another font: a touch smaller looks the same size.
+    let code_size = if look.document { size * 0.9 } else { size };
     let mut spans: Vec<text::Span<'a, ()>> = Vec::new();
     let mut at = 0;
     let mut ranges: Vec<_> = inline.spans.iter().filter(|(r, _)| r.end <= inline.text.len()).cloned().collect();
@@ -187,8 +280,8 @@ fn styled<'a, M: 'a>(font: &ChatFont, inline: &Inline, color: Color, strong: boo
         }
         let piece = inline.text[range.clone()].to_string();
         spans.push(match kind {
-            Span::Bold => span(piece).font(font.bold).color(TEXT_STRONG),
-            Span::Code => span(piece).font(font.regular).color(style::CODE).background(alpha(WORKING, 0x1a)),
+            Span::Bold => span(piece).font(look.bold).color(TEXT_STRONG),
+            Span::Code => span(piece).font(look.code).size(code_size).color(style::CODE).background(alpha(WORKING, 0x1a)),
             Span::Link => span(piece).font(base).color(WORKING).underline(true),
         });
         at = range.end;
@@ -196,7 +289,7 @@ fn styled<'a, M: 'a>(font: &ChatFont, inline: &Inline, color: Color, strong: boo
     if at < inline.text.len() {
         spans.push(span(inline.text[at..].to_string()).font(base).color(color));
     }
-    rich_text(spans).size(font.size).line_height(1.45).into()
+    rich_text(spans).size(size).line_height(look.line_height).into()
 }
 
 // ---- Timeline ------------------------------------------------------------------------
