@@ -51,7 +51,11 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         grip,
         container(detail).width(Fill).height(Fill).style(|_| style::fill(INK)),
     ];
-    let window = container(column![titlebar(brain), divider(), body.height(Fill), divider(), footer(brain)])
+    let mut chrome = column![titlebar(brain), divider(), body.height(Fill), divider()];
+    if let Some(offer) = screenshot_offer(brain) {
+        chrome = chrome.push(offer);
+    }
+    let window = container(chrome.push(footer(brain)))
         .width(Fill)
         .height(Fill)
         .style(|_| container::Style { background: Some(Background::Color(INK)), text_color: Some(TEXT), ..container::Style::default() });
@@ -165,6 +169,26 @@ fn palette(brain: &Brain) -> Element<'_, Message> {
         .on_press(Message::PaletteClose)
         .interaction(iced::mouse::Interaction::Idle);
     stack![backdrop, container(panel).padding(Padding { top: 90.0, ..Padding::ZERO }).center_x(Fill)].into()
+}
+
+/// A screenshot taken a moment ago: into a session's terminal, into the composer, or away.
+fn screenshot_offer(brain: &Brain) -> Option<Element<'_, Message>> {
+    let path = brain.screenshot_offer.as_ref()?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut bar = row![
+        container(iced::widget::image(iced::widget::image::Handle::from_path(path)).height(34)).padding(2).style(|_| boxed(SURFACE, LINE, 4.0)),
+        text(tr!("Neuer Screenshot: {name}", "New screenshot: {name}")).size(12.5).color(TEXT).font(UI).width(Fill),
+    ]
+    .spacing(10)
+    .align_y(iced::Center);
+    if let Some(target) = brain.screenshot_target().and_then(|k| brain.model.board.get(&k)) {
+        let session = clip(&target.display_name(), 28);
+        bar = bar.push(action(tr!("In „{session}“", "Into “{session}”"), "", true, Some(Message::ScreenshotTo(true))));
+    }
+    bar = bar
+        .push(action(t("In den Composer", "Into the composer"), "", false, Some(Message::ScreenshotTo(false))))
+        .push(button(text("✕").size(13).color(TEXT_MUTED)).padding([4, 8]).on_press(Message::ScreenshotDismiss).style(|_, _| button::Style::default()));
+    Some(container(bar).padding([6, 14]).width(Fill).style(|_| style::fill(alpha(WORKING, 0x1c))).into())
 }
 
 // ---- context menu -----------------------------------------------------------------

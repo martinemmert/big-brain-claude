@@ -248,6 +248,9 @@ pub enum Message {
     MousePressed,
     /// The quick-terminal hotkey was pressed (from anywhere).
     QuickTerminal,
+    /// The new screenshot into the offered session's terminal (`true`) or into the composer.
+    ScreenshotTo(bool),
+    ScreenshotDismiss,
     /// The left mouse button went up (a selection may have ended).
     MouseReleased,
     /// A terminal's request to put text on the clipboard, and whether it has the keyboard.
@@ -422,6 +425,13 @@ pub struct Brain {
     qa_loading: bool,
     pub palette: String,
     /// The composer's text, the screenshots pasted into it, and the templates it offers.
+    /// A screenshot taken a moment ago, offered for a session.
+    pub screenshot_offer: Option<std::path::PathBuf>,
+    /// The folder watched for screenshots, when it was last looked at, and what was offered.
+    screenshot_folder: Option<std::path::PathBuf>,
+    screenshot_scan: Instant,
+    screenshots_offered: HashSet<std::path::PathBuf>,
+    started: std::time::SystemTime,
     pub composer: iced::widget::text_editor::Content,
     pub composer_images: Vec<std::path::PathBuf>,
     pub composer_templates: Vec<brain_core::templates::Template>,
@@ -558,6 +568,11 @@ impl Brain {
             qa_loading: false,
             find: String::new(),
             palette: String::new(),
+            screenshot_offer: None,
+            screenshot_folder: if demo { None } else { crate::config::screenshot_folder() },
+            screenshot_scan: Instant::now(),
+            screenshots_offered: HashSet::new(),
+            started: std::time::SystemTime::now(),
             composer: iced::widget::text_editor::Content::new(),
             composer_images: Vec::new(),
             composer_templates: Vec::new(),
@@ -997,6 +1012,27 @@ impl Brain {
                 Task::batch(asks)
             }
             Message::QuickTerminal => self.quick_terminal(),
+            Message::ScreenshotTo(into_terminal) => {
+                let Some(path) = self.screenshot_offer.take() else { return Task::none() };
+                let target = self.screenshot_target();
+                if into_terminal {
+                    if let Some(key) = target {
+                        self.selected = Some(key);
+                        self.tab = DetailTab::Terminal;
+                        let escaped = escape_path(&path.display().to_string()) + " ";
+                        if let Some(term) = self.selected.as_ref().and_then(|k| self.terminals.get_mut(k)) {
+                            term.paste(&escaped);
+                        }
+                        return Task::batch([self.bring_forward(), self.focus_terminal()]);
+                    }
+                }
+                self.composer_images.push(path);
+                Task::batch([self.bring_forward(), self.open_composer()])
+            }
+            Message::ScreenshotDismiss => {
+                self.screenshot_offer = None;
+                Task::none()
+            }
             Message::MouseReleased => {
                 if let Some(key) = self.focused_terminal.clone() {
                     self.last_terminal_release = Some((key, Instant::now()));
@@ -1112,6 +1148,7 @@ impl Brain {
         if !self.titlebar_ready {
             self.titlebar_ready = crate::chrome::unified_titlebar();
         }
+        self.watch_screenshots();
         let now = now_ms();
         for item in self.model.refresh() {
             if self.prefs.snoozed_until(&item.key, now).is_some() || self.prefs.is_muted(&item.key) || self.filtered_background(&item.key) {
@@ -1374,6 +1411,45 @@ impl Brain {
             Ok(file)
         });
         Task::perform(exported, Message::Exported)
+    }
+
+    /// Every two seconds: a screenshot saved since Brain started and not offered yet becomes the
+    /// offer (the newest one).
+    fn watch_screenshots(&mut self) {
+        if self.screenshot_scan.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+        self.screenshot_scan = Instant::now();
+        let Some(folder) = &self.screenshot_folder else { return };
+        let Ok(entries) = std::fs::read_dir(folder) else { return };
+        let newest = entries
+            .flatten()
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_lowercase();
+                (name.starts_with("screenshot") || name.starts_with("bildschirmfoto")) && (name.ends_with(".png") || name.ends_with(".jpg"))
+            })
+            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+            .filter(|(modified, path)| *modified > self.started && !self.screenshots_offered.contains(path))
+            .max_by_key(|(modified, _)| *modified);
+        if let Some((_, path)) = newest {
+            self.screenshots_offered.insert(path.clone());
+            self.screenshot_offer = Some(path);
+        }
+    }
+
+    /// Where a new screenshot would go: the selected session when it runs in Brain, else the one
+    /// waiting longest that runs in Brain.
+    pub fn screenshot_target(&self) -> Option<SessionKey> {
+        if self.has_terminal() {
+            return self.selected.clone();
+        }
+        let groups = self.groups(now_ms());
+        groups
+            .attention
+            .iter()
+            .chain(&groups.pinned)
+            .find(|s| self.terminals.contains_key(&s.key))
+            .map(|s| s.key.clone())
     }
 
     /// ⌘E: the composer for the selected session.

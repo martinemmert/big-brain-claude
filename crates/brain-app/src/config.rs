@@ -21,6 +21,28 @@ pub fn quick_terminal() -> Option<String> {
     (!spec.trim().is_empty() && spec.trim() != "off").then_some(spec)
 }
 
+/// Where new screenshots are watched for: `screenshot_folder`, else macOS' screenshot location
+/// (`defaults read com.apple.screencapture location`), else the Desktop. "off" turns it off.
+pub fn screenshot_folder() -> Option<std::path::PathBuf> {
+    let home = brain_core::account::home_dir();
+    let configured = read().and_then(|v| v.get("screenshot_folder")?.as_str().map(str::to_string));
+    match configured.as_deref().map(str::trim) {
+        Some("off") | Some("") => None,
+        Some(folder) => Some(match folder.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => folder.into(),
+        }),
+        None => {
+            let out = std::process::Command::new("defaults").args(["read", "com.apple.screencapture", "location"]).output().ok();
+            let location = out.filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|l| !l.is_empty());
+            Some(location.map(|l| match l.strip_prefix("~/") {
+                Some(rest) => home.join(rest),
+                None => l.into(),
+            }).unwrap_or_else(|| home.join("Desktop")))
+        }
+    }
+}
+
 /// The chat history's font family (`chat_font`), e.g. "JetBrains Mono"; by default the
 /// terminal's.
 pub fn chat_font() -> Option<String> {
