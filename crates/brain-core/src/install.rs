@@ -150,21 +150,46 @@ fn group_is_brain(group: &Value) -> bool {
         })
 }
 
-/// Inserts or replaces the protocol section between Brain's markers.
+/// Puts exactly one protocol section into a CLAUDE.md: every earlier one goes (between markers,
+/// and copies whose markers another edit removed), stray markers too, then the current section
+/// takes the place of the first one, or the end of the file.
 pub fn patch_claude_md(content: &str) -> String {
     let section = protocol_section();
-    if let (Some(start), Some(end)) = (content.find(SECTION_START), content.find(SECTION_END)) {
-        if start < end {
-            let after = &content[end + SECTION_END.len()..];
-            let after = after.strip_prefix('\n').unwrap_or(after);
-            return format!("{}{}{}", &content[..start], section, after);
+    let body = section.trim_start_matches(SECTION_START).trim_end_matches(SECTION_END).trim().to_string();
+    let mut rest = content.to_string();
+    let mut place: Option<usize> = None;
+    // Marked sections: a start and the next end after it.
+    while let Some(start) = rest.find(SECTION_START) {
+        let Some(len) = rest[start..].find(SECTION_END) else { break };
+        let end = start + len + SECTION_END.len();
+        rest.replace_range(start..end, "");
+        place = Some(place.map_or(start, |p| p.min(start)));
+    }
+    // Unmarked copies of the protocol, and markers left on their own.
+    while let Some(at) = rest.find(&body) {
+        rest.replace_range(at..at + body.len(), "");
+        place = Some(place.map_or(at, |p| p.min(at)));
+    }
+    for marker in [SECTION_START, SECTION_END] {
+        while let Some(at) = rest.find(marker) {
+            rest.replace_range(at..at + marker.len(), "");
+            place = Some(place.map_or(at, |p| p.min(at)));
         }
     }
-    let mut out = content.trim_end().to_string();
+    let (before, after) = match place {
+        Some(at) => (rest[..at].trim_end().to_string(), rest[at..].trim_start().to_string()),
+        None => (rest.trim_end().to_string(), String::new()),
+    };
+    let mut out = before;
     if !out.is_empty() {
         out.push_str("\n\n");
     }
-    out.push_str(&section);
+    out.push_str(section.trim_end());
+    if !after.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(after.trim_end());
+    }
+    out.push('\n');
     out
 }
 
@@ -359,6 +384,22 @@ mod tests {
         assert_eq!(refreshed.matches(SECTION_START).count(), 1);
         assert!(refreshed.contains("Brain status protocol"));
         assert!(refreshed.ends_with("<!-- brain:end -->\n\n## After\n"));
+    }
+
+    #[test]
+    fn duplicated_sections_and_stray_markers_collapse_into_one() {
+        // Another edit removed the first start marker; each install then appended a section.
+        let section = protocol_section();
+        let body = section.trim_start_matches(SECTION_START).trim_end_matches(SECTION_END).trim();
+        let broken = format!("# Prefs\n\n{body}\n<!-- brain:end -->\n\n{section}\n\n{section}\n");
+
+        let fixed = patch_claude_md(&broken);
+
+        assert_eq!(fixed.matches("## Brain status protocol").count(), 1);
+        assert_eq!(fixed.matches(SECTION_START).count(), 1);
+        assert_eq!(fixed.matches(SECTION_END).count(), 1);
+        assert!(fixed.starts_with("# Prefs\n\n<!-- brain:start -->"));
+        assert_eq!(patch_claude_md(&fixed), fixed, "installing again changes nothing");
     }
 
     #[test]
