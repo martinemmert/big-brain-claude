@@ -596,6 +596,7 @@ fn detail(brain: &Brain, now: i64) -> Element<'_, Message> {
         DetailTab::Messages => messages(brain),
         DetailTab::Timeline => scrollable(column(markdown::timeline(s)).padding(Padding { top: 12.0, right: 8.0, bottom: 20.0, left: 0.0 })).height(Fill).style(scrollbar).into(),
         DetailTab::Changes => changes(brain, s),
+        DetailTab::Files => with_reader(brain, files(brain, s)),
         DetailTab::Terminal => terminal(brain, s),
     };
     column![
@@ -758,10 +759,12 @@ fn conflict_lines<'a>(brain: &'a Brain, s: &Session) -> Vec<Element<'a, Message>
 fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     let message_count = brain.conversation.as_ref().map_or(0, |c| c.messages.len());
     let change_count = brain.changes.as_ref().filter(|c| c.key == s.key).and_then(|c| c.changes.as_ref()).map_or(0, |c| c.files.len());
+    let file_count = brain.files.as_ref().filter(|f| f.key == s.key).map(|f| f.files.len());
     let tabs = [
         (DetailTab::Messages, t("Nachrichten", "Messages"), Some(message_count)),
         (DetailTab::Timeline, t("Verlauf", "Timeline"), Some(s.timeline.len())),
         (DetailTab::Changes, t("Änderungen", "Changes"), Some(change_count)),
+        (DetailTab::Files, t("Dateien", "Files"), file_count),
         (DetailTab::Terminal, "Terminal", None),
     ];
     let buttons = tabs.into_iter().map(|(tab, label, count)| {
@@ -785,10 +788,107 @@ fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
 /// A real terminal running the session inside Brain, or why there is none.
 /// The Terminal tab; an open file shows in the reader beside it (also once the terminal ended).
 fn terminal<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
-    let main = terminal_or_hint(brain, s);
+    with_reader(brain, terminal_or_hint(brain, s))
+}
+
+/// `main` with the reader beside it when a file is open.
+fn with_reader<'a>(brain: &'a Brain, main: Element<'a, Message>) -> Element<'a, Message> {
     match &brain.reader {
         Some(reader) => row![container(main).width(Length::FillPortion(11)).height(Fill), reader_pane(reader)].spacing(12).height(Fill).into(),
         None => main,
+    }
+}
+
+/// Every file the session wrote, edited, read or was given, newest first; a click opens it.
+fn files<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
+    use brain_core::files::Touch;
+    let Some(cache) = brain.files.as_ref().filter(|f| f.key == s.key) else {
+        let why = if brain.conversation.as_ref().and_then(|c| c.transcript()).is_some() {
+            t("Lade Dateien …", "Loading files …")
+        } else {
+            t("Zu dieser Session gibt es kein Transkript.", "This session has no transcript.")
+        };
+        return hint(why);
+    };
+    let filter = brain.file_filter;
+    let count = |f: app::FileFilter| cache.files.iter().filter(|file| shows(f, file)).count();
+    let options = [
+        (app::FileFilter::All, t("Alle", "All")),
+        (app::FileFilter::Changed, t("Geschrieben", "Written")),
+        (app::FileFilter::Read, t("Gelesen", "Read")),
+        (app::FileFilter::Given, t("Mitgegeben", "Given")),
+    ];
+    let bar = segmented(options.into_iter().map(|(f, label)| (format!("{label} {}", count(f)), filter == f, Message::FileFilter(f))).collect());
+    let now = now_ms();
+    let cwd = s.cwd.clone().unwrap_or_default();
+    let rows: Vec<Element<'a, Message>> = cache
+        .files
+        .iter()
+        .filter(|file| shows(filter, file))
+        .map(|file| {
+            let path = std::path::Path::new(&file.path);
+            let exists = path.exists();
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| file.path.clone());
+            // Inside the session's folder the path reads relative to it, elsewhere from ~.
+            let folder = path.parent().map(|p| p.display().to_string()).unwrap_or_default();
+            let folder = match folder.strip_prefix(&cwd) {
+                Some(rest) if !cwd.is_empty() => format!(".{rest}"),
+                _ => tilde(&folder),
+            };
+            let mut badges = row![].spacing(4);
+            for touch in &file.touches {
+                let (label, color) = match touch {
+                    Touch::Written => (t("geschrieben", "written"), DONE),
+                    Touch::Edited => (t("geändert", "edited"), TURN),
+                    Touch::Read => (t("gelesen", "read"), TEXT_FAINT),
+                    Touch::Attached => (t("angehängt", "attached"), style::BACKGROUND),
+                    Touch::Shared => (t("von dir", "from you"), WORKING),
+                };
+                badges = badges.push(marker(label, color));
+            }
+            if !exists {
+                badges = badges.push(marker(t("gelöscht", "deleted"), CALLS));
+            }
+            let line = row![
+                column![
+                    text(name).size(13).color(if exists { TEXT_STRONG } else { TEXT_FAINT }).font(style::medium()).wrapping(text::Wrapping::None),
+                    text(clip(&folder, 70)).size(11).color(TEXT_FAINT).font(MONO).wrapping(text::Wrapping::None),
+                ]
+                .spacing(2)
+                .width(Fill),
+                badges,
+                text(if file.last_ms > 0 { ago(file.last_ms, now) } else { String::new() }).size(11.5).color(TEXT_FAINT).font(UI),
+            ]
+            .spacing(10)
+            .align_y(iced::Center)
+            .padding([6, 8]);
+            button(line)
+                .padding(0)
+                .width(Fill)
+                .on_press_maybe(exists.then(|| Message::OpenFile(file.path.clone())))
+                .style(|_, status| button::Style {
+                    background: matches!(status, button::Status::Hovered).then_some(Background::Color(style::HOVER)),
+                    border: Border { radius: 6.0.into(), ..Border::default() },
+                    ..button::Style::default()
+                })
+                .into()
+        })
+        .collect();
+    let list: Element<'a, Message> = if rows.is_empty() {
+        hint(t("Keine Dateien in dieser Auswahl.", "No files in this view."))
+    } else {
+        scrollable(column(rows).spacing(1).padding(Padding { top: 0.0, right: 8.0, bottom: 20.0, left: 0.0 })).height(Fill).style(scrollbar).into()
+    };
+    column![container(bar).padding(Padding { top: 4.0, bottom: 8.0, ..Padding::ZERO }), list].height(Fill).into()
+}
+
+fn shows(filter: app::FileFilter, file: &brain_core::files::SessionFile) -> bool {
+    use brain_core::files::Touch;
+    match filter {
+        app::FileFilter::All => true,
+        app::FileFilter::Changed => file.has(Touch::Written) || file.has(Touch::Edited),
+        app::FileFilter::Read => file.has(Touch::Read),
+        app::FileFilter::Given => file.has(Touch::Attached) || file.has(Touch::Shared),
     }
 }
 

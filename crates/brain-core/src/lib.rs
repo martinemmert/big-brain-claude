@@ -7,6 +7,7 @@ pub mod changes;
 pub mod conflicts;
 pub mod digest;
 pub mod event;
+pub mod files;
 pub mod github;
 pub mod hook;
 pub mod install;

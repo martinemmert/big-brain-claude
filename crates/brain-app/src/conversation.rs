@@ -54,6 +54,11 @@ impl Conversation {
         false
     }
 
+    /// The transcript file, once it exists, and its size when last read.
+    pub fn transcript(&self) -> Option<(&std::path::Path, u64)> {
+        self.path.as_deref().map(|p| (p, self.len))
+    }
+
     fn current_len(&self) -> u64 {
         self.path
             .as_ref()

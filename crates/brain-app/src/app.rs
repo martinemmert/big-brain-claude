@@ -51,8 +51,28 @@ pub enum DetailTab {
     Messages,
     Timeline,
     Changes,
+    /// Every file the session wrote, edited, read or was given.
+    Files,
     /// A real terminal running the session inside Brain (`claude attach` / `claude --resume`).
     Terminal,
+}
+
+/// Which files the Files tab lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileFilter {
+    All,
+    /// Written or edited by Claude.
+    Changed,
+    Read,
+    /// Attached to the session or dropped into a prompt.
+    Given,
+}
+
+/// The files of one session, as of a transcript size.
+pub struct FilesCache {
+    pub key: SessionKey,
+    pub len: u64,
+    pub files: Vec<brain_core::files::SessionFile>,
 }
 
 /// Buttons in the detail pane and the list's context menu.
@@ -116,6 +136,10 @@ pub enum Message {
     CheckPrs,
     PrsLoaded(HashMap<SessionKey, brain_core::github::PullRequest>),
     ChangesLoaded(SessionKey, Option<brain_core::changes::Changes>),
+    FilesLoaded(SessionKey, u64, Vec<brain_core::files::SessionFile>),
+    FileFilter(FileFilter),
+    /// A file from the Files tab: Markdown opens in YAMV, the rest in the reader.
+    OpenFile(String),
     CheckUpdate,
     UpdateFound(Option<crate::links::Update>),
     DragWindow,
@@ -276,6 +300,9 @@ pub struct Brain {
     pub status: Option<(String, Instant)>,
     pub tab: DetailTab,
     pub conversation: Option<Conversation>,
+    pub files: Option<FilesCache>,
+    files_loading: bool,
+    pub file_filter: FileFilter,
     pub mode: Mode,
     pub search: String,
     pub rename: String,
@@ -375,6 +402,9 @@ impl Brain {
             prs: HashMap::new(),
             conflicts: HashMap::new(),
             terminal_titles: HashMap::new(),
+            files: None,
+            files_loading: false,
+            file_filter: FileFilter::All,
             bells: HashSet::new(),
             conflicts_notified: HashSet::new(),
             changes: None,
@@ -555,7 +585,7 @@ impl Brain {
             }
             Message::Tab(tab) => {
                 self.tab = tab;
-                self.load_changes()
+                Task::batch([self.load_changes(), self.load_files()])
             }
             Message::Do(action) => self.act(action),
             Message::CleanupAge(index) => {
@@ -580,6 +610,27 @@ impl Brain {
             }
             Message::PrsLoaded(prs) => {
                 self.prs = prs;
+                Task::none()
+            }
+            Message::FilesLoaded(key, len, files) => {
+                self.files = Some(FilesCache { key, len, files });
+                self.files_loading = false;
+                Task::none()
+            }
+            Message::FileFilter(filter) => {
+                self.file_filter = filter;
+                Task::none()
+            }
+            Message::OpenFile(path) => {
+                let path = std::path::PathBuf::from(path);
+                if !path.is_file() {
+                    self.set_status(t("Die Datei gibt es nicht mehr.", "That file no longer exists."));
+                    return Task::none();
+                }
+                if is_markdown(&path) {
+                    return open_markdown(path);
+                }
+                self.reader = Some(read_file(path));
                 Task::none()
             }
             Message::ChangesLoaded(key, changes) => {
@@ -789,7 +840,9 @@ impl Brain {
         if let Some(menubar) = self.menubar.as_mut() {
             menubar.show(waiting, calling);
         }
-        Task::batch([scroll, attach])
+        // The Files tab follows the transcript as it grows.
+        let files = self.load_files();
+        Task::batch([scroll, attach, files])
     }
 
     /// Background sessions open in Brain's terminal: when one gets selected (or Brain started it
@@ -925,6 +978,23 @@ impl Brain {
         Task::perform(off_thread(move || brain_core::changes::changes_of(std::path::Path::new(&cwd))), move |changes| {
             Message::ChangesLoaded(key.clone(), changes)
         })
+    }
+
+    /// Reads the selected session's files when the Files tab shows and its transcript grew.
+    fn load_files(&mut self) -> Task<Message> {
+        if self.tab != DetailTab::Files || self.files_loading {
+            return Task::none();
+        }
+        let Some(key) = self.selected.clone() else { return Task::none() };
+        let Some((path, len)) = self.conversation.as_ref().filter(|c| c.key == key).and_then(|c| c.transcript()) else {
+            return Task::none();
+        };
+        if self.files.as_ref().is_some_and(|f| f.key == key && f.len == len) {
+            return Task::none();
+        }
+        let path = path.to_path_buf();
+        self.files_loading = true;
+        Task::perform(off_thread(move || brain_core::files::session_files(&path)), move |files| Message::FilesLoaded(key.clone(), len, files))
     }
 
     /// What the Terminal tab would run for the selected session: `claude attach` for a
@@ -1482,19 +1552,21 @@ impl Brain {
                 self.tab = match self.tab {
                     DetailTab::Messages => DetailTab::Timeline,
                     DetailTab::Timeline => DetailTab::Changes,
-                    DetailTab::Changes => DetailTab::Terminal,
+                    DetailTab::Changes => DetailTab::Files,
+                    DetailTab::Files => DetailTab::Terminal,
                     DetailTab::Terminal => DetailTab::Messages,
                 };
-                return self.load_changes();
+                return Task::batch([self.load_changes(), self.load_files()]);
             }
             Some(Named::ArrowLeft) => {
                 self.tab = match self.tab {
                     DetailTab::Messages => DetailTab::Terminal,
                     DetailTab::Timeline => DetailTab::Messages,
                     DetailTab::Changes => DetailTab::Timeline,
-                    DetailTab::Terminal => DetailTab::Changes,
+                    DetailTab::Files => DetailTab::Changes,
+                    DetailTab::Terminal => DetailTab::Files,
                 };
-                return self.load_changes();
+                return Task::batch([self.load_changes(), self.load_files()]);
             }
             _ => {}
         }
