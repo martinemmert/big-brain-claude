@@ -25,6 +25,10 @@ pub const RESTING_AFTER_MS: i64 = 2 * 60 * 60 * 1000;
 /// Ended sessions show in the list for a day; older ones through the search.
 pub const ENDED_RECENT_MS: i64 = 24 * 60 * 60 * 1000;
 const SNOOZE_MS: i64 = 15 * 60 * 1000;
+/// How long after typing into a terminal its program may still write the clipboard (OSC 52):
+/// long enough for `/copy` and its picker, too short for output that arrives later.
+const CLIPBOARD_AFTER_TYPING: Duration = Duration::from_secs(10);
+
 /// Ages the clean-up dialog offers, in days.
 pub const CLEANUP_DAYS: [i64; 4] = [1, 3, 7, 14];
 
@@ -208,6 +212,8 @@ pub enum Message {
     /// A Markdown file was handed to YAMV (`true`), or to the text editor because YAMV is missing.
     MarkdownOpened(String, bool),
     MousePressed,
+    /// A terminal's request to put text on the clipboard, and whether it has the keyboard.
+    TerminalCopy(SessionKey, String, bool),
     /// Whether this session's terminal has the keyboard (asked after a click).
     TermFocused(SessionKey, bool),
     /// ⌘D: the current terminal stays on the left, the next selected session opens beside it.
@@ -427,6 +433,8 @@ pub struct Brain {
     /// Whether the selected session's terminal has the keyboard (drawn as a ring).
     /// The terminal that has the keyboard (Brain's shortcuts are off while one has it).
     pub focused_terminal: Option<SessionKey>,
+    /// The terminal the user last typed into, and when.
+    last_terminal_input: Option<(SessionKey, Instant)>,
     /// A file is being dragged over the window.
     pub file_hover: bool,
     /// The file the reader beside the terminal shows.
@@ -512,6 +520,7 @@ impl Brain {
             terminals: HashMap::new(),
             next_terminal: 1,
             focused_terminal: None,
+            last_terminal_input: None,
             file_hover: false,
             reader: None,
             pending_attach: None,
@@ -816,11 +825,15 @@ impl Brain {
                             self.bells.insert(key);
                         }
                         // Output can carry clipboard requests too (a printed file, a fetched page):
-                        // only the terminal you're typing in may write the clipboard, and it says so.
-                        Some(iced_term::actions::Action::CopyToClipboard(text)) if self.focused_terminal.as_ref() == Some(&key) => {
-                            let chars = text.chars().count();
-                            self.set_status(tr!("Die Session hat {chars} Zeichen in die Zwischenablage kopiert.", "The session copied {chars} characters to the clipboard."));
-                            task = iced::clipboard::write(text);
+                        // only a terminal you typed into a moment ago may write the clipboard, and
+                        // only if it really has the keyboard now (asked below), and it says so.
+                        Some(iced_term::actions::Action::CopyToClipboard(text))
+                            if self.last_terminal_input.as_ref().is_some_and(|(k, at)| *k == key && at.elapsed() < CLIPBOARD_AFTER_TYPING) =>
+                        {
+                            if let Some(term) = self.terminals.get(&key) {
+                                let key = key.clone();
+                                task = operation::is_focused(term.widget_id().clone()).map(move |focused| Message::TerminalCopy(key.clone(), text.clone(), focused));
+                            }
                         }
                         _ => {}
                     }
@@ -851,6 +864,15 @@ impl Brain {
                     })
                     .collect();
                 Task::batch(asks)
+            }
+            Message::TerminalCopy(key, text, focused) => {
+                if !focused {
+                    return Task::none();
+                }
+                self.focused_terminal = Some(key);
+                let chars = text.chars().count();
+                self.set_status(tr!("Die Session hat {chars} Zeichen in die Zwischenablage kopiert.", "The session copied {chars} characters to the clipboard."));
+                iced::clipboard::write(text)
             }
             Message::TermFocused(key, focused) => {
                 if focused {
@@ -1859,6 +1881,9 @@ impl Brain {
 
     fn on_key(&mut self, event: keyboard::Event, captured: bool) -> Task<Message> {
         let keyboard::Event::KeyPressed { key, modifiers, text, .. } = event else { return Task::none() };
+        if let Some(focused) = self.focused_terminal.clone() {
+            self.last_terminal_input = Some((focused, Instant::now()));
+        }
         let named = match key.as_ref() {
             keyboard::Key::Named(named) => Some(named),
             _ => None,
