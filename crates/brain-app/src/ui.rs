@@ -694,6 +694,7 @@ fn session_pane(brain: &Brain, now: i64) -> Element<'_, Message> {
         DetailTab::Timeline => scrollable(column(markdown::timeline(s)).padding(Padding { top: 12.0, right: 8.0, bottom: 20.0, left: 0.0 })).height(Fill).style(scrollbar).into(),
         DetailTab::Changes => changes(brain, s),
         DetailTab::Files => with_reader(brain, files(brain, s)),
+        DetailTab::Questions => questions(brain, s),
         DetailTab::Terminal => terminal(brain, s),
     };
     column![
@@ -857,11 +858,13 @@ fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     let message_count = brain.conversation.as_ref().map_or(0, |c| c.messages.len());
     let change_count = brain.changes.as_ref().filter(|c| c.key == s.key).and_then(|c| c.changes.as_ref()).map_or(0, |c| c.files.len());
     let file_count = brain.files.as_ref().filter(|f| f.key == s.key).map(|f| f.files.len());
+    let question_count = brain.qa.as_ref().filter(|q| q.key == s.key).map(|q| q.exchanges.len());
     let tabs = [
         (DetailTab::Messages, t("Nachrichten", "Messages"), Some(message_count)),
         (DetailTab::Timeline, t("Verlauf", "Timeline"), Some(s.timeline.len())),
         (DetailTab::Changes, t("Änderungen", "Changes"), Some(change_count)),
         (DetailTab::Files, t("Dateien", "Files"), file_count),
+        (DetailTab::Questions, t("Fragen", "Questions"), question_count),
         (DetailTab::Terminal, "Terminal", None),
     ];
     let buttons = tabs.into_iter().map(|(tab, label, count)| {
@@ -1021,6 +1024,48 @@ fn files<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
         scrollable(column(rows).spacing(1).padding(Padding { top: 0.0, right: 8.0, bottom: 20.0, left: 0.0 })).height(Fill).style(scrollbar).into()
     };
     column![container(bar).padding(Padding { top: 4.0, bottom: 8.0, ..Padding::ZERO }), list].height(Fill).into()
+}
+
+/// Claude's questions, newest first, each with the answer given (or "open").
+fn questions<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
+    use brain_core::qa::Asked;
+    let Some(cache) = brain.qa.as_ref().filter(|q| q.key == s.key) else {
+        let why = if brain.conversation.as_ref().and_then(|c| c.transcript()).is_some() {
+            t("Lade Fragen …", "Loading questions …")
+        } else {
+            t("Zu dieser Session gibt es kein Transkript.", "This session has no transcript.")
+        };
+        return hint(why);
+    };
+    if cache.exchanges.is_empty() {
+        return hint(t("Claude hat in dieser Session nichts gefragt.", "Claude asked nothing in this session."));
+    }
+    let now = now_ms();
+    let cards = cache.exchanges.iter().rev().map(|exchange| -> Element<'a, Message> {
+        let when = exchange.ts.map(|ts| ago(ts.timestamp_millis(), now)).unwrap_or_default();
+        let how = match exchange.asked {
+            Asked::Tool => t("Rückfrage", "asked"),
+            Asked::Text => t("im Text", "in the reply"),
+        };
+        let mut card = column![
+            row![text(how).size(11).color(TEXT_FAINT).font(UI), Space::new().width(Fill), text(when).size(11).color(TEXT_FAINT).font(UI)].align_y(iced::Center),
+            text(exchange.question.clone()).size(13).color(TEXT_STRONG).font(style::semibold()),
+        ]
+        .spacing(6);
+        if !exchange.options.is_empty() {
+            card = card.push(text(exchange.options.join(" · ")).size(11.5).color(TEXT_FAINT).font(UI));
+        }
+        card = card.push(match &exchange.answer {
+            Some(answer) => row![
+                text(t("Du:", "You:")).size(12.5).color(WORKING).font(style::semibold()),
+                text(clip(answer, 600)).size(12.5).color(TEXT).font(UI),
+            ]
+            .spacing(6),
+            None => row![text(t("noch offen", "still open")).size(12.5).color(TURN).font(style::semibold())],
+        });
+        container(card).padding([10, 12]).width(Fill).style(|_| boxed(SURFACE, LINE, 8.0)).into()
+    });
+    scrollable(column(cards).spacing(8).padding(Padding { top: 4.0, right: 12.0, bottom: 24.0, left: 0.0 })).height(Fill).style(scrollbar).into()
 }
 
 fn shows(filter: app::FileFilter, file: &brain_core::files::SessionFile) -> bool {

@@ -96,6 +96,8 @@ pub enum DetailTab {
     Changes,
     /// Every file the session wrote, edited, read or was given.
     Files,
+    /// Claude's questions and the answers given.
+    Questions,
     /// A real terminal running the session inside Brain (`claude attach` / `claude --resume`).
     Terminal,
 }
@@ -116,6 +118,13 @@ pub struct HistoryCache {
     pub key: SessionKey,
     pub len: u64,
     pub messages: Vec<brain_core::transcript::Message>,
+}
+
+/// The questions of one session, as of a transcript size.
+pub struct QaCache {
+    pub key: SessionKey,
+    pub len: u64,
+    pub exchanges: Vec<brain_core::qa::Exchange>,
 }
 
 /// The files of one session, as of a transcript size.
@@ -194,6 +203,7 @@ pub enum Message {
     PrsLoaded(HashMap<SessionKey, brain_core::github::PullRequest>),
     ChangesLoaded(SessionKey, Option<brain_core::changes::Changes>),
     FilesLoaded(SessionKey, u64, Vec<brain_core::files::SessionFile>),
+    QaLoaded(SessionKey, u64, Vec<brain_core::qa::Exchange>),
     Palette(String),
     PaletteRun(PaletteCommand),
     PaletteClose,
@@ -390,6 +400,8 @@ pub struct Brain {
     pub tab: DetailTab,
     pub conversation: Option<Conversation>,
     pub files: Option<FilesCache>,
+    pub qa: Option<QaCache>,
+    qa_loading: bool,
     pub palette: String,
     pub palette_index: usize,
     /// Text to find in the selected session's whole conversation (⌘F).
@@ -518,6 +530,8 @@ impl Brain {
             split: None,
             overview: false,
             files: None,
+            qa: None,
+            qa_loading: false,
             find: String::new(),
             palette: String::new(),
             palette_index: 0,
@@ -802,6 +816,11 @@ impl Brain {
                     Task::none()
                 }
             },
+            Message::QaLoaded(key, len, exchanges) => {
+                self.qa = Some(QaCache { key, len, exchanges });
+                self.qa_loading = false;
+                Task::none()
+            }
             Message::FilesLoaded(key, len, files) => {
                 self.files = Some(FilesCache { key, len, files });
                 self.files_loading = false;
@@ -1108,7 +1127,8 @@ impl Brain {
         // The Files tab and the find results follow the transcript as it grows.
         let files = self.load_files();
         let history = self.load_history();
-        Task::batch([scroll, attach, files, history])
+        let qa = self.load_qa();
+        Task::batch([scroll, attach, files, history, qa])
     }
 
     /// Background sessions open in Brain's terminal: when one gets selected (or Brain started it
@@ -1455,6 +1475,23 @@ impl Brain {
     fn start_find(&mut self) -> Task<Message> {
         self.tab = DetailTab::Messages;
         Task::batch([operation::focus(FIND), self.load_history()])
+    }
+
+    /// Reads the selected session's questions when their tab shows and the transcript grew.
+    fn load_qa(&mut self) -> Task<Message> {
+        if self.tab != DetailTab::Questions || self.qa_loading {
+            return Task::none();
+        }
+        let Some(key) = self.selected.clone() else { return Task::none() };
+        let Some((path, len)) = self.conversation.as_ref().filter(|c| c.key == key).and_then(|c| c.transcript()) else {
+            return Task::none();
+        };
+        if self.qa.as_ref().is_some_and(|q| q.key == key && q.len == len) {
+            return Task::none();
+        }
+        let path = path.to_path_buf();
+        self.qa_loading = true;
+        Task::perform(off_thread(move || brain_core::qa::exchanges(&path)), move |exchanges| Message::QaLoaded(key.clone(), len, exchanges))
     }
 
     /// Reads the selected session's files when the Files tab shows and its transcript grew.
@@ -2127,7 +2164,8 @@ impl Brain {
                     DetailTab::Messages => DetailTab::Timeline,
                     DetailTab::Timeline => DetailTab::Changes,
                     DetailTab::Changes => DetailTab::Files,
-                    DetailTab::Files => DetailTab::Terminal,
+                    DetailTab::Files => DetailTab::Questions,
+                    DetailTab::Questions => DetailTab::Terminal,
                     DetailTab::Terminal => DetailTab::Messages,
                 };
                 return Task::batch([self.load_changes(), self.load_files()]);
@@ -2138,7 +2176,8 @@ impl Brain {
                     DetailTab::Timeline => DetailTab::Messages,
                     DetailTab::Changes => DetailTab::Timeline,
                     DetailTab::Files => DetailTab::Changes,
-                    DetailTab::Terminal => DetailTab::Files,
+                    DetailTab::Questions => DetailTab::Files,
+                    DetailTab::Terminal => DetailTab::Questions,
                 };
                 return Task::batch([self.load_changes(), self.load_files()]);
             }
