@@ -2393,6 +2393,12 @@ impl Brain {
 
     fn on_key(&mut self, event: keyboard::Event, captured: bool) -> Task<Message> {
         let keyboard::Event::KeyPressed { key, modifiers, text, .. } = event else { return Task::none() };
+        // Keys only count while Brain is the active app: with another app in front they're that
+        // app's (⌘T in Chrome opened Brain's shell). Such a key is noted, to find where it came from.
+        if !app_is_active() {
+            note_key_while_inactive(&key, modifiers);
+            return Task::none();
+        }
         if let Some(focused) = self.focused_terminal.clone() {
             self.last_terminal_input = Some((focused, Instant::now()));
         }
@@ -3611,6 +3617,21 @@ fn open_reader_file(reader: &Reader) {
         ReaderKind::Unreadable(_) => return,
     };
     let _ = command.arg(&reader.path).spawn();
+}
+
+/// Whether macOS has Brain as the active app (the one that gets the keyboard).
+fn app_is_active() -> bool {
+    objc2::MainThreadMarker::new().is_none_or(|mtm| objc2_app_kit::NSApplication::sharedApplication(mtm).isActive())
+}
+
+/// Diagnostics: a key that reached Brain while another app was active, one line per key in
+/// `~/.claude-brain/keys-while-inactive.log`.
+fn note_key_while_inactive(key: &keyboard::Key, modifiers: keyboard::Modifiers) {
+    use std::io::Write;
+    let path = brain_core::account::home_dir().join(".claude-brain/keys-while-inactive.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{} {:?} {:?}", chrono::Local::now().format("%H:%M:%S"), modifiers, key);
+    }
 }
 
 /// A path as a shell word, like iTerm pastes dropped files: spaces and specials backslashed.
