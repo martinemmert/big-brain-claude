@@ -1466,7 +1466,7 @@ impl Brain {
             "p" => self.toggle_pin(),
             "m" => self.toggle_mute(),
             "s" => self.cycle_snooze(),
-            "a" => self.move_to_other_account(false),
+            "a" => return self.move_to_other_account(false),
             "x" => self.end_selected(false),
             "c" => {
                 self.armed = None;
@@ -1608,7 +1608,7 @@ impl Brain {
             Action::Pin => self.toggle_pin(),
             Action::Mute => self.toggle_mute(),
             Action::Snooze => self.cycle_snooze(),
-            Action::OtherAccount => self.move_to_other_account(confirmed),
+            Action::OtherAccount => return self.move_to_other_account(confirmed),
             Action::End => self.end_selected(confirmed),
             Action::Hide => self.hide_selected(confirmed),
             Action::Trash => self.trash_selected(confirmed),
@@ -1868,25 +1868,28 @@ impl Brain {
 
     /// `A` twice: continues a session in the next account. The transcript is copied and resumed
     /// there in a new tab (`--fork-session`); a running original gets `/exit`.
-    fn move_to_other_account(&mut self, confirmed: bool) {
-        let Some(session) = self.selected_session() else { return };
+    /// A session that runs in Brain moves within Brain: it stops here and a copy continues in
+    /// the other account's background, attached in Brain.
+    fn move_to_other_account(&mut self, confirmed: bool) -> Task<Message> {
+        let Some(session) = self.selected_session() else { return Task::none() };
         let key = session.key.clone();
-        let Some(index) = self.model.accounts.iter().position(|a| a.id == key.account) else { return };
+        let Some(index) = self.model.accounts.iter().position(|a| a.id == key.account) else { return Task::none() };
         let next = self.model.accounts.get((index + 1) % self.model.accounts.len()).cloned();
         let Some(target) = next.filter(|t| t.id != key.account) else {
             self.set_status(t("Es gibt kein zweites Konto.", "There is no other account."));
-            return;
+            return Task::none();
         };
-        if session.agent.is_some() {
-            self.set_status(t("Hintergrund-Sessions zieht Brain nicht um.", "Brain doesn't move background sessions."));
-            return;
-        }
         let ended = session.phase() == Phase::Ended;
-        if !ended && !session.accepts_input() {
+        // One that runs in Brain is stopped, so it only must not be mid-turn; one in iTerm gets
+        // `/exit` typed, so its prompt box must be ready.
+        let movable = ended || if session.agent.is_some() { session.phase() != Phase::Working } else { session.accepts_input() };
+        if !movable {
             self.set_status(t("Umziehen geht, sobald die Session fertig ist und auf dich wartet.", "Moving works once the session has finished and waits for you."));
-            return;
+            return Task::none();
         }
-        let (session_id, cwd, pid) = (session.session_id.clone(), session.cwd.clone(), session.pid);
+        let (session_id, cwd, pid, name) = (session.session_id.clone(), session.cwd.clone(), session.pid, session.name.clone());
+        let running_agent = session.agent.clone().filter(|a| a.is_active());
+        let in_brain = session.agent.is_some();
         if !confirmed && !self.arm('a', &key) {
             let target = target.id.clone();
             self.set_status(if ended {
@@ -1894,29 +1897,45 @@ impl Brain {
             } else {
                 tr!("Nochmal A zieht die Session nach {target} um.", "Press A again to move the session to {target}.")
             });
-            return;
+            return Task::none();
         }
         let (Some(session_id), Some(cwd)) = (session_id, cwd) else {
             self.set_status(t("Zu dieser Session fehlt die ID oder der Ordner.", "This session has no id or folder."));
-            return;
+            return Task::none();
         };
         if self.blocked_in_demo() {
-            return;
+            return Task::none();
         }
-        let transcript = self.model.account(&key.account).and_then(|a| brain_core::transcript::find_transcript(a, &session_id));
-        let Some(transcript) = transcript else {
+        let Some(source) = self.model.account(&key.account).cloned() else { return Task::none() };
+        let Some(transcript) = brain_core::transcript::find_transcript(&source, &session_id) else {
             self.set_status(t("Transkript nicht gefunden.", "Transcript not found."));
-            return;
+            return Task::none();
         };
+        if in_brain {
+            if self.prefs.is_pinned(&key) && ended {
+                self.prefs.toggle_pin(&key);
+                self.prefs.save();
+            }
+            let target_id = target.id.clone();
+            self.set_status(tr!("Ziehe die Session nach {target_id} um …", "Moving the session to {target_id} …"));
+            let moved = off_thread(move || {
+                if let Some(agent) = running_agent {
+                    brain_core::agents::stop(&source, &agent.id)?;
+                }
+                brain_core::transcript::copy_to_account(&transcript, &target).map_err(|e| e.to_string())?;
+                brain_core::agents::fork(&target, std::path::Path::new(&cwd), &session_id, name.as_deref())
+            });
+            return Task::perform(moved, move |result| Message::Started(target_id.clone(), result));
+        }
         if let Err(err) = brain_core::transcript::copy_to_account(&transcript, &target) {
             self.set_status(tr!("Kopieren fehlgeschlagen: {err}", "Copy failed: {err}"));
-            return;
+            return Task::none();
         }
         let config_dir = (target.id != "main").then(|| target.config_dir.display().to_string());
         let outcome = terminal::open_new(&cwd, config_dir.as_deref(), &format!("claude --resume {session_id} --fork-session"));
         if !matches!(outcome, Outcome::Done) {
             self.report(outcome, None);
-            return;
+            return Task::none();
         }
         if self.prefs.is_pinned(&key) && ended {
             self.prefs.toggle_pin(&key);
@@ -1925,7 +1944,7 @@ impl Brain {
         let target = target.id;
         if ended {
             self.set_status(tr!("In {target} fortgesetzt.", "Resumed in {target}."));
-            return;
+            return Task::none();
         }
         let closed = matches!(terminal::type_text(pid, "/exit"), Outcome::Done);
         self.set_status(if closed {
@@ -1933,6 +1952,7 @@ impl Brain {
         } else {
             tr!("Nach {target} umgezogen. Das Original konnte Brain nicht schließen.", "Moved to {target}. Brain could not close the original.")
         });
+        Task::none()
     }
 
     /// `⌫` twice: hides the session (or shows it again) until something new happens in it.

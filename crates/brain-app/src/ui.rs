@@ -1172,12 +1172,30 @@ fn footer(brain: &Brain) -> Element<'_, Message> {
     } else {
         hints.to_vec()
     };
-    let mut bar = row(shown.into_iter().map(|(key, label)| row![kbd(key), text(label).size(11.5).color(TEXT_FAINT).font(UI)].spacing(5).align_y(iced::Center).into()))
+    // A status message takes the whole footer while it shows: the hints would push it off the
+    // edge, and "press again" prompts must not be missed.
+    if let Some((message, _)) = &brain.status {
+        let band = row![
+            text("●").size(11).color(CALLS),
+            text(clip(message, 160)).size(13).color(TEXT_STRONG).font(style::semibold()).wrapping(text::Wrapping::None),
+        ]
+        .spacing(8)
+        .align_y(iced::Center);
+        return container(band)
+            .height(32)
+            .padding([0, 14])
+            .center_y(32)
+            .width(Fill)
+            .clip(true)
+            .style(|_| container::Style {
+                background: Some(Background::Color(alpha(CALLS, 0x2a))),
+                border: Border { color: alpha(CALLS, 0x80), width: 1.0, radius: 0.0.into() },
+                ..container::Style::default()
+            })
+            .into();
+    }
+    let bar = row(shown.into_iter().map(|(key, label)| row![kbd(key), text(label).size(11.5).color(TEXT_FAINT).font(UI)].spacing(5).align_y(iced::Center).into()))
         .spacing(12)
         .align_y(iced::Center);
-    bar = bar.push(Space::new().width(Fill));
-    if let Some((message, _)) = &brain.status {
-        bar = bar.push(text(clip(message, 90)).size(11.5).color(CALLS_SOFT).font(UI).wrapping(text::Wrapping::None));
-    }
     container(bar).height(32).padding([0, 14]).center_y(32).width(Fill).clip(true).style(|_| style::fill(CHROME)).into()
 }
