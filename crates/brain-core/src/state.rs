@@ -100,6 +100,9 @@ pub struct Session {
     transcript_signal: Option<(Signal, i64)>,
     /// Whether the last turn hook was a prompt (`true`) or a stop (`false`).
     turn_open: Option<bool>,
+    /// Brain's mod reports this session: the settings hooks, which still run as a fallback,
+    /// would say everything twice.
+    reports_by_mod: bool,
 }
 
 const TIMELINE_LIMIT: usize = 200;
@@ -128,6 +131,7 @@ impl Session {
             hook_signal: None,
             file_signal: None,
             transcript_signal: None,
+            reports_by_mod: false,
             turn_open: None,
         }
     }
@@ -261,6 +265,11 @@ impl Session {
     }
 
     fn apply(&mut self, event: &Event) {
+        match event.source {
+            Source::Mod => self.reports_by_mod = true,
+            Source::Hook if self.reports_by_mod => return,
+            _ => {}
+        }
         let ts = event.ts.timestamp_millis();
         self.last_activity_ms = self.last_activity_ms.max(ts);
         if event.session_id.is_some() {
@@ -310,7 +319,7 @@ impl Session {
             Kind::SessionStart => {}
         }
 
-        if event.source == Source::Hook {
+        if matches!(event.source, Source::Hook | Source::Mod) {
             match event.kind {
                 Kind::Prompt => self.turn_open = Some(true),
                 Kind::Stop | Kind::SessionStart => self.turn_open = Some(false),
@@ -493,6 +502,19 @@ impl Board {
 mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
+
+    #[test]
+    fn once_the_mod_reports_a_session_its_hook_events_are_left_out() {
+        let mut board = Board::default();
+        board.apply_event(&ev(0, Source::Hook, Kind::SessionStart, None));
+        board.apply_event(&ev(1, Source::Mod, Kind::Prompt, Some("Build it")));
+        board.apply_event(&ev(1, Source::Hook, Kind::Prompt, Some("Build it")));
+        board.apply_event(&ev(9, Source::Mod, Kind::Stop, Some("Built.")));
+        board.apply_event(&ev(9, Source::Hook, Kind::Stop, Some("Built.")));
+        let session = board.sessions.values().next().unwrap();
+        let kinds: Vec<Kind> = session.timeline.iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, [Kind::SessionStart, Kind::Prompt, Kind::Stop]);
+    }
 
     fn ev(secs: i64, source: Source, kind: Kind, text: Option<&str>) -> Event {
         Event {

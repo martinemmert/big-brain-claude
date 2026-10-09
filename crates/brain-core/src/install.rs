@@ -9,6 +9,11 @@ pub const HOOK_EVENTS: [&str; 5] = ["SessionStart", "UserPromptSubmit", "Notific
 const HOOK_MARKER: &str = "brain hook";
 pub const PERMISSION_RULE: &str = "Bash(brain report:*)";
 
+/// Claude Code loads the plugin directories listed in this variable (`env` in settings.json).
+const PLUGIN_DIRS: &str = "CLAUDE_CODE_PLUGIN_DIRS";
+/// Recognises the plugin directory of Brain's mod, wherever the home folder is.
+const MOD_MARKER: &str = "/.claude-brain/mod/brain";
+
 const SECTION_START: &str = "<!-- brain:start -->";
 const SECTION_END: &str = "<!-- brain:end -->";
 
@@ -30,9 +35,10 @@ Session state (working, permission prompts, turn end) is tracked automatically b
     )
 }
 
-/// Adds Brain's hooks and permission rule to a `settings.json` value.
-/// Earlier Brain entries are replaced, everything else is left untouched.
-pub fn patch_settings(settings: &mut Value, hook_command: &str) {
+/// Adds Brain's hooks and permission rule to a `settings.json` value, and Brain's mod to the
+/// plugin directories Claude Code loads when `mod_dir` is given. Earlier Brain entries are
+/// replaced, everything else is left untouched.
+pub fn patch_settings(settings: &mut Value, hook_command: &str, mod_dir: Option<&str>) {
     if !settings.is_object() {
         *settings = Value::Object(Map::new());
     }
@@ -59,6 +65,10 @@ pub fn patch_settings(settings: &mut Value, hook_command: &str) {
         wrap_statusline(root, brain);
     }
 
+    if let Some(dir) = mod_dir {
+        add_mod_dir(root, dir);
+    }
+
     let permissions = root.entry("permissions").or_insert_with(|| json!({}));
     if let Some(permissions) = permissions.as_object_mut() {
         let allow = permissions.entry("allow").or_insert_with(|| json!([]));
@@ -67,6 +77,35 @@ pub fn patch_settings(settings: &mut Value, hook_command: &str) {
                 allow.push(json!(PERMISSION_RULE));
             }
         }
+    }
+}
+
+/// Lists the mod's directory in `env.CLAUDE_CODE_PLUGIN_DIRS` (`:`-separated), keeping every
+/// other directory and replacing an earlier Brain entry.
+fn add_mod_dir(root: &mut Map<String, Value>, dir: &str) {
+    let env = root.entry("env").or_insert_with(|| json!({}));
+    let Some(env) = env.as_object_mut() else { return };
+    let current = env.get(PLUGIN_DIRS).and_then(Value::as_str).unwrap_or_default();
+    let mut dirs: Vec<&str> = current.split(':').filter(|d| !d.is_empty() && !d.ends_with(MOD_MARKER)).collect();
+    dirs.push(dir);
+    env.insert(PLUGIN_DIRS.to_string(), json!(dirs.join(":")));
+}
+
+/// The reverse of [`add_mod_dir`]: drops the variable, and `env`, when Brain's was all they held.
+fn remove_mod_dir(root: &mut Map<String, Value>) {
+    let Some(env) = root.get_mut("env").and_then(Value::as_object_mut) else { return };
+    let Some(current) = env.get(PLUGIN_DIRS).and_then(Value::as_str) else { return };
+    if !current.split(':').any(|d| d.ends_with(MOD_MARKER)) {
+        return;
+    }
+    let rest: Vec<&str> = current.split(':').filter(|d| !d.is_empty() && !d.ends_with(MOD_MARKER)).collect();
+    if rest.is_empty() {
+        env.remove(PLUGIN_DIRS);
+    } else {
+        env.insert(PLUGIN_DIRS.to_string(), json!(rest.join(":")));
+    }
+    if env.is_empty() {
+        root.remove("env");
     }
 }
 
@@ -199,6 +238,7 @@ pub fn patch_claude_md(content: &str) -> String {
 pub fn unpatch_settings(settings: &mut Value) {
     let Some(root) = settings.as_object_mut() else { return };
     unwrap_statusline(root);
+    remove_mod_dir(root);
 
     if let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) {
         let had_events = !hooks.is_empty();
@@ -281,13 +321,13 @@ pub fn rewrite_file(path: &Path, patch: impl FnOnce(&str) -> String) -> std::io:
 
 /// `settings.json` patcher for [`rewrite_file`]. Invalid JSON is an error
 /// rather than being overwritten.
-pub fn patch_settings_text(text: &str, hook_command: &str) -> Result<String, serde_json::Error> {
+pub fn patch_settings_text(text: &str, hook_command: &str, mod_dir: Option<&str>) -> Result<String, serde_json::Error> {
     let mut value: Value = if text.trim().is_empty() {
         json!({})
     } else {
         serde_json::from_str(text)?
     };
-    patch_settings(&mut value, hook_command);
+    patch_settings(&mut value, hook_command, mod_dir);
     let mut out = serde_json::to_string_pretty(&value)?;
     out.push('\n');
     Ok(out)
@@ -315,11 +355,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_mod_joins_other_plugin_dirs_and_leaves_with_uninstall() {
+        let mut settings = json!({ "env": { "CLAUDE_CODE_PLUGIN_DIRS": "/opt/other-mod", "FOO": "1" } });
+        patch_settings(&mut settings, "brain hook", Some("/Users/me/.claude-brain/mod/brain"));
+        patch_settings(&mut settings, "brain hook", Some("/Users/me/.claude-brain/mod/brain"));
+        assert_eq!(settings["env"]["CLAUDE_CODE_PLUGIN_DIRS"], "/opt/other-mod:/Users/me/.claude-brain/mod/brain");
+        unpatch_settings(&mut settings);
+        assert_eq!(settings["env"], json!({ "CLAUDE_CODE_PLUGIN_DIRS": "/opt/other-mod", "FOO": "1" }));
+
+        let mut only = json!({});
+        patch_settings(&mut only, "brain hook", Some("/Users/me/.claude-brain/mod/brain"));
+        unpatch_settings(&mut only);
+        assert!(only.get("env").is_none());
+    }
+
+    #[test]
     fn the_status_line_is_wrapped_once_and_restored_exactly() {
         let original = json!({ "statusLine": { "type": "command", "command": "bash \"$HOME/.claude/statusline-command.sh\"", "padding": 0 } });
         let mut settings = original.clone();
 
-        patch_settings(&mut settings, "/opt/bin/brain hook");
+        patch_settings(&mut settings, "/opt/bin/brain hook", None);
         let once = settings.clone();
         assert_eq!(
             settings["statusLine"]["command"],
@@ -327,9 +382,9 @@ mod tests {
         );
         assert_eq!(settings["statusLine"]["padding"], 0);
 
-        patch_settings(&mut settings, "/opt/bin/brain hook");
+        patch_settings(&mut settings, "/opt/bin/brain hook", None);
         assert_eq!(settings["statusLine"], once["statusLine"], "no double wrapping");
-        patch_settings(&mut settings, "/new/brain hook");
+        patch_settings(&mut settings, "/new/brain hook", None);
         assert!(settings["statusLine"]["command"].as_str().unwrap().starts_with("/new/brain statusline --then"));
 
         unpatch_settings(&mut settings);
@@ -339,7 +394,7 @@ mod tests {
     #[test]
     fn a_status_line_brain_added_alone_is_removed_again() {
         let mut settings = json!({});
-        patch_settings(&mut settings, "brain hook");
+        patch_settings(&mut settings, "brain hook", None);
         assert_eq!(settings["statusLine"]["command"], "brain statusline");
         unpatch_settings(&mut settings);
         assert!(settings.get("statusLine").is_none());
@@ -356,9 +411,9 @@ mod tests {
             "permissions": { "allow": ["Bash(ls:*)"] }
         });
 
-        patch_settings(&mut settings, "/bin/brain hook");
+        patch_settings(&mut settings, "/bin/brain hook", None);
         let once = settings.clone();
-        patch_settings(&mut settings, "/bin/brain hook");
+        patch_settings(&mut settings, "/bin/brain hook", None);
 
         assert_eq!(settings, once);
         assert_eq!(settings["model"], "opus");
@@ -417,7 +472,7 @@ mod tests {
         ];
         for original in originals {
             let mut settings = original.clone();
-            patch_settings(&mut settings, "/bin/brain hook");
+            patch_settings(&mut settings, "/bin/brain hook", None);
             unpatch_settings(&mut settings);
             assert_eq!(settings, original);
             unpatch_settings(&mut settings);
@@ -446,14 +501,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         std::fs::write(&path, "{ broken").unwrap();
-        assert!(patch_settings_text("{ broken", "brain hook").is_err());
+        assert!(patch_settings_text("{ broken", "brain hook", None).is_err());
 
         std::fs::write(&path, "{}").unwrap();
-        let change = rewrite_file(&path, |t| patch_settings_text(t, "brain hook").unwrap()).unwrap();
+        let change = rewrite_file(&path, |t| patch_settings_text(t, "brain hook", None).unwrap()).unwrap();
         let Change::Updated { backup: Some(backup) } = change else { panic!("expected backup") };
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), "{}");
         assert_eq!(
-            rewrite_file(&path, |t| patch_settings_text(t, "brain hook").unwrap()).unwrap(),
+            rewrite_file(&path, |t| patch_settings_text(t, "brain hook", None).unwrap()).unwrap(),
             Change::Unchanged
         );
 

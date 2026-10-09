@@ -27,7 +27,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Called by Claude Code hooks; reads the hook JSON from stdin.
-    Hook,
+    Hook {
+        /// The hook JSON as an argument instead (Brain's mod, which can't write to stdin).
+        #[arg(long)]
+        json: Option<String>,
+    },
     /// Report what this Claude session is doing or waiting for.
     #[command(group(ArgGroup::new("kind").required(true).args(["doing", "waiting", "done"])))]
     Report {
@@ -51,6 +55,9 @@ enum Command {
         /// The status line command to run afterwards, with the same input.
         #[arg(long)]
         then: Option<String>,
+        /// The status line JSON as an argument instead of stdin (Brain's mod); runs nothing after.
+        #[arg(long)]
+        json: Option<String>,
     },
     /// List the sessions that have not ended, in triage order.
     #[command(group(ArgGroup::new("format").required(true).args(["alfred", "json"])))]
@@ -81,9 +88,16 @@ fn main() -> ExitCode {
     let accounts = discover_accounts(&home);
 
     match cli.command {
-        Command::Hook => {
+        Command::Hook { json } => {
             // Hooks must never disturb Claude: no output, always success.
-            let _ = run_hook(&store, &accounts);
+            let source = if json.is_some() { Source::Mod } else { Source::Hook };
+            let input = json.or_else(|| {
+                let mut input = String::new();
+                std::io::stdin().read_to_string(&mut input).ok().map(|_| input)
+            });
+            if let Some(input) = input {
+                let _ = run_hook(&store, &accounts, &input, source);
+            }
             ExitCode::SUCCESS
         }
         Command::Report { doing, waiting, done, text } => {
@@ -100,18 +114,16 @@ fn main() -> ExitCode {
         Command::Install => run_install(&accounts),
         Command::Uninstall => run_uninstall(&accounts),
         Command::Status => run_status(&store, &accounts),
-        Command::Statusline { then } => statusline::run(then, &accounts),
+        Command::Statusline { then, json } => statusline::run(then, json, &accounts),
         Command::Sessions { alfred, json: _ } => run_sessions(&store, &accounts, alfred),
         Command::Open { session } => run_open(&accounts, &session),
         Command::Show { session } => run_show(&session),
     }
 }
 
-fn run_hook(store: &Store, accounts: &[Account]) -> Option<()> {
-    let mut input = String::new();
-    std::io::stdin().read_to_string(&mut input).ok()?;
-    capture_raw_hook(&input);
-    let payload: HookPayload = serde_json::from_str(&input).ok()?;
+fn run_hook(store: &Store, accounts: &[Account], input: &str, source: Source) -> Option<()> {
+    capture_raw_hook(input);
+    let payload: HookPayload = serde_json::from_str(input).ok()?;
     let kind = payload.kind()?;
 
     let session_id = payload.session_id.as_deref();
@@ -135,7 +147,7 @@ fn run_hook(store: &Store, accounts: &[Account]) -> Option<()> {
             pid,
             session_id: payload.session_id.clone(),
             cwd: payload.cwd.clone(),
-            source: Source::Hook,
+            source,
             kind,
             text: payload.text(),
             tasks: (kind == Kind::Stop).then(|| payload.background_tasks.clone().unwrap_or_default()),
@@ -215,6 +227,26 @@ fn run_report(store: &Store, accounts: &[Account], kind: Kind, text: &str) -> Ex
     }
 }
 
+/// Brain's Claude Code mod, built into the CLI so every install has the matching version.
+const MOD_FILES: [(&str, &str); 3] = [
+    (".claude-plugin/plugin.json", include_str!("../../../mod/brain/.claude-plugin/plugin.json")),
+    ("hooks/hooks.json", include_str!("../../../mod/brain/hooks/hooks.json")),
+    ("hooks/register.js", include_str!("../../../mod/brain/hooks/register.js")),
+];
+
+/// Writes the mod to `~/.claude-brain/mod/brain` and returns that directory.
+fn install_mod() -> std::io::Result<std::path::PathBuf> {
+    let dir = home_dir().join(".claude-brain/mod/brain");
+    for (path, content) in MOD_FILES {
+        let file = dir.join(path);
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(file, content)?;
+    }
+    Ok(dir)
+}
+
 fn run_install(accounts: &[Account]) -> ExitCode {
     let exe = match std::env::current_exe().and_then(|p| p.canonicalize()) {
         Ok(exe) => exe,
@@ -225,13 +257,21 @@ fn run_install(accounts: &[Account]) -> ExitCode {
     };
     let hook_command = format!("{} hook", shell_quote(&exe.to_string_lossy()));
     let mut failed = false;
+    // The mod reports from inside Claude Code; the hooks stay as a fallback for one release.
+    let mod_dir = match install_mod() {
+        Ok(dir) => Some(dir.to_string_lossy().into_owned()),
+        Err(err) => {
+            println!("mod ✗ not written, sessions report through hooks only: {err}");
+            None
+        }
+    };
 
     for account in accounts {
         println!("{} ({})", account.id, account.config_dir.display());
 
         let settings = account.config_dir.join("settings.json");
         let settings_text = std::fs::read_to_string(&settings).unwrap_or_default();
-        match install::patch_settings_text(&settings_text, &hook_command) {
+        match install::patch_settings_text(&settings_text, &hook_command, mod_dir.as_deref()) {
             Ok(patched) => report_change("settings.json", install::rewrite_file(&settings, |_| patched), UP_TO_DATE),
             Err(err) => {
                 failed = true;
@@ -247,7 +287,11 @@ fn run_install(accounts: &[Account]) -> ExitCode {
         eprintln!("brain install: no ~/.claude or ~/.claude-* directories found");
         return ExitCode::FAILURE;
     }
-    println!("\nHooks: {}\nNew Claude sessions pick this up on start.", install::HOOK_EVENTS.join(", "));
+    println!("\nHooks: {}", install::HOOK_EVENTS.join(", "));
+    if let Some(dir) = &mod_dir {
+        println!("Mod: {dir}");
+    }
+    println!("New Claude sessions pick this up on start.");
     if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
 

@@ -9,6 +9,8 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub enum Source {
     Hook,
     Report,
+    /// Brain's Claude Code mod, which sends the same events from inside Claude Code.
+    Mod,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -130,6 +130,17 @@ sources:
 Without hooks Brain still shows a coarse state from Claude Code's own
 `<config>/sessions/<pid>.json` files.
 
+## The Brain mod
+
+Claude Code [mods](https://code.claude.com/docs/en/plugins/mods/overview) run inside Claude
+Code (v2.1.287 or later). Brain's mod (`mod/brain`, built into the `brain` CLI) reports each
+session from there: start, prompts, questions (AskUserQuestion) and permission requests, turn ends
+with the subagents still running, the end, and after every turn the context fill and plan limits
+— what the status line wrapper recorded. `brain install` writes it to `~/.claude-brain/mod/brain`
+and lists that folder in `env.CLAUDE_CODE_PLUGIN_DIRS` of every account's `settings.json`;
+`brain uninstall` removes it. The settings hooks stay for now as a fallback: once a session
+reports through the mod, Brain leaves out its hook events.
+
 ## Install
 
 Requirements: macOS 13+ (Apple Silicon for the release builds).
