@@ -34,6 +34,7 @@ pub const RENAME: &str = "rename";
 pub const NEW_SESSION: &str = "new-session";
 pub const LIST: &str = "session-list";
 pub const MESSAGES: &str = "messages";
+pub const FIND: &str = "find";
 
 /// Where typed keys go.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +69,13 @@ pub enum FileFilter {
     Given,
 }
 
+/// The whole conversation of one session, as of a transcript size.
+pub struct HistoryCache {
+    pub key: SessionKey,
+    pub len: u64,
+    pub messages: Vec<brain_core::transcript::Message>,
+}
+
 /// The files of one session, as of a transcript size.
 pub struct FilesCache {
     pub key: SessionKey,
@@ -91,6 +99,10 @@ pub enum Action {
     Pin,
     Mute,
     Snooze,
+    /// Claude's last answer to the clipboard (⌘⇧C).
+    CopyAnswer,
+    /// The whole conversation as a Markdown file, opened in YAMV.
+    Export,
     OtherAccount,
     End,
     Hide,
@@ -137,6 +149,14 @@ pub enum Message {
     PrsLoaded(HashMap<SessionKey, brain_core::github::PullRequest>),
     ChangesLoaded(SessionKey, Option<brain_core::changes::Changes>),
     FilesLoaded(SessionKey, u64, Vec<brain_core::files::SessionFile>),
+    /// The find field in the Messages tab.
+    Find(String),
+    PromptsOnly(bool),
+    HistoryLoaded(SessionKey, u64, Vec<brain_core::transcript::Message>),
+    /// A search hit or a prompt clicked open (its index in the history), or closed again.
+    Expand(Option<usize>),
+    CopyText(String),
+    Exported(Result<std::path::PathBuf, String>),
     FileFilter(FileFilter),
     /// A file from the Files tab: Markdown opens in YAMV, the rest in the reader.
     OpenFile(String),
@@ -301,6 +321,14 @@ pub struct Brain {
     pub tab: DetailTab,
     pub conversation: Option<Conversation>,
     pub files: Option<FilesCache>,
+    /// Text to find in the selected session's whole conversation (⌘F).
+    pub find: String,
+    /// The Messages tab lists only the user's prompts, all of them.
+    pub prompts_only: bool,
+    /// The whole conversation, loaded for finding and the prompt list.
+    pub history: Option<HistoryCache>,
+    history_loading: bool,
+    pub expanded: Option<usize>,
     files_loading: bool,
     pub file_filter: FileFilter,
     pub mode: Mode,
@@ -403,6 +431,11 @@ impl Brain {
             conflicts: HashMap::new(),
             terminal_titles: HashMap::new(),
             files: None,
+            find: String::new(),
+            prompts_only: false,
+            history: None,
+            history_loading: false,
+            expanded: None,
             files_loading: false,
             file_filter: FileFilter::All,
             bells: HashSet::new(),
@@ -612,6 +645,36 @@ impl Brain {
                 self.prs = prs;
                 Task::none()
             }
+            Message::Find(text) => {
+                self.find = text;
+                self.expanded = None;
+                self.load_history()
+            }
+            Message::PromptsOnly(on) => {
+                self.prompts_only = on;
+                self.expanded = None;
+                self.load_history()
+            }
+            Message::HistoryLoaded(key, len, messages) => {
+                self.history = Some(HistoryCache { key, len, messages });
+                self.history_loading = false;
+                Task::none()
+            }
+            Message::Expand(index) => {
+                self.expanded = index;
+                Task::none()
+            }
+            Message::CopyText(text) => {
+                self.set_status(t("Kopiert.", "Copied."));
+                iced::clipboard::write(text)
+            }
+            Message::Exported(result) => match result {
+                Ok(path) => open_markdown(path),
+                Err(err) => {
+                    self.set_status(tr!("Export fehlgeschlagen: {err}", "Export failed: {err}"));
+                    Task::none()
+                }
+            },
             Message::FilesLoaded(key, len, files) => {
                 self.files = Some(FilesCache { key, len, files });
                 self.files_loading = false;
@@ -840,9 +903,10 @@ impl Brain {
         if let Some(menubar) = self.menubar.as_mut() {
             menubar.show(waiting, calling);
         }
-        // The Files tab follows the transcript as it grows.
+        // The Files tab and the find results follow the transcript as it grows.
         let files = self.load_files();
-        Task::batch([scroll, attach, files])
+        let history = self.load_history();
+        Task::batch([scroll, attach, files, history])
     }
 
     /// Background sessions open in Brain's terminal: when one gets selected (or Brain started it
@@ -978,6 +1042,53 @@ impl Brain {
         Task::perform(off_thread(move || brain_core::changes::changes_of(std::path::Path::new(&cwd))), move |changes| {
             Message::ChangesLoaded(key.clone(), changes)
         })
+    }
+
+    /// Loads the selected session's whole conversation while the find field or the prompt list
+    /// needs it, again when the transcript grew.
+    fn load_history(&mut self) -> Task<Message> {
+        if self.tab != DetailTab::Messages || self.history_loading || (self.find.trim().is_empty() && !self.prompts_only) {
+            return Task::none();
+        }
+        let Some(key) = self.selected.clone() else { return Task::none() };
+        let Some((path, len)) = self.conversation.as_ref().filter(|c| c.key == key).and_then(|c| c.transcript()) else {
+            return Task::none();
+        };
+        if self.history.as_ref().is_some_and(|h| h.key == key && h.len == len) {
+            return Task::none();
+        }
+        let path = path.to_path_buf();
+        self.history_loading = true;
+        Task::perform(off_thread(move || brain_core::transcript::read_all_messages(&path)), move |messages| {
+            Message::HistoryLoaded(key.clone(), len, messages)
+        })
+    }
+
+    /// Writes the selected session's conversation to `~/.claude-brain/exports/` as Markdown.
+    fn export_selected(&mut self) -> Task<Message> {
+        let Some(session) = self.selected_session() else { return Task::none() };
+        let Some((path, _)) = self.conversation.as_ref().filter(|c| c.key == session.key).and_then(|c| c.transcript()) else {
+            self.set_status(t("Zu dieser Session gibt es kein Transkript.", "This session has no transcript."));
+            return Task::none();
+        };
+        let path = path.to_path_buf();
+        let title = session.display_name();
+        let exported = off_thread(move || {
+            let messages = brain_core::transcript::read_all_messages(&path);
+            let dir = brain_core::account::home_dir().join(".claude-brain/exports");
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let safe: String = title.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
+            let file = dir.join(format!("{}-{}.md", safe.trim_matches('-'), chrono::Local::now().format("%Y%m%d-%H%M")));
+            std::fs::write(&file, brain_core::history::export_markdown(&title, &messages)).map_err(|e| e.to_string())?;
+            Ok(file)
+        });
+        Task::perform(exported, Message::Exported)
+    }
+
+    /// ⌘F: find in the selected session's conversation.
+    fn start_find(&mut self) -> Task<Message> {
+        self.tab = DetailTab::Messages;
+        Task::batch([operation::focus(FIND), self.load_history()])
     }
 
     /// Reads the selected session's files when the Files tab shows and its transcript grew.
@@ -1512,7 +1623,10 @@ impl Brain {
         }
 
         if cmd && character.as_deref() == Some("f") {
-            return self.start_search();
+            return self.start_find();
+        }
+        if cmd && modifiers.shift() && character.as_deref() == Some("c") {
+            return self.act(Action::CopyAnswer);
         }
         if cmd && character.as_deref() == Some("n") {
             return self.open_new_session_dialog();
@@ -1617,6 +1731,12 @@ impl Brain {
 
     /// Esc: leaves whatever is open — search (cleared), reply, rename, a dialog.
     fn escape(&mut self) -> Task<Message> {
+        if self.mode == Mode::Normal && (!self.find.is_empty() || self.prompts_only) {
+            self.find.clear();
+            self.prompts_only = false;
+            self.expanded = None;
+            return unfocus();
+        }
         if self.mode == Mode::Normal && self.reader.is_some() {
             self.reader = None;
             return Task::none();
@@ -1727,6 +1847,20 @@ impl Brain {
             Action::OpenInITerm => self.open_selected(),
             Action::TakeOver => self.take_over(confirmed),
             Action::Pin => self.toggle_pin(),
+            Action::CopyAnswer => {
+                let answer = self.conversation.as_ref().and_then(|c| brain_core::history::last_answer(&c.messages)).map(|m| m.text.clone());
+                return match answer {
+                    Some(answer) => {
+                        self.set_status(t("Letzte Antwort kopiert.", "Copied the last answer."));
+                        iced::clipboard::write(answer)
+                    }
+                    None => {
+                        self.set_status(t("Diese Session hat noch keine Antwort.", "This session has no answer yet."));
+                        Task::none()
+                    }
+                };
+            }
+            Action::Export => return self.export_selected(),
             Action::Mute => self.toggle_mute(),
             Action::Snooze => self.cycle_snooze(),
             Action::OtherAccount => return self.move_to_other_account(confirmed),

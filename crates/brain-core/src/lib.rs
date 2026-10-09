@@ -9,6 +9,7 @@ pub mod digest;
 pub mod event;
 pub mod files;
 pub mod github;
+pub mod history;
 pub mod hook;
 pub mod install;
 pub mod markdown;

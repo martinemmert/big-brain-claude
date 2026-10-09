@@ -195,7 +195,12 @@ pub fn section_title<'a, M: 'a>(title: impl Into<String>, count: usize, alert: b
 /// A labelled button with its key; `strong` fills it with the alert colour.
 pub fn action<'a, M: Clone + 'a>(label: impl Into<String>, key: impl Into<String>, strong: bool, on_press: Option<M>) -> Element<'a, M> {
     let enabled = on_press.is_some();
-    let content = row![text(label.into()).size(12.5).color(TEXT_STRONG).font(semibold()), kbd(key)].spacing(8).align_y(iced::Center);
+    let key = key.into();
+    let mut content = row![text(label.into()).size(12.5).color(TEXT_STRONG).font(semibold())].spacing(8).align_y(iced::Center);
+    // A button without a shortcut has no key cap.
+    if !key.is_empty() {
+        content = content.push(kbd(key));
+    }
     button(content)
         .padding([6, 12])
         .height(30)

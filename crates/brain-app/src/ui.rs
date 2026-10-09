@@ -979,15 +979,128 @@ fn reader_pane(reader: &crate::app::Reader) -> Element<'_, Message> {
         .into()
 }
 
+/// The latest messages; with text in the find field, the matches in the whole session; with
+/// "Your prompts", everything you asked.
 fn messages(brain: &Brain) -> Element<'_, Message> {
-    let list = brain.conversation.as_ref().map(|c| c.messages.as_slice()).unwrap_or_default();
-    let children = if list.is_empty() { vec![hint(t("Diese Session hat noch keine Nachrichten.", "This session has no messages yet."))] } else { markdown::conversation(list) };
-    scrollable(column(children).spacing(14).padding(Padding { top: 4.0, right: 12.0, bottom: 24.0, left: 0.0 }))
-        .id(app::MESSAGES)
-        .on_scroll(Message::MessagesScrolled)
-        .height(Fill)
-        .style(scrollbar)
-        .into()
+    let body: Element<'_, Message> = if brain.find.trim().is_empty() && !brain.prompts_only {
+        let list = brain.conversation.as_ref().map(|c| c.messages.as_slice()).unwrap_or_default();
+        let children = if list.is_empty() { vec![hint(t("Diese Session hat noch keine Nachrichten.", "This session has no messages yet."))] } else { markdown::conversation(list) };
+        scrollable(column(children).spacing(14).padding(Padding { top: 4.0, right: 12.0, bottom: 24.0, left: 0.0 }))
+            .id(app::MESSAGES)
+            .on_scroll(Message::MessagesScrolled)
+            .height(Fill)
+            .style(scrollbar)
+            .into()
+    } else {
+        whole_session(brain)
+    };
+    column![messages_bar(brain), body].spacing(8).height(Fill).into()
+}
+
+fn messages_bar(brain: &Brain) -> Element<'_, Message> {
+    let field = text_input(t("In der ganzen Session suchen", "Find in the whole session"), &brain.find)
+        .id(app::FIND)
+        .on_input(Message::Find)
+        .size(12.5)
+        .font(UI)
+        .padding([6, 2])
+        .style(|theme, status| text_input::Style { border: Border::default(), background: Background::Color(Color::TRANSPARENT), ..field_style(theme, status) });
+    let active = !brain.find.is_empty() || brain.prompts_only;
+    let find = container(row![text("⌕").size(13).color(TEXT_FAINT), field, kbd(if active { "esc" } else { "⌘F" })].spacing(6).align_y(iced::Center))
+        .padding([0, 10])
+        .width(Fill)
+        .style(move |_| boxed(INK, if active { alpha(WORKING, 0x99) } else { LINE }, 8.0));
+    let view = segmented(vec![
+        (t("Verlauf", "Conversation").to_string(), !brain.prompts_only, Message::PromptsOnly(false)),
+        (t("Deine Prompts", "Your prompts").to_string(), brain.prompts_only, Message::PromptsOnly(true)),
+    ]);
+    row![
+        find,
+        view,
+        action(t("Antwort kopieren", "Copy answer"), "⌘⇧C", false, Some(Message::Do(Action::CopyAnswer))),
+        action(t("Als Markdown", "As Markdown"), "", false, Some(Message::Do(Action::Export))),
+    ]
+    .spacing(8)
+    .align_y(iced::Center)
+    .into()
+}
+
+/// Matches or prompts from the whole conversation; a click opens one fully.
+fn whole_session(brain: &Brain) -> Element<'_, Message> {
+    use brain_core::transcript::Role;
+    let Some(history) = brain.history.as_ref().filter(|h| Some(&h.key) == brain.selected.as_ref()) else {
+        let why = if brain.conversation.as_ref().and_then(|c| c.transcript()).is_some() {
+            t("Lade die ganze Session …", "Loading the whole session …")
+        } else {
+            t("Zu dieser Session gibt es kein Transkript.", "This session has no transcript.")
+        };
+        return hint(why);
+    };
+    let messages = &history.messages;
+    let query = brain.find.trim();
+    let mut indices: Vec<usize> = if query.is_empty() { (0..messages.len()).collect() } else { brain_core::history::find(messages, query) };
+    if brain.prompts_only {
+        indices.retain(|&i| messages[i].role == Role::User);
+    }
+    let now = now_ms();
+    let found = indices.len();
+    let summary = match (brain.prompts_only, query.is_empty()) {
+        (true, true) => tr!("{found} Prompts", "{found} prompts"),
+        _ => tr!("{found} Treffer", "{found} matches"),
+    };
+    let mut rows: Vec<Element<'_, Message>> = vec![text(summary).size(11.5).color(TEXT_FAINT).font(UI).into()];
+    for i in indices.into_iter().rev() {
+        let message = &messages[i];
+        let (who, color) = match message.role {
+            Role::User => (t("Du", "You"), WORKING),
+            Role::Assistant => ("Claude", TEXT),
+            Role::Tool => (message.tool.as_deref().unwrap_or("Tool"), TEXT_MUTED),
+            Role::System => (t("Hinweis", "Note"), TEXT_FAINT),
+        };
+        let when = message.ts.map(|ts| ago(ts.timestamp_millis(), now)).unwrap_or_default();
+        let head = row![
+            text(who).size(12).color(color).font(style::semibold()),
+            Space::new().width(Fill),
+            text(when).size(11).color(TEXT_FAINT).font(UI),
+        ]
+        .align_y(iced::Center);
+        let open = brain.expanded == Some(i);
+        let content: Element<'_, Message> = if open {
+            column![
+                column(markdown::conversation(std::slice::from_ref(message))).spacing(8),
+                row![action(t("Kopieren", "Copy"), "", false, Some(Message::CopyText(message.text.clone())))],
+            ]
+            .spacing(8)
+            .into()
+        } else {
+            let (line, range) = brain_core::history::snippet(&message.text, query, 160);
+            highlighted(line, range)
+        };
+        let card = button(column![head, content].spacing(4))
+            .padding([8, 10])
+            .width(Fill)
+            .on_press(Message::Expand(if open { None } else { Some(i) }))
+            .style(move |_, status| button::Style {
+                background: Some(Background::Color(if open || matches!(status, button::Status::Hovered) { SURFACE } else { Color::TRANSPARENT })),
+                border: Border { color: if open { LINE } else { Color::TRANSPARENT }, width: 1.0, radius: 8.0.into() },
+                ..button::Style::default()
+            });
+        rows.push(card.into());
+    }
+    scrollable(column(rows).spacing(4).padding(Padding { top: 0.0, right: 12.0, bottom: 24.0, left: 0.0 })).height(Fill).style(scrollbar).into()
+}
+
+/// A line with the matched part marked.
+fn highlighted<'a>(line: String, range: Option<std::ops::Range<usize>>) -> Element<'a, Message> {
+    let Some(range) = range.filter(|r| line.is_char_boundary(r.start) && line.is_char_boundary(r.end)) else {
+        return text(line).size(12.5).color(TEXT).font(UI).into();
+    };
+    let spans: Vec<iced::widget::text::Span<'a, ()>> = vec![
+        iced::widget::span(line[..range.start].to_string()).color(TEXT),
+        iced::widget::span(line[range.clone()].to_string()).color(TEXT_STRONG).background(alpha(TURN, 0x55)),
+        iced::widget::span(line[range.end..].to_string()).color(TEXT),
+    ];
+    iced::widget::rich_text(spans).size(12.5).font(UI).into()
 }
 
 fn changes<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {

@@ -118,6 +118,12 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Every message of the transcript, oldest first (search and export need the whole session).
+pub fn read_all_messages(transcript: &Path) -> Vec<Message> {
+    let len = std::fs::metadata(transcript).map(|m| m.len()).unwrap_or(0);
+    read_tail(transcript, len, len)
+}
+
 /// The last `limit` messages, oldest first. Reads from the end of the file and
 /// reaches further back only while too few messages were found, so large
 /// transcripts stay cheap.
