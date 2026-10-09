@@ -189,8 +189,11 @@ fn default_keyboard_bindings() -> Vec<(Binding<InputKind>, BindingAction)> {
         // CTRL
         ArrowUp,    Modifiers::COMMAND; BindingAction::Esc("\x1b[1;5A".into());
         ArrowDown,  Modifiers::COMMAND; BindingAction::Esc("\x1b[1;5B".into());
-        ArrowLeft,  Modifiers::COMMAND; BindingAction::Esc("\x1b[1;5D".into());
-        ArrowRight, Modifiers::COMMAND; BindingAction::Esc("\x1b[1;5C".into());
+        // Brain: on macOS COMMAND is ⌘, and ⌘← / ⌘→ / ⌘⌫ mean line start, line end and delete
+        // to the line start, as in iTerm's "Natural Text Editing": Ctrl+A, Ctrl+E, Ctrl+U.
+        ArrowLeft,  Modifiers::COMMAND; BindingAction::Char('\x01');
+        ArrowRight, Modifiers::COMMAND; BindingAction::Char('\x05');
+        Backspace,  Modifiers::COMMAND; BindingAction::Char('\x15');
         End,        Modifiers::CTRL; BindingAction::Esc("\x1b[1;5F".into());
         Home,       Modifiers::CTRL; BindingAction::Esc("\x1b[1;5H".into());
         Delete,     Modifiers::CTRL; BindingAction::Esc("\x1b[3;5~".into());
@@ -392,6 +395,15 @@ mod tests {
                 c as u32
             );
         }
+    }
+
+    #[test]
+    fn command_keys_edit_the_line_like_macos() {
+        let layout = BindingsLayout::default();
+        let action = |key| layout.get_action(InputKind::KeyCode(key), Modifiers::COMMAND, TermMode::empty());
+        assert_eq!(action(Named::Backspace), BindingAction::Char('\x15'));
+        assert_eq!(action(Named::ArrowLeft), BindingAction::Char('\x01'));
+        assert_eq!(action(Named::ArrowRight), BindingAction::Char('\x05'));
     }
 
     #[test]
