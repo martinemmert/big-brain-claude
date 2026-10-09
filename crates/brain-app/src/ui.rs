@@ -85,6 +85,7 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
         open.push((t("In iTerm öffnen", "Open in iTerm").to_string(), "⌥⏎", Action::OpenInITerm, false));
     } else if ended {
         open.push((t("Fortsetzen", "Resume").to_string(), "⏎", Action::Resume, false));
+        open.push((t("In iTerm fortsetzen", "Resume in iTerm").to_string(), "⌥⏎", Action::OpenInITerm, false));
     } else if caps.focus {
         open.push((t("Zum Terminal", "Open terminal").to_string(), "⏎", Action::Open, false));
     }

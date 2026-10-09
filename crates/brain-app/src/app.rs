@@ -457,8 +457,7 @@ impl Brain {
             }
             Message::OpenEntry(key) => {
                 self.selected = Some(key);
-                self.open_selected();
-                Task::none()
+                self.act(Action::Open)
             }
             Message::ContextMenu(key) => {
                 self.selected = Some(key.clone());
@@ -1616,7 +1615,9 @@ impl Brain {
     fn perform(&mut self, action: Action, confirmed: bool) -> Task<Message> {
         match action {
             // A session that runs in Brain opens here; everything else in its terminal app.
-            Action::Open if self.selected_session().is_some_and(|s| s.agent.is_some()) => {
+            // Whatever Brain can run opens in its terminal: background sessions attach, ended
+            // ones resume. Sessions that live in an iTerm tab come forward there; ⌥⏎ goes to iTerm.
+            Action::Open | Action::Resume if self.has_terminal() || self.terminal_command().is_some() => {
                 self.tab = DetailTab::Terminal;
                 return self.open_terminal(true);
             }
