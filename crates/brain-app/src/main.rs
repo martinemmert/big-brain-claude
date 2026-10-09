@@ -21,6 +21,7 @@ mod ui;
 
 fn main() -> iced::Result {
     shell_env::adopt_login_path();
+    shell_env::forget_claude_session();
     // The app menu ("About …", "Quit …") is named after the process.
     objc2_foundation::NSProcessInfo::processInfo().setProcessName(&objc2_foundation::NSString::from_str("Brain"));
     links::listen_for_urls();

@@ -165,12 +165,37 @@ impl<'a> TerminalView<'a> {
                 );
             },
             iced::mouse::Event::WheelScrolled { delta } => {
+                let mut scrolls = Vec::new();
                 Self::handle_wheel_scrolled(
                     state,
                     *delta,
                     &self.term.font.measure,
-                    &mut commands,
+                    &mut scrolls,
                 );
+                // Brain: a program that asked for mouse reports (Claude Code's full-screen
+                // view) gets the wheel as wheel clicks at the pointer, like iTerm does; arrow
+                // keys would page through its prompt history instead.
+                if terminal_mode.intersects(TermMode::MOUSE_MODE) {
+                    let mut grid_commands = Vec::new();
+                    Self::handle_cursor_moved(
+                        state,
+                        self.term.backend.renderable_content(),
+                        &cursor_position,
+                        layout_position,
+                        &mut grid_commands,
+                    );
+                    for scroll in scrolls {
+                        if let Command::Scroll(lines) = scroll {
+                            // Scroll(n) counts lines down the scrollback: positive is up.
+                            let button = if lines > 0 { MouseButton::ScrollUp } else { MouseButton::ScrollDown };
+                            for _ in 0..lines.unsigned_abs() {
+                                commands.push(Command::MouseReport(button.clone(), state.keyboard_modifiers, state.mouse_position_on_grid, true));
+                            }
+                        }
+                    }
+                } else {
+                    commands.extend(scrolls);
+                }
             },
             _ => {},
         }

@@ -33,3 +33,17 @@ pub fn adopt_login_path() {
         std::env::set_var("PATH", path.trim());
     }
 }
+
+/// Brain is not a Claude Code session, but started from one (a terminal running `claude`, or
+/// `open` from Claude's shell) it inherits that session's variables. Every `claude` Brain starts
+/// would then think it is that session's child: `CLAUDE_CODE_CHILD_SESSION` turns transcript
+/// saving off, `CLAUDE_CONFIG_DIR` points every account at one config folder. So they go.
+pub fn forget_claude_session() {
+    let inherited: Vec<String> = std::env::vars_os()
+        .filter_map(|(name, _)| name.into_string().ok())
+        .filter(|name| name == "CLAUDECODE" || name == "CLAUDE_CONFIG_DIR" || name.starts_with("CLAUDE_CODE_") || matches!(name.as_str(), "CLAUDE_PID" | "CLAUDE_EFFORT"))
+        .collect();
+    for name in inherited {
+        std::env::remove_var(name);
+    }
+}

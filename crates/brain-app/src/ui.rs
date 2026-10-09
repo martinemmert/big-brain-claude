@@ -33,9 +33,17 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
     if let Some(usage) = usage(brain, now) {
         left = left.push(usage);
     }
+    let width = brain.prefs.sidebar_width.unwrap_or(app::SIDEBAR_DEFAULT);
+    let edge = if brain.dragging_sidebar { WORKING } else { LINE };
+    // A 7 pt grab area around the 1 pt divider line.
+    let grip = mouse_area(
+        container(container(Space::new().width(1).height(Fill)).style(move |_| style::fill(edge))).width(7).height(Fill).center_x(7),
+    )
+    .on_press(Message::SidebarDrag)
+    .interaction(iced::mouse::Interaction::ResizingHorizontally);
     let body = row![
-        container(left).width(Length::Fixed(460.0)).height(Fill).style(|_| style::fill(CHROME)),
-        container(Space::new().width(1).height(Fill)).style(|_| style::fill(LINE)),
+        container(left).width(Length::Fixed(width - 3.0)).height(Fill).style(|_| style::fill(CHROME)),
+        grip,
         container(detail).width(Fill).height(Fill).style(|_| style::fill(INK)),
     ];
     container(column![titlebar(brain), divider(), body.height(Fill), divider(), footer(brain)])
@@ -626,20 +634,15 @@ fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     column![row(buttons).spacing(18), divider()].into()
 }
 
-/// About 120 columns: Claude Code wraps its answers to the terminal width, and long lines across
-/// a wide window are hard to read.
-const TERMINAL_COLUMNS: f32 = 120.0;
-
 /// A real terminal running the session inside Brain, or why there is none.
 fn terminal<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     if let Some(term) = brain.terminals.get(&s.key) {
-        let font = crate::chat_font::get();
         let focused = brain.terminal_focused;
         let hovering = brain.file_hover;
         let edge = if hovering { WORKING } else if focused { alpha(WORKING, 0x88) } else { LINE };
         let screen = container(iced_term::TerminalView::show(term).map(Message::Term))
             .padding([14, 18])
-            .max_width(TERMINAL_COLUMNS * font.size * 0.62 + 36.0)
+            .width(Fill)
             .height(Fill)
             .style(move |_| boxed(INK, edge, 10.0));
         let mut layers = stack![screen];
@@ -657,7 +660,7 @@ fn terminal<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
         let main = container(layers).padding(Padding { top: 6.0, bottom: 12.0, ..Padding::ZERO }).height(Fill);
         return match &brain.reader {
             Some(reader) => row![main.width(Length::FillPortion(11)), reader_pane(reader)].spacing(12).height(Fill).into(),
-            None => main.center_x(Fill).into(),
+            None => main.width(Fill).into(),
         };
     }
     let why = if brain.model.is_demo() {
@@ -1004,8 +1007,8 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
 
 fn footer(brain: &Brain) -> Element<'_, Message> {
     let terminal_hints: [(&str, &str); 6] = [
-        ("⌘J", t("ins Terminal", "into terminal")),
-        ("⌘[", t("zur Liste", "to the list")),
+        ("⌘2", t("ins Terminal", "into terminal")),
+        ("⌘1", t("zur Liste", "to the list")),
         ("⌘-Klick", t("Pfad öffnen", "open path")),
         ("⌘V", t("Screenshot einfügen", "paste screenshot")),
         ("⌥⏎", t("in iTerm", "in iTerm")),

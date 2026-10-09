@@ -115,7 +115,15 @@ pub enum Message {
     CloseReader,
     ReaderToEditor,
     NewPlace(bool),
+    SidebarDrag,
+    SidebarTo(f32),
+    SidebarDone,
 }
+
+/// The session list's width bounds when dragged.
+pub const SIDEBAR_DEFAULT: f32 = 460.0;
+const SIDEBAR_MIN: f32 = 300.0;
+const SIDEBAR_MAX: f32 = 1100.0;
 
 /// A file opened from a path in the terminal output.
 pub struct Reader {
@@ -296,6 +304,8 @@ pub struct Brain {
     /// An iTerm session being moved into Brain: its `/exit` was sent; once the process ended it
     /// continues in the background (`claude --bg --resume`).
     takeover: Option<SessionKey>,
+    /// The session list's divider is being dragged.
+    pub dragging_sidebar: bool,
     /// The selection the derived state was last synced for, and whether it ran in Brain then
     /// (auto-attach when either changes: another session, or this one just moved into Brain).
     synced_selection: Option<(SessionKey, bool)>,
@@ -356,6 +366,7 @@ impl Brain {
             pending_attach: None,
             takeover: None,
             synced_selection: None,
+            dragging_sidebar: false,
             titlebar_ready: false,
             detail_shape: (Layout::Status, Mode::Normal, DetailTab::Messages),
         };
@@ -382,6 +393,14 @@ impl Brain {
             _ => None,
         });
         let mut subscriptions = vec![keys, iced::time::every(Duration::from_millis(800)).map(|_| Message::Tick)];
+        if self.dragging_sidebar {
+            // Pointer moves only while the divider is held; otherwise every move would redraw.
+            subscriptions.push(iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Message::SidebarTo(position.x)),
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(_)) => Some(Message::SidebarDone),
+                _ => None,
+            }));
+        }
         subscriptions.extend(self.terminals.values().map(|term| term.subscription().map(Message::Term)));
         if !self.model.is_demo() {
             subscriptions.push(iced::time::every(Duration::from_secs(120)).map(|_| Message::CheckPrs));
@@ -567,6 +586,19 @@ impl Brain {
             Message::CloseReader => {
                 self.reader = None;
                 self.focus_terminal()
+            }
+            Message::SidebarDrag => {
+                self.dragging_sidebar = true;
+                Task::none()
+            }
+            Message::SidebarTo(x) => {
+                self.prefs.sidebar_width = Some(x.clamp(SIDEBAR_MIN, SIDEBAR_MAX));
+                Task::none()
+            }
+            Message::SidebarDone => {
+                self.dragging_sidebar = false;
+                self.prefs.save();
+                Task::none()
             }
             Message::NewPlace(in_iterm) => {
                 self.new_session.in_iterm = in_iterm;
@@ -1261,7 +1293,8 @@ impl Brain {
             }
             return Task::none();
         }
-        if cmd && character.as_deref() == Some("j") {
+        // ⌘2 / ⌘J: keyboard into the terminal; ⌘1 / ⌘[: back to the session list.
+        if cmd && matches!(character.as_deref(), Some("2") | Some("j")) {
             return if self.selected.as_ref().is_some_and(|k| self.terminals.contains_key(k)) {
                 self.tab = DetailTab::Terminal;
                 self.focus_terminal()
@@ -1269,9 +1302,16 @@ impl Brain {
                 Task::none()
             };
         }
-        if cmd && character.as_deref() == Some("[") && self.tab == DetailTab::Terminal {
+        if cmd && matches!(character.as_deref(), Some("1") | Some("[")) {
             self.terminal_focused = false;
+            if self.mode == Mode::Search {
+                self.mode = Mode::Normal;
+            }
             return unfocus();
+        }
+        // While the terminal has the keyboard, Brain's shortcuts are off: everything is Claude's.
+        if self.tab == DetailTab::Terminal && self.terminal_focused && self.selected.as_ref().is_some_and(|k| self.terminals.contains_key(k)) {
+            return Task::none();
         }
         if captured {
             return Task::none();

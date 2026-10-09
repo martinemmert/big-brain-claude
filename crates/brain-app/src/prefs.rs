@@ -28,6 +28,9 @@ pub struct Prefs {
     /// Show Claude Code's background sessions (`claude --bg`); off by default.
     #[serde(default)]
     pub show_background: bool,
+    /// Width of the session list in points, as dragged.
+    #[serde(default)]
+    pub sidebar_width: Option<f32>,
     /// Session id → snoozed until (epoch ms).
     #[serde(default)]
     snoozed: BTreeMap<String, i64>,
