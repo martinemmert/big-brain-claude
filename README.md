@@ -18,6 +18,8 @@ Built in Rust with [Iced](https://iced.rs) (native text input with dead keys and
 undo, selection) and AppKit for the menu bar item, notifications and `brain://` links. The
 interface follows your macOS language: English or German.
 
+A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.md).
+
 ## What it does
 
 - **Sessions run in Brain.** `⌘N` starts a session as a Claude Code background session
