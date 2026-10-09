@@ -187,6 +187,39 @@ pub struct Insight {
     pub edited: Vec<String>,
 }
 
+/// The folder a session ran in: the `cwd` of its first entry that has one.
+pub fn cwd_of(transcript: &Path) -> Option<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(transcript).ok()?;
+    std::io::BufReader::new(file)
+        .lines()
+        .take(400)
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+        .find_map(|entry| entry.get("cwd")?.as_str().map(str::to_string))
+}
+
+/// A session's name from its whole transcript: the last `/rename` (`custom-title`), else
+/// Claude Code's latest generated title (`ai-title`). Reads the full file, so only for sessions
+/// Brain knows nothing else about.
+pub fn title_of(transcript: &Path) -> Option<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(transcript).ok()?;
+    let (mut custom, mut generated) = (None, None);
+    for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+        if !line.contains("-title\"") {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<Value>(&line) else { continue };
+        match entry.get("type").and_then(Value::as_str) {
+            Some("custom-title") => custom = entry.get("customTitle").and_then(Value::as_str).map(str::to_string),
+            Some("ai-title") => generated = entry.get("aiTitle").and_then(Value::as_str).map(str::to_string),
+            _ => {}
+        }
+    }
+    custom.or(generated)
+}
+
 /// Reads the last 512 KiB of a transcript.
 ///
 /// A turn ends with a `system`/`turn_duration` entry; a denied permission or Esc writes

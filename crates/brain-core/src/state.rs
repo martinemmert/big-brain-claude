@@ -438,6 +438,20 @@ impl Board {
         }
     }
 
+    /// An ended session Brain has no events for (they predate its hooks, or never fired), known
+    /// only from its transcript: e.g. one the user saved to resume.
+    pub fn add_ended(&mut self, key: SessionKey, cwd: Option<String>, mut insight: Insight, last_activity_ms: i64) {
+        let folder = cwd.as_deref().and_then(|c| c.rsplit('/').next()).map(str::to_string);
+        insight.title = insight.title.or(folder);
+        let session = self.sessions.entry(key.clone()).or_insert_with(|| Session::new(key.clone(), 0));
+        session.session_id.get_or_insert(key.id);
+        session.cwd = session.cwd.take().or(cwd);
+        session.alive = false;
+        session.last_activity_ms = session.last_activity_ms.max(last_activity_ms);
+        session.name = session.name.take().or(insight.title.clone());
+        session.insight = insight;
+    }
+
     /// Forgets a session, e.g. after its transcript went to the Trash.
     pub fn remove(&mut self, key: &SessionKey) {
         self.sessions.remove(key);
@@ -696,6 +710,17 @@ mod tests {
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::Ended);
         board.set_agents("second", &[]);
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::Working);
+    }
+
+    #[test]
+    fn a_session_known_only_from_its_transcript_is_ended_and_named() {
+        let mut board = Board::default();
+        board.add_ended(key(), Some("/w/phoenix-fux".into()), Insight::default(), 1_000);
+        let s = board.get(&key()).unwrap();
+        assert_eq!((s.phase(), s.display_name().as_str(), s.is_empty()), (Phase::Ended, "phoenix-fux", false));
+        let other = SessionKey { account: "second".into(), id: "s2".into() };
+        board.add_ended(other.clone(), None, Insight { title: Some("QA Autopilot".into()), ..Insight::default() }, 1_000);
+        assert_eq!(board.get(&other).unwrap().display_name(), "QA Autopilot");
     }
 
     #[test]

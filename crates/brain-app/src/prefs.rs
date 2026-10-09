@@ -70,6 +70,15 @@ impl Prefs {
         }
     }
 
+    /// Every pinned or saved session (`account:session id`).
+    pub fn pinned_keys(&self) -> Vec<SessionKey> {
+        self.pinned
+            .iter()
+            .filter_map(|entry| entry.split_once(':'))
+            .map(|(account, id)| SessionKey { account: account.to_string(), id: id.to_string() })
+            .collect()
+    }
+
     pub fn is_pinned(&self, key: &SessionKey) -> bool {
         self.pinned.contains(&id(key))
     }

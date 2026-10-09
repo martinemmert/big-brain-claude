@@ -315,6 +315,7 @@ impl Brain {
             prefs.save();
         }
         let demo = model.is_demo();
+        restore_saved(&mut model, &prefs);
         let mut brain = Self {
             model,
             prefs,
@@ -2213,6 +2214,26 @@ impl Brain {
             })
             .collect::<Vec<_>>();
         brain_core::digest::day(sessions, chrono::Local::now().date_naive())
+    }
+}
+
+/// Saved sessions Brain has no events for (they ended before its hooks, or the hooks never
+/// fired for them) are loaded from their transcripts, so "saved to resume" keeps them.
+fn restore_saved(model: &mut Model, prefs: &Prefs) {
+    for key in prefs.pinned_keys() {
+        if model.board.get(&key).is_some() {
+            continue;
+        }
+        let Some(path) = model.account(&key.account).and_then(|a| brain_core::transcript::find_transcript(a, &key.id)) else { continue };
+        let modified = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_millis() as i64);
+        let cwd = brain_core::transcript::cwd_of(&path);
+        let mut insight = brain_core::transcript::insight(&path);
+        insight.title = brain_core::transcript::title_of(&path).or(insight.title);
+        model.board.add_ended(key, cwd, insight, modified);
     }
 }
 
