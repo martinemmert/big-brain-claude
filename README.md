@@ -226,6 +226,7 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `C` | clean up: hide or trash everything quiet for N days |
 | `H` | fold / unfold the resting group |
 | `B` | show / hide Claude Code's background sessions |
+| `U` | show / hide sessions programs started (security reviews, SDK scripts, `claude -p`) |
 | `A` `A` | move the session to the next account (an ended one resumes there) |
 | `⌘N` | start a new session (in Brain; `⌘I` in the dialog: in iTerm) |
 | `←` `→` | switch between messages, timeline, changes, files and terminal |
