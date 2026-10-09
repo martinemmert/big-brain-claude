@@ -121,9 +121,14 @@ impl Terminal {
         }
     }
 
-    /// Brain: whether the program asked for pastes to be marked (bracketed paste mode).
-    pub fn bracketed_paste(&self) -> bool {
-        self.backend.renderable_content().terminal_mode.contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
+    /// Brain: pastes text into the program like ⌘V: marked as one paste when the program asked
+    /// for that, with ESC and Ctrl-C removed so the text can't end the paste early or turn into
+    /// keystrokes.
+    pub fn paste(&mut self, text: &str) {
+        let bracketed = self.backend.renderable_content().terminal_mode.contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE);
+        let filtered: Vec<u8> = text.bytes().filter(|&b| b != 0x1b && b != 0x03).collect();
+        let bytes = crate::view::wrap_bracketed_paste(filtered, bracketed);
+        self.handle(Command::ProxyToBackend(backend::Command::Write(bytes)));
     }
 
     /// Brain: copies the current screen for drawing (after [`Self::handle_quiet`]).

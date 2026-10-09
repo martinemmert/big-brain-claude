@@ -27,9 +27,17 @@ impl Changes {
     }
 }
 
+/// git in `cwd`. Paths are always literal: a file named `*` or `:(top)` is that file, never a
+/// pattern that matches others.
 fn git(cwd: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(cwd).args(args).output().ok()?;
+    let out = git_command(cwd).args(args).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn git_command(cwd: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(cwd).arg("--literal-pathspecs");
+    command
 }
 
 /// The checked-out branch, `None` outside git or on a detached HEAD.
@@ -39,34 +47,48 @@ pub fn branch_of(cwd: &Path) -> Option<String> {
 
 /// `None` outside a git repository.
 pub fn changes_of(cwd: &Path) -> Option<Changes> {
-    let status = git(cwd, &["status", "--porcelain=v1", "--untracked-files=normal"])?;
-    let numstat = git(cwd, &["diff", "--numstat", "HEAD"]).unwrap_or_default();
+    // `-z`: paths exactly as they are, NUL-separated, never quoted or escaped.
+    let status = git(cwd, &["status", "--porcelain=v1", "-z", "--untracked-files=normal"])?;
+    let numstat = git(cwd, &["diff", "--numstat", "-z", "HEAD"]).unwrap_or_default();
     let branch = git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).map(|b| b.trim().to_string());
     let ahead_behind = git(cwd, &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])
         .and_then(|out| parse_ahead_behind(&out));
     Some(Changes { branch, ahead_behind, files: parse(&status, &numstat) })
 }
 
-/// Joins `git status --porcelain=v1` with `git diff --numstat HEAD` by path.
+/// Joins `git status --porcelain=v1 -z` with `git diff --numstat -z HEAD` by path.
 pub fn parse(status: &str, numstat: &str) -> Vec<FileChange> {
     let mut counts: BTreeMap<String, (Option<u64>, Option<u64>)> = BTreeMap::new();
-    for line in numstat.lines() {
-        let mut parts = line.splitn(3, '\t');
+    // `added<TAB>removed<TAB>path<NUL>`; a rename: `added<TAB>removed<TAB><NUL>old<NUL>new<NUL>`.
+    let mut fields = numstat.split('\0');
+    while let Some(field) = fields.next() {
+        let mut parts = field.splitn(3, '\t');
         let (Some(added), Some(removed), Some(path)) = (parts.next(), parts.next(), parts.next()) else { continue };
-        // Binary files show `-`; renames show `old => new`.
-        let path = path.rsplit(" => ").next().unwrap_or(path).trim_end_matches('}').to_string();
+        let path = if path.is_empty() {
+            let _old = fields.next();
+            fields.next().unwrap_or_default().to_string()
+        } else {
+            path.to_string()
+        };
+        // Binary files show `-`.
         counts.insert(path, (added.parse().ok(), removed.parse().ok()));
     }
-    status
-        .lines()
-        .filter(|line| line.len() > 3)
-        .map(|line| {
-            let code = line[..2].to_string();
-            let path = line[3..].rsplit(" -> ").next().unwrap_or(&line[3..]).trim_matches('"').to_string();
-            let (added, removed) = counts.get(&path).copied().unwrap_or((None, None));
-            FileChange { path, status: code, added, removed }
-        })
-        .collect()
+    // `XY path<NUL>`; a rename or copy is followed by its original path as its own entry.
+    let mut entries = status.split('\0').filter(|e| !e.is_empty());
+    let mut out = Vec::new();
+    while let Some(entry) = entries.next() {
+        if entry.len() < 4 || !entry.is_char_boundary(3) {
+            continue;
+        }
+        let code = entry[..2].to_string();
+        if code.starts_with('R') || code.starts_with('C') {
+            let _original = entries.next();
+        }
+        let path = entry[3..].to_string();
+        let (added, removed) = counts.get(&path).copied().unwrap_or((None, None));
+        out.push(FileChange { path, status: code, added, removed });
+    }
+    out
 }
 
 /// One line of a diff, by what it does.
@@ -85,7 +107,7 @@ pub enum DiffKind {
 pub fn diff_of(cwd: &Path, change: &FileChange) -> Option<String> {
     if change.status == "??" {
         // `--no-index` exits with 1 when the files differ, which they always do here.
-        let out = Command::new("git").arg("-C").arg(cwd).args(["diff", "--no-color", "--no-index", "--", "/dev/null", &change.path]).output().ok()?;
+        let out = git_command(cwd).args(["diff", "--no-color", "--no-index", "--", "/dev/null", &change.path]).output().ok()?;
         return (out.status.code() == Some(1)).then(|| String::from_utf8_lossy(&out.stdout).into_owned());
     }
     git(cwd, &["diff", "--no-color", "HEAD", "--", &change.path])
@@ -119,7 +141,8 @@ pub fn diff_lines(diff: &str) -> Vec<(DiffKind, String)> {
 /// Whether Brain offers to discard the change: a modified, deleted, added or untracked file
 /// (not renames or conflicts, which need git by hand).
 pub fn discardable(change: &FileChange) -> bool {
-    matches!(change.status.as_str(), " M" | "M " | "MM" | " D" | "D " | "A " | "AM" | "??")
+    // An untracked folder (`dir/`) is never discarded as a whole.
+    matches!(change.status.as_str(), " M" | "M " | "MM" | " D" | "D " | "A " | "AM" | "??") && !change.path.ends_with('/')
 }
 
 /// After the current version is out of the way (in the Trash): the file as in HEAD again, or,
@@ -130,7 +153,7 @@ pub fn restore_from_head(cwd: &Path, change: &FileChange) -> Result<(), String> 
         "A " | "AM" => &["reset", "-q", "--"],
         _ => &["checkout", "HEAD", "--"],
     };
-    let out = Command::new("git").arg("-C").arg(cwd).args(args).arg(&change.path).output().map_err(|e| e.to_string())?;
+    let out = git_command(cwd).args(args).arg(&change.path).output().map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(())
     } else {
@@ -152,8 +175,8 @@ mod tests {
 
     #[test]
     fn joins_status_and_line_counts_including_renames_and_untracked_files() {
-        let status = " M src/view.rs\nA  src/new.rs\nR  old.rs -> renamed.rs\n?? notes.txt\n";
-        let numstat = "12\t3\tsrc/view.rs\n40\t0\tsrc/new.rs\n0\t0\told.rs => renamed.rs\n";
+        let status = " M src/view.rs\0A  src/new.rs\0R  renamed.rs\0old.rs\0?? notes.txt\0";
+        let numstat = "12\t3\tsrc/view.rs\040\t0\tsrc/new.rs\00\t0\t\0old.rs\0renamed.rs\0";
 
         let files = parse(status, numstat);
 
@@ -163,6 +186,31 @@ mod tests {
         assert_eq!((files[3].status.as_str(), files[3].added), ("??", None));
         assert_eq!(Changes { files, ..Changes::default() }.totals(), (52, 3));
         assert_eq!(parse_ahead_behind("2\t5\n"), Some((5, 2)));
+    }
+
+    #[test]
+    fn odd_file_names_stay_exact_and_are_never_patterns() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| Command::new("git").arg("-C").arg(dir.path()).args(args).output().unwrap();
+        run(&["init", "-q"]);
+        for name in ["a.txt", "*", "quote\"d.txt", "ümlaut.txt"] {
+            std::fs::write(dir.path().join(name), "one\n").unwrap();
+        }
+        run(&["add", "."]);
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]);
+        for name in ["a.txt", "*", "quote\"d.txt", "ümlaut.txt"] {
+            std::fs::write(dir.path().join(name), "two\n").unwrap();
+        }
+        let changes = changes_of(dir.path()).unwrap();
+        let mut paths: Vec<&str> = changes.files.iter().map(|f| f.path.as_str()).collect();
+        paths.sort();
+        assert_eq!(paths, ["*", "a.txt", "quote\"d.txt", "ümlaut.txt"]);
+
+        // Restoring the file named `*` restores only that file.
+        let star = changes.files.iter().find(|f| f.path == "*").unwrap();
+        restore_from_head(dir.path(), star).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("*")).unwrap(), "one\n");
+        assert_eq!(std::fs::read_to_string(dir.path().join("a.txt")).unwrap(), "two\n");
     }
 
     #[test]

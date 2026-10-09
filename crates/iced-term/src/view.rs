@@ -795,7 +795,7 @@ impl BackgroundRect {
 // ESC (0x1b) and Ctrl-C (0x03) are stripped from the pasted text first, mirroring Alacritty: otherwise a
 // clipboard that itself contains `\x1b[201~` would close the bracketed paste early (the rest would be
 // interpreted as keystrokes), and some shells terminate bracketed paste on 0x03.
-fn wrap_bracketed_paste(input: Vec<u8>, bracketed: bool) -> Vec<u8> {
+pub(crate) fn wrap_bracketed_paste(input: Vec<u8>, bracketed: bool) -> Vec<u8> {
     if !bracketed {
         return input;
     }

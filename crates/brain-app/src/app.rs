@@ -1404,16 +1404,7 @@ impl Brain {
             return Task::none();
         }
         let task = if let Some(term) = self.terminals.get_mut(&key) {
-            let mut bytes = Vec::new();
-            let bracketed = term.bracketed_paste();
-            if bracketed {
-                bytes.extend_from_slice(b"\x1b[200~");
-            }
-            bytes.extend_from_slice(text.as_bytes());
-            if bracketed {
-                bytes.extend_from_slice(b"\x1b[201~");
-            }
-            term.handle(iced_term::Command::ProxyToBackend(iced_term::BackendCommand::Write(bytes)));
+            term.paste(&text);
             let enter_key = key.clone();
             Task::perform(off_thread(|| std::thread::sleep(Duration::from_millis(150))), move |_| Message::TerminalKeys(enter_key.clone(), b"\r".to_vec()))
         } else if self.model.board.get(&key).is_some_and(|s| s.accepts_input()) {
@@ -1586,7 +1577,7 @@ impl Brain {
             return Task::none();
         }
         if let Some(term) = self.terminals.get_mut(key) {
-            term.handle(iced_term::Command::ProxyToBackend(iced_term::BackendCommand::Write(text.as_bytes().to_vec())));
+            term.paste(text);
             let key = key.clone();
             return Task::perform(off_thread(|| std::thread::sleep(Duration::from_millis(150))), move |_| Message::TerminalKeys(key.clone(), b"\r".to_vec()));
         }
@@ -1627,6 +1618,15 @@ impl Brain {
             return;
         }
         let file = std::path::Path::new(&cwd).join(path);
+        // Only a file inside the session's folder, never the folder or something outside it.
+        let inside = match (std::path::Path::new(&cwd).canonicalize(), file.parent().and_then(|p| p.canonicalize().ok())) {
+            (Ok(root), Some(parent)) => parent.starts_with(&root) && !file.is_dir(),
+            _ => false,
+        };
+        if !inside {
+            self.set_status(tr!("{path} liegt nicht im Ordner der Session – nichts verworfen.", "{path} isn't inside the session's folder – nothing discarded."));
+            return;
+        }
         if file.exists() {
             if let Err(err) = crate::trash::move_to_trash(&file) {
                 self.set_status(tr!("Konnte {path} nicht in den Papierkorb legen: {err}", "Couldn't move {path} to the Trash: {err}"));
@@ -1755,13 +1755,14 @@ impl Brain {
         }
     }
 
-    /// Writes bytes into the selected session's terminal (typed text, a dropped file's path).
-    fn write_to_terminal(&mut self, bytes: Vec<u8>) -> bool {
+    /// Pastes text into the selected session's terminal (a dropped or pasted file's path), like
+    /// iTerm does: as one paste, without control characters.
+    fn write_to_terminal(&mut self, text: &str) -> bool {
         // The terminal with the keyboard (in a split, maybe not the selected session's).
         let key = self.focused_terminal.clone().or_else(|| self.selected.clone());
         match key.and_then(|k| self.terminals.get_mut(&k)) {
             Some(term) => {
-                term.handle(iced_term::Command::ProxyToBackend(iced_term::BackendCommand::Write(bytes)));
+                term.paste(text);
                 true
             }
             None => false,
@@ -1776,7 +1777,7 @@ impl Brain {
             self.reply.push_str(&escaped);
             return Task::none();
         }
-        if self.write_to_terminal(escaped.into_bytes()) {
+        if self.write_to_terminal(&escaped) {
             self.tab = DetailTab::Terminal;
             return self.focus_terminal();
         }
@@ -2214,7 +2215,7 @@ impl Brain {
             // pastes its path, which Claude Code turns into an attachment.
             if let Some(path) = crate::clipboard::save_image() {
                 let escaped = escape_path(&path.display().to_string()) + " ";
-                self.write_to_terminal(escaped.into_bytes());
+                self.write_to_terminal(&escaped);
             }
             return Task::none();
         }
