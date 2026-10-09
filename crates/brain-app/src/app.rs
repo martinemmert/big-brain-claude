@@ -573,7 +573,7 @@ impl Brain {
             }
             Message::ReaderToEditor => {
                 if let Some(reader) = &self.reader {
-                    open_in_editor(&reader.path);
+                    open_reader_file(reader);
                 }
                 Task::none()
             }
@@ -862,7 +862,14 @@ impl Brain {
     /// beside the terminal (relative ones from the session's folder).
     fn open_link(&mut self, key: &SessionKey, link: &str) -> Task<Message> {
         if link.contains("://") || link.starts_with("mailto:") {
-            let _ = std::process::Command::new("open").arg(link).spawn();
+            // Only web and mail links: the output may come from anywhere (a fetched page, a file),
+            // and `open` would hand other schemes (file://, ssh:, app schemes) to whatever app.
+            let lower = link.to_ascii_lowercase();
+            if lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:") {
+                let _ = std::process::Command::new("open").arg(link).spawn();
+            } else {
+                self.set_status(tr!("Nur Web-Links öffnet Brain: {link}", "Brain opens web links only: {link}"));
+            }
             return Task::none();
         }
         let cwd = self.model.board.get(key).and_then(|s| s.cwd.clone()).unwrap_or_default();
@@ -1249,7 +1256,7 @@ impl Brain {
         }
         if cmd && named == Some(Named::Enter) && self.reader.is_some() {
             if let Some(reader) = &self.reader {
-                open_in_editor(&reader.path);
+                open_reader_file(reader);
             }
             return Task::none();
         }
@@ -2247,6 +2254,21 @@ fn open_in_editor(path: &std::path::Path) {
     let _ = std::process::Command::new("open").arg(path).spawn();
 }
 
+/// "In editor" for a file from the reader. The path came from a session's output, so it never
+/// goes to plain `open` (a `.command` or `.app` would run): text opens in the default text
+/// editor (`open -t`), pictures and PDFs in Preview, anything else not at all.
+fn open_reader_file(reader: &Reader) {
+    let extension = reader.path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let mut command = std::process::Command::new("open");
+    match &reader.kind {
+        ReaderKind::Markdown(_) | ReaderKind::Code(..) => command.arg("-t"),
+        ReaderKind::Image(_) => command.args(["-a", "Preview"]),
+        ReaderKind::Unreadable(_) if extension == "pdf" => command.args(["-a", "Preview"]),
+        ReaderKind::Unreadable(_) => return,
+    };
+    let _ = command.arg(&reader.path).spawn();
+}
+
 /// A path as a shell word, like iTerm pastes dropped files: spaces and specials backslashed.
 fn escape_path(path: &str) -> String {
     let mut out = String::new();
@@ -2287,7 +2309,8 @@ fn read_file(path: std::path::PathBuf) -> Reader {
         match std::fs::read_to_string(&path) {
             Ok(text) if matches!(extension.as_str(), "md" | "markdown") => ReaderKind::Markdown(text),
             Ok(text) => ReaderKind::Code(iced::widget::text_editor::Content::with_text(&text), extension),
-            Err(_) => ReaderKind::Unreadable(t("Keine Textdatei – ⌘⏎ öffnet sie in ihrer App.", "Not a text file – ⌘⏎ opens it in its app.").into()),
+            Err(_) if extension == "pdf" => ReaderKind::Unreadable(t("Ein PDF – ⌘⏎ öffnet es in der Vorschau.", "A PDF – ⌘⏎ opens it in Preview.").into()),
+            Err(_) => ReaderKind::Unreadable(t("Keine Textdatei – der Reader zeigt sie nicht.", "Not a text file – the reader can't show it.").into()),
         }
     };
     Reader { path, kind }

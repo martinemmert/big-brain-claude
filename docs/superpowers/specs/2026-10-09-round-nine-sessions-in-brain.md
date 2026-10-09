@@ -32,3 +32,8 @@ third-party harnesses don't apply: Brain runs the official `claude` client, like
 - **State:** `claude agents` reports "working" late; an idle process status wins. Background
   sessions show unless they had no activity for a day (then only with `B`). Agents are polled
   every 5 s.
+
+**Safety (from the commit review):** links from the output open only with `http`, `https` or
+`mailto` (`open` would hand `file://`, `ssh:` or app schemes to any app); the reader's "in
+editor" never uses plain `open` on a path from the output (a `.command`/`.app` would run): text
+goes to `open -t`, pictures and PDFs to Preview, anything else nowhere.
