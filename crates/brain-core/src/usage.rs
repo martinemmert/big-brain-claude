@@ -52,6 +52,28 @@ impl Snapshot {
     }
 }
 
+/// The five-hour and the seven-day window, in seconds.
+pub const FIVE_HOURS: i64 = 5 * 3600;
+pub const SEVEN_DAYS: i64 = 7 * 24 * 3600;
+
+impl Limit {
+    /// When the limit will be used up if the pace so far in this window goes on (Unix seconds);
+    /// `None` when it lasts until the reset, or the window is too young to tell (under a tenth).
+    pub fn runs_out_at(&self, window_secs: i64, now_secs: i64) -> Option<i64> {
+        let resets_at = self.resets_at?;
+        let start = resets_at - window_secs;
+        let elapsed = now_secs - start;
+        if elapsed * 10 < window_secs || self.used_percentage <= 0.0 {
+            return None;
+        }
+        if self.used_percentage >= 100.0 {
+            return Some(now_secs);
+        }
+        let at = start + (elapsed as f64 * 100.0 / self.used_percentage) as i64;
+        (at < resets_at).then_some(at)
+    }
+}
+
 pub fn status_dir(home: &Path) -> PathBuf {
     home.join(".claude-brain/status")
 }
@@ -92,6 +114,23 @@ pub fn account_limits<'a>(snapshots: &'a [Snapshot], account: &str) -> Option<&'
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_limit_runs_out_when_the_pace_outlasts_the_window() {
+        let resets_at = 1_000_000;
+        let start = resets_at - SEVEN_DAYS;
+        // Three of seven days gone, 60 % used: at this pace 100 % after five days.
+        let fast = Limit { used_percentage: 60.0, resets_at: Some(resets_at) };
+        assert_eq!(fast.runs_out_at(SEVEN_DAYS, start + 3 * 86_400), Some(start + 5 * 86_400));
+        // 30 % after three days lasts.
+        let slow = Limit { used_percentage: 30.0, resets_at: Some(resets_at) };
+        assert_eq!(slow.runs_out_at(SEVEN_DAYS, start + 3 * 86_400), None);
+        // Half a day in, too early to tell.
+        assert_eq!(fast.runs_out_at(SEVEN_DAYS, start + 43_200), None);
+        // Used up already.
+        let full = Limit { used_percentage: 100.0, resets_at: Some(resets_at) };
+        assert_eq!(full.runs_out_at(SEVEN_DAYS, start + 4 * 86_400), Some(start + 4 * 86_400));
+    }
     use serde_json::json;
 
     #[test]

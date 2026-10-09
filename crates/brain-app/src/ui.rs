@@ -648,11 +648,27 @@ fn usage(brain: &Brain, now: i64) -> Option<Element<'_, Message>> {
             }
             let mut line = row![account_badge(&account.id, brain.account_index(&account.id))].spacing(10).align_y(iced::Center);
             if let Some(snapshot) = limits {
-                for (label, limit) in [("5h", snapshot.five_hour), ("7d", snapshot.seven_day)] {
+                let windows = [("5h", snapshot.five_hour, brain_core::usage::FIVE_HOURS), ("7d", snapshot.seven_day, brain_core::usage::SEVEN_DAYS)];
+                for (label, limit, window) in windows {
                     if let Some(limit) = limit {
-                        line = line.push(limit_bar(label, limit, now));
+                        line = line.push(limit_bar(label, limit, window, now));
                     }
                 }
+            }
+            // Running out at this pace while another account has room: say where to go.
+            let runs_out = limits.is_some_and(|snapshot| {
+                let now_secs = now / 1000;
+                snapshot.five_hour.and_then(|l| l.runs_out_at(brain_core::usage::FIVE_HOURS, now_secs)).is_some()
+                    || snapshot.seven_day.and_then(|l| l.runs_out_at(brain_core::usage::SEVEN_DAYS, now_secs)).is_some()
+            });
+            let roomy = brain.model.accounts.iter().filter(|a| a.id != account.id).find(|other| {
+                brain_core::usage::account_limits(&brain.model.usage, &other.id).is_some_and(|s| {
+                    s.five_hour.is_none_or(|l| l.used_percentage < 50.0) && s.seven_day.is_none_or(|l| l.used_percentage < 50.0)
+                })
+            });
+            if let (true, Some(other)) = (runs_out, roomy) {
+                let other = other.id.clone();
+                line = line.push(text(tr!("→ {other} hat Luft", "→ {other} has room")).size(11).color(DONE).font(UI));
             }
             if cost > 0.0 {
                 // Claude Code's per-session totals at API prices: a measure of use, not a bill.
@@ -673,7 +689,7 @@ fn usage(brain: &Brain, now: i64) -> Option<Element<'_, Message>> {
 }
 
 /// `5h ▓▓▓░░ 46% · 15:20`: a plan limit window with its reset time.
-fn limit_bar<'a>(label: &str, limit: brain_core::usage::Limit, now_ms: i64) -> Element<'a, Message> {
+fn limit_bar<'a>(label: &str, limit: brain_core::usage::Limit, window_secs: i64, now_ms: i64) -> Element<'a, Message> {
     let used = limit.used_percentage.clamp(0.0, 100.0);
     let color = if used >= 90.0 { CALLS } else if used >= 70.0 { TURN } else { WORKING };
     let resets = limit.resets_at.filter(|r| r * 1000 > now_ms).map(|r| {
@@ -694,6 +710,16 @@ fn limit_bar<'a>(label: &str, limit: brain_core::usage::Limit, now_ms: i64) -> E
         .align_y(iced::Center);
     if let Some(at) = resets {
         out = out.push(text(format!("↻ {at}")).size(11).color(TEXT_FAINT).font(UI));
+    }
+    // At this pace the limit runs out before it resets: when.
+    if let Some(at) = limit.runs_out_at(window_secs, now_ms / 1000).filter(|_| used < 100.0) {
+        let when = chrono::DateTime::from_timestamp(at, 0).map(|t| t.with_timezone(&chrono::Local));
+        let when = match when {
+            Some(t) if at * 1000 - now_ms < 24 * 3600 * 1000 => t.format("%H:%M").to_string(),
+            Some(t) => t.format("%a %H:%M").to_string(),
+            None => String::new(),
+        };
+        out = out.push(text(tr!("voll ~{when}", "full ~{when}")).size(11).color(TURN).font(style::semibold()));
     }
     out.into()
 }
