@@ -230,6 +230,8 @@ pub enum Message {
     TermFocused(SessionKey, bool),
     /// ⌘D: the current terminal stays on the left, the next selected session opens beside it.
     ToggleSplit,
+    /// A click on the split's other pane: its session becomes the active one.
+    ActivatePane,
     /// ⌘⇧A: live previews of every session that runs in Brain.
     ToggleOverview,
     /// A preview clicked in the overview: open that session's terminal.
@@ -919,6 +921,10 @@ impl Brain {
             }
             Message::TermFocused(key, focused) => {
                 if focused {
+                    // Typing into the split's other pane makes it the active session.
+                    if self.split.as_ref() == Some(&key) {
+                        self.activate_split_pane();
+                    }
                     self.focused_terminal = Some(key);
                 } else if self.focused_terminal.as_ref() == Some(&key) {
                     self.focused_terminal = None;
@@ -937,6 +943,10 @@ impl Brain {
                         None
                     }
                 };
+                Task::none()
+            }
+            Message::ActivatePane => {
+                self.activate_split_pane();
                 Task::none()
             }
             Message::ToggleOverview => {
@@ -1114,11 +1124,8 @@ impl Brain {
                 self.filter = None;
             }
         }
-        let attachable = self
-            .selected_session()
-            .and_then(|s| s.agent.as_ref())
-            .is_some_and(|a| !matches!(a.state.as_str(), "failed" | "stopped"));
-        let current = self.selected.clone().map(|k| (k, attachable));
+        let current = self.selection_state();
+        let attachable = current.as_ref().is_some_and(|(_, a)| *a);
         if current == self.synced_selection {
             return Task::none();
         }
@@ -1479,6 +1486,25 @@ impl Brain {
         None
     }
 
+    /// The selected session and whether Brain can attach to it: what `sync_terminal` follows.
+    fn selection_state(&self) -> Option<(SessionKey, bool)> {
+        let attachable = self
+            .selected_session()
+            .and_then(|s| s.agent.as_ref())
+            .is_some_and(|a| !matches!(a.state.as_str(), "failed" | "stopped"));
+        self.selected.clone().map(|k| (k, attachable))
+    }
+
+    /// In a split, the other pane becomes the active one (its session selected); the keyboard
+    /// stays where it is.
+    fn activate_split_pane(&mut self) {
+        let Some(other) = self.split.clone() else { return };
+        self.split = self.selected.replace(other);
+        self.tab = DetailTab::Terminal;
+        // Already showing its terminal: don't let the selection change reset the keyboard.
+        self.synced_selection = self.selection_state();
+    }
+
     /// Which terminals are on screen; the ones that just came on screen catch up.
     fn sync_shown_terminal(&mut self) {
         if self.split.as_ref().is_some_and(|k| !self.terminals.contains_key(k)) {
@@ -1486,10 +1512,10 @@ impl Brain {
         }
         let shown: HashSet<SessionKey> = if self.overview {
             self.terminals.keys().cloned().collect()
-        } else if self.tab == DetailTab::Terminal {
-            self.selected.iter().chain(self.split.iter()).filter(|k| self.terminals.contains_key(*k)).cloned().collect()
         } else {
-            HashSet::new()
+            // The split's other pane always shows its terminal; the active one on its tab.
+            let active = self.selected.iter().filter(|_| self.tab == DetailTab::Terminal);
+            active.chain(self.split.iter()).filter(|k| self.terminals.contains_key(*k)).cloned().collect()
         };
         for key in shown.difference(&self.shown_terminals) {
             if let Some(term) = self.terminals.get_mut(key) {

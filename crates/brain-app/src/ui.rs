@@ -614,6 +614,46 @@ fn limit_bar<'a>(label: &str, limit: brain_core::usage::Limit, now_ms: i64) -> E
 // ---- detail -----------------------------------------------------------------------
 
 fn detail(brain: &Brain, now: i64) -> Element<'_, Message> {
+    let partner = brain.split.as_ref().filter(|k| Some(*k) != brain.selected.as_ref()).and_then(|k| brain.model.board.get(k));
+    match partner {
+        Some(other) => row![
+            container(other_pane(brain, other)).width(Fill).height(Fill),
+            container(Space::new().width(1).height(Fill)).style(|_| style::fill(LINE)),
+            container(session_pane(brain, now)).width(Fill).height(Fill),
+        ]
+        .height(Fill)
+        .into(),
+        None => session_pane(brain, now),
+    }
+}
+
+/// The split's other session: its header and its terminal. A click (or typing into it) makes
+/// it the active one.
+fn other_pane<'a>(brain: &'a Brain, s: &'a Session) -> Element<'a, Message> {
+    let mut header = row![
+        text(clip(&s.display_name(), 40)).size(18).color(TEXT_STRONG).font(style::bold()).wrapping(text::Wrapping::None),
+        account_badge(&s.key.account, brain.account_index(&s.key.account)),
+    ]
+    .spacing(10)
+    .align_y(iced::Center);
+    for m in markers(brain, s) {
+        header = header.push(m);
+    }
+    header = header
+        .push(Space::new().width(Fill))
+        .push(button(text("✕").size(13).color(TEXT_MUTED)).padding([4, 8]).on_press(Message::ToggleSplit).style(|_, _| button::Style::default()));
+    let head = mouse_area(column![header, iced::widget::row(meta_chips(brain, s)).spacing(6).wrap()].spacing(10))
+        .on_press(Message::ActivatePane)
+        .interaction(iced::mouse::Interaction::Pointer);
+    column![head, terminal_or_hint(brain, s)]
+        .spacing(14)
+        .padding(Padding { top: 20.0, right: 20.0, bottom: 0.0, left: 28.0 })
+        .height(Fill)
+        .into()
+}
+
+/// The selected session: header, details, tabs and the tab's content.
+fn session_pane(brain: &Brain, now: i64) -> Element<'_, Message> {
     let Some(s) = brain.selected_session() else {
         return container(
             column![
@@ -846,27 +886,7 @@ fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
 /// The Terminal tab; split (⌘D), the kept session's terminal beside it; an open file shows
 /// in the reader (also once the terminal ended).
 fn terminal<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
-    let partner = brain.split.as_ref().filter(|k| **k != s.key && brain.terminals.contains_key(*k));
-    let main = match partner.and_then(|k| brain.model.board.get(k)) {
-        Some(other) => row![
-            column![split_label(other, true), terminal_or_hint(brain, other)].width(Fill),
-            column![split_label(s, false), terminal_or_hint(brain, s)].width(Fill),
-        ]
-        .spacing(12)
-        .height(Fill)
-        .into(),
-        None => terminal_or_hint(brain, s),
-    };
-    with_reader(brain, main)
-}
-
-/// Above each half of a split: whose terminal it is; the kept one says how to end the split.
-fn split_label<'a>(s: &Session, kept: bool) -> Element<'a, Message> {
-    let mut line = row![text(s.display_name()).size(12).color(TEXT_MUTED).font(style::semibold())].spacing(8).align_y(iced::Center);
-    if kept {
-        line = line.push(Space::new().width(Fill)).push(kbd("⌘D")).push(text(t("Teilung beenden", "end split")).size(11).color(TEXT_FAINT).font(UI));
-    }
-    container(line).padding(Padding { top: 6.0, ..Padding::ZERO }).into()
+    with_reader(brain, terminal_or_hint(brain, s))
 }
 
 /// ⌘⇧A: every session that runs in Brain as a live preview; a click opens it.
