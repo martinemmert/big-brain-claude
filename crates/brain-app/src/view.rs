@@ -148,6 +148,8 @@ struct Groups<'a> {
     older_ended: usize,
     /// Hidden with ⌫, shown only while searching.
     hidden: usize,
+    /// Background sessions left out while the filter is off.
+    background: usize,
 }
 
 impl<'a> Groups<'a> {
@@ -266,7 +268,7 @@ impl BrainView {
     fn tick(&mut self, cx: &mut Context<Self>) {
         let now = now_ms();
         for item in self.model.refresh() {
-            if self.prefs.snoozed_until(&item.key, now).is_some() || self.prefs.is_muted(&item.key) {
+            if self.prefs.snoozed_until(&item.key, now).is_some() || self.prefs.is_muted(&item.key) || self.filtered_background(&item.key) {
                 continue;
             }
             let account = item.key.account.clone();
@@ -329,7 +331,7 @@ impl BrainView {
             .collect();
         self.reminders.retain(|key, _| waiting.iter().any(|(k, ..)| k == key));
         for (key, since, phase, name, headline) in waiting {
-            if self.prefs.is_muted(&key) || self.prefs.snoozed_until(&key, now).is_some() {
+            if self.prefs.is_muted(&key) || self.prefs.snoozed_until(&key, now).is_some() || self.filtered_background(&key) {
                 continue;
             }
             let entry = self.reminders.entry(key.clone()).or_insert((since, 0));
@@ -815,6 +817,7 @@ impl BrainView {
             .into_iter()
             .filter(|s| self.filter.as_ref().is_none_or(|f| *f == s.key.account))
             .filter(|s| !self.prefs.is_pinned(&s.key))
+            .filter(|s| s.agent.is_none() || self.prefs.show_background)
             .filter(|s| s.phase() == Phase::Ended || s.agent.is_some())
             .filter(|s| s.last_activity_ms < cutoff)
             .filter(|s| s.phase() != Phase::Ended || (self.model.resumable(s) && !s.is_empty()))
@@ -1111,6 +1114,7 @@ impl BrainView {
             resting_open: self.show_resting || searching,
             older_ended: 0,
             hidden: 0,
+            background: 0,
         };
         let visible = self
             .model
@@ -1122,6 +1126,10 @@ impl BrainView {
         for session in visible {
             let ended = session.phase() == Phase::Ended;
             if ended && (session.is_empty() || !self.model.resumable(session)) {
+                continue;
+            }
+            if session.agent.is_some() && !self.prefs.show_background {
+                groups.background += 1;
                 continue;
             }
             if self.prefs.is_hidden(&session.key, session.last_activity_ms) && !searching {
@@ -1153,6 +1161,21 @@ impl BrainView {
         // Resting: most recently finished first.
         groups.resting.reverse();
         groups
+    }
+
+    /// A background session while the background filter is off: not listed, not announced.
+    fn filtered_background(&self, key: &SessionKey) -> bool {
+        !self.prefs.show_background && self.model.board.get(key).is_some_and(|s| s.agent.is_some())
+    }
+
+    fn toggle_background(&mut self) {
+        self.prefs.show_background = !self.prefs.show_background;
+        self.prefs.save();
+        self.set_status(if self.prefs.show_background {
+            t("Hintergrund-Sessions werden angezeigt.", "Showing background sessions.")
+        } else {
+            t("Hintergrund-Sessions ausgeblendet.", "Background sessions hidden.")
+        });
     }
 
     fn include_ended(&self) -> bool {
@@ -1303,6 +1326,7 @@ impl BrainView {
                 self.mode = Mode::Cleanup;
             }
             "h" => self.show_resting = !self.show_resting,
+            "b" => self.toggle_background(),
             "g" => {
                 self.prefs.layout = if self.prefs.layout == Layout::Projects { Layout::Status } else { Layout::Projects };
                 self.prefs.save();
@@ -1681,6 +1705,32 @@ impl BrainView {
                     cx.notify();
                 }),
             ))
+            .when(self.prefs.show_background || groups.background > 0, |d| {
+                let on = self.prefs.show_background;
+                let count = groups.background;
+                let label = if on {
+                    t("◌ Hintergrund an", "◌ Background on").to_string()
+                } else {
+                    tr!("◌ {count} im Hintergrund", "◌ {count} in background")
+                };
+                d.child(
+                    div()
+                        .id("background-filter")
+                        .flex_none()
+                        .px(px(9.))
+                        .py(px(3.))
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .when(on, |d| d.bg(theme::raised()).text_color(theme::text_strong()))
+                        .when(!on, |d| d.text_color(theme::text_faint()).hover(|d| d.bg(theme::hover())))
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.toggle_background();
+                            cx.notify();
+                        }))
+                        .child(label),
+                )
+            })
             .child(segmented(
                 "accounts",
                 accounts,

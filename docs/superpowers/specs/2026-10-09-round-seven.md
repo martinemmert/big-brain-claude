@@ -24,3 +24,8 @@ Date: 2026-10-09.
 Verified: the app found both accounts' background sessions (three blocked since June/July);
 a throwaway background session went to the Trash and `claude rm` removed it; stop → trash → rm
 leaves no file behind.
+
+## 0.7.1
+
+Background sessions are hidden by default (`prefs.show_background`, `B` or the title bar count);
+hidden ones are left out of the list, the clean-up dialog, notifications and reminders.

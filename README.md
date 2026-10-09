@@ -44,8 +44,9 @@ follows your macOS language: English or German.
   a session until something new happens in it; `⌘⌫` twice moves an ended session's transcript to
   the **Trash**. `C` opens *Clean up*: everything ended (or in the background) and quiet for 1, 3,
   7 or 14 days, to hide or trash at once. Pinned and saved sessions always stay.
-- **Claude Code's background sessions** (`claude --bg`, listed by `claude agents`) show with
-  their own state (blocked, failed, done …). `⏎` attaches to one in a new tab, `X X` stops it,
+- **Claude Code's background sessions** (`claude --bg`, listed by `claude agents`) are hidden
+  by default; the title bar counts them, and `B` (or a click on the count) shows them with their
+  own state (blocked, failed, done …). Hidden ones don't notify. `⏎` attaches to one in a new tab, `X X` stops it,
   `⌘⌫ ⌘⌫` stops it, moves its transcript to the Trash and runs `claude rm`.
 - **End now, resume later.** `X` twice ends a waiting session (`/exit`); closing the tab works
   too. Ended sessions stay in the list as long as Claude Code keeps their transcript
@@ -183,6 +184,7 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `⌘⌫` `⌘⌫` | move an ended session's transcript to the Trash |
 | `C` | clean up: hide or trash everything quiet for N days |
 | `H` | fold / unfold the resting group |
+| `B` | show / hide Claude Code's background sessions |
 | `A` `A` | move the session to the next account (an ended one resumes there) |
 | `⌘N` | start a new session |
 | `←` `→` | switch between messages, timeline and changes |

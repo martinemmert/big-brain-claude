@@ -25,6 +25,9 @@ pub struct Prefs {
     muted: BTreeSet<String>,
     #[serde(default)]
     pub layout: Layout,
+    /// Show Claude Code's background sessions (`claude --bg`); off by default.
+    #[serde(default)]
+    pub show_background: bool,
     /// Session id → snoozed until (epoch ms).
     #[serde(default)]
     snoozed: BTreeMap<String, i64>,
