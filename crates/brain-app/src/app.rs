@@ -66,6 +66,8 @@ pub enum PaletteCommand {
     ToggleProjects,
     ToggleToday,
     ToggleBackground,
+    Split,
+    Overview,
 }
 
 /// Slash commands the palette offers for the selected session.
@@ -206,7 +208,14 @@ pub enum Message {
     /// A Markdown file was handed to YAMV (`true`), or to the text editor because YAMV is missing.
     MarkdownOpened(String, bool),
     MousePressed,
-    TermFocused(bool),
+    /// Whether this session's terminal has the keyboard (asked after a click).
+    TermFocused(SessionKey, bool),
+    /// ⌘D: the current terminal stays on the left, the next selected session opens beside it.
+    ToggleSplit,
+    /// ⌘⇧A: live previews of every session that runs in Brain.
+    ToggleOverview,
+    /// A preview clicked in the overview: open that session's terminal.
+    OpenFromOverview(SessionKey),
     FileHover(bool),
     FileDrop(std::path::PathBuf),
     CloseReader,
@@ -387,8 +396,12 @@ pub struct Brain {
     pub conflicts: HashMap<SessionKey, brain_core::conflicts::Conflict>,
     /// The title each terminal's program set (Claude Code names its current task there).
     pub terminal_titles: HashMap<SessionKey, String>,
-    /// The terminal on screen; the others handle their output without drawing it.
-    shown_terminal: Option<SessionKey>,
+    /// The terminals on screen; the others handle their output without drawing it.
+    shown_terminals: HashSet<SessionKey>,
+    /// ⌘D: this session's terminal stays on screen beside the selected one.
+    pub split: Option<SessionKey>,
+    /// ⌘⇧A: live previews of every terminal instead of the detail pane.
+    pub overview: bool,
     /// Sessions whose terminal rang the bell while another session was selected.
     pub bells: HashSet<SessionKey>,
     /// Pairs already notified about shared files.
@@ -412,7 +425,8 @@ pub struct Brain {
     pub terminals: HashMap<SessionKey, iced_term::Terminal>,
     next_terminal: u64,
     /// Whether the selected session's terminal has the keyboard (drawn as a ring).
-    pub terminal_focused: bool,
+    /// The terminal that has the keyboard (Brain's shortcuts are off while one has it).
+    pub focused_terminal: Option<SessionKey>,
     /// A file is being dragged over the window.
     pub file_hover: bool,
     /// The file the reader beside the terminal shows.
@@ -470,7 +484,9 @@ impl Brain {
             prs: HashMap::new(),
             conflicts: HashMap::new(),
             terminal_titles: HashMap::new(),
-            shown_terminal: None,
+            shown_terminals: HashSet::new(),
+            split: None,
+            overview: false,
             files: None,
             find: String::new(),
             palette: String::new(),
@@ -495,7 +511,7 @@ impl Brain {
             messages_at_bottom: true,
             terminals: HashMap::new(),
             next_terminal: 1,
-            terminal_focused: false,
+            focused_terminal: None,
             file_hover: false,
             reader: None,
             pending_attach: None,
@@ -778,7 +794,7 @@ impl Brain {
                 if let Some(key) = key {
                     // Only the terminal on screen copies its screen per event; the others catch
                     // up when they're shown (`sync_shown_terminal`).
-                    let shown = self.shown_terminal.as_ref() == Some(&key);
+                    let shown = self.shown_terminals.contains(&key);
                     let command = iced_term::Command::ProxyToBackend(command);
                     match self.terminals.get_mut(&key).map(|term| if shown { term.handle(command) } else { term.handle_quiet(command) }) {
                         Some(iced_term::actions::Action::Shutdown) => {
@@ -801,7 +817,7 @@ impl Brain {
                         }
                         // Output can carry clipboard requests too (a printed file, a fetched page):
                         // only the terminal you're typing in may write the clipboard, and it says so.
-                        Some(iced_term::actions::Action::CopyToClipboard(text)) if self.terminal_focused && self.selected.as_ref() == Some(&key) => {
+                        Some(iced_term::actions::Action::CopyToClipboard(text)) if self.focused_terminal.as_ref() == Some(&key) => {
                             let chars = text.chars().count();
                             self.set_status(tr!("Die Session hat {chars} Zeichen in die Zwischenablage kopiert.", "The session copied {chars} characters to the clipboard."));
                             task = iced::clipboard::write(text);
@@ -823,14 +839,54 @@ impl Brain {
                     Task::none()
                 }
             },
-            Message::MousePressed => match self.selected.as_ref().and_then(|k| self.terminals.get(k)) {
-                // Clicks move the keyboard in or out of the terminal; ask it where it went.
-                Some(term) => operation::is_focused(term.widget_id().clone()).map(Message::TermFocused),
-                None => Task::none(),
-            },
-            Message::TermFocused(focused) => {
-                self.terminal_focused = focused;
+            Message::MousePressed => {
+                // Clicks move the keyboard in or out of a terminal; ask each shown one.
+                let asks: Vec<Task<Message>> = self
+                    .shown_terminals
+                    .iter()
+                    .filter_map(|key| {
+                        let term = self.terminals.get(key)?;
+                        let key = key.clone();
+                        Some(operation::is_focused(term.widget_id().clone()).map(move |focused| Message::TermFocused(key.clone(), focused)))
+                    })
+                    .collect();
+                Task::batch(asks)
+            }
+            Message::TermFocused(key, focused) => {
+                if focused {
+                    self.focused_terminal = Some(key);
+                } else if self.focused_terminal.as_ref() == Some(&key) {
+                    self.focused_terminal = None;
+                }
                 Task::none()
+            }
+            Message::ToggleSplit => {
+                self.split = match &self.split {
+                    Some(_) => None,
+                    None if self.has_terminal() => {
+                        self.set_status(t("Geteilt – wähle die zweite Session.", "Split – pick the second session."));
+                        self.selected.clone()
+                    }
+                    None => {
+                        self.set_status(t("Teilen geht mit einer Session, die hier im Terminal läuft.", "Splitting works with a session running in Brain's terminal."));
+                        None
+                    }
+                };
+                Task::none()
+            }
+            Message::ToggleOverview => {
+                self.overview = !self.overview;
+                if self.overview && self.terminals.is_empty() {
+                    self.overview = false;
+                    self.set_status(t("Noch läuft keine Session hier im Terminal.", "No session runs in Brain's terminal yet."));
+                }
+                Task::none()
+            }
+            Message::OpenFromOverview(key) => {
+                self.overview = false;
+                self.selected = Some(key);
+                self.tab = DetailTab::Terminal;
+                self.open_terminal(true)
             }
             Message::MarkdownOpened(name, in_yamv) => {
                 if !in_yamv {
@@ -1002,7 +1058,7 @@ impl Brain {
             return Task::none();
         }
         self.synced_selection = current;
-        self.terminal_focused = false;
+        self.focused_terminal = None;
         let has_terminal = self.has_terminal();
         if attachable || has_terminal {
             self.tab = DetailTab::Terminal;
@@ -1158,7 +1214,7 @@ impl Brain {
         self.mode = Mode::Palette;
         self.palette.clear();
         self.palette_index = 0;
-        self.terminal_focused = false;
+        self.focused_terminal = None;
         operation::focus(PALETTE)
     }
 
@@ -1196,6 +1252,8 @@ impl Brain {
             all.push((t("Ausblenden", "Hide").to_string(), "⌫", PaletteCommand::Act(Action::Hide)));
             all.push((t("In den Papierkorb", "Move to Trash").to_string(), "⌘⌫", PaletteCommand::Act(Action::Trash)));
         }
+        all.push((t("Terminal teilen", "Split the terminal").to_string(), "⌘D", PaletteCommand::Split));
+        all.push((t("Alle Terminals im Überblick", "All terminals at a glance").to_string(), "⌘⇧A", PaletteCommand::Overview));
         all.push((t("Neue Session", "New session").to_string(), "⌘N", PaletteCommand::NewSession));
         all.push((t("Aufräumen", "Clean up").to_string(), "C", PaletteCommand::Cleanup));
         all.push((t("Beendete Sessions zeigen / verbergen", "Show / hide ended sessions").to_string(), "E", PaletteCommand::ToggleEnded));
@@ -1266,6 +1324,11 @@ impl Brain {
                 self.toggle_background();
                 Task::none()
             }
+            PaletteCommand::Split => {
+                self.tab = DetailTab::Terminal;
+                self.update(Message::ToggleSplit)
+            }
+            PaletteCommand::Overview => self.update(Message::ToggleOverview),
         }
     }
 
@@ -1346,16 +1409,24 @@ impl Brain {
         None
     }
 
-    /// Catches up the terminal that just came on screen.
+    /// Which terminals are on screen; the ones that just came on screen catch up.
     fn sync_shown_terminal(&mut self) {
-        let shown = self.selected.clone().filter(|k| self.tab == DetailTab::Terminal && self.terminals.contains_key(k));
-        if shown == self.shown_terminal {
-            return;
+        if self.split.as_ref().is_some_and(|k| !self.terminals.contains_key(k)) {
+            self.split = None;
         }
-        if let Some(term) = shown.as_ref().and_then(|k| self.terminals.get_mut(k)) {
-            term.refresh();
+        let shown: HashSet<SessionKey> = if self.overview {
+            self.terminals.keys().cloned().collect()
+        } else if self.tab == DetailTab::Terminal {
+            self.selected.iter().chain(self.split.iter()).filter(|k| self.terminals.contains_key(*k)).cloned().collect()
+        } else {
+            HashSet::new()
+        };
+        for key in shown.difference(&self.shown_terminals) {
+            if let Some(term) = self.terminals.get_mut(key) {
+                term.refresh();
+            }
         }
-        self.shown_terminal = shown;
+        self.shown_terminals = shown;
     }
 
     /// Whether the selected session has a terminal in Brain.
@@ -1365,10 +1436,12 @@ impl Brain {
 
     /// Gives a running terminal the keyboard when its tab is shown; starts nothing.
     fn focus_terminal(&mut self) -> Task<Message> {
-        match self.selected.as_ref().and_then(|k| self.terminals.get(k)) {
+        let Some(key) = self.selected.clone() else { return Task::none() };
+        match self.terminals.get(&key) {
             Some(term) if self.tab == DetailTab::Terminal => {
-                self.terminal_focused = true;
-                iced_term::TerminalView::focus(term.widget_id().clone())
+                let task = iced_term::TerminalView::focus(term.widget_id().clone());
+                self.focused_terminal = Some(key);
+                task
             }
             _ => Task::none(),
         }
@@ -1376,7 +1449,9 @@ impl Brain {
 
     /// Writes bytes into the selected session's terminal (typed text, a dropped file's path).
     fn write_to_terminal(&mut self, bytes: Vec<u8>) -> bool {
-        match self.selected.as_ref().and_then(|k| self.terminals.get_mut(k)) {
+        // The terminal with the keyboard (in a split, maybe not the selected session's).
+        let key = self.focused_terminal.clone().or_else(|| self.selected.clone());
+        match key.and_then(|k| self.terminals.get_mut(&k)) {
             Some(term) => {
                 term.handle(iced_term::Command::ProxyToBackend(iced_term::BackendCommand::Write(bytes)));
                 true
@@ -1798,10 +1873,10 @@ impl Brain {
         }
 
         // A focused terminal keeps Esc (it interrupts Claude); ⌘[ leaves it.
-        if named == Some(Named::Escape) && !(self.tab == DetailTab::Terminal && self.terminal_focused) {
+        if named == Some(Named::Escape) && !(self.tab == DetailTab::Terminal && self.focused_terminal.is_some()) {
             return self.escape();
         }
-        if cmd && self.tab == DetailTab::Terminal && self.terminal_focused && character.as_deref() == Some("v") {
+        if cmd && self.tab == DetailTab::Terminal && self.focused_terminal.is_some() && character.as_deref() == Some("v") {
             // A copied screenshot: the terminal pastes text only, so Brain saves the picture and
             // pastes its path, which Claude Code turns into an attachment.
             if let Some(path) = crate::clipboard::save_image() {
@@ -1825,6 +1900,13 @@ impl Brain {
                 Task::none()
             };
         }
+        // ⌘D splits the terminal, ⌘⇧A shows all of them: also from inside a terminal.
+        if cmd && character.as_deref() == Some("d") && self.tab == DetailTab::Terminal {
+            return self.update(Message::ToggleSplit);
+        }
+        if cmd && modifiers.shift() && character.as_deref() == Some("a") {
+            return self.update(Message::ToggleOverview);
+        }
         // ⌘K: the command palette, also from inside the terminal.
         if cmd && character.as_deref() == Some("k") {
             return self.open_palette();
@@ -1844,14 +1926,14 @@ impl Brain {
             return Task::none();
         }
         if cmd && matches!(character.as_deref(), Some("1") | Some("[")) {
-            self.terminal_focused = false;
+            self.focused_terminal = None;
             if self.mode == Mode::Search {
                 self.mode = Mode::Normal;
             }
             return unfocus();
         }
         // While the terminal has the keyboard, Brain's shortcuts are off: everything is Claude's.
-        if self.tab == DetailTab::Terminal && self.terminal_focused && self.has_terminal() {
+        if self.tab == DetailTab::Terminal && self.focused_terminal.is_some() && self.has_terminal() {
             return Task::none();
         }
         if captured {
@@ -1984,6 +2066,10 @@ impl Brain {
 
     /// Esc: leaves whatever is open — search (cleared), reply, rename, a dialog.
     fn escape(&mut self) -> Task<Message> {
+        if self.overview {
+            self.overview = false;
+            return Task::none();
+        }
         if self.mode == Mode::Normal && (!self.find.is_empty() || self.prompts_only) {
             self.find.clear();
             self.prompts_only = false;

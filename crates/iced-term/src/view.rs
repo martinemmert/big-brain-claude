@@ -573,205 +573,9 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
         viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_ref::<TerminalViewState>();
-        let content = self.term.backend.renderable_content();
-        let term_size = content.terminal_size;
-        let cell_width = term_size.cell_width as f32;
-        let cell_height = term_size.cell_height as f32;
-        let font_size = self.term.font.size;
-        let font_scale_factor = self.term.font.scale_factor;
-        let layout_offset_x = layout.position().x;
-        let layout_offset_y = layout.position().y;
-
+        let origin = layout.position();
         let geom = self.term.cache.draw(renderer, viewport.size(), |frame| {
-            // Precompute constants used in the inner loop
-            let display_offset = content.grid.display_offset() as f32;
-            let cell_size = Size::new(cell_width, cell_height);
-            let half_w = cell_width * 0.5;
-            let half_h = cell_height * 0.5;
-            // We use the background pallete color as a default
-            // because the widget global background color must be the same
-            let default_bg = self
-                .term
-                .theme
-                .get_color(ansi::Color::Named(NamedColor::Background));
-
-            let mut last_line: Option<i32> = None;
-            let mut bg_batch_rect = BackgroundRect::default();
-
-            for indexed in content.grid.display_iter() {
-                // Compute per-cell geometry cheaply
-                let line = indexed.point.line.0;
-                let col = indexed.point.column.0 as f32;
-
-                // Resolve position point for this cell
-                let x = layout_offset_x + (col * cell_width);
-                let y = layout_offset_y
-                    + (((line as f32) + display_offset) * cell_height);
-                let cell_center_y = y + half_h;
-                let cell_center_x = if indexed
-                    .cell
-                    .flags
-                    .contains(cell::Flags::WIDE_CHAR)
-                {
-                    x + cell_width
-                } else {
-                    x + half_w
-                };
-
-                // Resolve colors for this cell
-                let mut fg = self.term.theme.get_color(indexed.fg);
-                let mut bg = self.term.theme.get_color(indexed.bg);
-                // Pre-swap background: the block cursor is painted in the
-                // cell's (pre-swap) fg, so this is the contrasting color
-                // for the glyph under it regardless of INVERSE/selection.
-                let cell_bg = bg;
-
-                // If the new line was detected,
-                // need to flush pending background rect and init the new one
-                if last_line != Some(line) {
-                    if bg_batch_rect.can_flush() {
-                        let line = last_line.unwrap_or(line);
-                        frame.fill(
-                            &bg_batch_rect.build(line),
-                            bg_batch_rect.color,
-                        );
-                    }
-
-                    last_line = Some(line);
-                    bg_batch_rect = BackgroundRect::default()
-                        .with_cell_height(cell_height)
-                        .with_display_offset(display_offset)
-                        .with_layout_offset_y(layout_offset_y);
-                }
-
-                // Handle dim, inverse, and selected text
-                if indexed
-                    .cell
-                    .flags
-                    .intersects(cell::Flags::DIM | cell::Flags::DIM_BOLD)
-                {
-                    fg.a *= 0.7;
-                }
-                if indexed.cell.flags.contains(cell::Flags::INVERSE)
-                    || content
-                        .selectable_range
-                        .is_some_and(|r| r.contains(indexed.point))
-                {
-                    std::mem::swap(&mut fg, &mut bg);
-                }
-
-                // Batch draw backgrounds: skip default background (container already paints it)
-                if bg != default_bg {
-                    if bg_batch_rect.can_extend(bg, x) {
-                        // Same color and contiguous: extend current run
-                        bg_batch_rect.extend(cell_width);
-                    } else {
-                        // New colored run (or non-contiguous): flush previous run if any
-                        if bg_batch_rect.can_flush() {
-                            frame.fill(
-                                &bg_batch_rect.build(line),
-                                bg_batch_rect.color,
-                            );
-                        }
-
-                        // Start a new run but do not draw yet; wait for potential extensions
-                        bg_batch_rect = BackgroundRect::default()
-                            .with_cell_height(cell_height)
-                            .with_display_offset(display_offset)
-                            .with_layout_offset_y(layout_offset_y)
-                            .activate()
-                            .with_color(bg)
-                            .with_start_x(x)
-                            .with_width(cell_width);
-                    }
-                } else if bg_batch_rect.can_flush() {
-                    // Background returns to default, flush current background rect and init the new one
-                    frame.fill(&bg_batch_rect.build(line), bg_batch_rect.color);
-
-                    bg_batch_rect = BackgroundRect::default()
-                        .with_cell_height(cell_height)
-                        .with_display_offset(display_offset)
-                        .with_layout_offset_y(layout_offset_y);
-                }
-
-                // Draw hovered hyperlink underline (rare; keep per-cell for correctness)
-                if content.hovered_hyperlink.as_ref().is_some_and(|range| {
-                    range.contains(&indexed.point)
-                        && range.contains(&state.mouse_position_on_grid)
-                }) || indexed.cell.flags.contains(cell::Flags::UNDERLINE)
-                {
-                    let underline_height = y + cell_size.height;
-                    let underline = Path::line(
-                        Point::new(x, underline_height),
-                        Point::new(x + cell_size.width, underline_height),
-                    );
-                    frame.stroke(
-                        &underline,
-                        Stroke::default()
-                            .with_width(font_size * 0.15)
-                            .with_color(fg),
-                    );
-                }
-
-                // Handle cursor rendering
-                if content.grid.cursor.point == indexed.point
-                    && content.terminal_mode.contains(TermMode::SHOW_CURSOR)
-                {
-                    let cursor_color =
-                        self.term.theme.get_color(content.cursor.fg);
-                    let cursor_rect =
-                        Path::rectangle(Point::new(x, y), cell_size);
-                    frame.fill(&cursor_rect, cursor_color);
-                }
-
-                // Draw text
-                if indexed.c != ' ' && indexed.c != '\t' {
-                    // The glyph under the block cursor must contrast with
-                    // the cursor rect (painted above in the cell's pre-swap
-                    // fg). Using the post-swap bg — or gating this on
-                    // APP_CURSOR, a keypad mode unrelated to rendering —
-                    // made the glyph invisible whenever the cell was
-                    // INVERSE or inside a selection.
-                    if content.grid.cursor.point == indexed.point
-                        && content.terminal_mode.contains(TermMode::SHOW_CURSOR)
-                    {
-                        fg = cell_bg;
-                    }
-                    // Resolve font style (bold/italic) from cell flags
-                    let mut font = self.term.font.font_type;
-                    if indexed
-                        .cell
-                        .flags
-                        .intersects(cell::Flags::BOLD | cell::Flags::DIM_BOLD)
-                    {
-                        font.weight = FontWeight::Bold;
-                    }
-                    if indexed.cell.flags.contains(cell::Flags::ITALIC) {
-                        font.style = FontStyle::Italic;
-                    }
-                    let text = Text {
-                        content: glyph(indexed.cell.c).to_string(),
-                        position: Point::new(cell_center_x, cell_center_y),
-                        font,
-                        size: iced_core::Pixels(font_size),
-                        color: fg,
-                        align_x: Alignment::Center,
-                        align_y: Vertical::Center,
-                        shaping: Shaping::Advanced,
-                        line_height: LineHeight::Relative(font_scale_factor),
-                        ..Default::default()
-                    };
-                    frame.fill_text(text);
-                }
-            }
-
-            // Flush any remaining background run at the end
-            if bg_batch_rect.can_flush() {
-                frame.fill(
-                    &bg_batch_rect.build(last_line.unwrap_or(0)),
-                    bg_batch_rect.color,
-                );
-            }
+            paint_grid(self.term, frame, origin, Some(state.mouse_position_on_grid));
         });
 
         use iced::advanced::graphics::geometry::Renderer as _;
@@ -1635,6 +1439,274 @@ mod tests {
             assert_eq!(state.scroll_pixels, -5.4000034);
         }
     }
+}
+
+/// Brain: a terminal drawn scaled down into any box, for overviews of many sessions. It never
+/// resizes the terminal (the program keeps its size) and takes no input.
+pub struct TerminalPreview<'a> {
+    term: &'a Terminal,
+}
+
+impl<'a> TerminalPreview<'a> {
+    pub fn show<Message: 'a>(term: &'a Terminal) -> Element<'a, Message> {
+        Element::new(Self { term })
+    }
+}
+
+impl<Message> Widget<Message, Theme, iced::Renderer> for TerminalPreview<'_> {
+    fn size(&self) -> Size<Length> {
+        Size { width: Length::Fill, height: Length::Fill }
+    }
+
+    fn layout(
+        &mut self,
+        _tree: &mut Tree,
+        _renderer: &iced::Renderer,
+        limits: &iced_core::layout::Limits,
+    ) -> iced_core::layout::Node {
+        iced_core::layout::Node::new(limits.resolve(Length::Fill, Length::Fill, Size::ZERO))
+    }
+
+    fn draw(
+        &self,
+        _tree: &Tree,
+        renderer: &mut iced::Renderer,
+        _theme: &Theme,
+        _style: &iced::advanced::renderer::Style,
+        layout: iced::advanced::Layout,
+        _cursor: Cursor,
+        viewport: &Rectangle,
+    ) {
+        let bounds = layout.bounds();
+        let size = self.term.backend.renderable_content().terminal_size;
+        let grid = Size::new(
+            f32::from(size.num_cols) * f32::from(size.cell_width),
+            f32::from(size.num_lines) * f32::from(size.cell_height),
+        );
+        if grid.width <= 0.0 || grid.height <= 0.0 {
+            return;
+        }
+        let scale = (bounds.width / grid.width).min(bounds.height / grid.height).min(1.0);
+        let background = self.term.theme.get_color(ansi::Color::Named(NamedColor::Background));
+        let mut frame = iced::widget::canvas::Frame::new(renderer, viewport.size());
+        // A clipped frame keeps window coordinates: move to the box first.
+        frame.with_clip(bounds, |frame| {
+            frame.translate(iced::Vector::new(bounds.x, bounds.y));
+            frame.fill_rectangle(Point::ORIGIN, bounds.size(), background);
+            frame.scale(scale);
+            paint_grid(self.term, frame, Point::ORIGIN, None);
+        });
+        use iced::advanced::graphics::geometry::Renderer as _;
+        renderer.draw_geometry(frame.into_geometry());
+    }
+}
+
+/// Brain: paints the terminal's grid with its top-left corner at `origin`, for the terminal
+/// itself and for previews; `pointer` is the grid point under the mouse (a hovered link's
+/// underline).
+fn paint_grid(
+    term: &Terminal,
+    frame: &mut iced::widget::canvas::Frame,
+    origin: Point,
+    pointer: Option<TerminalGridPoint>,
+) {
+    let content = term.backend.renderable_content();
+    let term_size = content.terminal_size;
+    let cell_width = term_size.cell_width as f32;
+    let cell_height = term_size.cell_height as f32;
+    let font_size = term.font.size;
+    let font_scale_factor = term.font.scale_factor;
+    let layout_offset_x = origin.x;
+    let layout_offset_y = origin.y;
+
+        // Precompute constants used in the inner loop
+        let display_offset = content.grid.display_offset() as f32;
+        let cell_size = Size::new(cell_width, cell_height);
+        let half_w = cell_width * 0.5;
+        let half_h = cell_height * 0.5;
+        // We use the background pallete color as a default
+        // because the widget global background color must be the same
+        let default_bg = term
+            .theme
+            .get_color(ansi::Color::Named(NamedColor::Background));
+
+        let mut last_line: Option<i32> = None;
+        let mut bg_batch_rect = BackgroundRect::default();
+
+        for indexed in content.grid.display_iter() {
+            // Compute per-cell geometry cheaply
+            let line = indexed.point.line.0;
+            let col = indexed.point.column.0 as f32;
+
+            // Resolve position point for this cell
+            let x = layout_offset_x + (col * cell_width);
+            let y = layout_offset_y
+                + (((line as f32) + display_offset) * cell_height);
+            let cell_center_y = y + half_h;
+            let cell_center_x = if indexed
+                .cell
+                .flags
+                .contains(cell::Flags::WIDE_CHAR)
+            {
+                x + cell_width
+            } else {
+                x + half_w
+            };
+
+            // Resolve colors for this cell
+            let mut fg = term.theme.get_color(indexed.fg);
+            let mut bg = term.theme.get_color(indexed.bg);
+            // Pre-swap background: the block cursor is painted in the
+            // cell's (pre-swap) fg, so this is the contrasting color
+            // for the glyph under it regardless of INVERSE/selection.
+            let cell_bg = bg;
+
+            // If the new line was detected,
+            // need to flush pending background rect and init the new one
+            if last_line != Some(line) {
+                if bg_batch_rect.can_flush() {
+                    let line = last_line.unwrap_or(line);
+                    frame.fill(
+                        &bg_batch_rect.build(line),
+                        bg_batch_rect.color,
+                    );
+                }
+
+                last_line = Some(line);
+                bg_batch_rect = BackgroundRect::default()
+                    .with_cell_height(cell_height)
+                    .with_display_offset(display_offset)
+                    .with_layout_offset_y(layout_offset_y);
+            }
+
+            // Handle dim, inverse, and selected text
+            if indexed
+                .cell
+                .flags
+                .intersects(cell::Flags::DIM | cell::Flags::DIM_BOLD)
+            {
+                fg.a *= 0.7;
+            }
+            if indexed.cell.flags.contains(cell::Flags::INVERSE)
+                || content
+                    .selectable_range
+                    .is_some_and(|r| r.contains(indexed.point))
+            {
+                std::mem::swap(&mut fg, &mut bg);
+            }
+
+            // Batch draw backgrounds: skip default background (container already paints it)
+            if bg != default_bg {
+                if bg_batch_rect.can_extend(bg, x) {
+                    // Same color and contiguous: extend current run
+                    bg_batch_rect.extend(cell_width);
+                } else {
+                    // New colored run (or non-contiguous): flush previous run if any
+                    if bg_batch_rect.can_flush() {
+                        frame.fill(
+                            &bg_batch_rect.build(line),
+                            bg_batch_rect.color,
+                        );
+                    }
+
+                    // Start a new run but do not draw yet; wait for potential extensions
+                    bg_batch_rect = BackgroundRect::default()
+                        .with_cell_height(cell_height)
+                        .with_display_offset(display_offset)
+                        .with_layout_offset_y(layout_offset_y)
+                        .activate()
+                        .with_color(bg)
+                        .with_start_x(x)
+                        .with_width(cell_width);
+                }
+            } else if bg_batch_rect.can_flush() {
+                // Background returns to default, flush current background rect and init the new one
+                frame.fill(&bg_batch_rect.build(line), bg_batch_rect.color);
+
+                bg_batch_rect = BackgroundRect::default()
+                    .with_cell_height(cell_height)
+                    .with_display_offset(display_offset)
+                    .with_layout_offset_y(layout_offset_y);
+            }
+
+            // Draw hovered hyperlink underline (rare; keep per-cell for correctness)
+            if content.hovered_hyperlink.as_ref().is_some_and(|range| {
+                range.contains(&indexed.point)
+                    && pointer.is_some_and(|p| range.contains(&p))
+            }) || indexed.cell.flags.contains(cell::Flags::UNDERLINE)
+            {
+                let underline_height = y + cell_size.height;
+                let underline = Path::line(
+                    Point::new(x, underline_height),
+                    Point::new(x + cell_size.width, underline_height),
+                );
+                frame.stroke(
+                    &underline,
+                    Stroke::default()
+                        .with_width(font_size * 0.15)
+                        .with_color(fg),
+                );
+            }
+
+            // Handle cursor rendering
+            if content.grid.cursor.point == indexed.point
+                && content.terminal_mode.contains(TermMode::SHOW_CURSOR)
+            {
+                let cursor_color =
+                    term.theme.get_color(content.cursor.fg);
+                let cursor_rect =
+                    Path::rectangle(Point::new(x, y), cell_size);
+                frame.fill(&cursor_rect, cursor_color);
+            }
+
+            // Draw text
+            if indexed.c != ' ' && indexed.c != '\t' {
+                // The glyph under the block cursor must contrast with
+                // the cursor rect (painted above in the cell's pre-swap
+                // fg). Using the post-swap bg — or gating this on
+                // APP_CURSOR, a keypad mode unrelated to rendering —
+                // made the glyph invisible whenever the cell was
+                // INVERSE or inside a selection.
+                if content.grid.cursor.point == indexed.point
+                    && content.terminal_mode.contains(TermMode::SHOW_CURSOR)
+                {
+                    fg = cell_bg;
+                }
+                // Resolve font style (bold/italic) from cell flags
+                let mut font = term.font.font_type;
+                if indexed
+                    .cell
+                    .flags
+                    .intersects(cell::Flags::BOLD | cell::Flags::DIM_BOLD)
+                {
+                    font.weight = FontWeight::Bold;
+                }
+                if indexed.cell.flags.contains(cell::Flags::ITALIC) {
+                    font.style = FontStyle::Italic;
+                }
+                let text = Text {
+                    content: glyph(indexed.cell.c).to_string(),
+                    position: Point::new(cell_center_x, cell_center_y),
+                    font,
+                    size: iced_core::Pixels(font_size),
+                    color: fg,
+                    align_x: Alignment::Center,
+                    align_y: Vertical::Center,
+                    shaping: Shaping::Advanced,
+                    line_height: LineHeight::Relative(font_scale_factor),
+                    ..Default::default()
+                };
+                frame.fill_text(text);
+            }
+        }
+
+        // Flush any remaining background run at the end
+        if bg_batch_rect.can_flush() {
+            frame.fill(
+                &bg_batch_rect.build(last_line.unwrap_or(0)),
+                bg_batch_rect.color,
+            );
+        }
 }
 
 /// Brain: characters terminal fonts lack and whose fallback would be a colour emoji (Claude Code

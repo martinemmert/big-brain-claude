@@ -82,8 +82,8 @@ pub enum LinkAction {
 pub struct TerminalSize {
     pub cell_width: u16,
     pub cell_height: u16,
-    num_cols: u16,
-    num_lines: u16,
+    pub(crate) num_cols: u16,
+    pub(crate) num_lines: u16,
     layout_width: f32,
     layout_height: f32,
 }

@@ -24,6 +24,7 @@ const TRAFFIC_LIGHTS: f32 = 78.0;
 pub fn view(brain: &Brain) -> Element<'_, Message> {
     let now = now_ms();
     let detail = match brain.mode {
+        _ if brain.overview => overview(brain),
         Mode::Cleanup => cleanup(brain),
         Mode::NewSession => new_session(brain),
         _ if brain.prefs.layout == Layout::Today => today(brain),
@@ -829,9 +830,73 @@ fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
 }
 
 /// A real terminal running the session inside Brain, or why there is none.
-/// The Terminal tab; an open file shows in the reader beside it (also once the terminal ended).
+/// The Terminal tab; split (⌘D), the kept session's terminal beside it; an open file shows
+/// in the reader (also once the terminal ended).
 fn terminal<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
-    with_reader(brain, terminal_or_hint(brain, s))
+    let partner = brain.split.as_ref().filter(|k| **k != s.key && brain.terminals.contains_key(*k));
+    let main = match partner.and_then(|k| brain.model.board.get(k)) {
+        Some(other) => row![
+            column![split_label(other, true), terminal_or_hint(brain, other)].width(Fill),
+            column![split_label(s, false), terminal_or_hint(brain, s)].width(Fill),
+        ]
+        .spacing(12)
+        .height(Fill)
+        .into(),
+        None => terminal_or_hint(brain, s),
+    };
+    with_reader(brain, main)
+}
+
+/// Above each half of a split: whose terminal it is; the kept one says how to end the split.
+fn split_label<'a>(s: &Session, kept: bool) -> Element<'a, Message> {
+    let mut line = row![text(s.display_name()).size(12).color(TEXT_MUTED).font(style::semibold())].spacing(8).align_y(iced::Center);
+    if kept {
+        line = line.push(Space::new().width(Fill)).push(kbd("⌘D")).push(text(t("Teilung beenden", "end split")).size(11).color(TEXT_FAINT).font(UI));
+    }
+    container(line).padding(Padding { top: 6.0, ..Padding::ZERO }).into()
+}
+
+/// ⌘⇧A: every session that runs in Brain as a live preview; a click opens it.
+fn overview(brain: &Brain) -> Element<'_, Message> {
+    let mut keys: Vec<&brain_core::state::SessionKey> = brain.terminals.keys().collect();
+    keys.sort_by_key(|k| brain.model.board.get(k).map(|s| s.display_name().to_lowercase()));
+    let per_row = if keys.len() <= 4 { 2 } else { 3 };
+    let tiles: Vec<Element<'_, Message>> = keys
+        .into_iter()
+        .filter_map(|key| {
+            let term = brain.terminals.get(key)?;
+            let s = brain.model.board.get(key)?;
+            let phase = s.phase();
+            let mut head = row![style::dot(phase_color(phase), 8.0), text(clip(&s.display_name(), 40)).size(12.5).color(TEXT_STRONG).font(style::semibold())].spacing(8).align_y(iced::Center);
+            if let Some(title) = brain.terminal_titles.get(key) {
+                head = head.push(text(clip(title, 40)).size(11).color(TEXT_FAINT).font(UI));
+            }
+            let screen = container(iced_term::TerminalPreview::show(term)).padding(8).width(Fill).height(Fill).style(|_| boxed(INK, LINE, 8.0));
+            let tile = container(column![head, screen].spacing(6)).padding(8).width(Fill).height(260).style(|_| boxed(SURFACE, LINE, 10.0));
+            Some(mouse_area(tile).on_press(Message::OpenFromOverview(key.clone())).interaction(iced::mouse::Interaction::Pointer).into())
+        })
+        .collect();
+    let mut rows = column![row![
+        text(t("Alle Terminals", "All terminals")).size(15).color(TEXT_STRONG).font(style::semibold()),
+        Space::new().width(Fill),
+        kbd("⌘⇧A"),
+        text(t("schließen", "close")).size(11).color(TEXT_FAINT).font(UI),
+    ]
+    .spacing(8)
+    .align_y(iced::Center)]
+    .spacing(12);
+    let mut tiles = tiles.into_iter().peekable();
+    while tiles.peek().is_some() {
+        let mut line = row![].spacing(12);
+        for _ in 0..per_row {
+            line = line.push(match tiles.next() {
+                Some(tile) => tile,
+                None => Space::new().width(Fill).into(),
+            });
+        }
+        rows = rows.push(line);
+    }
+    scrollable(rows.padding(Padding { top: 16.0, right: 20.0, bottom: 20.0, left: 20.0 })).height(Fill).style(scrollbar).into()
 }
 
 /// `main` with the reader beside it when a file is open.
@@ -937,7 +1002,7 @@ fn shows(filter: app::FileFilter, file: &brain_core::files::SessionFile) -> bool
 
 fn terminal_or_hint<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     if let Some(term) = brain.terminals.get(&s.key) {
-        let focused = brain.terminal_focused;
+        let focused = brain.focused_terminal.as_ref() == Some(&s.key);
         let hovering = brain.file_hover;
         let edge = if hovering { WORKING } else if focused { alpha(WORKING, 0x88) } else { LINE };
         let screen = container(iced_term::TerminalView::show(term).map(Message::Term))
@@ -1414,9 +1479,11 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
 // ---- footer -----------------------------------------------------------------------
 
 fn footer(brain: &Brain) -> Element<'_, Message> {
-    let terminal_hints: [(&str, &str); 6] = [
+    let terminal_hints: [(&str, &str); 8] = [
         ("⏎ ⌘2", t("ins Terminal", "into terminal")),
         ("⌘1", t("zur Liste", "to the list")),
+        ("⌘K", t("Befehle", "commands")),
+        ("⌘D", t("teilen", "split")),
         ("⌘-Klick", t("Pfad öffnen", "open path")),
         ("⌘V", t("Screenshot einfügen", "paste screenshot")),
         ("⌥⏎", t("in iTerm", "in iTerm")),

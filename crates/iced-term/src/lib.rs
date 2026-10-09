@@ -16,4 +16,4 @@ pub use backend::Command as BackendCommand;
 pub use backend::{LinkAction, MouseButton};
 pub use terminal::{Command, Event, Terminal};
 pub use theme::{ColorPalette, Theme};
-pub use view::TerminalView;
+pub use view::{TerminalPreview, TerminalView};
