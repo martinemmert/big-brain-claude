@@ -138,11 +138,12 @@ impl Notifier {
             &NSString::from_str(t("15 Min. pausieren", "Snooze 15 min")),
             UNNotificationActionOptions::empty(),
         );
-        // Answer without opening Brain: the text goes into the session.
+        // Answer without opening Brain: the text goes into the session. Only on an unlocked Mac:
+        // from the lock screen anyone at the keyboard could type into a session that runs commands.
         let reply = UNTextInputNotificationAction::actionWithIdentifier_title_options_textInputButtonTitle_textInputPlaceholder(
             &NSString::from_str(ACTION_REPLY),
             &NSString::from_str(t("Antworten", "Reply")),
-            UNNotificationActionOptions::empty(),
+            UNNotificationActionOptions::AuthenticationRequired,
             &NSString::from_str(t("Senden", "Send")),
             &NSString::from_str(t("Antwort an die Session …", "Reply to the session …")),
         );
