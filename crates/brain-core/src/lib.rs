@@ -2,6 +2,7 @@
 //! session discovery and the state reducer.
 
 pub mod account;
+pub mod agents;
 pub mod changes;
 pub mod conflicts;
 pub mod digest;

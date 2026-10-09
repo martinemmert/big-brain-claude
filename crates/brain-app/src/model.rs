@@ -2,6 +2,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver};
+use std::time::{Duration, Instant};
+
+use brain_core::agents::{self, BackgroundAgent};
 
 use brain_core::account::{discover_accounts, home_dir, Account};
 use brain_core::process::{pid_alive, process_started_ms};
@@ -25,6 +29,11 @@ fn history_days(accounts: &[Account]) -> u64 {
 
 /// How often (in refreshes) the kept transcripts are listed again.
 const KEPT_EVERY: u32 = 60;
+/// How often `claude agents` is asked for background sessions.
+const AGENTS_EVERY: Duration = Duration::from_secs(20);
+
+/// Per account, its background sessions, or `None` when `claude agents` failed there.
+type AgentLists = Vec<(String, Option<Vec<BackgroundAgent>>)>;
 
 /// A session that just started waiting for the user.
 pub struct Attention {
@@ -54,6 +63,9 @@ pub struct Model {
     /// Per account: ids of the sessions whose transcripts still exist (resumable).
     kept: HashMap<String, HashSet<String>>,
     kept_age: u32,
+    /// The `claude agents` run in flight, and when the last one started.
+    agents_pending: Option<Receiver<AgentLists>>,
+    agents_asked: Option<Instant>,
     /// Status line snapshots (plan limits, context, cost) of all sessions.
     pub usage: Vec<Snapshot>,
     /// Fixed conversations in demo mode; `None` reads real transcripts.
@@ -77,6 +89,8 @@ impl Model {
             projects: HashMap::new(),
             kept: HashMap::new(),
             kept_age: 0,
+            agents_pending: None,
+            agents_asked: None,
             usage: Vec::new(),
             demo_messages: None,
         };
@@ -184,6 +198,7 @@ impl Model {
             self.kept = self.accounts.iter().map(|a| (a.id.clone(), kept_session_ids(a))).collect();
         }
         self.kept_age = (self.kept_age + 1) % KEPT_EVERY;
+        self.refresh_agents();
         self.refresh_transcripts(&seen);
         self.usage = usage::read_all(&usage::status_dir(&home_dir()));
 
@@ -203,6 +218,64 @@ impl Model {
         }
         self.primed = true;
         attention
+    }
+
+    /// Lists the transcripts again on the next refresh (after Brain deleted one).
+    pub fn relist_transcripts(&mut self) {
+        self.kept_age = 0;
+        self.agents_asked = None;
+    }
+
+    /// Applies the last `claude agents` answer and asks again every 20 s, off the UI thread.
+    /// A background session counts for the account whose folder holds its transcript.
+    fn refresh_agents(&mut self) {
+        if let Some(lists) = self.agents_pending.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.agents_pending = None;
+            let mut owned: HashMap<String, Vec<BackgroundAgent>> = HashMap::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            for (listed_by, agents) in &lists {
+                for agent in agents.iter().flatten() {
+                    if !seen.insert(agent.session_id.clone()) {
+                        continue;
+                    }
+                    let owner = self
+                        .accounts
+                        .iter()
+                        .find(|a| self.kept.get(&a.id).is_some_and(|ids| ids.contains(&agent.session_id)))
+                        .map_or(listed_by.clone(), |a| a.id.clone());
+                    owned.entry(owner).or_default().push(agent.clone());
+                }
+            }
+            for account in &self.accounts {
+                // An account whose listing failed keeps what it had.
+                if lists.iter().any(|(id, agents)| *id == account.id && agents.is_none()) {
+                    continue;
+                }
+                let agents = owned.remove(&account.id).unwrap_or_default();
+                self.board.set_agents(&account.id, &agents);
+                for agent in &agents {
+                    let key = SessionKey { account: account.id.clone(), id: agent.session_id.clone() };
+                    let modified = find_transcript(account, &agent.session_id)
+                        .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
+                        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|since| since.as_millis() as i64);
+                    if let Some(at) = modified {
+                        self.board.touch(&key, at);
+                    }
+                }
+            }
+        }
+        if self.agents_pending.is_some() || self.agents_asked.is_some_and(|at| at.elapsed() < AGENTS_EVERY) {
+            return;
+        }
+        let accounts = self.accounts.clone();
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            let lists: AgentLists = accounts.iter().map(|a| (a.id.clone(), agents::list(a))).collect();
+            let _ = tx.send(lists);
+        });
+        self.agents_pending = Some(rx);
+        self.agents_asked = Some(Instant::now());
     }
 
     /// Re-reads a live session's transcript tail when the file grew.

@@ -59,6 +59,18 @@ pub fn find_transcript(account: &Account, session_id: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// A session's files: its transcript and, if there is one, the folder of its subagents' transcripts
+/// and tool output.
+pub fn session_files(account: &Account, session_id: &str) -> Vec<PathBuf> {
+    let Some(transcript) = find_transcript(account, session_id) else { return Vec::new() };
+    let folder = transcript.with_extension("");
+    let mut files = vec![transcript];
+    if folder.is_dir() {
+        files.push(folder);
+    }
+    files
+}
+
 /// The ids of every session whose transcript Claude Code still keeps for this account, i.e. the
 /// sessions that can still be resumed.
 pub fn kept_session_ids(account: &Account) -> std::collections::HashSet<String> {

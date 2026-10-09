@@ -23,6 +23,8 @@ use crate::widgets::{
 use crate::{messages, theme, tr};
 
 /// Sessions on "your turn" for longer than this move to the "resting" section.
+/// Ended sessions show in the list for a day; older ones through the search.
+const ENDED_RECENT_MS: i64 = 24 * 60 * 60 * 1000;
 const RESTING_AFTER_MS: i64 = 2 * 60 * 60 * 1000;
 /// Ended sessions stay listed this long (they are read from the event history).
 const SNOOZE_MS: i64 = 15 * 60 * 1000;
@@ -37,6 +39,10 @@ pub struct BrainView {
     filter: Option<String>,
     selected: Option<SessionKey>,
     show_ended: bool,
+    /// The "resting for over 2 h" group is open.
+    show_resting: bool,
+    /// The clean-up dialog's age choice (index into CLEANUP_DAYS).
+    cleanup_age: usize,
     status: Option<(String, Instant)>,
     list_scroll: ScrollHandle,
     tab: DetailTab,
@@ -82,7 +88,11 @@ enum Mode {
     Rename,
     Reply,
     NewSession,
+    Cleanup,
 }
+
+/// Ages the clean-up dialog offers, in days.
+const CLEANUP_DAYS: [i64; 4] = [1, 3, 7, 14];
 
 /// The "new session" dialog: a folder (picked from recent ones or typed) and an account.
 #[derive(Default)]
@@ -132,12 +142,18 @@ struct Groups<'a> {
     resting: Vec<&'a Session>,
     snoozed: Vec<&'a Session>,
     ended: Vec<&'a Session>,
+    /// Whether the resting group is open (or a search shows everything).
+    resting_open: bool,
+    /// Ended over a day ago, shown only while searching.
+    older_ended: usize,
+    /// Hidden with ⌫, shown only while searching.
+    hidden: usize,
 }
 
 impl<'a> Groups<'a> {
     fn navigable(&self, include_ended: bool) -> Vec<&'a Session> {
         let mut all: Vec<&Session> = self.saved.clone();
-        all.extend(self.live());
+        all.extend(self.live().into_iter().filter(|s| self.resting_open || !self.resting.iter().any(|r| r.key == s.key)));
         if include_ended {
             all.extend(&self.ended);
         }
@@ -187,6 +203,8 @@ impl BrainView {
             filter: None,
             selected: None,
             show_ended: false,
+            show_resting: false,
+            cleanup_age: 1,
             status: None,
             list_scroll: ScrollHandle::new(),
             tab: DetailTab::Messages,
@@ -701,6 +719,233 @@ impl BrainView {
             .into_any_element()
     }
 
+    /// ⏎ on a background session: `claude attach` in a new tab.
+    fn attach_agent(&mut self, account: &str, agent: &brain_core::agents::BackgroundAgent, cwd: Option<String>) {
+        let config_dir = self.model.account(account).filter(|a| a.id != "main").map(|a| a.config_dir.display().to_string());
+        let cwd = cwd.unwrap_or_else(|| brain_core::account::home_dir().display().to_string());
+        if self.blocked_in_demo() {
+            return;
+        }
+        let outcome = terminal::open_new(&cwd, config_dir.as_deref(), &format!("claude attach {}", agent.id));
+        self.report(outcome, Some(t("Hintergrund-Session in einem neuen Tab geöffnet.", "Opened the background session in a new tab.").into()));
+    }
+
+    /// `⌫` twice: hides the session (or shows it again) until something new happens in it.
+    fn hide_selected(&mut self) {
+        let Some(session) = self.selected_session() else { return };
+        let key = session.key.clone();
+        if self.prefs.is_hidden(&key, session.last_activity_ms) {
+            self.prefs.unhide(&key);
+            self.prefs.save();
+            self.set_status(t("Wieder eingeblendet.", "Shown again."));
+            return;
+        }
+        if !self.arm('h', &key) {
+            self.set_status(t("Nochmal ⌫ blendet die Session aus, bis sich in ihr etwas tut.", "Press ⌫ again to hide the session until something happens in it."));
+            return;
+        }
+        self.prefs.hide(&key, now_ms());
+        self.prefs.save();
+        self.selected = None;
+        self.set_status(t("Ausgeblendet – über / findest du sie wieder.", "Hidden – / finds it again."));
+    }
+
+    /// `⌘⌫` twice: an ended session's transcript goes to the Trash; a background session is
+    /// removed with `claude rm` after its transcript went to the Trash.
+    fn trash_selected(&mut self) {
+        let Some(session) = self.selected_session() else { return };
+        let key = session.key.clone();
+        let deletable = session.phase() == Phase::Ended || session.agent.as_ref().is_some_and(|a| !a.is_active());
+        if !deletable {
+            self.set_status(t(
+                "Löschen geht nur bei beendeten Sessions – erst X X.",
+                "Only ended sessions can be deleted – end it with X X first.",
+            ));
+            return;
+        }
+        if !self.arm('d', &key) {
+            self.set_status(t("Nochmal ⌘⌫ legt die Session in den Papierkorb.", "Press ⌘⌫ again to move the session to the Trash."));
+            return;
+        }
+        if self.blocked_in_demo() {
+            return;
+        }
+        match self.delete_session(&key) {
+            Ok(()) => self.set_status(t("In den Papierkorb gelegt.", "Moved to the Trash.")),
+            Err(err) => self.set_status(tr!("Löschen fehlgeschlagen: {err}", "Deleting failed: {err}")),
+        }
+    }
+
+    /// Moves a session's transcript and its folder to the Trash, removes a background session
+    /// with `claude rm`, and forgets the session.
+    fn delete_session(&mut self, key: &SessionKey) -> Result<(), String> {
+        let session = self.model.board.get(key).ok_or("unknown session")?;
+        let account = self.model.account(&key.account).cloned().ok_or("unknown account")?;
+        let agent = session.agent.clone();
+        // A background session's process writes its last lines when it exits: stop it first, so
+        // nothing is written after its transcript went to the Trash. (Already stopped is fine.)
+        if let Some(agent) = &agent {
+            let _ = brain_core::agents::stop(&account, &agent.id);
+        }
+        if let Some(session_id) = session.session_id.clone() {
+            for path in brain_core::transcript::session_files(&account, &session_id) {
+                crate::trash::move_to_trash(&path)?;
+            }
+        }
+        if let Some(agent) = agent {
+            brain_core::agents::remove(&account, &agent.id)?;
+        }
+        self.prefs.forget(key);
+        self.prefs.save();
+        self.model.board.remove(key);
+        self.model.relist_transcripts();
+        if self.selected.as_ref() == Some(key) {
+            self.selected = None;
+        }
+        Ok(())
+    }
+
+    /// What the clean-up dialog offers: sessions not pinned that ended (or are background
+    /// sessions) and saw nothing for the chosen number of days.
+    fn cleanup_candidates(&self) -> Vec<&Session> {
+        let cutoff = now_ms() - CLEANUP_DAYS[self.cleanup_age] * 24 * 60 * 60 * 1000;
+        self.model
+            .board
+            .sorted()
+            .into_iter()
+            .filter(|s| self.filter.as_ref().is_none_or(|f| *f == s.key.account))
+            .filter(|s| !self.prefs.is_pinned(&s.key))
+            .filter(|s| s.phase() == Phase::Ended || s.agent.is_some())
+            .filter(|s| s.last_activity_ms < cutoff)
+            .filter(|s| s.phase() != Phase::Ended || (self.model.resumable(s) && !s.is_empty()))
+            .collect()
+    }
+
+    fn on_cleanup_key(&mut self, keystroke: &gpui::Keystroke) {
+        if keystroke.modifiers.platform && keystroke.key == "backspace" {
+            let keys: Vec<SessionKey> = self.cleanup_candidates().iter().map(|s| s.key.clone()).collect();
+            if keys.is_empty() || !self.arm('d', &SessionKey { account: String::new(), id: "cleanup".into() }) {
+                if !keys.is_empty() {
+                    let n = keys.len();
+                    self.set_status(tr!("Nochmal ⌘⌫ legt {n} Sessions in den Papierkorb.", "Press ⌘⌫ again to move {n} sessions to the Trash."));
+                }
+                return;
+            }
+            if self.blocked_in_demo() {
+                return;
+            }
+            let (mut done, mut failed) = (0, Vec::new());
+            for key in keys {
+                match self.delete_session(&key) {
+                    Ok(()) => done += 1,
+                    Err(err) => failed.push(err),
+                }
+            }
+            self.mode = Mode::Normal;
+            self.set_status(match failed.first() {
+                None => tr!("{done} Sessions in den Papierkorb gelegt.", "Moved {done} sessions to the Trash."),
+                Some(err) => {
+                    let n = failed.len();
+                    tr!("{done} gelöscht, {n} fehlgeschlagen: {err}", "{done} deleted, {n} failed: {err}")
+                }
+            });
+            return;
+        }
+        match keystroke.key.as_str() {
+            "tab" => self.cleanup_age = (self.cleanup_age + 1) % CLEANUP_DAYS.len(),
+            "h" => {
+                let keys: Vec<SessionKey> = self.cleanup_candidates().iter().map(|s| s.key.clone()).collect();
+                let n = keys.len();
+                for key in &keys {
+                    self.prefs.hide(key, now_ms());
+                }
+                self.prefs.save();
+                self.mode = Mode::Normal;
+                self.set_status(tr!("{n} Sessions ausgeblendet.", "Hid {n} sessions."));
+            }
+            "escape" => self.mode = Mode::Normal,
+            _ => {}
+        }
+    }
+
+    fn render_cleanup(&self, cx: &mut Context<Self>) -> AnyElement {
+        let candidates = self.cleanup_candidates();
+        let now = now_ms();
+        let ages: Vec<(usize, SharedString)> = CLEANUP_DAYS
+            .iter()
+            .enumerate()
+            .map(|(i, days)| (i, SharedString::from(tr!("{days} T", "{days} d"))))
+            .collect();
+        let count = candidates.len();
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .h_full()
+            .px(px(28.))
+            .pt(px(24.))
+            .bg(theme::ink())
+            .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).text_color(theme::text_strong()).child(t("Aufräumen", "Clean up")))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(div().text_size(px(12.5)).text_color(theme::text_muted()).child(t("Ohne Aktivität seit", "Nothing happened for")))
+                    .child(segmented("cleanup-age", ages, self.cleanup_age, cx.listener(|this, value: &usize, _, cx| {
+                        this.cleanup_age = *value;
+                        cx.notify();
+                    }))),
+            )
+            .child(div().text_size(px(12.5)).text_color(theme::text_muted()).child(if count == 0 {
+                t("Nichts aufzuräumen. Angeheftete und gemerkte Sessions bleiben immer.", "Nothing to clean up. Pinned and saved sessions always stay.").to_string()
+            } else {
+                tr!(
+                    "{count} beendete oder Hintergrund-Sessions. Angeheftete und gemerkte bleiben.",
+                    "{count} ended or background sessions. Pinned and saved ones stay."
+                )
+            }))
+            .child(
+                div()
+                    .id("cleanup-list")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .children(candidates.iter().map(|s| {
+                        let ago = theme::ago_phrase(s.last_activity_ms, now);
+                        let kind = match &s.agent {
+                            Some(agent) => {
+                                let state = &agent.state;
+                                tr!("Hintergrund · {state}", "background · {state}")
+                            }
+                            None => t("beendet", "ended").to_string(),
+                        };
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(10.))
+                            .px(px(10.))
+                            .py(px(5.))
+                            .text_size(px(12.5))
+                            .child(dot(phase_color(s.phase()), 7., false, SharedString::from(format!("cleanup-dot-{}", s.key.id))))
+                            .child(name_label(s, 12.5))
+                            .child(account_badge(&s.key.account, self.account_index(&s.key.account)))
+                            .child(div().flex_none().text_color(theme::text_faint()).child(kind))
+                            .child(div().flex_1().min_w_0().truncate().text_color(theme::text_muted()).child(ago))
+                    })),
+            )
+            .child(div().pb(px(16.)).text_size(px(11.5)).text_color(theme::text_faint()).child(t(
+                "H alle ausblenden · ⌘⌫ ⌘⌫ alle in den Papierkorb · ⇥ Alter · esc",
+                "H hide all · ⌘⌫ ⌘⌫ move all to the Trash · ⇥ age · esc",
+            )))
+            .into_any_element()
+    }
+
     /// The first press of a two-press action arms it; returns whether this press is the second,
     /// within 5 s, on the same session.
     fn arm(&mut self, action: char, key: &SessionKey) -> bool {
@@ -713,6 +958,24 @@ impl BrainView {
     fn end_selected(&mut self) {
         let Some(session) = self.selected_session() else { return };
         let key = session.key.clone();
+        if let Some(agent) = session.agent.clone().filter(|a| a.is_active()) {
+            if !self.arm('x', &key) {
+                self.set_status(t("Nochmal X stoppt die Hintergrund-Session (das Gespräch bleibt).", "Press X again to stop the background session (its conversation is kept)."));
+                return;
+            }
+            if self.blocked_in_demo() {
+                return;
+            }
+            let Some(account) = self.model.account(&key.account).cloned() else { return };
+            match brain_core::agents::stop(&account, &agent.id) {
+                Ok(()) => {
+                    self.model.relist_transcripts();
+                    self.set_status(t("Hintergrund-Session gestoppt.", "Stopped the background session."));
+                }
+                Err(err) => self.set_status(tr!("Stoppen fehlgeschlagen: {err}", "Stopping failed: {err}")),
+            }
+            return;
+        }
         if session.phase() == Phase::Ended {
             self.set_status(t("Die Session ist schon beendet.", "The session has already ended."));
             return;
@@ -745,6 +1008,10 @@ impl BrainView {
             self.set_status(t("Es gibt kein zweites Konto.", "There is no other account."));
             return;
         };
+        if session.agent.is_some() {
+            self.set_status(t("Hintergrund-Sessions zieht Brain nicht um.", "Brain doesn't move background sessions."));
+            return;
+        }
         let ended = session.phase() == Phase::Ended;
         if !ended && !session.accepts_input() {
             self.set_status(t(
@@ -832,7 +1099,19 @@ impl BrainView {
     }
 
     fn groups(&self, now: i64) -> Groups<'_> {
-        let mut groups = Groups { saved: vec![], pinned: vec![], attention: vec![], working: vec![], resting: vec![], snoozed: vec![], ended: vec![] };
+        let searching = !self.search.text.is_empty();
+        let mut groups = Groups {
+            saved: vec![],
+            pinned: vec![],
+            attention: vec![],
+            working: vec![],
+            resting: vec![],
+            snoozed: vec![],
+            ended: vec![],
+            resting_open: self.show_resting || searching,
+            older_ended: 0,
+            hidden: 0,
+        };
         let visible = self
             .model
             .board
@@ -841,7 +1120,12 @@ impl BrainView {
             .filter(|s| self.filter.as_ref().is_none_or(|f| *f == s.key.account))
             .filter(|s| s.matches(&self.search.text));
         for session in visible {
-            if session.phase() == Phase::Ended && !self.model.resumable(session) {
+            let ended = session.phase() == Phase::Ended;
+            if ended && (session.is_empty() || !self.model.resumable(session)) {
+                continue;
+            }
+            if self.prefs.is_hidden(&session.key, session.last_activity_ms) && !searching {
+                groups.hidden += 1;
                 continue;
             }
             if self.prefs.is_pinned(&session.key) {
@@ -862,7 +1146,8 @@ impl BrainView {
                 Phase::YourTurn if now - session.phase_since_ms() > RESTING_AFTER_MS => groups.resting.push(session),
                 Phase::YourTurn => groups.attention.push(session),
                 Phase::Working | Phase::Background => groups.working.push(session),
-                Phase::Ended => groups.ended.push(session),
+                Phase::Ended if searching || now - session.last_activity_ms < ENDED_RECENT_MS => groups.ended.push(session),
+                Phase::Ended => groups.older_ended += 1,
             }
         }
         // Resting: most recently finished first.
@@ -901,6 +1186,12 @@ impl BrainView {
         let clipboard = || cx.read_from_clipboard().and_then(|item| item.text());
 
         match self.mode {
+            Mode::Cleanup => {
+                self.on_cleanup_key(keystroke);
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
             Mode::NewSession => {
                 self.on_new_session_key(keystroke, cx);
                 cx.stop_propagation();
@@ -958,6 +1249,12 @@ impl BrainView {
             cx.notify();
             return;
         }
+        if keystroke.modifiers.platform && keystroke.key == "backspace" && self.mode == Mode::Normal {
+            self.trash_selected();
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if keystroke.modifiers.platform && keystroke.key == "c" && self.prefs.layout == Layout::Today {
             let date = chrono::Local::now().format("%d.%m.%Y").to_string();
             let markdown = brain_core::digest::markdown(&tr!("Heute, {date}", "Today, {date}"), &self.today_digest());
@@ -1000,6 +1297,12 @@ impl BrainView {
             "s" => self.cycle_snooze(),
             "a" => self.move_to_other_account(),
             "x" => self.end_selected(),
+            "backspace" => self.hide_selected(),
+            "c" => {
+                self.armed = None;
+                self.mode = Mode::Cleanup;
+            }
+            "h" => self.show_resting = !self.show_resting,
             "g" => {
                 self.prefs.layout = if self.prefs.layout == Layout::Projects { Layout::Status } else { Layout::Projects };
                 self.prefs.save();
@@ -1090,6 +1393,10 @@ impl BrainView {
     /// ⏎: a live session's terminal comes forward; an ended one is resumed in a new tab.
     fn open_selected(&mut self) {
         let Some(session) = self.selected_session() else { return };
+        if let Some(agent) = session.agent.clone() {
+            self.attach_agent(&session.key.account.clone(), &agent, session.cwd.clone());
+            return;
+        }
         if session.phase() == Phase::Ended {
             self.resume_selected();
             return;
@@ -1506,7 +1813,27 @@ impl BrainView {
             if sessions.is_empty() {
                 continue;
             }
-            children.push(section_title(title, sessions.len(), false));
+            let resting = std::ptr::eq(sessions, &groups.resting);
+            if !resting {
+                children.push(section_title(title, sessions.len(), false));
+            } else {
+                let open = groups.resting_open;
+                let title = format!("{title} {}", if open { "▾" } else { "▸" });
+                children.push(
+                    div()
+                        .id("resting-toggle")
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.show_resting = !this.show_resting;
+                            cx.notify();
+                        }))
+                        .child(section_title(&title, sessions.len(), false))
+                        .into_any_element(),
+                );
+                if !open {
+                    continue;
+                }
+            }
             for session in sessions.iter() {
                 self.push_session(session, nav, now, cx, children);
             }
@@ -1538,6 +1865,19 @@ impl BrainView {
     }
 
     fn push_ended(&self, groups: &Groups, nav: &mut usize, now: i64, cx: &mut Context<Self>, children: &mut Vec<AnyElement>) {
+        let mut notes: Vec<String> = Vec::new();
+        if groups.older_ended > 0 {
+            let n = groups.older_ended;
+            notes.push(tr!("{n} älter als ein Tag", "{n} older than a day"));
+        }
+        if groups.hidden > 0 {
+            let n = groups.hidden;
+            notes.push(tr!("{n} ausgeblendet", "{n} hidden"));
+        }
+        if !notes.is_empty() {
+            let notes = notes.join(" · ");
+            children.push(hint(tr!("{notes} – / sucht darin, C räumt auf.", "{notes} – / searches them, C cleans up.")));
+        }
         if groups.ended.is_empty() {
             return;
         }
@@ -1631,8 +1971,21 @@ impl BrainView {
         if self.conflicts.get(&s.key).is_some_and(|c| !c.shared_files.is_empty()) {
             out.push(marker(t("⚠ Konflikt", "⚠ conflict").into(), theme::calls()));
         }
+        if let Some(agent) = &s.agent {
+            let label = match agent.state.as_str() {
+                "blocked" => t("Hintergrund · wartet", "background · blocked"),
+                "failed" => t("Hintergrund · fehlgeschlagen", "background · failed"),
+                "done" => t("Hintergrund · fertig", "background · done"),
+                "stopped" => t("Hintergrund · gestoppt", "background · stopped"),
+                _ => t("Hintergrund", "background"),
+            };
+            out.push(marker(format!("◌ {label}"), theme::text_faint()));
+        }
         if self.prefs.is_pinned(&s.key) {
             out.push(marker("★".into(), theme::turn()));
+        }
+        if self.prefs.is_hidden(&s.key, s.last_activity_ms) {
+            out.push(marker(t("ausgeblendet", "hidden").into(), theme::text_faint()));
         }
         if self.prefs.is_muted(&s.key) {
             out.push(marker(t("stumm", "muted").into(), theme::text_faint()));
@@ -1876,7 +2229,12 @@ impl BrainView {
         };
         let phase = s.phase();
         let caps = self.capabilities();
-        let primary = if phase == Phase::Ended {
+        let primary = if s.agent.is_some() {
+            button("open", t("Öffnen", "Attach"), "⏎", phase == Phase::NeedsYou, true, cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.open_selected();
+                cx.notify();
+            }))
+        } else if phase == Phase::Ended {
             button("open", t("Fortsetzen", "Resume"), "⏎", false, true, cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.resume_selected();
                 cx.notify();
@@ -2260,7 +2618,7 @@ impl BrainView {
     }
 
     fn render_footer(&self) -> impl IntoElement {
-        let hints: [(&str, &str); 9] = [
+        let hints: [(&str, &str); 10] = [
             ("↑↓", t("wählen", "select")),
             ("⏎", t("öffnen", "open")),
             ("/", t("suchen", "search")),
@@ -2269,7 +2627,8 @@ impl BrainView {
             ("R", t("umbenennen", "rename")),
             ("P M S", t("anheften · stumm · pausieren", "pin · mute · snooze")),
             ("G", t("Projekte", "projects")),
-            ("X A", t("beenden · Konto wechseln", "end · move account")),
+            ("X A", t("beenden · Konto", "end · account")),
+            ("⌫ C", t("ausblenden · aufräumen", "hide · clean up")),
         ];
         div()
             .flex()
@@ -2338,7 +2697,9 @@ impl Render for BrainView {
             .child(self.render_list(&groups, now, cx))
             .children(self.render_usage(now))
             .into_any_element();
-        let detail = if self.mode == Mode::NewSession {
+        let detail = if self.mode == Mode::Cleanup {
+            self.render_cleanup(cx)
+        } else if self.mode == Mode::NewSession {
             self.render_new_session(cx)
         } else if self.prefs.layout == Layout::Today {
             self.render_today(cx)

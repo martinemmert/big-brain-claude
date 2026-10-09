@@ -39,6 +39,14 @@ follows your macOS language: English or German.
   from their transcripts, and a softer hint when they change files in the same checkout.
 - **Today.** What every session reported as done today, per project; copy it as Markdown.
 - **Timeline.** Every hook event and report of a session.
+- **Keep the list short.** Sessions that never got a prompt don't show up; the "resting" group
+  is folded (`H`); ended sessions show for a day, older ones through the search. `⌫` twice hides
+  a session until something new happens in it; `⌘⌫` twice moves an ended session's transcript to
+  the **Trash**. `C` opens *Clean up*: everything ended (or in the background) and quiet for 1, 3,
+  7 or 14 days, to hide or trash at once. Pinned and saved sessions always stay.
+- **Claude Code's background sessions** (`claude --bg`, listed by `claude agents`) show with
+  their own state (blocked, failed, done …). `⏎` attaches to one in a new tab, `X X` stops it,
+  `⌘⌫ ⌘⌫` stops it, moves its transcript to the Trash and runs `claude rm`.
 - **End now, resume later.** `X` twice ends a waiting session (`/exit`); closing the tab works
   too. Ended sessions stay in the list as long as Claude Code keeps their transcript
   (`cleanupPeriodDays`, 30 days by default), with their name, last message and how many days are
@@ -170,7 +178,11 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `P` / `M` | pin (an ended session: save it to resume) / mute notifications |
 | `S` | snooze: 15 min → 1 h → until tomorrow 9:00 → off |
 | `G` / `D` | group by project / today's digest (`⌘C` copies it) |
-| `X` `X` | end the session (`/exit`); it stays resumable |
+| `X` `X` | end the session (`/exit`; a background session: `claude stop`); it stays resumable |
+| `⌫` `⌫` | hide the session until something new happens in it (again: show it) |
+| `⌘⌫` `⌘⌫` | move an ended session's transcript to the Trash |
+| `C` | clean up: hide or trash everything quiet for N days |
+| `H` | fold / unfold the resting group |
 | `A` `A` | move the session to the next account (an ended one resumes there) |
 | `⌘N` | start a new session |
 | `←` `→` | switch between messages, timeline and changes |

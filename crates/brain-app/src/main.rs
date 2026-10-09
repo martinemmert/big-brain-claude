@@ -9,7 +9,9 @@ mod messages;
 mod model;
 mod notify;
 mod prefs;
+mod shell_env;
 mod theme;
+mod trash;
 mod view;
 mod widgets;
 
@@ -21,6 +23,7 @@ use gpui::{
 actions!(brain, [Quit]);
 
 fn main() {
+    shell_env::adopt_login_path();
     let app = Application::new();
     app.on_open_urls(links::received);
     app.run(|cx: &mut App| {
