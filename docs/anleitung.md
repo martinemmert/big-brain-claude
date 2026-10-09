@@ -101,8 +101,10 @@ Die Tabs (`←` `→`):
   für die Session. Freier Text geht an die Session oder an alle, die auf dich warten.
 - **Benachrichtigungen:** Wartet eine Session, meldet macOS das. Direkt in der Mitteilung kannst du
   antworten (nur am entsperrten Mac), öffnen oder 15 Minuten pausieren.
-- **Quick Terminal:** `⌃⌥Space` aus jeder App holt Brain mit dem Terminal der wartenden Session
-  nach vorn; nochmal drücken blendet Brain aus.
+- **Quick Terminal:** Eine Taste deiner Wahl holt Brain aus jeder App mit dem Terminal der
+  wartenden Session nach vorn; nochmal drücken blendet Brain aus. Ist aus, bis du sie in der
+  Config setzt (`"quick_terminal": "cmd+shift+b"`). Eine globale Taste gilt überall, auch
+  gegenüber macOS: ⌃⌥Space etwa wechselt dort die Eingabequelle.
 - **Screenshot-Wächter:** Ein neuer Screenshot erscheint als Leiste über der Fußzeile, mit
   „In <Session>“ oder „In den Composer“.
 
@@ -139,7 +141,7 @@ Alles optional, in `~/.claude-brain/config.json`:
 | `chat_font`, `chat_font_size` | Schrift des Gesprächs, sonst die von iTerm |
 | `remind_after_minutes` | nach wie vielen Minuten Warten Brain erneut erinnert (`0` = nie) |
 | `quick_replies` | eigene Schnellantworten für `T` `1`–`9` |
-| `quick_terminal` | Tastenkürzel des Quick Terminals, z. B. `"cmd+shift+b"`; `"off"` schaltet es ab |
+| `quick_terminal` | Tastenkürzel des Quick Terminals, z. B. `"cmd+shift+b"`; ohne Eintrag aus |
 | `screenshot_folder` | Ordner, den der Screenshot-Wächter beobachtet; `"off"` schaltet ihn ab |
 
 **Vorlagen** liegen in `~/.claude-brain/templates/*.md`, mit Platzhaltern wie `{branch}`. Im Dialog
@@ -163,7 +165,7 @@ Alles optional, in `~/.claude-brain/config.json`:
 | `⌘D` | Terminal teilen |
 | `⌘⇧A` | alle Terminals im Überblick |
 | `⌘T` | Shell im Projektordner |
-| `⌃⌥Space` | Quick Terminal, aus jeder App |
+| deine `quick_terminal`-Taste | Quick Terminal, aus jeder App |
 | `⌘`-Klick | Pfad oder Link aus der Ausgabe öffnen |
 | `⌘V` | Screenshot ins Terminal einfügen |
 | `I` `I` | Session aus iTerm nach Brain holen |

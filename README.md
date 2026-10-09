@@ -37,9 +37,10 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   dictation work, the title Claude Code sets shows beside the session, and a bell from a session
   you're not looking at marks it. `⌘D` keeps one terminal on screen beside the next session you
   pick; `⌘⇧A` shows every session that runs in Brain as a live preview.
-- **Quick terminal.** `⌃⌥Space` from any app brings Brain forward with the longest-waiting
-  session's terminal; again hides Brain. `"quick_terminal"` in `~/.claude-brain/config.json`
-  picks another key (`"cmd+shift+b"`, `"off"`).
+- **Quick terminal.** A key you pick, e.g. `"quick_terminal": "cmd+shift+b"` in
+  `~/.claude-brain/config.json`, brings Brain forward from any app with the longest-waiting
+  session's terminal; again hides Brain. Off until set: a global key takes the combination
+  everywhere, also from macOS (⌃⌥Space switches the input source).
 - **Command palette.** `⌘K`: every action, `/compact`, `/context`, `/model` and other slash
   commands for the session, and any text sent to it or to every session whose turn it is.
 - **Files.** Every file a session wrote, edited, read or was given, newest first: find the
@@ -247,7 +248,7 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `⌘T` | shell in the session's folder (again: hide) |
 | `⌘D` | split: keep this terminal beside the next session (again: end) |
 | `⌘⇧A` | all terminals as live previews |
-| `⌃⌥Space` | from any app: Brain with the waiting session's terminal (again: hide) |
+| your `quick_terminal` key | from any app: Brain with the waiting session's terminal (again: hide) |
 | right-click | a session's actions |
 | `P` / `M` | pin (an ended session: save it to resume) / mute notifications |
 | `S` | snooze: 15 min → 1 h → until tomorrow 9:00 → off |

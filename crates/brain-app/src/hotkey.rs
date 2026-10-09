@@ -1,5 +1,5 @@
-//! The quick-terminal hotkey: a system-wide key (⌃⌥Space by default) that brings Brain forward
-//! with the waiting session's terminal. Carbon's `RegisterEventHotKey` is the macOS way to own a
+//! The quick-terminal hotkey: a system-wide key (only when `quick_terminal` is set in the config)
+//! that brings Brain forward with the waiting session's terminal. Carbon's `RegisterEventHotKey` is the macOS way to own a
 //! global key without the accessibility permission; the declarations below follow the SDK's
 //! HIToolbox headers (CarbonEvents.h, CarbonEventsCore.h, Events.h).
 

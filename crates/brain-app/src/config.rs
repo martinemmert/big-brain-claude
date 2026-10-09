@@ -14,10 +14,11 @@ pub fn remind_after_ms() -> Option<i64> {
     (minutes > 0).then_some(minutes * 60 * 1000)
 }
 
-/// The quick-terminal hotkey (`quick_terminal`), e.g. "ctrl+option+space" (the default);
-/// "" or "off" turns it off.
+/// The quick-terminal hotkey (`quick_terminal`), e.g. "cmd+shift+b". Off unless set: a global
+/// key overrides the same combination everywhere, including macOS' own shortcuts (⌃⌥Space
+/// switches the input source), so only a key the user picked is taken.
 pub fn quick_terminal() -> Option<String> {
-    let spec = read().and_then(|v| v.get("quick_terminal")?.as_str().map(str::to_string)).unwrap_or_else(|| "ctrl+option+space".to_string());
+    let spec = read().and_then(|v| v.get("quick_terminal")?.as_str().map(str::to_string))?;
     (!spec.trim().is_empty() && spec.trim() != "off").then_some(spec)
 }
 
