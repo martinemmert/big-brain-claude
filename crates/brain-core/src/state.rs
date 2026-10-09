@@ -168,10 +168,13 @@ impl Session {
     pub fn phase(&self) -> Phase {
         // A background session's state comes from `claude agents`, which knows it best.
         if let Some(agent) = &self.agent {
+            // `claude agents` updates "working" late; the process's own status file says at once
+            // when the turn ended, so an idle process falls through to the usual rules.
+            let process_idle = matches!(self.current_signal(), Some((Signal::Idle | Signal::Waiting, _)));
             match agent.state.as_str() {
                 "blocked" => return Phase::NeedsYou,
                 "idle" => return Phase::YourTurn,
-                "starting" | "running" | "working" => return Phase::Working,
+                "starting" | "running" | "working" if !process_idle => return Phase::Working,
                 "done" | "failed" | "stopped" => return Phase::Ended,
                 _ => {}
             }
@@ -681,7 +684,12 @@ mod tests {
             started_ms: Some(0),
         };
 
-        board.set_agents("second", &[agent("blocked")]);
+        board.set_agents("second", &[agent("working")]);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::Working);
+        board.apply_session_file("second", &file("idle", 10), true);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::YourTurn, "an idle process beats a late 'working'");
+        board.apply_session_file("second", &file("busy", 20), true);
+                board.set_agents("second", &[agent("blocked")]);
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::NeedsYou);
         assert!(!board.get(&key()).unwrap().accepts_input());
         board.set_agents("second", &[agent("failed")]);

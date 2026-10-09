@@ -5,11 +5,8 @@
 use std::sync::OnceLock;
 
 use iced::{font, Font};
-use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2::{msg_send, AnyThread};
 use objc2_app_kit::NSFont;
-use objc2_foundation::{NSString, NSUserDefaults};
+use objc2_foundation::NSString;
 
 pub struct ChatFont {
     pub regular: Font,
@@ -40,27 +37,7 @@ fn configured() -> Option<(String, f32)> {
 /// The family and size of iTerm2's default profile font, e.g. `JetBrainsMono-Regular 13` →
 /// ("JetBrains Mono", 13).
 fn iterm() -> Option<(String, f32)> {
-    let ns = NSString::from_str;
-    let defaults = NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), Some(&ns("com.googlecode.iterm2")))?;
-    let default_guid = defaults.stringForKey(&ns("Default Bookmark Guid"));
-    let profiles = defaults.arrayForKey(&ns("New Bookmarks"))?;
-    let font_of = |profile: &AnyObject| -> Option<String> {
-        // SAFETY: iTerm2 stores each profile as a dictionary of strings and numbers.
-        let font: Option<Retained<NSString>> = unsafe { msg_send![profile, objectForKey: &*ns("Normal Font")] };
-        font.map(|f| f.to_string())
-    };
-    let guid_of = |profile: &AnyObject| -> Option<String> {
-        // SAFETY: as above.
-        let guid: Option<Retained<NSString>> = unsafe { msg_send![profile, objectForKey: &*ns("Guid")] };
-        guid.map(|g| g.to_string())
-    };
-    let chosen = profiles
-        .iter()
-        .find(|p| default_guid.as_ref().is_some_and(|g| guid_of(p).as_deref() == Some(&g.to_string())))
-        .or_else(|| profiles.iter().next())?;
-    let spec = font_of(&chosen)?;
-    let (postscript, size) = spec.rsplit_once(' ')?;
-    let size: f32 = size.parse().ok()?;
-    let family = NSFont::fontWithName_size(&ns(postscript), size as f64)?.familyName()?.to_string();
+    let (postscript, size) = crate::iterm::font()?;
+    let family = NSFont::fontWithName_size(&NSString::from_str(&postscript), size as f64)?.familyName()?.to_string();
     Some((family, size))
 }

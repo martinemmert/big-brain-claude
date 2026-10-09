@@ -20,6 +20,16 @@ interface follows your macOS language: English or German.
 
 ## What it does
 
+- **Sessions run in Brain.** `⌘N` starts a session as a Claude Code background session
+  (`claude --bg`) and opens it in Brain's own terminal: Claude Code exactly as in your terminal,
+  in your iTerm2 font and colours, at a readable width. It keeps running when Brain quits, and
+  `claude attach <id>` opens it from any terminal. `I` twice moves a session from an iTerm tab
+  into Brain without losing its conversation (`/exit` there, `claude --bg --resume` here).
+- **Screenshots and files in.** Drag files onto the terminal or paste a copied screenshot with
+  `⌘V`: Brain inserts the path, and Claude reads the picture. `⌘`-click a path or URL in the
+  output: files open in a reader beside the terminal (Markdown rendered, code highlighted,
+  images shown; `⌘⏎` opens it in your editor), URLs in the browser.
+
 - **Triage inbox.** Sessions that wait for you come first, longest wait on top: red when
   Claude asks a question or needs a permission, amber when a turn finished, quiet blue when the
   turn ended but subagents or background shells still run (from the Stop hook's
@@ -174,7 +184,11 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | Key | Action |
 |---|---|
 | `↑` `↓` / `j` `k` | select |
-| `⏎`, double-click | open the session's terminal (resume it if it ended) |
+| `⏎`, double-click | open the session: in Brain's terminal if it runs in Brain, else its terminal app (an ended one resumes) |
+| `⌥⏎` | open it in iTerm instead |
+| `⌘J` / `⌘[` | keyboard into the terminal / back to the list |
+| `I` `I` | move a session from its iTerm tab into Brain |
+| `⌘`-click | open a path (reader) or URL from the terminal output |
 | `1`–`9` | open the n-th session |
 | `Y` / `N` | allow / deny an open permission prompt |
 | `T` | reply to a session that waits for you (then `1`–`9` for a quick reply) |
@@ -190,8 +204,8 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `H` | fold / unfold the resting group |
 | `B` | show / hide Claude Code's background sessions |
 | `A` `A` | move the session to the next account (an ended one resumes there) |
-| `⌘N` | start a new session |
-| `←` `→` | switch between messages, timeline and changes |
+| `⌘N` | start a new session (in Brain; `⌘I` in the dialog: in iTerm) |
+| `←` `→` | switch between messages, timeline, changes and terminal |
 | `⇥` | cycle the account filter |
 | `E` | show ended sessions |
 
@@ -237,6 +251,9 @@ the zipped app, the `brain` binary, the Alfred workflow and SHA-256 checksums, t
 - `crates/brain-cli`: the `brain` binary (`hook`, `report`, `install`, `uninstall`, `status`,
   `sessions`, `open`, `show`)
 - `crates/brain-app`: the Iced app
+- `crates/iced-term`: Brain's fork of [iced_term](https://github.com/Harzu/iced_term) (MIT,
+  Ilya Shvyryalkin): Ctrl keys, ⇧⏎ and back-tab for Claude Code, clickable file paths, plain
+  look-alikes for glyphs that would fall back to colour emoji
 
 Design notes: [`docs/superpowers/specs/2026-10-02-claude-brain-design.md`](docs/superpowers/specs/2026-10-02-claude-brain-design.md)
 

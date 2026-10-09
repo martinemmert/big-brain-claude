@@ -7,16 +7,19 @@ version.workspace = true
 name = "brain-app"
 path = "src/main.rs"
 
+[dev-dependencies]
+tempfile = "3"
+
 [dependencies]
 brain-core.workspace = true
 brain-terminal.workspace = true
-iced = { version = "0.14", features = ["tokio", "advanced"] }
-iced_term = "0.8"
+iced = { version = "0.14", features = ["tokio", "advanced", "highlighter", "image"] }
+iced_term = { path = "../iced-term" }
 chrono.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSBundle", "NSString", "NSArray", "NSSet", "NSError", "NSObject", "NSFileManager", "NSURL", "NSProcessInfo", "NSUserDefaults", "NSDictionary"] }
+objc2-foundation = { version = "0.3", features = ["NSBundle", "NSString", "NSArray", "NSSet", "NSError", "NSObject", "NSFileManager", "NSURL", "NSProcessInfo", "NSUserDefaults", "NSDictionary", "NSData"] }
 objc2-user-notifications = { version = "0.3", features = ["block2", "UNNotification", "UNNotificationAction", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 block2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSView", "NSResponder", "NSApplication", "NSRunningApplication", "NSToolbar", "NSWindow", "NSFont"] }
+objc2-app-kit = { version = "0.3", features = ["NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSView", "NSResponder", "NSApplication", "NSRunningApplication", "NSToolbar", "NSWindow", "NSFont", "NSPasteboard"] }

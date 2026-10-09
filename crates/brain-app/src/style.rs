@@ -103,22 +103,34 @@ pub fn glow(color: Color) -> Shadow {
     Shadow { color: alpha(color, 0x30), offset: Vector::new(0.0, 0.0), blur_radius: 18.0 }
 }
 
-/// The embedded terminal's colours: Brain's ink background, the usual ANSI hues in Brain's tones.
+/// The embedded terminal's colours: iTerm2's default profile (foreground and the 16 ANSI
+/// colours) on Brain's ink background; Brain's own tones where iTerm has none.
 pub fn terminal_palette() -> iced_term::ColorPalette {
     let hex = |c: Color| format!("#{:02x}{:02x}{:02x}", (c.r * 255.0).round() as u8, (c.g * 255.0).round() as u8, (c.b * 255.0).round() as u8);
+    let iterm = |key: &str, fallback: Color| {
+        crate::iterm::color(key).map(|(r, g, b)| hex(Color::from_rgb(r, g, b))).unwrap_or_else(|| hex(fallback))
+    };
+    let ansi = |n: u8, fallback: Color| iterm(&format!("Ansi {n} Color"), fallback);
     iced_term::ColorPalette {
-        foreground: hex(TEXT),
+        foreground: iterm("Foreground Color", TEXT),
         background: hex(INK),
-        black: hex(INK),
-        red: hex(CALLS),
-        green: hex(DONE),
-        yellow: hex(TURN),
-        blue: hex(WORKING),
-        magenta: hex(BACKGROUND),
-        white: hex(TEXT),
-        bright_black: hex(TEXT_FAINT),
-        bright_red: hex(CALLS_SOFT),
-        bright_white: hex(TEXT_STRONG),
+        black: ansi(0, INK),
+        red: ansi(1, CALLS),
+        green: ansi(2, DONE),
+        yellow: ansi(3, TURN),
+        blue: ansi(4, WORKING),
+        magenta: ansi(5, BACKGROUND),
+        cyan: ansi(6, color!(0x5fd7d7)),
+        white: ansi(7, TEXT),
+        bright_black: ansi(8, TEXT_FAINT),
+        bright_red: ansi(9, CALLS_SOFT),
+        bright_green: ansi(10, DONE),
+        bright_yellow: ansi(11, TURN),
+        bright_blue: ansi(12, WORKING),
+        bright_magenta: ansi(13, BACKGROUND),
+        bright_cyan: ansi(14, color!(0x87ffff)),
+        bright_white: ansi(15, TEXT_STRONG),
+        bright_foreground: None,
         dim_foreground: hex(TEXT_MUTED),
         ..iced_term::ColorPalette::default()
     }

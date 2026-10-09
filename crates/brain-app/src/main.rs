@@ -1,11 +1,13 @@
 mod app;
 mod chat_font;
+mod clipboard;
 mod chrome;
 mod config;
 mod conversation;
 mod demo;
 mod format;
 mod i18n;
+mod iterm;
 mod links;
 mod markdown;
 mod menubar;

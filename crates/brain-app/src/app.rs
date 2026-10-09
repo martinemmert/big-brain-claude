@@ -66,6 +66,8 @@ pub enum Action {
     StartRename,
     CopyDigest,
     StartTerminal,
+    OpenInITerm,
+    TakeOver,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +106,28 @@ pub enum Message {
     DragWindow,
     ZoomWindow,
     Term(iced_term::Event),
+    /// A background session Brain started or took over: its account and short id, or why not.
+    Started(String, Result<String, String>),
+    MousePressed,
+    TermFocused(bool),
+    FileHover(bool),
+    FileDrop(std::path::PathBuf),
+    CloseReader,
+    ReaderToEditor,
+    NewPlace(bool),
+}
+
+/// A file opened from a path in the terminal output.
+pub struct Reader {
+    pub path: std::path::PathBuf,
+    pub kind: ReaderKind,
+}
+
+pub enum ReaderKind {
+    Markdown(String),
+    Code(iced::widget::text_editor::Content, String),
+    Image(iced::widget::image::Handle),
+    Unreadable(String),
 }
 
 /// The "new session" dialog: a folder (picked from recent ones or typed) and an account.
@@ -116,6 +140,8 @@ pub struct NewSession {
     pub templates: Vec<brain_core::templates::Template>,
     /// The picked template and its placeholder values so far.
     pub chosen: Option<Chosen>,
+    /// ⌥⏎ starts it in an iTerm tab instead of in Brain.
+    pub in_iterm: bool,
 }
 
 pub struct Chosen {
@@ -258,6 +284,21 @@ pub struct Brain {
     /// session is selected.
     pub terminals: HashMap<SessionKey, iced_term::Terminal>,
     next_terminal: u64,
+    /// Whether the selected session's terminal has the keyboard (drawn as a ring).
+    pub terminal_focused: bool,
+    /// A file is being dragged over the window.
+    pub file_hover: bool,
+    /// The file the reader beside the terminal shows.
+    pub reader: Option<Reader>,
+    /// A background session Brain just started or took over: select and attach it once
+    /// `claude agents` lists it (account, short id).
+    pending_attach: Option<(String, String)>,
+    /// An iTerm session being moved into Brain: its `/exit` was sent; once the process ended it
+    /// continues in the background (`claude --bg --resume`).
+    takeover: Option<SessionKey>,
+    /// The selection the derived state was last synced for, and whether it ran in Brain then
+    /// (auto-attach when either changes: another session, or this one just moved into Brain).
+    synced_selection: Option<(SessionKey, bool)>,
     /// The native title bar is set up once the window exists.
     titlebar_ready: bool,
     /// What the detail pane showed last; when it changes, the message list is built anew and
@@ -308,6 +349,12 @@ impl Brain {
             messages_at_bottom: true,
             terminals: HashMap::new(),
             next_terminal: 1,
+            terminal_focused: false,
+            file_hover: false,
+            reader: None,
+            pending_attach: None,
+            takeover: None,
+            synced_selection: None,
             titlebar_ready: false,
             detail_shape: (Layout::Status, Mode::Normal, DetailTab::Messages),
         };
@@ -327,6 +374,10 @@ impl Brain {
             iced::Event::Keyboard(event @ keyboard::Event::KeyPressed { .. }) => {
                 Some(Message::Key(event, status == iced::event::Status::Captured))
             }
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => Some(Message::MousePressed),
+            iced::Event::Window(window::Event::FileHovered(_)) => Some(Message::FileHover(true)),
+            iced::Event::Window(window::Event::FilesHoveredLeft) => Some(Message::FileHover(false)),
+            iced::Event::Window(window::Event::FileDropped(path)) => Some(Message::FileDrop(path)),
             _ => None,
         });
         let mut subscriptions = vec![keys, iced::time::every(Duration::from_millis(800)).map(|_| Message::Tick)];
@@ -471,11 +522,58 @@ impl Brain {
             Message::Term(event) => {
                 let iced_term::Event::BackendCall(id, command) = event;
                 let key = self.terminals.iter().find(|(_, term)| term.id == id).map(|(key, _)| key.clone());
+                let mut task = Task::none();
                 if let Some(key) = key {
-                    let action = self.terminals.get_mut(&key).map(|term| term.handle(iced_term::Command::ProxyToBackend(command)));
-                    if action == Some(iced_term::actions::Action::Shutdown) {
-                        self.terminals.remove(&key);
+                    match self.terminals.get_mut(&key).map(|term| term.handle(iced_term::Command::ProxyToBackend(command))) {
+                        Some(iced_term::actions::Action::Shutdown) => {
+                            self.terminals.remove(&key);
+                        }
+                        Some(iced_term::actions::Action::OpenLink(link)) => task = self.open_link(&key, &link),
+                        _ => {}
                     }
+                }
+                task
+            }
+            Message::Started(account, result) => match result {
+                Ok(id) => {
+                    self.pending_attach = Some((account, id));
+                    self.model.relist_transcripts();
+                    self.set_status(t("Session läuft in Brain – sie erscheint gleich.", "The session runs in Brain – it shows up in a moment."));
+                    Task::none()
+                }
+                Err(why) => {
+                    self.set_status(tr!("Konnte die Session nicht starten: {why}", "Couldn't start the session: {why}"));
+                    Task::none()
+                }
+            },
+            Message::MousePressed => match self.selected.as_ref().and_then(|k| self.terminals.get(k)) {
+                // Clicks move the keyboard in or out of the terminal; ask it where it went.
+                Some(term) => operation::is_focused(term.widget_id().clone()).map(Message::TermFocused),
+                None => Task::none(),
+            },
+            Message::TermFocused(focused) => {
+                self.terminal_focused = focused;
+                Task::none()
+            }
+            Message::FileHover(hovering) => {
+                self.file_hover = hovering;
+                Task::none()
+            }
+            Message::FileDrop(path) => {
+                self.file_hover = false;
+                self.drop_file(&path)
+            }
+            Message::CloseReader => {
+                self.reader = None;
+                self.focus_terminal()
+            }
+            Message::NewPlace(in_iterm) => {
+                self.new_session.in_iterm = in_iterm;
+                Task::none()
+            }
+            Message::ReaderToEditor => {
+                if let Some(reader) = &self.reader {
+                    open_in_editor(&reader.path);
                 }
                 Task::none()
             }
@@ -534,6 +632,7 @@ impl Brain {
         if MenuBar::take_click() {
             tasks.push(self.bring_forward());
         }
+        tasks.push(self.continue_takeover());
         if self.status.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(6)) {
             self.status = None;
         }
@@ -555,6 +654,7 @@ impl Brain {
             self.selected = visible.first().cloned();
         }
         let mut scroll = self.sync_conversation();
+        let attach = self.sync_terminal();
         let shape = (self.prefs.layout, if matches!(self.mode, Mode::NewSession | Mode::Cleanup) { self.mode } else { Mode::Normal }, self.tab);
         if shape != self.detail_shape {
             self.detail_shape = shape;
@@ -568,7 +668,42 @@ impl Brain {
         if let Some(menubar) = self.menubar.as_mut() {
             menubar.show(waiting, calling);
         }
-        scroll
+        Task::batch([scroll, attach])
+    }
+
+    /// Background sessions open in Brain's terminal: when one gets selected (or Brain started it
+    /// a moment ago), the Terminal tab shows and attaches. Leaving it for a session without a
+    /// terminal goes back to the messages.
+    fn sync_terminal(&mut self) -> Task<Message> {
+        if let Some((account, id)) = self.pending_attach.clone() {
+            let found = self.model.board.keys().find(|k| {
+                k.account == account && self.model.board.get(k).and_then(|s| s.agent.as_ref()).is_some_and(|a| a.id == id)
+            });
+            if let Some(key) = found.cloned() {
+                self.pending_attach = None;
+                self.selected = Some(key);
+                self.filter = None;
+            }
+        }
+        let attachable = self
+            .selected_session()
+            .and_then(|s| s.agent.as_ref())
+            .is_some_and(|a| !matches!(a.state.as_str(), "failed" | "stopped"));
+        let current = self.selected.clone().map(|k| (k, attachable));
+        if current == self.synced_selection {
+            return Task::none();
+        }
+        self.synced_selection = current;
+        self.terminal_focused = false;
+        let has_terminal = self.selected.as_ref().is_some_and(|k| self.terminals.contains_key(k));
+        if attachable || has_terminal {
+            self.tab = DetailTab::Terminal;
+            return self.open_terminal();
+        }
+        if self.tab == DetailTab::Terminal {
+            self.tab = DetailTab::Messages;
+        }
+        Task::none()
     }
 
     /// Reminds again about sessions that keep waiting: every `remind_after_minutes`, at most
@@ -683,11 +818,60 @@ impl Brain {
     }
 
     /// Gives a running terminal the keyboard when its tab is shown; starts nothing.
-    fn focus_terminal(&self) -> Task<Message> {
+    fn focus_terminal(&mut self) -> Task<Message> {
         match self.selected.as_ref().and_then(|k| self.terminals.get(k)) {
-            Some(term) if self.tab == DetailTab::Terminal => iced_term::TerminalView::focus(term.widget_id().clone()),
+            Some(term) if self.tab == DetailTab::Terminal => {
+                self.terminal_focused = true;
+                iced_term::TerminalView::focus(term.widget_id().clone())
+            }
             _ => Task::none(),
         }
+    }
+
+    /// Writes bytes into the selected session's terminal (typed text, a dropped file's path).
+    fn write_to_terminal(&mut self, bytes: Vec<u8>) -> bool {
+        match self.selected.as_ref().and_then(|k| self.terminals.get_mut(k)) {
+            Some(term) => {
+                term.handle(iced_term::Command::ProxyToBackend(iced_term::BackendCommand::Write(bytes)));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A file dropped on the window goes into the session like in iTerm: its path, escaped for
+    /// the shell. Claude Code turns image paths into attachments (`[Image #1]`).
+    fn drop_file(&mut self, path: &std::path::Path) -> Task<Message> {
+        let escaped = escape_path(&path.display().to_string()) + " ";
+        if self.mode == Mode::Reply {
+            self.reply.push_str(&escaped);
+            return Task::none();
+        }
+        if self.write_to_terminal(escaped.into_bytes()) {
+            self.tab = DetailTab::Terminal;
+            return self.focus_terminal();
+        }
+        self.set_status(t(
+            "Dateien lassen sich in Sessions ziehen, die in Brain laufen (Terminal-Reiter).",
+            "Files can be dropped into sessions that run in Brain (Terminal tab).",
+        ));
+        Task::none()
+    }
+
+    /// ⌘-click on a link in the terminal: URLs open in the browser, file paths in the reader
+    /// beside the terminal (relative ones from the session's folder).
+    fn open_link(&mut self, key: &SessionKey, link: &str) -> Task<Message> {
+        if link.contains("://") || link.starts_with("mailto:") {
+            let _ = std::process::Command::new("open").arg(link).spawn();
+            return Task::none();
+        }
+        let cwd = self.model.board.get(key).and_then(|s| s.cwd.clone()).unwrap_or_default();
+        let Some(path) = resolve_path(link, &cwd) else {
+            self.set_status(tr!("Datei nicht gefunden: {link}", "File not found: {link}"));
+            return Task::none();
+        };
+        self.reader = Some(read_file(path));
+        Task::none()
     }
 
     /// Starts the selected session's terminal on the Terminal tab (⏎ or the button), and
@@ -706,7 +890,8 @@ impl Brain {
             env.insert("TERM".to_string(), "xterm-256color".to_string());
             let font = crate::chat_font::get();
             let settings = iced_term::settings::Settings {
-                font: iced_term::settings::FontSettings { size: font.size, font_type: font.regular, ..Default::default() },
+                // A little more line spacing than the terminal default reads better at length.
+                font: iced_term::settings::FontSettings { size: font.size, font_type: font.regular, scale_factor: 1.4 },
                 theme: iced_term::settings::ThemeSettings::new(Box::new(crate::style::terminal_palette())),
                 backend: iced_term::settings::BackendSettings {
                     program: "claude".into(),
@@ -726,10 +911,7 @@ impl Brain {
                 }
             }
         }
-        match self.terminals.get(&key) {
-            Some(term) => iced_term::TerminalView::focus(term.widget_id().clone()),
-            None => Task::none(),
-        }
+        self.focus_terminal()
     }
 
     /// Keeps the message list in step with the selected session. New messages scroll into view
@@ -818,7 +1000,9 @@ impl Brain {
             if ended && (session.is_empty() || !self.model.resumable(session)) {
                 continue;
             }
-            if session.agent.is_some() && !self.prefs.show_background {
+            // Background sessions with something happening show; stale ones (a day without
+            // activity) only with the filter on.
+            if session.agent.is_some() && !self.prefs.show_background && now - session.last_activity_ms > ENDED_RECENT_MS {
                 groups.background += 1;
                 continue;
             }
@@ -991,7 +1175,8 @@ impl Brain {
 
     /// A background session while the background filter is off: not listed, not announced.
     fn filtered_background(&self, key: &SessionKey) -> bool {
-        !self.prefs.show_background && self.model.board.get(key).is_some_and(|s| s.agent.is_some())
+        !self.prefs.show_background
+            && self.model.board.get(key).is_some_and(|s| s.agent.is_some() && now_ms() - s.last_activity_ms > ENDED_RECENT_MS)
     }
 
     fn toggle_background(&mut self) {
@@ -1049,9 +1234,36 @@ impl Brain {
         };
         let cmd = modifiers.command();
 
-        // A focused text field takes Esc for itself; Brain still leaves the mode.
-        if named == Some(Named::Escape) {
+        // A focused terminal keeps Esc (it interrupts Claude); ⌘[ leaves it.
+        if named == Some(Named::Escape) && !(self.tab == DetailTab::Terminal && self.terminal_focused) {
             return self.escape();
+        }
+        if cmd && self.tab == DetailTab::Terminal && self.terminal_focused && character.as_deref() == Some("v") {
+            // A copied screenshot: the terminal pastes text only, so Brain saves the picture and
+            // pastes its path, which Claude Code turns into an attachment.
+            if let Some(path) = crate::clipboard::save_image() {
+                let escaped = escape_path(&path.display().to_string()) + " ";
+                self.write_to_terminal(escaped.into_bytes());
+            }
+            return Task::none();
+        }
+        if cmd && named == Some(Named::Enter) && self.reader.is_some() {
+            if let Some(reader) = &self.reader {
+                open_in_editor(&reader.path);
+            }
+            return Task::none();
+        }
+        if cmd && character.as_deref() == Some("j") {
+            return if self.selected.as_ref().is_some_and(|k| self.terminals.contains_key(k)) {
+                self.tab = DetailTab::Terminal;
+                self.focus_terminal()
+            } else {
+                Task::none()
+            };
+        }
+        if cmd && character.as_deref() == Some("[") && self.tab == DetailTab::Terminal {
+            self.terminal_focused = false;
+            return unfocus();
         }
         if captured {
             return Task::none();
@@ -1115,10 +1327,8 @@ impl Brain {
             Some(Named::ArrowUp) => return self.select_index(&list, previous),
             // On the Terminal tab ⏎ runs the session here instead of in iTerm.
             Some(Named::Enter) if self.tab == DetailTab::Terminal && self.terminal_command().is_some() => return self.open_terminal(),
-            Some(Named::Enter) => {
-                self.open_selected();
-                return Task::none();
-            }
+            Some(Named::Enter) if modifiers.alt() => return self.act(Action::OpenInITerm),
+            Some(Named::Enter) => return self.act(Action::Open),
             Some(Named::Tab) => {
                 self.cycle_filter(modifiers.shift());
                 return Task::none();
@@ -1168,6 +1378,7 @@ impl Brain {
                 self.armed = None;
                 self.mode = Mode::Cleanup;
             }
+            "i" => return self.act(Action::TakeOver),
             "h" => self.show_resting = !self.show_resting,
             "b" => self.toggle_background(),
             "g" => {
@@ -1193,6 +1404,10 @@ impl Brain {
 
     /// Esc: leaves whatever is open — search (cleared), reply, rename, a dialog.
     fn escape(&mut self) -> Task<Message> {
+        if self.mode == Mode::Normal && self.reader.is_some() {
+            self.reader = None;
+            return Task::none();
+        }
         match self.mode {
             Mode::Search => {
                 self.search.clear();
@@ -1281,7 +1496,14 @@ impl Brain {
 
     fn act(&mut self, action: Action) -> Task<Message> {
         match action {
+            // A session that runs in Brain opens here; everything else in its terminal app.
+            Action::Open if self.selected_session().is_some_and(|s| s.agent.is_some()) => {
+                self.tab = DetailTab::Terminal;
+                return self.open_terminal();
+            }
             Action::Open => self.open_selected(),
+            Action::OpenInITerm => self.open_selected(),
+            Action::TakeOver => self.take_over(),
             Action::Resume => self.resume_selected(),
             Action::Allow => self.answer_permission(true),
             Action::Deny => self.answer_permission(false),
@@ -1804,6 +2026,10 @@ impl Brain {
             }
             return Task::none();
         }
+        if cmd && character == Some("i") {
+            self.new_session.in_iterm = !self.new_session.in_iterm;
+            return Task::none();
+        }
         if cmd && shift && character == Some("n") {
             let dir = brain_core::templates::templates_dir(&brain_core::account::home_dir());
             let prompt = t(
@@ -1885,23 +2111,83 @@ impl Brain {
             self.set_status(tr!("Ordner nicht gefunden: {folder}", "Folder not found: {folder}"));
             return Task::none();
         }
-        let mut command = String::from("claude");
-        if let Some(chosen) = chosen {
-            if let Some(model) = &chosen.template.model {
+        let model = chosen.and_then(|c| c.template.model.clone());
+        let prompt = chosen.map(|c| c.template.fill(&c.values)).filter(|p| !p.is_empty());
+        let name = chosen.map(|c| c.template.name.clone());
+        let in_iterm = self.new_session.in_iterm;
+        self.mode = Mode::Normal;
+        let Some(account) = self.model.accounts.get(self.new_session.account).cloned() else { return unfocus() };
+        if self.blocked_in_demo() {
+            return unfocus();
+        }
+        if in_iterm {
+            let mut command = String::from("claude");
+            if let Some(model) = &model {
                 command.push_str(&format!(" --model {}", shell_quote(model)));
             }
-            let prompt = chosen.template.fill(&chosen.values);
-            if !prompt.is_empty() {
-                command.push_str(&format!(" {}", shell_quote(&prompt)));
+            if let Some(prompt) = &prompt {
+                command.push_str(&format!(" {}", shell_quote(prompt)));
             }
-        }
-        self.mode = Mode::Normal;
-        let config_dir = self.model.accounts.get(self.new_session.account).filter(|a| a.id != "main").map(|a| a.config_dir.display().to_string());
-        if !self.blocked_in_demo() {
+            let config_dir = (account.id != "main").then(|| account.config_dir.display().to_string());
             let outcome = terminal::open_new(&folder, config_dir.as_deref(), &command);
-            self.report(outcome, Some(t("Neue Session gestartet.", "Started a new session.").into()));
+            self.report(outcome, Some(t("Neue Session in iTerm gestartet.", "Started a new session in iTerm.").into()));
+            return unfocus();
         }
-        unfocus()
+        self.set_status(t("Starte die Session in Brain …", "Starting the session in Brain …"));
+        let id = account.id.clone();
+        let started = off_thread(move || {
+            brain_core::agents::start(&account, std::path::Path::new(&folder), model.as_deref(), name.as_deref(), prompt.as_deref())
+        });
+        Task::batch([unfocus(), Task::perform(started, move |result| Message::Started(id.clone(), result))])
+    }
+
+    /// `I` twice: moves a session running in an iTerm tab into Brain. Brain sends it `/exit`,
+    /// waits until it ended, and continues it in the background under the same id.
+    fn take_over(&mut self) {
+        let Some(session) = self.selected_session() else { return };
+        let key = session.key.clone();
+        if session.agent.is_some() {
+            self.set_status(t("Diese Session läuft schon in Brain.", "This session already runs in Brain."));
+            return;
+        }
+        let ended = session.phase() == Phase::Ended;
+        if !ended && !session.accepts_input() {
+            self.set_status(t("Übernehmen geht, sobald die Session auf dich wartet.", "Taking over works once the session waits for you."));
+            return;
+        }
+        if !self.arm('i', &key) {
+            self.set_status(t("Nochmal I holt die Session nach Brain (das iTerm-Tab wird beendet).", "Press I again to move the session into Brain (its iTerm tab ends)."));
+            return;
+        }
+        if self.blocked_in_demo() {
+            return;
+        }
+        if !ended {
+            self.type_into_selected("/exit", t("Beende die Session in iTerm …", "Ending the session in iTerm …").into());
+        }
+        self.takeover = Some(key);
+    }
+
+    /// Once a taken-over session's iTerm process ended: continue it in the background.
+    fn continue_takeover(&mut self) -> Task<Message> {
+        let Some(key) = self.takeover.clone() else { return Task::none() };
+        let Some(session) = self.model.board.get(&key) else {
+            self.takeover = None;
+            return Task::none();
+        };
+        if session.phase() != Phase::Ended {
+            return Task::none();
+        }
+        self.takeover = None;
+        let name = session.name.clone();
+        let (Some(session_id), Some(cwd), Some(account)) = (session.session_id.clone(), session.cwd.clone(), self.model.account(&key.account).cloned()) else {
+            self.set_status(t("Zu dieser Session fehlt die ID oder der Ordner.", "This session has no id or folder."));
+            return Task::none();
+        };
+        self.set_status(t("Setze die Session in Brain fort …", "Continuing the session in Brain …"));
+        let id = account.id.clone();
+        let resumed = off_thread(move || brain_core::agents::resume(&account, std::path::Path::new(&cwd), &session_id, name.as_deref()));
+        Task::perform(resumed, move |result| Message::Started(id.clone(), result))
     }
 
     // ---- today ------------------------------------------------------------------
@@ -1959,4 +2245,73 @@ fn lookup_prs(sessions: Vec<(SessionKey, String)>) -> HashMap<SessionKey, brain_
 /// Opens a file with the app macOS uses for its type (your Markdown editor for templates).
 fn open_in_editor(path: &std::path::Path) {
     let _ = std::process::Command::new("open").arg(path).spawn();
+}
+
+/// A path as a shell word, like iTerm pastes dropped files: spaces and specials backslashed.
+fn escape_path(path: &str) -> String {
+    let mut out = String::new();
+    for c in path.chars() {
+        if c.is_whitespace() || "\\'\"()[]{}&;|<>*?$`!#~".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// `src/app.rs:12`, `~/notes.md` or `/tmp/x.png` as an existing file, relative paths from `cwd`.
+fn resolve_path(link: &str, cwd: &str) -> Option<std::path::PathBuf> {
+    let trimmed = link.trim_end_matches(|c: char| c == '.' || c == ',' || c == ')');
+    let without_line = match trimmed.rsplit_once(':') {
+        Some((path, line)) if line.chars().all(|c| c.is_ascii_digit()) => path,
+        _ => trimmed,
+    };
+    let home = brain_core::account::home_dir();
+    let path = match without_line.strip_prefix("~/") {
+        Some(rest) => home.join(rest),
+        None if without_line.starts_with('/') => std::path::PathBuf::from(without_line),
+        None => std::path::Path::new(cwd).join(without_line),
+    };
+    path.is_file().then(|| path.canonicalize().unwrap_or(path))
+}
+
+/// Loads a file for the reader: Markdown rendered, images shown, other text highlighted.
+fn read_file(path: std::path::PathBuf) -> Reader {
+    const LIMIT: u64 = 2 * 1024 * 1024;
+    let extension = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let kind = if matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp") {
+        ReaderKind::Image(iced::widget::image::Handle::from_path(&path))
+    } else if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > LIMIT {
+        ReaderKind::Unreadable(t("Die Datei ist zu groß für den Reader.", "The file is too large for the reader.").into())
+    } else {
+        match std::fs::read_to_string(&path) {
+            Ok(text) if matches!(extension.as_str(), "md" | "markdown") => ReaderKind::Markdown(text),
+            Ok(text) => ReaderKind::Code(iced::widget::text_editor::Content::with_text(&text), extension),
+            Err(_) => ReaderKind::Unreadable(t("Keine Textdatei – ⌘⏎ öffnet sie in ihrer App.", "Not a text file – ⌘⏎ opens it in its app.").into()),
+        }
+    };
+    Reader { path, kind }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropped_paths_are_escaped_like_iterm_does() {
+        assert_eq!(escape_path("/Users/me/Desktop/Bildschirmfoto 2026-10-09 um 19.01.png"), "/Users/me/Desktop/Bildschirmfoto\\ 2026-10-09\\ um\\ 19.01.png");
+        assert_eq!(escape_path("/tmp/a(1).png"), "/tmp/a\\(1\\).png");
+    }
+
+    #[test]
+    fn printed_paths_resolve_from_the_session_folder_with_or_without_a_line() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/app.rs"), "x").unwrap();
+        let cwd = dir.path().display().to_string();
+        let file = dir.path().join("src/app.rs").canonicalize().unwrap();
+        assert_eq!(resolve_path("src/app.rs:12", &cwd), Some(file.clone()));
+        assert_eq!(resolve_path("src/app.rs.", &cwd), Some(file));
+        assert_eq!(resolve_path("src/missing.rs", &cwd), None);
+    }
 }

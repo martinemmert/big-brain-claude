@@ -1,0 +1,19 @@
+# Brain's fork of iced_term 0.8.0 (https://github.com/Harzu/iced_term, MIT, © Ilya Shvyryalkin):
+# terminal glyph fallbacks, clickable file paths, and readability settings for Claude Code.
+[package]
+name = "iced_term"
+version = "0.8.0-brain.1"
+description = "Terminal emulator widget powered by ICED framework and alacritty terminal backend."
+authors = ["Ilya Shvyryalkin <ilyashvy@gmail.com>"]
+repository = "https://github.com/Harzu/iced_term"
+license = "MIT"
+edition = "2021"
+publish = false
+
+[dependencies]
+alacritty_terminal = "0.25.1"
+iced = { version = "0.14.0", features = ["canvas", "lazy", "advanced"] }
+tokio = { version = "1.50.0", features = ["full"] }
+iced_graphics = { version = "0.14.0", default-features = false }
+iced_core = "0.14.0"
+anyhow = "1.0.102"

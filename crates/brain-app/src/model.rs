@@ -30,7 +30,7 @@ fn history_days(accounts: &[Account]) -> u64 {
 /// How often (in refreshes) the kept transcripts are listed again.
 const KEPT_EVERY: u32 = 60;
 /// How often `claude agents` is asked for background sessions.
-const AGENTS_EVERY: Duration = Duration::from_secs(20);
+const AGENTS_EVERY: Duration = Duration::from_secs(5);
 
 /// Per account, its background sessions, or `None` when `claude agents` failed there.
 type AgentLists = Vec<(String, Option<Vec<BackgroundAgent>>)>;

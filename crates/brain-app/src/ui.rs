@@ -626,10 +626,39 @@ fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     column![row(buttons).spacing(18), divider()].into()
 }
 
+/// About 120 columns: Claude Code wraps its answers to the terminal width, and long lines across
+/// a wide window are hard to read.
+const TERMINAL_COLUMNS: f32 = 120.0;
+
 /// A real terminal running the session inside Brain, or why there is none.
 fn terminal<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     if let Some(term) = brain.terminals.get(&s.key) {
-        return container(iced_term::TerminalView::show(term).map(Message::Term)).padding(Padding { top: 6.0, bottom: 12.0, ..Padding::ZERO }).height(Fill).into();
+        let font = crate::chat_font::get();
+        let focused = brain.terminal_focused;
+        let hovering = brain.file_hover;
+        let edge = if hovering { WORKING } else if focused { alpha(WORKING, 0x88) } else { LINE };
+        let screen = container(iced_term::TerminalView::show(term).map(Message::Term))
+            .padding([14, 18])
+            .max_width(TERMINAL_COLUMNS * font.size * 0.62 + 36.0)
+            .height(Fill)
+            .style(move |_| boxed(INK, edge, 10.0));
+        let mut layers = stack![screen];
+        if hovering {
+            let name = s.display_name();
+            layers = layers.push(
+                container(
+                    container(text(tr!("Loslassen fügt die Datei in „{name}“ ein", "Drop to add the file to “{name}”")).size(13).color(TEXT_STRONG).font(style::semibold()))
+                        .padding([10, 16])
+                        .style(|_| boxed(alpha(WORKING, 0xdd), Color::TRANSPARENT, 8.0)),
+                )
+                .center(Fill),
+            );
+        }
+        let main = container(layers).padding(Padding { top: 6.0, bottom: 12.0, ..Padding::ZERO }).height(Fill);
+        return match &brain.reader {
+            Some(reader) => row![main.width(Length::FillPortion(11)), reader_pane(reader)].spacing(12).height(Fill).into(),
+            None => main.center_x(Fill).into(),
+        };
     }
     let why = if brain.model.is_demo() {
         t("Im Demo-Modus startet Brain keine Terminals.", "In demo mode Brain starts no terminals.")
@@ -649,6 +678,50 @@ fn terminal<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
         .into();
     };
     hint(why)
+}
+
+/// The file opened from a path in the terminal: Markdown rendered, code highlighted, images.
+fn reader_pane(reader: &crate::app::Reader) -> Element<'_, Message> {
+    use crate::app::ReaderKind;
+    let name = reader.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let header = row![
+        column![
+            text(name).size(13).color(TEXT_STRONG).font(style::semibold()),
+            text(clip(&tilde(&reader.path.parent().map(|p| p.display().to_string()).unwrap_or_default()), 48)).size(11).color(TEXT_FAINT).font(MONO).wrapping(text::Wrapping::None),
+        ]
+        .spacing(2)
+        .width(Fill),
+        action(t("Im Editor", "In editor"), "⌘⏎", false, Some(Message::ReaderToEditor)),
+        button(text("✕").size(13).color(TEXT_MUTED)).padding([4, 8]).on_press(Message::CloseReader).style(|_, _| button::Style::default()),
+    ]
+    .spacing(8)
+    .align_y(iced::Center);
+    let font = crate::chat_font::get();
+    let body: Element<'_, Message> = match &reader.kind {
+        ReaderKind::Markdown(source) => scrollable(container(markdown::document(source)).padding(Padding { right: 12.0, ..Padding::ZERO })).height(Fill).style(scrollbar).into(),
+        ReaderKind::Code(content, extension) => iced::widget::text_editor(content)
+            .highlight(extension, iced::highlighter::Theme::Base16Ocean)
+            .font(font.regular)
+            .size(font.size - 1.0)
+            .height(Fill)
+            .padding(10)
+            .style(|_, _| iced::widget::text_editor::Style {
+                background: Background::Color(INK),
+                border: Border { color: LINE, width: 1.0, radius: 8.0.into() },
+                placeholder: TEXT_FAINT,
+                value: TEXT,
+                selection: alpha(WORKING, 0x55),
+            })
+            .into(),
+        ReaderKind::Image(handle) => scrollable(iced::widget::image(handle.clone()).width(Fill)).height(Fill).style(scrollbar).into(),
+        ReaderKind::Unreadable(why) => hint(why.clone()),
+    };
+    container(column![header, body].spacing(10))
+        .padding(12)
+        .width(Length::FillPortion(9))
+        .height(Fill)
+        .style(|_| boxed(style::CHROME, LINE, 10.0))
+        .into()
 }
 
 fn messages(brain: &Brain) -> Element<'_, Message> {
@@ -818,9 +891,21 @@ fn new_session(brain: &Brain) -> Element<'_, Message> {
         None => t("Neue Session", "New session").to_string(),
     };
     let accounts = brain.model.accounts.iter().enumerate().map(|(i, a)| (a.id.clone(), i == dialog.account, Message::NewAccount(i))).collect();
+    let place = vec![
+        (t("In Brain", "In Brain").to_string(), !dialog.in_iterm, Message::NewPlace(false)),
+        (t("In iTerm", "In iTerm").to_string(), dialog.in_iterm, Message::NewPlace(true)),
+    ];
     let mut content = column![
         dialog_title(title),
-        row![text(t("Konto", "Account")).size(12.5).color(TEXT_MUTED).font(UI), segmented(accounts)].spacing(10).align_y(iced::Center),
+        row![
+            text(t("Konto", "Account")).size(12.5).color(TEXT_MUTED).font(UI),
+            segmented(accounts),
+            Space::new().width(12),
+            text(t("Läuft", "Runs")).size(12.5).color(TEXT_MUTED).font(UI),
+            segmented(place),
+        ]
+        .spacing(10)
+        .align_y(iced::Center),
     ]
     .spacing(14);
     if let Some(c) = chosen.filter(|c| !c.template.prompt.is_empty()) {
@@ -857,7 +942,7 @@ fn new_session(brain: &Brain) -> Element<'_, Message> {
     content = content.push(scrollable(column(choices).spacing(2)).height(Fill).style(scrollbar));
     content = content.push(
         container(
-            text(t("⏎ wählen/starten · ↑↓ · ⇥ Konto · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc", "⏎ pick/start · ↑↓ · ⇥ account · ⌘E edit template · ⌘⇧N new template · esc"))
+            text(t("⏎ wählen/starten · ↑↓ · ⇥ Konto · ⌘I Brain/iTerm · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc", "⏎ pick/start · ↑↓ · ⇥ account · ⌘I Brain/iTerm · ⌘E edit template · ⌘⇧N new template · esc"))
                 .size(11.5)
                 .color(TEXT_FAINT)
                 .font(UI),
@@ -918,6 +1003,14 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
 // ---- footer -----------------------------------------------------------------------
 
 fn footer(brain: &Brain) -> Element<'_, Message> {
+    let terminal_hints: [(&str, &str); 6] = [
+        ("⌘J", t("ins Terminal", "into terminal")),
+        ("⌘[", t("zur Liste", "to the list")),
+        ("⌘-Klick", t("Pfad öffnen", "open path")),
+        ("⌘V", t("Screenshot einfügen", "paste screenshot")),
+        ("⌥⏎", t("in iTerm", "in iTerm")),
+        ("I", t("nach Brain holen", "move into Brain")),
+    ];
     let hints: [(&str, &str); 10] = [
         ("↑↓", t("wählen", "select")),
         ("⏎", t("öffnen", "open")),
@@ -930,7 +1023,12 @@ fn footer(brain: &Brain) -> Element<'_, Message> {
         ("X A", t("beenden · Konto", "end · account")),
         ("⌫ C", t("ausblenden · aufräumen", "hide · clean up")),
     ];
-    let mut bar = row(hints.into_iter().map(|(key, label)| row![kbd(key), text(label).size(11.5).color(TEXT_FAINT).font(UI)].spacing(5).align_y(iced::Center).into()))
+    let shown: Vec<(&str, &str)> = if brain.tab == DetailTab::Terminal && brain.selected.as_ref().is_some_and(|k| brain.terminals.contains_key(k)) {
+        terminal_hints.to_vec()
+    } else {
+        hints.to_vec()
+    };
+    let mut bar = row(shown.into_iter().map(|(key, label)| row![kbd(key), text(label).size(11.5).color(TEXT_FAINT).font(UI)].spacing(5).align_y(iced::Center).into()))
         .spacing(12)
         .align_y(iced::Center);
     bar = bar.push(Space::new().width(Fill));

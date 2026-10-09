@@ -1,6 +1,7 @@
 //! Claude Code's own background sessions (`claude --bg`), as `claude agents --json --all` lists
 //! them, and the `claude stop` / `claude rm` commands that act on them.
 
+use std::path::Path;
 use std::process::Command;
 
 use serde::Deserialize;
@@ -86,6 +87,45 @@ fn run(account: &Account, args: &[&str]) -> Result<(), String> {
     Err(crate::hook::one_line(&text, 200))
 }
 
+/// The short id in `claude --bg`'s answer: `backgrounded · 824489b9 · name (idle …)`.
+pub fn started_id(output: &str) -> Option<String> {
+    let line = output.lines().find(|l| l.trim_start().starts_with("backgrounded"))?;
+    let id = line.split('·').nth(1)?.trim();
+    (!id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric())).then(|| id.to_string())
+}
+
+/// Starts a background session in `cwd` (`claude --bg`), with an optional model, name and first
+/// prompt; returns its short id, or what `claude` said (e.g. an untrusted folder).
+pub fn start(account: &Account, cwd: &Path, model: Option<&str>, name: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
+    let mut args = vec!["--bg"];
+    if let Some(model) = model {
+        args.extend(["--model", model]);
+    }
+    if let Some(name) = name {
+        args.extend(["-n", name]);
+    }
+    if let Some(prompt) = prompt.filter(|p| !p.trim().is_empty()) {
+        args.push(prompt);
+    }
+    started(claude(account, &args).current_dir(cwd))
+}
+
+/// Continues an existing session in the background under its id (`claude --bg --resume`),
+/// keeping its name.
+pub fn resume(account: &Account, cwd: &Path, session_id: &str, name: Option<&str>) -> Result<String, String> {
+    let mut args = vec!["--bg", "--resume", session_id];
+    if let Some(name) = name {
+        args.extend(["-n", name]);
+    }
+    started(claude(account, &args).current_dir(cwd))
+}
+
+fn started(command: &mut Command) -> Result<String, String> {
+    let out = command.output().map_err(|e| e.to_string())?;
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    started_id(&text).ok_or_else(|| crate::hook::one_line(text.trim(), 240))
+}
+
 /// Stops a background session; its conversation is kept.
 pub fn stop(account: &Account, id: &str) -> Result<(), String> {
     run(account, &["stop", id])
@@ -99,6 +139,13 @@ pub fn remove(account: &Account, id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_id_from_the_background_start_message() {
+        let out = "backgrounded · 824489b9 · bg-empty-test (idle — send a prompt to start)\n  claude agents             list sessions\n";
+        assert_eq!(started_id(out).as_deref(), Some("824489b9"));
+        assert_eq!(started_id("Workspace not trusted. Run `claude` in /tmp once"), None);
+    }
 
     #[test]
     fn keeps_background_rows_with_ids_only() {
