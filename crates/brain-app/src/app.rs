@@ -212,6 +212,8 @@ pub enum Message {
     /// A Markdown file was handed to YAMV (`true`), or to the text editor because YAMV is missing.
     MarkdownOpened(String, bool),
     MousePressed,
+    /// The quick-terminal hotkey was pressed (from anywhere).
+    QuickTerminal,
     /// A terminal's request to put text on the clipboard, and whether it has the keyboard.
     TerminalCopy(SessionKey, String, bool),
     /// Whether this session's terminal has the keyboard (asked after a click).
@@ -531,6 +533,11 @@ impl Brain {
             detail_shape: (Layout::Status, Mode::Normal, DetailTab::Messages),
         };
         brain.selected = brain.groups(now_ms()).navigable(false).first().map(|s| s.key.clone());
+        if let Some(spec) = crate::config::quick_terminal().filter(|_| !demo) {
+            if !crate::hotkey::register(&spec) {
+                brain.set_status(tr!("Die Tastenkombination „{spec}“ ist vergeben oder ungültig.", "The hotkey “{spec}” is taken or invalid."));
+            }
+        }
         let synced = brain.sync();
         // For screenshots of the reader: `BRAIN_DEMO=1 BRAIN_DEMO_READER=notes.md`.
         if let Some(path) = std::env::var_os("BRAIN_DEMO_READER").filter(|_| demo) {
@@ -558,7 +565,11 @@ impl Brain {
             iced::Event::Window(window::Event::FileDropped(path)) => Some(Message::FileDrop(path)),
             _ => None,
         });
-        let mut subscriptions = vec![keys, iced::time::every(Duration::from_millis(800)).map(|_| Message::Tick)];
+        let mut subscriptions = vec![
+            keys,
+            iced::time::every(Duration::from_millis(800)).map(|_| Message::Tick),
+            Subscription::run(crate::hotkey::presses).map(|_| Message::QuickTerminal),
+        ];
         if self.dragging_sidebar {
             // Pointer moves only while the divider is held; otherwise every move would redraw.
             subscriptions.push(iced::event::listen_with(|event, _, _| match event {
@@ -865,6 +876,7 @@ impl Brain {
                     .collect();
                 Task::batch(asks)
             }
+            Message::QuickTerminal => self.quick_terminal(),
             Message::TerminalCopy(key, text, focused) => {
                 if !focused {
                     return Task::none();
@@ -2179,6 +2191,34 @@ impl Brain {
             Outcome::Unsupported(reason) => self.set_status(reason),
             Outcome::Failed(reason) => self.set_status(tr!("Fehlgeschlagen: {reason}", "Failed: {reason}")),
         }
+    }
+
+    /// The hotkey: with Brain in front and a terminal typing, Brain hides again; otherwise it
+    /// comes forward with the longest-waiting session that runs (or can run) here, keyboard in
+    /// its terminal.
+    fn quick_terminal(&mut self) -> Task<Message> {
+        let Some(mtm) = objc2::MainThreadMarker::new() else { return Task::none() };
+        let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+        if app.isActive() && !app.isHidden() && self.focused_terminal.is_some() {
+            app.hide(None);
+            return Task::none();
+        }
+        app.unhide(None);
+        let groups = self.groups(now_ms());
+        let waiting = groups
+            .attention
+            .iter()
+            .chain(&groups.pinned)
+            .filter(|s| matches!(s.phase(), Phase::NeedsYou | Phase::YourTurn))
+            .find(|s| self.terminals.contains_key(&s.key) || s.agent.is_some())
+            .map(|s| s.key.clone());
+        if let Some(key) = waiting {
+            self.selected = Some(key);
+        }
+        self.overview = false;
+        self.mode = Mode::Normal;
+        self.tab = DetailTab::Terminal;
+        Task::batch([self.bring_forward(), self.open_terminal(true)])
     }
 
     /// Brings Brain's window to the front (notification click, menu bar, `brain://` link).

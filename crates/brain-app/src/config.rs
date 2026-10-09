@@ -14,6 +14,13 @@ pub fn remind_after_ms() -> Option<i64> {
     (minutes > 0).then_some(minutes * 60 * 1000)
 }
 
+/// The quick-terminal hotkey (`quick_terminal`), e.g. "ctrl+option+space" (the default);
+/// "" or "off" turns it off.
+pub fn quick_terminal() -> Option<String> {
+    let spec = read().and_then(|v| v.get("quick_terminal")?.as_str().map(str::to_string)).unwrap_or_else(|| "ctrl+option+space".to_string());
+    (!spec.trim().is_empty() && spec.trim() != "off").then_some(spec)
+}
+
 /// The chat history's font family (`chat_font`), e.g. "JetBrains Mono"; by default the
 /// terminal's.
 pub fn chat_font() -> Option<String> {

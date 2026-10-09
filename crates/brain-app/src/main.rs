@@ -6,6 +6,7 @@ mod config;
 mod conversation;
 mod demo;
 mod format;
+mod hotkey;
 mod i18n;
 mod iterm;
 mod links;
