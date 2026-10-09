@@ -349,6 +349,8 @@ pub struct Brain {
     pub conflicts: HashMap<SessionKey, brain_core::conflicts::Conflict>,
     /// The title each terminal's program set (Claude Code names its current task there).
     pub terminal_titles: HashMap<SessionKey, String>,
+    /// The terminal on screen; the others handle their output without drawing it.
+    shown_terminal: Option<SessionKey>,
     /// Sessions whose terminal rang the bell while another session was selected.
     pub bells: HashSet<SessionKey>,
     /// Pairs already notified about shared files.
@@ -430,6 +432,7 @@ impl Brain {
             prs: HashMap::new(),
             conflicts: HashMap::new(),
             terminal_titles: HashMap::new(),
+            shown_terminal: None,
             files: None,
             find: String::new(),
             prompts_only: false,
@@ -713,7 +716,11 @@ impl Brain {
                 let key = self.terminals.iter().find(|(_, term)| term.id == id).map(|(key, _)| key.clone());
                 let mut task = Task::none();
                 if let Some(key) = key {
-                    match self.terminals.get_mut(&key).map(|term| term.handle(iced_term::Command::ProxyToBackend(command))) {
+                    // Only the terminal on screen copies its screen per event; the others catch
+                    // up when they're shown (`sync_shown_terminal`).
+                    let shown = self.shown_terminal.as_ref() == Some(&key);
+                    let command = iced_term::Command::ProxyToBackend(command);
+                    match self.terminals.get_mut(&key).map(|term| if shown { term.handle(command) } else { term.handle_quiet(command) }) {
                         Some(iced_term::actions::Action::Shutdown) => {
                             self.terminals.remove(&key);
                             self.terminal_titles.remove(&key);
@@ -890,6 +897,7 @@ impl Brain {
         }
         let mut scroll = self.sync_conversation();
         let attach = self.sync_terminal();
+        self.sync_shown_terminal();
         let shape = (self.prefs.layout, if matches!(self.mode, Mode::NewSession | Mode::Cleanup) { self.mode } else { Mode::Normal }, self.tab);
         if shape != self.detail_shape {
             self.detail_shape = shape;
@@ -1121,6 +1129,18 @@ impl Brain {
             return Some((vec!["--resume".into(), session.session_id.clone()?], cwd));
         }
         None
+    }
+
+    /// Catches up the terminal that just came on screen.
+    fn sync_shown_terminal(&mut self) {
+        let shown = self.selected.clone().filter(|k| self.tab == DetailTab::Terminal && self.terminals.contains_key(k));
+        if shown == self.shown_terminal {
+            return;
+        }
+        if let Some(term) = shown.as_ref().and_then(|k| self.terminals.get_mut(k)) {
+            term.refresh();
+        }
+        self.shown_terminal = shown;
     }
 
     /// Whether the selected session has a terminal in Brain.

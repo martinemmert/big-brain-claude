@@ -112,6 +112,20 @@ impl Terminal {
         action
     }
 
+    /// Brain: handles a backend command without copying the screen for drawing, for terminals
+    /// that aren't on screen; [`Self::refresh`] catches one up before it's shown.
+    pub fn handle_quiet(&mut self, cmd: Command) -> Action {
+        match cmd {
+            Command::ProxyToBackend(cmd) => self.backend.handle(cmd),
+            other => self.handle(other),
+        }
+    }
+
+    /// Brain: copies the current screen for drawing (after [`Self::handle_quiet`]).
+    pub fn refresh(&mut self) {
+        self.sync_and_redraw();
+    }
+
     fn sync_and_redraw(&mut self) {
         self.sync_font();
         self.backend.sync();
