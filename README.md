@@ -31,6 +31,20 @@ interface follows your macOS language: English or German.
   (math, Mermaid, extended Markdown; the text editor if YAMV isn't installed), other files in a
   reader beside the terminal (code highlighted, images shown; `⌘⏎` opens it in your editor),
   URLs in the browser.
+- **The terminal, made for sessions.** Multi-line pastes arrive as one paste, dead keys and
+  dictation work, the title Claude Code sets shows beside the session, and a bell from a session
+  you're not looking at marks it. `⌘D` keeps one terminal on screen beside the next session you
+  pick; `⌘⇧A` shows every session that runs in Brain as a live preview.
+- **Quick terminal.** `⌃⌥Space` from any app brings Brain forward with the longest-waiting
+  session's terminal; again hides Brain. `"quick_terminal"` in `~/.claude-brain/config.json`
+  picks another key (`"cmd+shift+b"`, `"off"`).
+- **Command palette.** `⌘K`: every action, `/compact`, `/context`, `/model` and other slash
+  commands for the session, and any text sent to it or to every session whose turn it is.
+- **Files.** Every file a session wrote, edited, read or was given, newest first: find the
+  Markdown files it created. A click opens one.
+- **Find in the whole session.** `⌘F` searches the entire conversation, "Your prompts" lists
+  everything you asked, `⌘⇧C` copies Claude's last answer, "As Markdown" opens the whole
+  conversation in YAMV.
 
 - **Triage inbox.** Sessions that wait for you come first, longest wait on top: red when
   Claude asks a question or needs a permission, amber when a turn finished, quiet blue when the
@@ -195,7 +209,14 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `Y` / `N` | allow / deny an open permission prompt |
 | `T` | reply to a session that waits for you (then `1`–`9` for a quick reply) |
 | `R`, click the name | rename (only while the session waits for you) |
-| `/`, `⌘F` | search (`esc` clears) |
+| `/` | search the session list (`esc` clears) |
+| `⌘F` | find in the selected session's whole conversation |
+| `⌘⇧C` | copy Claude's last answer |
+| `⌘K` | command palette |
+| `⌘D` | split: keep this terminal beside the next session (again: end) |
+| `⌘⇧A` | all terminals as live previews |
+| `⌃⌥Space` | from any app: Brain with the waiting session's terminal (again: hide) |
+| right-click | a session's actions |
 | `P` / `M` | pin (an ended session: save it to resume) / mute notifications |
 | `S` | snooze: 15 min → 1 h → until tomorrow 9:00 → off |
 | `G` / `D` | group by project / today's digest (`⌘C` copies it) |
@@ -207,7 +228,7 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `B` | show / hide Claude Code's background sessions |
 | `A` `A` | move the session to the next account (an ended one resumes there) |
 | `⌘N` | start a new session (in Brain; `⌘I` in the dialog: in iTerm) |
-| `←` `→` | switch between messages, timeline, changes and terminal |
+| `←` `→` | switch between messages, timeline, changes, files and terminal |
 | `⇥` | cycle the account filter |
 | `E` | show ended sessions |
 
