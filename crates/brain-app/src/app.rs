@@ -55,7 +55,7 @@ pub enum DetailTab {
     Terminal,
 }
 
-/// Buttons in the detail pane.
+/// Buttons in the detail pane and the list's context menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Open,
@@ -68,6 +68,13 @@ pub enum Action {
     StartTerminal,
     OpenInITerm,
     TakeOver,
+    Pin,
+    Mute,
+    Snooze,
+    OtherAccount,
+    End,
+    Hide,
+    Trash,
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +83,14 @@ pub enum Message {
     Key(keyboard::Event, bool),
     Select(SessionKey),
     OpenEntry(SessionKey),
+    /// A right click on a list entry: select it, open its menu at the pointer.
+    ContextMenu(SessionKey),
+    /// A choice in the context menu; the click is the confirmation keys get by pressing twice.
+    MenuPick(Action),
+    CloseMenu,
+    /// The pointer over the list, in window coordinates (where a context menu opens).
+    Pointer(iced::Point),
+    WindowSized(iced::Size),
     Hover(Option<SessionKey>),
     Search(String),
     SearchSubmit,
@@ -283,6 +298,10 @@ pub struct Brain {
     pub new_session: NewSession,
     /// `A`, `X`, `⌫` or `⌘⌫` was pressed once on this session: a second press within 5 s acts.
     armed: Option<(char, SessionKey, Instant)>,
+    /// The session whose context menu is open, and where it opens.
+    pub context_menu: Option<(SessionKey, iced::Point)>,
+    pointer: iced::Point,
+    pub window_size: iced::Size,
     /// A newer release on GitHub, if the daily check found one.
     pub update: Option<crate::links::Update>,
     /// What the list and the message pane show, to keep the selection and new messages in view.
@@ -355,6 +374,9 @@ impl Brain {
             changes_loading: false,
             new_session: NewSession::default(),
             armed: None,
+            context_menu: None,
+            pointer: iced::Point::ORIGIN,
+            window_size: iced::Size::new(1180.0, 760.0),
             update: None,
             list_viewport: None,
             messages_at_bottom: true,
@@ -387,6 +409,7 @@ impl Brain {
                 Some(Message::Key(event, status == iced::event::Status::Captured))
             }
             iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => Some(Message::MousePressed),
+            iced::Event::Window(window::Event::Opened { size, .. } | window::Event::Resized(size)) => Some(Message::WindowSized(size)),
             iced::Event::Window(window::Event::FileHovered(_)) => Some(Message::FileHover(true)),
             iced::Event::Window(window::Event::FilesHoveredLeft) => Some(Message::FileHover(false)),
             iced::Event::Window(window::Event::FileDropped(path)) => Some(Message::FileDrop(path)),
@@ -429,6 +452,27 @@ impl Brain {
             Message::OpenEntry(key) => {
                 self.selected = Some(key);
                 self.open_selected();
+                Task::none()
+            }
+            Message::ContextMenu(key) => {
+                self.selected = Some(key.clone());
+                self.context_menu = Some((key, self.pointer));
+                Task::none()
+            }
+            Message::MenuPick(action) => {
+                self.context_menu = None;
+                self.perform(action, true)
+            }
+            Message::CloseMenu => {
+                self.context_menu = None;
+                Task::none()
+            }
+            Message::Pointer(position) => {
+                self.pointer = position;
+                Task::none()
+            }
+            Message::WindowSized(size) => {
+                self.window_size = size;
                 Task::none()
             }
             Message::Hover(key) => {
@@ -500,7 +544,7 @@ impl Brain {
             }
             Message::Tab(tab) => {
                 self.tab = tab;
-                Task::batch([self.load_changes(), self.focus_terminal()])
+                self.load_changes()
             }
             Message::Do(action) => self.act(action),
             Message::CleanupAge(index) => {
@@ -708,12 +752,14 @@ impl Brain {
     /// a moment ago), the Terminal tab shows and attaches. Leaving it for a session without a
     /// terminal goes back to the messages.
     fn sync_terminal(&mut self) -> Task<Message> {
+        let mut just_started = false;
         if let Some((account, id)) = self.pending_attach.clone() {
             let found = self.model.board.keys().find(|k| {
                 k.account == account && self.model.board.get(k).and_then(|s| s.agent.as_ref()).is_some_and(|a| a.id == id)
             });
             if let Some(key) = found.cloned() {
                 self.pending_attach = None;
+                just_started = true;
                 self.selected = Some(key);
                 self.filter = None;
             }
@@ -728,10 +774,12 @@ impl Brain {
         }
         self.synced_selection = current;
         self.terminal_focused = false;
-        let has_terminal = self.selected.as_ref().is_some_and(|k| self.terminals.contains_key(k));
+        let has_terminal = self.has_terminal();
         if attachable || has_terminal {
             self.tab = DetailTab::Terminal;
-            return self.open_terminal();
+            // Selecting a session shows its terminal but keeps the keys for the list; a session
+            // started a moment ago gets them, its prompt is next.
+            return self.open_terminal(just_started);
         }
         if self.tab == DetailTab::Terminal {
             self.tab = DetailTab::Messages;
@@ -850,6 +898,11 @@ impl Brain {
         None
     }
 
+    /// Whether the selected session has a terminal in Brain.
+    fn has_terminal(&self) -> bool {
+        self.selected.as_ref().is_some_and(|k| self.terminals.contains_key(k))
+    }
+
     /// Gives a running terminal the keyboard when its tab is shown; starts nothing.
     fn focus_terminal(&mut self) -> Task<Message> {
         match self.selected.as_ref().and_then(|k| self.terminals.get(k)) {
@@ -916,7 +969,7 @@ impl Brain {
 
     /// Starts the selected session's terminal on the Terminal tab (⏎ or the button), and
     /// focuses it.
-    fn open_terminal(&mut self) -> Task<Message> {
+    fn open_terminal(&mut self, focus: bool) -> Task<Message> {
         if self.tab != DetailTab::Terminal || self.model.is_demo() {
             return Task::none();
         }
@@ -951,7 +1004,11 @@ impl Brain {
                 }
             }
         }
-        self.focus_terminal()
+        if focus {
+            self.focus_terminal()
+        } else {
+            Task::none()
+        }
     }
 
     /// Keeps the message list in step with the selected session. New messages scroll into view
@@ -1273,6 +1330,9 @@ impl Brain {
             _ => None,
         };
         let cmd = modifiers.command();
+        if self.context_menu.take().is_some() && named == Some(Named::Escape) {
+            return Task::none();
+        }
 
         // A focused terminal keeps Esc (it interrupts Claude); ⌘[ leaves it.
         if named == Some(Named::Escape) && !(self.tab == DetailTab::Terminal && self.terminal_focused) {
@@ -1295,7 +1355,7 @@ impl Brain {
         }
         // ⌘2 / ⌘J: keyboard into the terminal; ⌘1 / ⌘[: back to the session list.
         if cmd && matches!(character.as_deref(), Some("2") | Some("j")) {
-            return if self.selected.as_ref().is_some_and(|k| self.terminals.contains_key(k)) {
+            return if self.has_terminal() {
                 self.tab = DetailTab::Terminal;
                 self.focus_terminal()
             } else {
@@ -1310,7 +1370,7 @@ impl Brain {
             return unfocus();
         }
         // While the terminal has the keyboard, Brain's shortcuts are off: everything is Claude's.
-        if self.tab == DetailTab::Terminal && self.terminal_focused && self.selected.as_ref().is_some_and(|k| self.terminals.contains_key(k)) {
+        if self.tab == DetailTab::Terminal && self.terminal_focused && self.has_terminal() {
             return Task::none();
         }
         if captured {
@@ -1334,20 +1394,6 @@ impl Brain {
             _ => {}
         }
 
-        // On the Terminal tab, typing belongs to the terminal even when a click elsewhere took
-        // its focus: text, ⏎ and ⌫ go there (and give it the focus back), never to shortcuts.
-        if self.tab == DetailTab::Terminal && !cmd && !modifiers.control() {
-            let bytes = match named {
-                Some(Named::Enter) => Some(b"\r".to_vec()),
-                Some(Named::Backspace) => Some(vec![0x7f]),
-                Some(Named::ArrowUp | Named::ArrowDown) => None,
-                _ => text.as_ref().map(|t| t.as_bytes().to_vec()),
-            };
-            if let (Some(bytes), Some(term)) = (bytes, self.selected.as_ref().and_then(|k| self.terminals.get_mut(k))) {
-                term.handle(iced_term::Command::ProxyToBackend(iced_term::BackendCommand::Write(bytes)));
-                return iced_term::TerminalView::focus(term.widget_id().clone());
-            }
-        }
         if cmd && character.as_deref() == Some("f") {
             return self.start_search();
         }
@@ -1355,7 +1401,7 @@ impl Brain {
             return self.open_new_session_dialog();
         }
         if cmd && named == Some(Named::Backspace) {
-            self.trash_selected();
+            self.trash_selected(false);
             return Task::none();
         }
         if cmd && character.as_deref() == Some("c") && self.prefs.layout == Layout::Today {
@@ -1373,8 +1419,8 @@ impl Brain {
         match named {
             Some(Named::ArrowDown) => return self.select_index(&list, next),
             Some(Named::ArrowUp) => return self.select_index(&list, previous),
-            // On the Terminal tab ⏎ runs the session here instead of in iTerm.
-            Some(Named::Enter) if self.tab == DetailTab::Terminal && self.terminal_command().is_some() => return self.open_terminal(),
+            // On the Terminal tab ⏎ gives the terminal the keyboard (starting it if needed).
+            Some(Named::Enter) if self.tab == DetailTab::Terminal && (self.has_terminal() || self.terminal_command().is_some()) => return self.open_terminal(true),
             Some(Named::Enter) if modifiers.alt() => return self.act(Action::OpenInITerm),
             Some(Named::Enter) => return self.act(Action::Open),
             Some(Named::Tab) => {
@@ -1382,7 +1428,7 @@ impl Brain {
                 return Task::none();
             }
             Some(Named::Backspace) => {
-                self.hide_selected();
+                self.hide_selected(false);
                 return Task::none();
             }
             Some(Named::ArrowRight) => {
@@ -1392,7 +1438,7 @@ impl Brain {
                     DetailTab::Changes => DetailTab::Terminal,
                     DetailTab::Terminal => DetailTab::Messages,
                 };
-                return Task::batch([self.load_changes(), self.focus_terminal()]);
+                return self.load_changes();
             }
             Some(Named::ArrowLeft) => {
                 self.tab = match self.tab {
@@ -1401,7 +1447,7 @@ impl Brain {
                     DetailTab::Changes => DetailTab::Timeline,
                     DetailTab::Terminal => DetailTab::Changes,
                 };
-                return Task::batch([self.load_changes(), self.focus_terminal()]);
+                return self.load_changes();
             }
             _ => {}
         }
@@ -1420,8 +1466,8 @@ impl Brain {
             "p" => self.toggle_pin(),
             "m" => self.toggle_mute(),
             "s" => self.cycle_snooze(),
-            "a" => self.move_to_other_account(),
-            "x" => self.end_selected(),
+            "a" => self.move_to_other_account(false),
+            "x" => self.end_selected(false),
             "c" => {
                 self.armed = None;
                 self.mode = Mode::Cleanup;
@@ -1542,22 +1588,36 @@ impl Brain {
 
     // ---- actions ----------------------------------------------------------------
 
+    /// A button or a key. Actions that ask to be pressed twice ask here.
     fn act(&mut self, action: Action) -> Task<Message> {
+        self.perform(action, false)
+    }
+
+    /// `confirmed`: the user already chose deliberately (a menu click), so actions that
+    /// normally want a second press run at once.
+    fn perform(&mut self, action: Action, confirmed: bool) -> Task<Message> {
         match action {
             // A session that runs in Brain opens here; everything else in its terminal app.
             Action::Open if self.selected_session().is_some_and(|s| s.agent.is_some()) => {
                 self.tab = DetailTab::Terminal;
-                return self.open_terminal();
+                return self.open_terminal(true);
             }
             Action::Open => self.open_selected(),
             Action::OpenInITerm => self.open_selected(),
-            Action::TakeOver => self.take_over(),
+            Action::TakeOver => self.take_over(confirmed),
+            Action::Pin => self.toggle_pin(),
+            Action::Mute => self.toggle_mute(),
+            Action::Snooze => self.cycle_snooze(),
+            Action::OtherAccount => self.move_to_other_account(confirmed),
+            Action::End => self.end_selected(confirmed),
+            Action::Hide => self.hide_selected(confirmed),
+            Action::Trash => self.trash_selected(confirmed),
             Action::Resume => self.resume_selected(),
             Action::Allow => self.answer_permission(true),
             Action::Deny => self.answer_permission(false),
             Action::StartReply => return self.start_reply(),
             Action::StartRename => return self.start_rename(),
-            Action::StartTerminal => return self.open_terminal(),
+            Action::StartTerminal => return self.open_terminal(true),
             Action::CopyDigest => {
                 let date = chrono::Local::now().format("%d.%m.%Y").to_string();
                 let markdown = brain_core::digest::markdown(&tr!("Heute, {date}", "Today, {date}"), &self.today_digest());
@@ -1767,11 +1827,11 @@ impl Brain {
     }
 
     /// `X` twice: ends a waiting session with `/exit` (a background one with `claude stop`).
-    fn end_selected(&mut self) {
+    fn end_selected(&mut self, confirmed: bool) {
         let Some(session) = self.selected_session() else { return };
         let key = session.key.clone();
         if let Some(agent) = session.agent.clone().filter(|a| a.is_active()) {
-            if !self.arm('x', &key) {
+            if !confirmed && !self.arm('x', &key) {
                 self.set_status(t("Nochmal X stoppt die Hintergrund-Session (das Gespräch bleibt).", "Press X again to stop the background session (its conversation is kept)."));
                 return;
             }
@@ -1796,7 +1856,7 @@ impl Brain {
             self.set_status(t("Beenden geht, sobald die Session fertig ist und auf dich wartet.", "Ending works once the session has finished and waits for you."));
             return;
         }
-        if !self.arm('x', &key) {
+        if !confirmed && !self.arm('x', &key) {
             self.set_status(t("Nochmal X beendet die Session (fortsetzen mit ⏎).", "Press X again to end the session (⏎ resumes it)."));
             return;
         }
@@ -1808,7 +1868,7 @@ impl Brain {
 
     /// `A` twice: continues a session in the next account. The transcript is copied and resumed
     /// there in a new tab (`--fork-session`); a running original gets `/exit`.
-    fn move_to_other_account(&mut self) {
+    fn move_to_other_account(&mut self, confirmed: bool) {
         let Some(session) = self.selected_session() else { return };
         let key = session.key.clone();
         let Some(index) = self.model.accounts.iter().position(|a| a.id == key.account) else { return };
@@ -1827,7 +1887,7 @@ impl Brain {
             return;
         }
         let (session_id, cwd, pid) = (session.session_id.clone(), session.cwd.clone(), session.pid);
-        if !self.arm('a', &key) {
+        if !confirmed && !self.arm('a', &key) {
             let target = target.id.clone();
             self.set_status(if ended {
                 tr!("Nochmal A setzt die Session in {target} fort.", "Press A again to resume the session in {target}.")
@@ -1876,7 +1936,7 @@ impl Brain {
     }
 
     /// `⌫` twice: hides the session (or shows it again) until something new happens in it.
-    fn hide_selected(&mut self) {
+    fn hide_selected(&mut self, confirmed: bool) {
         let Some(session) = self.selected_session() else { return };
         let key = session.key.clone();
         if self.prefs.is_hidden(&key, session.last_activity_ms) {
@@ -1885,7 +1945,7 @@ impl Brain {
             self.set_status(t("Wieder eingeblendet.", "Shown again."));
             return;
         }
-        if !self.arm('h', &key) {
+        if !confirmed && !self.arm('h', &key) {
             self.set_status(t("Nochmal ⌫ blendet die Session aus, bis sich in ihr etwas tut.", "Press ⌫ again to hide the session until something happens in it."));
             return;
         }
@@ -1897,7 +1957,7 @@ impl Brain {
 
     /// `⌘⌫` twice: an ended session's transcript goes to the Trash; a background session is
     /// removed with `claude rm` after its transcript went to the Trash.
-    fn trash_selected(&mut self) {
+    fn trash_selected(&mut self, confirmed: bool) {
         let Some(session) = self.selected_session() else { return };
         let key = session.key.clone();
         let deletable = session.phase() == Phase::Ended || session.agent.as_ref().is_some_and(|a| !a.is_active());
@@ -1905,7 +1965,7 @@ impl Brain {
             self.set_status(t("Löschen geht nur bei beendeten Sessions – erst X X.", "Only ended sessions can be deleted – end it with X X first."));
             return;
         }
-        if !self.arm('d', &key) {
+        if !confirmed && !self.arm('d', &key) {
             self.set_status(t("Nochmal ⌘⌫ legt die Session in den Papierkorb.", "Press ⌘⌫ again to move the session to the Trash."));
             return;
         }
@@ -2191,7 +2251,7 @@ impl Brain {
 
     /// `I` twice: moves a session running in an iTerm tab into Brain. Brain sends it `/exit`,
     /// waits until it ended, and continues it in the background under the same id.
-    fn take_over(&mut self) {
+    fn take_over(&mut self, confirmed: bool) {
         let Some(session) = self.selected_session() else { return };
         let key = session.key.clone();
         if session.agent.is_some() {
@@ -2203,7 +2263,7 @@ impl Brain {
             self.set_status(t("Übernehmen geht, sobald die Session auf dich wartet.", "Taking over works once the session waits for you."));
             return;
         }
-        if !self.arm('i', &key) {
+        if !confirmed && !self.arm('i', &key) {
             self.set_status(t("Nochmal I holt die Session nach Brain (das iTerm-Tab wird beendet).", "Press I again to move the session into Brain (its iTerm tab ends)."));
             return;
         }

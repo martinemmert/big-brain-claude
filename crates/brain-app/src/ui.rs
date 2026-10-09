@@ -41,16 +41,156 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
     )
     .on_press(Message::SidebarDrag)
     .interaction(iced::mouse::Interaction::ResizingHorizontally);
+    // The pointer is followed over the list only (that's where context menus open); the list
+    // starts below the title bar and its divider.
+    let left = mouse_area(container(left).width(Length::Fixed(width - 3.0)).height(Fill).style(|_| style::fill(CHROME)))
+        .on_move(|p| Message::Pointer(iced::Point::new(p.x, p.y + crate::chrome::TITLEBAR_HEIGHT + 1.0)));
     let body = row![
-        container(left).width(Length::Fixed(width - 3.0)).height(Fill).style(|_| style::fill(CHROME)),
+        left,
         grip,
         container(detail).width(Fill).height(Fill).style(|_| style::fill(INK)),
     ];
-    container(column![titlebar(brain), divider(), body.height(Fill), divider(), footer(brain)])
+    let window = container(column![titlebar(brain), divider(), body.height(Fill), divider(), footer(brain)])
         .width(Fill)
         .height(Fill)
-        .style(|_| container::Style { background: Some(Background::Color(INK)), text_color: Some(TEXT), ..container::Style::default() })
+        .style(|_| container::Style { background: Some(Background::Color(INK)), text_color: Some(TEXT), ..container::Style::default() });
+    match context_menu(brain) {
+        Some(menu) => stack![window, menu].into(),
+        None => window.into(),
+    }
+}
+
+// ---- context menu -----------------------------------------------------------------
+
+const MENU_WIDTH: f32 = 250.0;
+const MENU_ROW: f32 = 28.0;
+const MENU_PADDING: f32 = 5.0;
+/// A separator's height: 1 pt line, 4 pt above and below.
+const MENU_SEPARATOR: f32 = 9.0;
+
+/// One line of a context menu; `None` is a separator.
+type MenuLine = Option<(String, &'static str, Action, bool)>;
+
+/// What a right click on a list entry offers: the same actions as the keys, in groups.
+fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
+    let phase = s.phase();
+    let ended = phase == Phase::Ended;
+    let caps = brain.capabilities();
+    let agent_active = s.agent.as_ref().is_some_and(|a| a.is_active());
+    let mut groups: Vec<Vec<(String, &'static str, Action, bool)>> = Vec::new();
+
+    let mut open = Vec::new();
+    if s.agent.is_some() {
+        open.push((t("Öffnen", "Attach").to_string(), "⏎", Action::Open, false));
+        open.push((t("In iTerm öffnen", "Open in iTerm").to_string(), "⌥⏎", Action::OpenInITerm, false));
+    } else if ended {
+        open.push((t("Fortsetzen", "Resume").to_string(), "⏎", Action::Resume, false));
+    } else if caps.focus {
+        open.push((t("Zum Terminal", "Open terminal").to_string(), "⏎", Action::Open, false));
+    }
+    if s.agent.is_none() && (ended || s.accepts_input()) {
+        open.push((t("Nach Brain holen", "Move into Brain").to_string(), "I", Action::TakeOver, false));
+    }
+    groups.push(open);
+
+    let mut talk = Vec::new();
+    if s.awaiting_permission() && caps.keys {
+        talk.push((t("Erlauben", "Allow").to_string(), "Y", Action::Allow, false));
+        talk.push((t("Ablehnen", "Deny").to_string(), "N", Action::Deny, false));
+    } else if s.accepts_input() && caps.type_text {
+        talk.push((t("Antworten", "Reply").to_string(), "T", Action::StartReply, false));
+    }
+    talk.push((t("Umbenennen", "Rename").to_string(), "R", Action::StartRename, false));
+    groups.push(talk);
+
+    let pinned = brain.prefs.is_pinned(&s.key);
+    let pin = match (pinned, ended) {
+        (false, true) => t("Zum Fortsetzen merken", "Save to resume"),
+        (true, true) => t("Nicht mehr merken", "Don't save"),
+        (false, false) => t("Anheften", "Pin"),
+        (true, false) => t("Lösen", "Unpin"),
+    };
+    let mut keep = vec![(pin.to_string(), "P", Action::Pin, false)];
+    let mute = if brain.prefs.is_muted(&s.key) { t("Benachrichtigungen an", "Unmute") } else { t("Stummschalten", "Mute") };
+    keep.push((mute.to_string(), "M", Action::Mute, false));
+    if !ended {
+        keep.push((t("Pausieren (15 min → 1 h → morgen)", "Snooze (15 min → 1 h → tomorrow)").to_string(), "S", Action::Snooze, false));
+    }
+    if brain.model.accounts.len() > 1 {
+        keep.push((t("Im anderen Konto fortsetzen", "Continue in the other account").to_string(), "A", Action::OtherAccount, false));
+    }
+    groups.push(keep);
+
+    let mut remove = Vec::new();
+    if agent_active {
+        remove.push((t("Hintergrund-Session stoppen", "Stop background session").to_string(), "X", Action::End, false));
+    } else if !ended && s.accepts_input() {
+        remove.push((t("Beenden", "End").to_string(), "X", Action::End, false));
+    }
+    let hidden = brain.prefs.is_hidden(&s.key, s.last_activity_ms);
+    remove.push((if hidden { t("Einblenden", "Show again") } else { t("Ausblenden", "Hide") }.to_string(), "⌫", Action::Hide, false));
+    if ended || s.agent.as_ref().is_some_and(|a| !a.is_active()) {
+        remove.push((t("In den Papierkorb", "Move to Trash").to_string(), "⌘⌫", Action::Trash, true));
+    }
+    groups.push(remove);
+
+    let mut lines = Vec::new();
+    for group in groups.into_iter().filter(|g| !g.is_empty()) {
+        if !lines.is_empty() {
+            lines.push(None);
+        }
+        lines.extend(group.into_iter().map(Some));
+    }
+    lines
+}
+
+/// The open context menu at the pointer, kept inside the window; a click beside it closes it.
+fn context_menu(brain: &Brain) -> Option<Element<'_, Message>> {
+    let (key, at) = brain.context_menu.as_ref()?;
+    let s = brain.model.board.get(key)?;
+    let lines = menu_lines(brain, s);
+    let height = MENU_PADDING * 2.0 + lines.iter().map(|l| if l.is_some() { MENU_ROW } else { MENU_SEPARATOR }).sum::<f32>();
+    let x = at.x.min(brain.window_size.width - MENU_WIDTH - 8.0).max(8.0);
+    // Below the pointer when it fits, otherwise above it.
+    let y = if at.y + height + 8.0 <= brain.window_size.height { at.y } else { (at.y - height).max(8.0) };
+
+    let rows = lines.into_iter().map(|line| -> Element<'_, Message> {
+        let Some((label, keys, action, danger)) = line else {
+            return container(container(Space::new().width(Fill).height(1)).style(|_| style::fill(LINE)))
+                .padding([4, 6])
+                .height(MENU_SEPARATOR)
+                .into();
+        };
+        let color = if danger { CALLS_SOFT } else { TEXT };
+        button(
+            row![text(label).size(13).color(color).font(UI).width(Fill), text(keys).size(11.5).color(TEXT_FAINT).font(UI)]
+                .spacing(12)
+                .align_y(iced::Center),
+        )
+        .padding([0, 10])
+        .height(MENU_ROW)
+        .width(Fill)
+        .on_press(Message::MenuPick(action))
+        .style(move |_, status| button::Style {
+            background: matches!(status, button::Status::Hovered | button::Status::Pressed)
+                .then(|| Background::Color(if danger { alpha(CALLS, 0x2e) } else { alpha(WORKING, 0x2e) })),
+            border: Border { radius: 5.0.into(), ..Border::default() },
+            ..button::Style::default()
+        })
         .into()
+    });
+    let menu = container(column(rows))
+        .padding(MENU_PADDING)
+        .width(MENU_WIDTH)
+        .style(|_| container::Style {
+            shadow: iced::Shadow { color: Color { a: 0.45, ..Color::BLACK }, offset: iced::Vector::new(0.0, 6.0), blur_radius: 18.0 },
+            ..boxed(RAISED, LINE_STRONG, 8.0)
+        });
+    let backdrop = mouse_area(Space::new().width(Fill).height(Fill))
+        .on_press(Message::CloseMenu)
+        .on_right_press(Message::CloseMenu)
+        .interaction(iced::mouse::Interaction::Idle);
+    Some(stack![backdrop, iced::widget::pin(menu).position(iced::Point::new(x, y))].into())
 }
 
 fn divider<'a>() -> Element<'a, Message> {
@@ -247,6 +387,7 @@ fn clickable<'a>(content: Element<'a, Message>, s: &Session) -> Element<'a, Mess
     mouse_area(content)
         .on_press(Message::Select(s.key.clone()))
         .on_double_click(Message::OpenEntry(s.key.clone()))
+        .on_right_press(Message::ContextMenu(s.key.clone()))
         .on_enter(Message::Hover(Some(s.key.clone())))
         .on_exit(Message::Hover(None))
         .interaction(iced::mouse::Interaction::Pointer)
@@ -1007,7 +1148,7 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
 
 fn footer(brain: &Brain) -> Element<'_, Message> {
     let terminal_hints: [(&str, &str); 6] = [
-        ("⌘2", t("ins Terminal", "into terminal")),
+        ("⏎ ⌘2", t("ins Terminal", "into terminal")),
         ("⌘1", t("zur Liste", "to the list")),
         ("⌘-Klick", t("Pfad öffnen", "open path")),
         ("⌘V", t("Screenshot einfügen", "paste screenshot")),
