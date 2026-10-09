@@ -42,6 +42,23 @@ interface follows your macOS language: English or German.
   commands for the session, and any text sent to it or to every session whose turn it is.
 - **Files.** Every file a session wrote, edited, read or was given, newest first: find the
   Markdown files it created. A click opens one.
+- **Questions.** Every question Claude asked (AskUserQuestion, or a reply ending in a question)
+  with your answer, newest first; unanswered ones stand out.
+- **Composer.** `⌘E`: a large editor for a longer prompt, with your templates, dictation and
+  screenshots pasted with `⌘V`; `⌘⏎` sends it as one paste.
+- **Screenshots, offered.** A new screenshot shows above the footer: into the waiting session's
+  terminal or into the composer. `"screenshot_folder"` in the config changes the folder
+  (`"off"` turns it off).
+- **Reply from the notification.** "Session waits" notifications have a reply field (only on an
+  unlocked Mac); the text goes into the session.
+- **Shell per project.** `⌘T` opens a login shell in the session's folder below its terminal.
+- **Context gauge.** From 80 % context the gauge turns amber and offers `/compact`.
+- **Diffs.** A click on a file in Changes shows its diff; "Discard change" (twice) puts the
+  current version in the Trash and restores HEAD's.
+- **Before resuming.** An ended session's Terminal tab sums it up: how it began, what was asked
+  last, the last answer, an open question, the files it changed.
+- **Usage forecast.** "full ~Thu 14:00" when a limit would run out at this pace, and which
+  account has room.
 - **Find in the whole session.** `⌘F` searches the entire conversation, "Your prompts" lists
   everything you asked, `⌘⇧C` copies Claude's last answer, "As Markdown" opens the whole
   conversation in YAMV.
@@ -213,6 +230,8 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `⌘F` | find in the selected session's whole conversation |
 | `⌘⇧C` | copy Claude's last answer |
 | `⌘K` | command palette |
+| `⌘E` | composer: a longer prompt for the session (`⌘⏎` sends) |
+| `⌘T` | shell in the session's folder (again: hide) |
 | `⌘D` | split: keep this terminal beside the next session (again: end) |
 | `⌘⇧A` | all terminals as live previews |
 | `⌃⌥Space` | from any app: Brain with the waiting session's terminal (again: hide) |
@@ -229,7 +248,7 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `U` | show / hide sessions programs started (security reviews, SDK scripts, `claude -p`) |
 | `A` `A` | move the session to the next account (an ended one resumes there) |
 | `⌘N` | start a new session (in Brain; `⌘I` in the dialog: in iTerm) |
-| `←` `→` | switch between messages, timeline, changes, files and terminal |
+| `←` `→` | switch between messages, timeline, changes, files, questions and terminal |
 | `⇥` | cycle the account filter |
 | `E` | show ended sessions |
 
