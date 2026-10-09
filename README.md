@@ -40,6 +40,9 @@ interface follows your macOS language: English or German.
   from their transcripts, and a softer hint when they change files in the same checkout.
 - **Today.** What every session reported as done today, per project; copy it as Markdown.
 - **Timeline.** Every hook event and report of a session.
+- **The conversation reads like the terminal:** your prompts as `> …`, Claude's replies and tool
+  calls with `●`, in your terminal's font (iTerm2's default profile, e.g. JetBrains Mono 13).
+  `"chat_font"` and `"chat_font_size"` in `~/.claude-brain/config.json` pick another one.
 - **Keep the list short.** Sessions that never got a prompt don't show up; the "resting" group
   is folded (`H`); ended sessions show for a day, older ones through the search. `⌫` twice hides
   a session until something new happens in it; `⌘⌫` twice moves an ended session's transcript to

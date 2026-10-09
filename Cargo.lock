@@ -360,7 +360,7 @@ dependencies = [
 
 [[package]]
 name = "brain-app"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "block2 0.6.2",
  "brain-core",
@@ -377,7 +377,7 @@ dependencies = [
 
 [[package]]
 name = "brain-cli"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "brain-core",
  "brain-terminal",
@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "brain-core"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "libc",
@@ -399,7 +399,7 @@ dependencies = [
 
 [[package]]
 name = "brain-terminal"
-version = "0.8.0"
+version = "0.8.1"
 
 [[package]]
 name = "bumpalo"

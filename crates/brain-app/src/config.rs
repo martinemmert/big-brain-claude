@@ -14,6 +14,17 @@ pub fn remind_after_ms() -> Option<i64> {
     (minutes > 0).then_some(minutes * 60 * 1000)
 }
 
+/// The chat history's font family (`chat_font`), e.g. "JetBrains Mono"; by default the
+/// terminal's.
+pub fn chat_font() -> Option<String> {
+    read().and_then(|v| v.get("chat_font")?.as_str().map(str::to_string)).filter(|f| !f.trim().is_empty())
+}
+
+/// The chat history's font size (`chat_font_size`) in points.
+pub fn chat_font_size() -> Option<f32> {
+    read().and_then(|v| v.get("chat_font_size")?.as_f64()).map(|s| s.clamp(9.0, 24.0) as f32)
+}
+
 /// Canned replies for `T` then `1`–`9`: `quick_replies` in config.json, or a default set in the
 /// UI language.
 pub fn quick_replies() -> Vec<String> {

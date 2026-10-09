@@ -1,4 +1,5 @@
 mod app;
+mod chat_font;
 mod chrome;
 mod config;
 mod conversation;
@@ -21,6 +22,7 @@ fn main() -> iced::Result {
     // The app menu ("About …", "Quit …") is named after the process.
     objc2_foundation::NSProcessInfo::processInfo().setProcessName(&objc2_foundation::NSString::from_str("Brain"));
     links::listen_for_urls();
+    chat_font::init();
     iced::application(app::Brain::new, app::Brain::update, ui::view)
         .title(app::Brain::title)
         .subscription(app::Brain::subscription)

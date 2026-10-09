@@ -1,4 +1,5 @@
-//! The detail pane's content: conversation messages (with Markdown) and the event timeline.
+//! The detail pane's content: the conversation, drawn like Claude Code in the terminal (in the
+//! terminal's font), and the event timeline.
 
 use brain_core::event::{Event, Kind, Source};
 use brain_core::markdown::{self, Block, Inline, Span};
@@ -6,31 +7,43 @@ use brain_core::state::Session;
 use brain_core::transcript::{classify_prompt, Message, Prompt, Role};
 use chrono::Local;
 use iced::widget::{column, container, rich_text, row, span, text, Space};
-use iced::{Background, Border, Color, Element, Fill, Length, Padding};
+use iced::{Border, Color, Element, Fill, Length, Padding};
 
+use crate::chat_font::{self, ChatFont};
 use crate::format::{clip, note, plain, tilde};
 use crate::i18n::t;
-use crate::style::{self, alpha, boxed, LINE, LINE_STRONG, MONO, SURFACE, TEXT, TEXT_FAINT, TEXT_MUTED, TEXT_STRONG, TURN, UI, WORKING};
+use crate::style::{self, alpha, boxed, DONE, LINE, SURFACE, TEXT, TEXT_FAINT, TEXT_MUTED, TEXT_STRONG, TURN, UI, WORKING};
 use crate::tr;
 
 /// Consecutive tool calls are shown as one block; long runs are cut to this many rows.
 const TOOL_ROWS_SHOWN: usize = 6;
+/// Width of the `● ` / `> ` gutter in characters, so wrapped lines stay aligned like in the terminal.
+const GUTTER: f32 = 2.0;
+/// Claude Code's reply marker. (`⏺`, which it uses on macOS, comes out as a colour emoji here:
+/// the terminal fonts don't have it and the fallback is Apple Color Emoji.)
+const DOT: &str = "●";
+
+/// The width of `chars` characters of the chat font (monospaced: about 0.6 em each).
+fn cells(font: &ChatFont, chars: f32) -> Length {
+    Length::Fixed((font.size * 0.62 * chars).ceil() + 1.0)
+}
 
 pub fn conversation<'a, M: 'a>(messages: &[Message]) -> Vec<Element<'a, M>> {
+    let font = chat_font::get();
     let mut out = Vec::new();
     let mut i = 0;
     while i < messages.len() {
         let message = &messages[i];
         if message.role == Role::Tool {
             let run = messages[i..].iter().take_while(|m| m.role == Role::Tool).count();
-            out.push(tool_block(&messages[i..i + run]));
+            out.push(tool_calls(font, &messages[i..i + run]));
             i += run;
             continue;
         }
         out.push(match message.role {
-            Role::User => user_bubble(message),
-            Role::Assistant => assistant_reply(message),
-            Role::System => system_note(&message.text),
+            Role::User => prompt(font, message),
+            Role::Assistant => gutter(font, DOT, TEXT, body_in(font, &message.text)),
+            Role::System => note_line(font, &message.text),
             Role::Tool => unreachable!(),
         });
         i += 1;
@@ -38,101 +51,55 @@ pub fn conversation<'a, M: 'a>(messages: &[Message]) -> Vec<Element<'a, M>> {
     out
 }
 
-fn time_of(message: &Message) -> String {
-    message.ts.map(|t| t.with_timezone(&Local).format("%H:%M").to_string()).unwrap_or_default()
+/// A marker in a fixed-width column, the content beside it: `⏺ text`, `> prompt`.
+fn gutter<'a, M: 'a>(font: &ChatFont, marker: &str, color: Color, content: Element<'a, M>) -> Element<'a, M> {
+    row![
+        container(text(marker.to_string()).size(font.size).color(color).font(font.regular)).width(cells(font, GUTTER)),
+        container(content).width(Fill),
+    ]
+    .into()
 }
 
-fn user_bubble<'a, M: 'a>(message: &Message) -> Element<'a, M> {
-    // Very long prompts (pasted logs) are cut like the GPUI version's 14-line clamp.
+/// Your prompt: `> text` on a faint band, like Claude Code's echo of what you typed.
+fn prompt<'a, M: 'a>(font: &ChatFont, message: &Message) -> Element<'a, M> {
+    // Very long prompts (pasted logs) are cut to 14 lines.
     let body: String = message.text.lines().take(14).collect::<Vec<_>>().join("\n");
-    column![
-        text(format!("{} · {}", t("Du", "You"), time_of(message))).size(11).color(TEXT_FAINT).font(UI),
-        container(text(body).size(13).color(TEXT_STRONG).font(UI).line_height(1.5))
-            .padding([9, 13])
-            .max_width(620)
-            .style(|_| container::Style {
-                background: Some(Background::Color(alpha(TURN, 0x1c))),
-                border: Border {
-                    color: alpha(TURN, 0x40),
-                    width: 1.0,
-                    radius: iced::border::Radius { top_left: 12.0, top_right: 4.0, bottom_right: 12.0, bottom_left: 12.0 },
-                },
-                ..container::Style::default()
-            }),
-    ]
-    .spacing(4)
-    .align_x(iced::Right)
-    .width(Fill)
-    .into()
+    container(gutter(font, ">", TEXT_FAINT, text(body).size(font.size).color(TEXT_MUTED).font(font.regular).line_height(1.45).into()))
+        .padding([6, 8])
+        .width(Fill)
+        .style(|_| boxed(SURFACE, Color::TRANSPARENT, 4.0))
+        .into()
 }
 
-fn assistant_reply<'a, M: 'a>(message: &Message) -> Element<'a, M> {
-    column![
-        row![
-            style::dot(WORKING, 6.0),
-            text("Claude").size(11).color(TEXT_MUTED).font(style::semibold()),
-            text(time_of(message)).size(11).color(TEXT_FAINT).font(UI),
-        ]
-        .spacing(6)
-        .align_y(iced::Center),
-        body(&message.text),
-    ]
-    .spacing(6)
-    .into()
-}
-
-fn system_note<'a, M: 'a>(label: &str) -> Element<'a, M> {
+/// A harness note (subagent hand-back, task notification): `⎿ note`, dim.
+fn note_line<'a, M: 'a>(font: &ChatFont, label: &str) -> Element<'a, M> {
     row![
-        container(Space::new().width(14).height(1)).style(|_| style::fill(LINE_STRONG)),
-        text(clip(&note(label), 140)).size(11.5).color(TEXT_FAINT).font(UI),
+        Space::new().width(cells(font, GUTTER)),
+        text(format!("⎿  {}", clip(&note(label), 140))).size(font.size).color(TEXT_FAINT).font(font.regular),
     ]
-    .spacing(8)
-    .align_y(iced::Center)
-    .padding([0, 4])
     .into()
 }
 
-fn tool_block<'a, M: 'a>(calls: &[Message]) -> Element<'a, M> {
+/// `● Bash(cargo test -p gateway)` per call, as one tight block; long runs start with how many
+/// came before.
+fn tool_calls<'a, M: 'a>(font: &ChatFont, calls: &[Message]) -> Element<'a, M> {
     let hidden = calls.len().saturating_sub(TOOL_ROWS_SHOWN);
-    let mut rows: Vec<Element<'a, M>> = Vec::new();
+    let mut out = Vec::new();
     if hidden > 0 {
-        rows.push(text(tr!("{hidden} frühere Tool-Aufrufe", "{hidden} earlier tool calls")).size(11).color(TEXT_FAINT).font(UI).into());
+        out.push(gutter(font, DOT, TEXT_FAINT, text(tr!("… {hidden} frühere Tool-Aufrufe", "… {hidden} earlier tool calls")).size(font.size).color(TEXT_FAINT).font(font.regular).into()));
     }
-    rows.extend(calls[hidden..].iter().map(tool_row));
-    row![
-        container(Space::new().width(2).height(Length::Fill)).style(|_| style::fill(LINE_STRONG)),
-        column(rows).spacing(1).padding([2, 0]),
-    ]
-    .spacing(12)
-    .height(Length::Shrink)
-    .padding(Padding { left: 2.0, ..Padding::ZERO })
-    .into()
-}
-
-fn tool_row<'a, M: 'a>(call: &Message) -> Element<'a, M> {
-    let tool = call.tool.clone().unwrap_or_default();
-    row![
-        container(text(tool_icon(&tool)).size(12).color(TEXT_FAINT).font(UI)).width(14),
-        text(short_tool_name(&tool)).size(12).color(TEXT_MUTED).font(style::medium()),
-        text(clip(&tilde(&note(&call.text)), 110)).size(11.5).color(TEXT).font(MONO).wrapping(text::Wrapping::None),
-    ]
-    .spacing(8)
-    .align_y(iced::Center)
-    .padding([2, 0])
-    .into()
-}
-
-fn tool_icon(tool: &str) -> &'static str {
-    match tool {
-        "Bash" => "❯",
-        "Read" => "◱",
-        "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => "✎",
-        "Grep" | "Glob" => "⌕",
-        "WebSearch" | "WebFetch" => "◍",
-        "Agent" | "Task" => "◆",
-        "TodoWrite" => "☑",
-        _ => "⚙",
+    for call in &calls[hidden..] {
+        let tool = short_tool_name(call.tool.as_deref().unwrap_or_default());
+        let argument = clip(&tilde(&note(&call.text)), 110);
+        // Two texts, not two spans: Iced shapes a word in the font its first letter has, so
+        // "Bash(pnpm" as spans would draw "pnpm" bold too.
+        let line = row![
+            text(tool).size(font.size).font(font.bold).color(TEXT_STRONG).wrapping(text::Wrapping::None),
+            text(format!("({argument})")).size(font.size).font(font.regular).color(TEXT_MUTED).wrapping(text::Wrapping::None),
+        ];
+        out.push(gutter(font, DOT, DONE, line.into()));
     }
+    column(out).spacing(font.size * 0.35).into()
 }
 
 /// `mcp__claude-in-chrome__navigate` → `chrome · navigate`
@@ -151,49 +118,41 @@ fn short_tool_name(tool: &str) -> String {
 
 // ---- Markdown ------------------------------------------------------------------------
 
-pub fn body<'a, M: 'a>(source: &str) -> Element<'a, M> {
-    column(markdown::parse(source).into_iter().map(block)).spacing(8).into()
+fn body_in<'a, M: 'a>(font: &ChatFont, source: &str) -> Element<'a, M> {
+    column(markdown::parse(source).into_iter().map(|b| block(font, b))).spacing(font.size * 0.6).into()
 }
 
-fn block<'a, M: 'a>(block: Block) -> Element<'a, M> {
+fn block<'a, M: 'a>(font: &ChatFont, block: Block) -> Element<'a, M> {
     match block {
-        Block::Heading { level, text: heading } => {
-            container(styled(&heading, if level <= 2 { 15.0 } else { 13.5 }, TEXT_STRONG, true)).padding(Padding { top: 4.0, ..Padding::ZERO }).into()
+        // The terminal has one size: headings are bold, the first levels also brighter.
+        Block::Heading { level, text: heading } => styled(font, &heading, if level <= 2 { TEXT_STRONG } else { TEXT }, true),
+        Block::Paragraph(paragraph) => styled(font, &paragraph, TEXT, false),
+        Block::Item { indent, marker, text: item } => {
+            let marker = if marker == "•" { "-".to_string() } else { marker };
+            let width = font.size * 0.62 * (marker.chars().count() as f32 + 1.0);
+            row![
+                container(text(marker).size(font.size).color(TEXT_MUTED).font(font.regular)).width(Length::Fixed(width)),
+                container(styled(font, &item, TEXT, false)).width(Fill),
+            ]
+            .padding(Padding { left: indent as f32 * font.size * 0.62 * 2.0, ..Padding::ZERO })
+            .into()
         }
-        Block::Paragraph(paragraph) => styled(&paragraph, 13.0, TEXT, false),
-        Block::Item { indent, marker, text: item } => row![
-            container(text(marker.clone()).size(13).color(if marker == "•" { TEXT_FAINT } else { TEXT_MUTED }).font(UI)).width(Length::Fixed(14.0)),
-            container(styled(&item, 13.0, TEXT, false)).width(Fill),
-        ]
-        .spacing(8)
-        .padding(Padding { left: indent as f32 * 18.0, ..Padding::ZERO })
-        .into(),
-        Block::Code { lang, text: code } => {
-            let label: Element<'a, M> = match lang {
-                Some(lang) => container(text(lang).size(10).color(TEXT_FAINT).font(UI)).align_right(Fill).into(),
-                None => Space::new().into(),
-            };
-            container(column![label, text(code).size(12).color(TEXT).font(MONO).line_height(1.5)].spacing(2))
-                .padding([10, 12])
-                .width(Fill)
-                .style(|_| boxed(style::INK, LINE, 8.0))
-                .into()
-        }
+        Block::Code { text: code, .. } => container(text(code).size(font.size).color(style::CODE).font(font.regular).line_height(1.45))
+            .padding(Padding { left: font.size * 0.62 * 2.0, ..Padding::ZERO })
+            .into(),
         Block::Quote(quote) => row![
-            container(Space::new().width(2).height(Length::Fill)).style(|_| style::fill(LINE_STRONG)),
-            styled(&quote, 13.0, TEXT_MUTED, false),
+            text("│ ").size(font.size).color(TEXT_FAINT).font(font.regular),
+            styled(font, &quote, TEXT_MUTED, false),
         ]
-        .spacing(12)
-        .height(Length::Shrink)
         .into(),
-        Block::Table { header, rows } => table(header, rows),
-        Block::Rule => container(Space::new().width(Fill).height(1)).style(|_| style::fill(LINE)).padding([4, 0]).into(),
+        Block::Table { header, rows } => table(font, header, rows),
+        Block::Rule => text("─".repeat(40)).size(font.size).color(TEXT_FAINT).font(font.regular).into(),
     }
 }
 
-fn table<'a, M: 'a>(header: Vec<Inline>, rows: Vec<Vec<Inline>>) -> Element<'a, M> {
+fn table<'a, M: 'a>(font: &ChatFont, header: Vec<Inline>, rows: Vec<Vec<Inline>>) -> Element<'a, M> {
     let line = |cells: Vec<Inline>, head: bool| -> Element<'a, M> {
-        let cells = cells.into_iter().map(|cell| container(styled(&cell, 12.5, if head { TEXT_STRONG } else { TEXT }, head)).padding([5, 10]).width(Fill).into());
+        let cells = cells.into_iter().map(|cell| container(styled(font, &cell, if head { TEXT_STRONG } else { TEXT }, head)).padding([3, 8]).width(Fill).into());
         container(row(cells)).width(Fill).style(move |_| if head { style::fill(SURFACE) } else { container::Style::default() }).into()
     };
     let mut lines = vec![line(header, true)];
@@ -201,12 +160,15 @@ fn table<'a, M: 'a>(header: Vec<Inline>, rows: Vec<Vec<Inline>>) -> Element<'a, 
         lines.push(container(Space::new().width(Fill).height(1)).style(|_| style::fill(LINE)).into());
         lines.push(line(cells, false));
     }
-    container(column(lines)).style(|_| boxed(Color::TRANSPARENT, LINE, 8.0)).clip(true).into()
+    container(column(lines))
+        .style(|_| container::Style { border: Border { color: LINE, width: 1.0, radius: 4.0.into() }, ..container::Style::default() })
+        .clip(true)
+        .into()
 }
 
-/// Text with bold, code and link ranges drawn as spans.
-fn styled<'a, M: 'a>(inline: &Inline, size: f32, color: Color, strong: bool) -> Element<'a, M> {
-    let base = if strong { style::semibold() } else { UI };
+/// Text with bold, code and link ranges drawn as spans, all in the chat font.
+fn styled<'a, M: 'a>(font: &ChatFont, inline: &Inline, color: Color, strong: bool) -> Element<'a, M> {
+    let base = if strong { font.bold } else { font.regular };
     let mut spans: Vec<text::Span<'a, ()>> = Vec::new();
     let mut at = 0;
     let mut ranges: Vec<_> = inline.spans.iter().filter(|(r, _)| r.end <= inline.text.len()).cloned().collect();
@@ -220,16 +182,16 @@ fn styled<'a, M: 'a>(inline: &Inline, size: f32, color: Color, strong: bool) -> 
         }
         let piece = inline.text[range.clone()].to_string();
         spans.push(match kind {
-            Span::Bold => span(piece).font(style::semibold()).color(TEXT_STRONG),
-            Span::Code => span(piece).font(MONO).color(style::CODE).background(alpha(WORKING, 0x22)),
-            Span::Link => span(piece).font(base).color(WORKING),
+            Span::Bold => span(piece).font(font.bold).color(TEXT_STRONG),
+            Span::Code => span(piece).font(font.regular).color(style::CODE).background(alpha(WORKING, 0x1a)),
+            Span::Link => span(piece).font(base).color(WORKING).underline(true),
         });
         at = range.end;
     }
     if at < inline.text.len() {
         spans.push(span(inline.text[at..].to_string()).font(base).color(color));
     }
-    rich_text(spans).size(size).line_height(1.55).into()
+    rich_text(spans).size(font.size).line_height(1.45).into()
 }
 
 // ---- Timeline ------------------------------------------------------------------------

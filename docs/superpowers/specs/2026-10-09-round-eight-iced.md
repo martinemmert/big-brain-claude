@@ -26,3 +26,13 @@ new-session dialog, clean-up, Today, Projects); the installed bundle with real s
 `brain show` link selects and scrolls to the session, menu bar item shows the count,
 notifications are delivered from `local.claude-brain`. Not ported: the pulsing halo around the
 "calls you" dot.
+
+## 0.8.1 — the conversation in the terminal's font
+
+The message list is drawn like Claude Code: `> prompt` on a faint band, `●` before replies (white)
+and tool calls (green, `Tool(argument)`), Markdown in one size with bold headings. The font is
+iTerm2's default profile font (`NSUserDefaults` suite `com.googlecode.iterm2`, PostScript name →
+family via `NSFont`), else `chat_font`/`chat_font_size` from config.json win, else Menlo 13.
+`⏺` is replaced by `●`: terminal fonts lack it and Iced falls back to the colour emoji font.
+Tool name and argument are separate texts, because Iced shapes a whole word in its first
+letter's font ("Bash(pnpm" would come out bold).

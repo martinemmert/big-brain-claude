@@ -627,7 +627,7 @@ fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
 fn messages(brain: &Brain) -> Element<'_, Message> {
     let list = brain.conversation.as_ref().map(|c| c.messages.as_slice()).unwrap_or_default();
     let children = if list.is_empty() { vec![hint(t("Diese Session hat noch keine Nachrichten.", "This session has no messages yet."))] } else { markdown::conversation(list) };
-    scrollable(column(children).spacing(16).padding(Padding { top: 4.0, right: 12.0, bottom: 24.0, left: 0.0 }))
+    scrollable(column(children).spacing(14).padding(Padding { top: 4.0, right: 12.0, bottom: 24.0, left: 0.0 }))
         .id(app::MESSAGES)
         .on_scroll(Message::MessagesScrolled)
         .height(Fill)
