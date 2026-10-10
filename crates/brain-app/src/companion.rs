@@ -73,6 +73,9 @@ pub enum Command {
 pub struct Pairing {
     pub url: String,
     pub hosts: Vec<String>,
+    /// The first 8 hex digits of the certificate's fingerprint (`071f 6895`). The phone shows
+    /// the same before it pairs: name and addresses in a link can be made up, this can't.
+    pub code: String,
 }
 
 /// The running server: Brain publishes its session list to it and takes the phone's commands.
@@ -95,7 +98,7 @@ impl Link {
         let identity = Identity::load_or_create(&dir)?;
         let config = identity.server_config()?;
         let hosts = hosts();
-        let pairing = Pairing { url: pairing_url(&hosts, &identity), hosts };
+        let pairing = Pairing { url: pairing_url(&hosts, &identity), code: short_code(&identity.fingerprint()), hosts };
         let stop = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = channel();
         let state = Arc::new(State {
@@ -252,6 +255,10 @@ fn pairing_url(hosts: &[String], identity: &Identity) -> String {
         identity.token,
         identity.fingerprint()
     )
+}
+
+fn short_code(fingerprint: &str) -> String {
+    format!("{} {}", &fingerprint[..4], &fingerprint[4..8])
 }
 
 fn encode(text: &str) -> String {

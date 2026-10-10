@@ -1866,6 +1866,19 @@ fn pairing(brain: &Brain) -> Element<'_, Message> {
         body = body.push(container(code).padding(10).style(|_| boxed(Color::WHITE, LINE, 12.0)));
     }
     if let Some(pairing) = brain.link_pairing() {
+        let code = pairing.code.clone();
+        body = body.push(
+            row![
+                text(t("Kennung", "Code")).size(13).color(TEXT_MUTED).font(UI),
+                text(code).size(17).color(TEXT_STRONG).font(style::bold()),
+                text(t("– das iPhone zeigt sie vor dem Koppeln, sie muss gleich sein.", "– the iPhone shows it before pairing; it must match."))
+                    .size(12.5)
+                    .color(TEXT_MUTED)
+                    .font(UI),
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+        );
         let hosts = pairing.hosts.join(" · ");
         body = body.push(text(tr!("Erreichbar unter {hosts}", "Reachable at {hosts}")).size(12).color(TEXT_MUTED).font(UI));
     }
