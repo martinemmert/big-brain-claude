@@ -23,3 +23,13 @@ objc2-foundation = { version = "0.3", features = ["NSBundle", "NSString", "NSArr
 objc2-user-notifications = { version = "0.3", features = ["block2", "UNNotification", "UNNotificationAction", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSView", "NSResponder", "NSApplication", "NSRunningApplication", "NSToolbar", "NSWindow", "NSFont", "NSPasteboard"] }
+hyper = { version = "1.12", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+http-body-util = "0.1.5"
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+rcgen = "0.14.10"
+qrcode = { version = "0.14.1", default-features = false }
+tokio = { version = "1", features = ["rt", "net", "time"] }
+libc = "0.2"
+ring = "0.17"
+base64 = "0.22"

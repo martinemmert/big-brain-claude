@@ -11,6 +11,8 @@ use iced::widget::{operation, scrollable};
 use iced::{window, Subscription, Task};
 
 use crate::config;
+
+mod link;
 use crate::conversation::Conversation;
 use crate::format::{ago, clock, now_ms, plain, shell_quote};
 use crate::i18n::t;
@@ -58,6 +60,8 @@ pub enum Mode {
     Palette,
     /// The composer (⌘E): a longer prompt for the selected session.
     Composer,
+    /// The code a phone scans to pair with Brain Link.
+    Pairing,
 }
 
 /// What a line of the command palette does.
@@ -82,6 +86,8 @@ pub enum PaletteCommand {
     Overview,
     Composer,
     Shell,
+    /// Turn Brain Link on and show the pairing code.
+    PairPhone,
 }
 
 /// Slash commands the palette offers for the selected session.
@@ -269,6 +275,11 @@ pub enum Message {
     ActivatePane,
     /// Close the dialog or view on top, like esc.
     Close,
+    /// Brain Link: turn it off, or sign out every paired phone.
+    LinkOff,
+    LinkForget,
+    /// A phone's command, again once a background session's terminal attached.
+    LinkRetry(crate::companion::Command),
     /// ⌘⇧A: live previews of every session that runs in Brain.
     ToggleOverview,
     /// A preview clicked in the overview: open that session's terminal.
@@ -536,6 +547,10 @@ pub struct Brain {
     /// What the detail pane showed last; when it changes, the message list is built anew and
     /// starts at its newest message again.
     detail_shape: (Layout, Mode, DetailTab),
+    /// Brain Link, the companion app's server, while it runs.
+    link: Option<crate::companion::Link>,
+    /// The pairing code as an image.
+    pub link_qr: Option<iced::widget::image::Handle>,
 }
 
 impl Brain {
@@ -629,7 +644,10 @@ impl Brain {
             dragging_sidebar: false,
             titlebar_ready: false,
             detail_shape: (Layout::Status, Mode::Normal, DetailTab::Messages),
+            link: None,
+            link_qr: None,
         };
+        brain.resume_link();
         brain.selected = brain.groups(now_ms()).navigable(false).first().map(|s| s.key.clone());
         if let Some(spec) = crate::config::quick_terminal().filter(|_| !demo) {
             if !crate::hotkey::register(&spec) {
@@ -1123,6 +1141,15 @@ impl Brain {
                 Task::none()
             }
             Message::Close => self.escape(),
+            Message::LinkOff => {
+                self.stop_link();
+                Task::none()
+            }
+            Message::LinkForget => {
+                self.forget_phones();
+                Task::none()
+            }
+            Message::LinkRetry(command) => self.run_link_command(command, false),
             Message::ActivatePane => {
                 self.activate_split_pane();
                 Task::none()
@@ -1226,6 +1253,7 @@ impl Brain {
                 notify::Response::Reply(key, text) => tasks.push(self.reply_from_notification(key, text)),
             }
         }
+        tasks.push(self.serve_link(now));
         self.remind(now);
         self.notify_conflicts();
         tasks.push(self.load_changes());
@@ -1656,6 +1684,7 @@ impl Brain {
         all.push((t("Alle Terminals im Überblick", "All terminals at a glance").to_string(), "⌘⇧A", PaletteCommand::Overview));
         all.push((t("Neue Session", "New session").to_string(), "⌘N", PaletteCommand::NewSession));
         all.push((t("Aufräumen", "Clean up").to_string(), "C", PaletteCommand::Cleanup));
+        all.push((t("iPhone koppeln (Brain Link)", "Pair a phone (Brain Link)").to_string(), "", PaletteCommand::PairPhone));
         all.push((t("Beendete Sessions zeigen / verbergen", "Show / hide ended sessions").to_string(), "E", PaletteCommand::ToggleEnded));
         all.push((t("Nach Projekten gruppieren", "Group by project").to_string(), "G", PaletteCommand::ToggleProjects));
         all.push((t("Heute", "Today").to_string(), "D", PaletteCommand::ToggleToday));
@@ -1705,6 +1734,10 @@ impl Brain {
             PaletteCommand::Cleanup => {
                 self.armed = None;
                 self.mode = Mode::Cleanup;
+                Task::none()
+            }
+            PaletteCommand::PairPhone => {
+                self.pair_phone();
                 Task::none()
             }
             PaletteCommand::ToggleEnded => {
@@ -1893,7 +1926,10 @@ impl Brain {
     /// background session, `claude --resume` for an ended one. Sessions running in an iTerm tab
     /// can't be joined from outside, so they get none.
     pub fn terminal_command(&self) -> Option<(Vec<String>, String)> {
-        let session = self.selected_session()?;
+        self.terminal_command_for(self.selected_session()?)
+    }
+
+    fn terminal_command_for(&self, session: &Session) -> Option<(Vec<String>, String)> {
         let cwd = session.cwd.clone().unwrap_or_else(|| brain_core::account::home_dir().display().to_string());
         if let Some(agent) = &session.agent {
             return Some((vec!["attach".into(), agent.id.clone()], cwd));
@@ -2027,8 +2063,21 @@ impl Brain {
             return Task::none();
         }
         let Some(key) = self.selected.clone() else { return Task::none() };
-        if !self.terminals.contains_key(&key) {
-            let Some((args, cwd)) = self.terminal_command() else { return Task::none() };
+        if !self.terminals.contains_key(&key) && !self.spawn_terminal(&key) {
+            return Task::none();
+        }
+        if focus {
+            self.focus_terminal()
+        } else {
+            Task::none()
+        }
+    }
+
+    /// Starts a session's terminal in Brain (`claude attach` or `claude --resume`), shown or
+    /// not. False when the session has none or it didn't start.
+    fn spawn_terminal(&mut self, key: &SessionKey) -> bool {
+        let Some((args, cwd)) = self.model.board.get(key).and_then(|s| self.terminal_command_for(s)) else { return false };
+        {
             let mut env = HashMap::new();
             if let Some(account) = self.model.account(&key.account).filter(|a| a.id != "main") {
                 env.insert("CLAUDE_CONFIG_DIR".to_string(), account.config_dir.display().to_string());
@@ -2050,17 +2099,13 @@ impl Brain {
                 Ok(term) => {
                     self.next_terminal += 1;
                     self.terminals.insert(key.clone(), term);
+                    true
                 }
                 Err(err) => {
                     self.set_status(tr!("Terminal startet nicht: {err}", "Terminal didn't start: {err}"));
-                    return Task::none();
+                    false
                 }
             }
-        }
-        if focus {
-            self.focus_terminal()
-        } else {
-            Task::none()
         }
     }
 
@@ -2515,6 +2560,7 @@ impl Brain {
                 self.on_cleanup_key(named, character.as_deref(), cmd);
                 return Task::none();
             }
+            Mode::Pairing => return Task::none(),
             Mode::NewSession => return self.on_new_session_key(named, character.as_deref(), cmd, modifiers.shift()),
             Mode::Reply | Mode::Rename => {
                 // The field lost its focus (a click elsewhere): give it back instead of acting.
@@ -2663,7 +2709,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer => {
+            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing => {
                 self.mode = Mode::Normal;
                 unfocus()
             }

@@ -26,6 +26,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
     let detail = match brain.mode {
         _ if brain.overview => overview(brain),
         Mode::Cleanup => cleanup(brain),
+        Mode::Pairing => pairing(brain),
         Mode::NewSession => new_session(brain),
         _ if brain.prefs.layout == Layout::Today => today(brain),
         _ => detail(brain, now),
@@ -1843,6 +1844,50 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
     .spacing(14)
     .padding(Padding { top: 24.0, right: 28.0, bottom: 0.0, left: 28.0 })
     .into()
+}
+
+/// Brain Link: the code the iPhone camera scans, where Brain listens, and the way out.
+fn pairing(brain: &Brain) -> Element<'_, Message> {
+    let mut body = column![
+        dialog_title(t("iPhone koppeln", "Pair a phone")),
+        text(t(
+            "Richte die Kamera deines iPhones auf den Code und tippe auf „In Brain öffnen“. Die App merkt sich Brain und verbindet sich verschlüsselt.",
+            "Point your iPhone's camera at the code and tap “Open in Brain”. The app remembers Brain and connects encrypted.",
+        ))
+        .size(13)
+        .line_height(1.5)
+        .color(TEXT)
+        .font(UI),
+    ]
+    .spacing(16)
+    .max_width(560);
+    if let Some(qr) = &brain.link_qr {
+        let code = iced::widget::image(qr.clone()).width(280).height(280).filter_method(iced::widget::image::FilterMethod::Nearest);
+        body = body.push(container(code).padding(10).style(|_| boxed(Color::WHITE, LINE, 12.0)));
+    }
+    if let Some(pairing) = brain.link_pairing() {
+        let hosts = pairing.hosts.join(" · ");
+        body = body.push(text(tr!("Erreichbar unter {hosts}", "Reachable at {hosts}")).size(12).color(TEXT_MUTED).font(UI));
+    }
+    body = body
+        .push(
+            text(t(
+                "Unterwegs: Mit Tailscale auf Mac und iPhone erreicht die App Brain auch außer Haus. Der Code enthält den Schlüssel – zeig ihn niemandem.",
+                "On the go: with Tailscale on the Mac and the iPhone, the app reaches Brain away from home too. The code holds the key – don't show it to anyone.",
+            ))
+            .size(12)
+            .line_height(1.5)
+            .color(TEXT_FAINT)
+            .font(UI),
+        )
+        .push(
+            row![
+                action(t("Alle Handys abmelden", "Sign out all phones"), "", false, Some(Message::LinkForget)),
+                action(t("Brain Link ausschalten", "Turn Brain Link off"), "", false, Some(Message::LinkOff)),
+            ]
+            .spacing(10),
+        );
+    scrollable(body.padding(Padding { top: 24.0, right: 28.0, bottom: 24.0, left: 28.0 })).height(Fill).style(scrollbar).into()
 }
 
 // ---- footer -----------------------------------------------------------------------

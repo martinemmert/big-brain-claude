@@ -1,6 +1,7 @@
 mod app;
 mod chat_font;
 mod clipboard;
+mod companion;
 mod chrome;
 mod config;
 mod conversation;
