@@ -32,8 +32,9 @@ messages during the council (e.g. a note from another session) stay in Messages.
 
 ## The skill patch
 
-Not applied here: the skill lives in the `phoenix-framework` plugin. Against
-`skills/konsil/SKILL.md` of version 3.5.0:
+Not applied here: the skill lives in its own repository, `phoenix-developer-plugin`
+(`~/Work/FastBill/phoenix/tools/claude-code-plugin`). Against `skills/konsil/SKILL.md` of
+version 3.5.0:
 
 ```diff
 @@ ## 1. The topic
