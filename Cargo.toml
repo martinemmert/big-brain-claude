@@ -4,7 +4,7 @@ members = ["crates/brain-core", "crates/brain-terminal", "crates/brain-cli", "cr
 
 [workspace.package]
 edition = "2021"
-version = "0.9.1"
+version = "0.10.0"
 
 [workspace.dependencies]
 brain-core = { path = "crates/brain-core" }
