@@ -2394,16 +2394,12 @@ impl Brain {
     fn on_key(&mut self, event: keyboard::Event, captured: bool) -> Task<Message> {
         let keyboard::Event::KeyPressed { key, modifiers, text, .. } = event else { return Task::none() };
         // Keys only count while Brain is the active app: with another app in front they're that
-        // app's (⌘T in Chrome opened Brain's shell). Such a key is noted, to find where it came from.
+        // app's, never Brain's shortcuts.
         if !app_is_active() {
-            note_key_while_inactive(&key, modifiers);
             return Task::none();
         }
         if let Some(focused) = self.focused_terminal.clone() {
             self.last_terminal_input = Some((focused, Instant::now()));
-        }
-        if modifiers.command() {
-            note_shortcut(&key, modifiers);
         }
         let named = match key.as_ref() {
             keyboard::Key::Named(named) => Some(named),
@@ -3625,64 +3621,6 @@ fn open_reader_file(reader: &Reader) {
 /// Whether macOS has Brain as the active app (the one that gets the keyboard).
 fn app_is_active() -> bool {
     objc2::MainThreadMarker::new().is_none_or(|mtm| objc2_app_kit::NSApplication::sharedApplication(mtm).isActive())
-}
-
-/// Diagnostics: each ⌘ shortcut Brain sees, with what macOS says about the moment: the frontmost
-/// app, whether Brain is active and whether its key window is visible. Goes to
-/// `~/.claude-brain/shortcuts.log` (owner-only, at most 200 lines); only the shortcut is written.
-fn note_shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers) {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let path = brain_core::account::home_dir().join(".claude-brain/shortcuts.log");
-    if std::fs::read_to_string(&path).map(|t| t.lines().count()).unwrap_or(0) >= 200 {
-        return;
-    }
-    let Some(mtm) = objc2::MainThreadMarker::new() else { return };
-    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-    let front = objc2_app_kit::NSWorkspace::sharedWorkspace()
-        .frontmostApplication()
-        .and_then(|a| a.bundleIdentifier())
-        .map(|b| b.to_string())
-        .unwrap_or_default();
-    let key_window_visible = app.keyWindow().is_some_and(|w| w.isVisible());
-    let what = match key {
-        keyboard::Key::Named(named) => format!("{named:?}"),
-        keyboard::Key::Character(c) => c.to_string(),
-        _ => "?".to_string(),
-    };
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(path) {
-        let _ = writeln!(
-            file,
-            "{} {:?}+{what} front={front} brain_active={} key_window_visible={key_window_visible} hidden={}",
-            chrono::Local::now().format("%H:%M:%S"),
-            modifiers,
-            app.isActive(),
-            app.isHidden()
-        );
-    }
-}
-
-/// Diagnostics: a key that reached Brain while another app was active, one line per key in
-/// `~/.claude-brain/keys-while-inactive.log` (owner-only, at most 200 lines). What was typed is
-/// never written: only shortcuts (with ⌘ or ⌃) name their key, other keys show as `<key>`.
-fn note_key_while_inactive(key: &keyboard::Key, modifiers: keyboard::Modifiers) {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    const MAX_LINES: usize = 200;
-    let path = brain_core::account::home_dir().join(".claude-brain/keys-while-inactive.log");
-    let lines = std::fs::read_to_string(&path).map(|t| t.lines().count()).unwrap_or(0);
-    if lines >= MAX_LINES {
-        return;
-    }
-    let shortcut = modifiers.command() || modifiers.control();
-    let what = match key {
-        keyboard::Key::Named(named) => format!("{named:?}"),
-        keyboard::Key::Character(c) if shortcut => c.to_string(),
-        _ => "<key>".to_string(),
-    };
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(path) {
-        let _ = writeln!(file, "{} {:?} {what}", chrono::Local::now().format("%H:%M:%S"), modifiers);
-    }
 }
 
 /// A path as a shell word, like iTerm pastes dropped files: spaces and specials backslashed.
