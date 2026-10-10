@@ -121,6 +121,7 @@ impl Brain {
             since_ms: s.phase_since_ms(),
             folder: s.cwd.as_deref().and_then(|c| c.rsplit('/').find(|p| !p.is_empty())).map(str::to_string),
             permission_open: s.awaiting_permission(),
+            permission_since_ms: s.awaiting_permission().then(|| s.phase_since_ms()),
             can_reply: phase != Phase::Ended && (self.can_send(&s.key) || s.agent.as_ref().is_some_and(|a| a.is_active())),
         }
     }
@@ -137,6 +138,7 @@ impl Brain {
         let Some(session) = self.model.board.get(&key) else { return Task::none() };
         let name = session.display_name();
         let permission_open = session.awaiting_permission();
+        let permission_since = permission_open.then(|| session.phase_since_ms());
         let pid = session.pid;
         let in_background = session.agent.as_ref().is_some_and(|a| a.is_active());
         match command {
@@ -158,8 +160,15 @@ impl Brain {
                 self.set_status(tr!("Vom Handy: „{name}“ nimmt gerade keine Eingabe an.", "From the phone: “{name}” doesn't take input right now."));
                 Task::none()
             }
-            Command::Permission { allow, .. } => {
-                if !permission_open {
+            Command::Permission { allow, since_ms, .. } => {
+                // Only the dialog the phone showed: one that opened since was never seen there.
+                if permission_since != Some(since_ms) {
+                    if permission_open {
+                        self.set_status(tr!(
+                            "Vom Handy: „{name}“ fragt inzwischen etwas anderes – Freigabe nicht gesendet.",
+                            "From the phone: “{name}” asks something else by now – permission not sent."
+                        ));
+                    }
                     return Task::none();
                 }
                 let done = if allow { tr!("Freigabe vom Handy für „{name}“ erteilt.", "Permission for “{name}” allowed from the phone.") } else { tr!("Freigabe vom Handy für „{name}“ abgelehnt.", "Permission for “{name}” denied from the phone.") };
@@ -175,7 +184,7 @@ impl Brain {
                     return Task::none();
                 }
                 if first_try && self.spawn_terminal(&key) {
-                    return later(Command::Permission { key, allow });
+                    return later(Command::Permission { key, allow, since_ms });
                 }
                 Task::none()
             }

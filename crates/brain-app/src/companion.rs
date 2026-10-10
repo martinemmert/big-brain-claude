@@ -53,6 +53,9 @@ pub struct View {
     pub folder: Option<String>,
     /// A permission dialog is open: the phone offers Allow and Deny.
     pub permission_open: bool,
+    /// When that dialog opened (epoch ms): the phone sends it with its answer, so the answer
+    /// only ever reaches the dialog the user saw, never one that opened since.
+    pub permission_since_ms: Option<i64>,
     /// Brain can deliver a reply (its terminal, an iTerm tab, or a background session).
     pub can_reply: bool,
 }
@@ -61,7 +64,8 @@ pub struct View {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Reply { key: SessionKey, text: String },
-    Permission { key: SessionKey, allow: bool },
+    /// `since_ms`: when the dialog the user answered opened ([`View::permission_since_ms`]).
+    Permission { key: SessionKey, allow: bool, since_ms: i64 },
 }
 
 /// What the pairing QR code carries.
@@ -369,7 +373,10 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
             };
             let command = match action.as_str() {
                 "reply" => body.get("text").and_then(|t| t.as_str()).filter(|t| !t.trim().is_empty()).map(|text| Command::Reply { key, text: text.to_string() }),
-                _ => body.get("allow").and_then(|a| a.as_bool()).map(|allow| Command::Permission { key, allow }),
+                _ => match (body.get("allow").and_then(|a| a.as_bool()), body.get("since_ms").and_then(|s| s.as_i64())) {
+                    (Some(allow), Some(since_ms)) => Some(Command::Permission { key, allow, since_ms }),
+                    _ => None,
+                },
             };
             match command {
                 Some(command) => {
@@ -489,6 +496,7 @@ mod tests {
             since_ms: 1,
             folder: Some("fin".into()),
             permission_open: false,
+            permission_since_ms: None,
             can_reply: true,
         }]);
         let token = std::fs::read_to_string(dir.join("token")).unwrap();
@@ -511,8 +519,14 @@ mod tests {
         assert!(curl(&["-H", &bearer, "BASE/v1/sessions/main/..%2f..%2fetc/messages"]).ends_with("404"));
         let sent = curl(&["-H", &bearer, "-H", "Content-Type: application/json", "-d", "{\"text\":\"weiter\"}", "BASE/v1/sessions/main/0331-ab/reply"]);
         assert!(sent.ends_with("202"), "{sent}");
+        // An answer that doesn't say which dialog it is for is refused.
+        assert!(curl(&["-H", &bearer, "-d", "{\"allow\":true}", "BASE/v1/sessions/main/0331-ab/permission"]).ends_with("400"));
+        assert!(curl(&["-H", &bearer, "-d", "{\"allow\":true,\"since_ms\":7}", "BASE/v1/sessions/main/0331-ab/permission"]).ends_with("202"));
         let key = SessionKey { account: "main".into(), id: "0331-ab".into() };
-        assert_eq!(link.take_commands(), vec![Command::Reply { key, text: "weiter".into() }]);
+        assert_eq!(
+            link.take_commands(),
+            vec![Command::Reply { key: key.clone(), text: "weiter".into() }, Command::Permission { key, allow: true, since_ms: 7 }]
+        );
         drop(link);
         let _ = std::fs::remove_dir_all(&dir);
     }
