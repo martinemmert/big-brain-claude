@@ -48,11 +48,19 @@ impl Brain {
         if self.blocked_in_demo() {
             return;
         }
-        if self.link.is_none() {
-            if !self.start_link() {
-                return;
+        match self.link.as_mut() {
+            // The Mac may be in another network since Brain Link started.
+            Some(link) => {
+                if link.refresh_addresses().is_ok() {
+                    self.link_qr = qr_image(&link.pairing.url);
+                }
             }
-            companion::set_enabled(true);
+            None => {
+                if !self.start_link() {
+                    return;
+                }
+                companion::set_enabled(true);
+            }
         }
         self.mode = Mode::Pairing;
     }

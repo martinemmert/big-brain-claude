@@ -141,8 +141,9 @@ verschlüsselt; die App prüft Brains Zertifikat am Fingerabdruck aus dem Code u
 Anfrage den Schlüssel mit – ohne ihn kommt niemand rein. Eine Freigabe vom Handy gilt nur für den
 Dialog, den das Handy gezeigt hat: Ist inzwischen ein anderer offen, antwortet Brain nicht.
 
-Unterwegs: Mit [Tailscale](https://tailscale.com) auf Mac und iPhone erreicht die App Brain auch
-außer Haus. Im Kopplungsdialog: **„Alle Handys abmelden“** (neuer Schlüssel, alte Kopplungen
+Die App erreicht Brain, solange iPhone und Mac im selben WLAN sind. Wechseln beide das WLAN, findet
+sie Brain nach wenigen Sekunden wieder; eine neue Adresse des Macs übernimmt sie von selbst. Im
+Kopplungsdialog: **„Alle Handys abmelden“** (neuer Schlüssel, alte Kopplungen
 gelten nicht mehr) und **„Brain Link ausschalten“**.
 
 ## Nutzung und Limits

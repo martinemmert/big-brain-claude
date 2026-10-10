@@ -1885,8 +1885,8 @@ fn pairing(brain: &Brain) -> Element<'_, Message> {
     body = body
         .push(
             text(t(
-                "Unterwegs: Mit Tailscale auf Mac und iPhone erreicht die App Brain auch außer Haus. Der Code enthält den Schlüssel – zeig ihn niemandem.",
-                "On the go: with Tailscale on the Mac and the iPhone, the app reaches Brain away from home too. The code holds the key – don't show it to anyone.",
+                "Die App erreicht Brain, solange iPhone und Mac im selben WLAN sind; nach einem Wechsel findet sie Brain von selbst wieder. Der Code enthält den Schlüssel – zeig ihn niemandem.",
+                "The app reaches Brain while the iPhone and the Mac are in the same Wi-Fi; after a change it finds Brain again by itself. The code holds the key – don't show it to anyone.",
             ))
             .size(12)
             .line_height(1.5)

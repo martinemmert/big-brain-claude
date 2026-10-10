@@ -152,7 +152,9 @@ reply typed in Brain. ⌘K → *Pair a phone (Brain Link)* turns the server on a
 the iPhone camera opens it in the app.
 
 - Off until paired, then it starts with Brain. HTTPS on port 48620 on every interface, so the
-  phone reaches it in the same Wi-Fi or a tailnet.
+  phone reaches it while both are in the same Wi-Fi. The pairing offers the Mac's Bonjour name
+  and its Wi-Fi/Ethernet addresses (no VM bridges or VPN tunnels); `/v1/hello` tells the phone
+  the current ones, so a new address needs no new pairing.
 - The code carries the Mac's addresses, a random token (required on every request, compared in
   constant time) and the SHA-256 of Brain's self-signed certificate, which the app pins.
 - Certificate, key and token live in `~/.claude-brain/link` (0700). *Sign out all phones* makes a

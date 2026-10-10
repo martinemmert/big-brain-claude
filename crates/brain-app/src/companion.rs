@@ -1,5 +1,5 @@
-//! Brain Link: the companion app on the phone talks to Brain over HTTPS, in the local network
-//! or a tailnet. It is off until the user pairs a phone (⌘K → "Pair a phone").
+//! Brain Link: the companion app on the phone talks to Brain over HTTPS in the network both are
+//! in. It is off until the user pairs a phone (⌘K → "Pair a phone").
 //!
 //! Pairing hands the phone a `brainlink://pair` URL (as a QR code the iPhone camera opens): the
 //! addresses Brain listens on, a random token every request must carry, and the SHA-256 of
@@ -122,6 +122,14 @@ impl Link {
         if let Ok(mut sessions) = self.state.sessions.write() {
             *sessions = views;
         }
+    }
+
+    /// The Mac's addresses as they are now (after a change of network), for the pairing code.
+    pub fn refresh_addresses(&mut self) -> Result<(), String> {
+        let identity = Identity::load_or_create(&self.dir)?;
+        self.pairing.hosts = hosts();
+        self.pairing.url = pairing_url(&self.pairing.hosts, &identity);
+        Ok(())
     }
 
     /// A new token: phones paired before are shut out and must scan the new code.
@@ -271,8 +279,9 @@ fn encode(text: &str) -> String {
         .collect()
 }
 
-/// The Mac's Bonjour name first (it survives a new IP address in the same network), then every
-/// IPv4 address of an interface that is up: the Wi-Fi's, and a tailnet's when one runs.
+/// The Mac's Bonjour name first (it survives a new IP address in the same network), then the
+/// IPv4 addresses of its Wi-Fi and Ethernet. Virtual interfaces (a VM's bridge, a VPN's tunnel)
+/// are left out: the phone can't reach them, and every dead address delays its reconnect.
 fn hosts() -> Vec<String> {
     let mut hosts = Vec::new();
     if let Some(name) = local_host_name() {
@@ -312,7 +321,9 @@ fn ipv4_addresses() -> Vec<Ipv4Addr> {
         while !entry.is_null() {
             let ifa = &*entry;
             let up = ifa.ifa_flags & (libc::IFF_UP as u32) != 0 && ifa.ifa_flags & (libc::IFF_LOOPBACK as u32) == 0;
-            if up && !ifa.ifa_addr.is_null() && i32::from((*ifa.ifa_addr).sa_family) == libc::AF_INET {
+            // macOS names Wi-Fi and Ethernet en0, en1, …
+            let wired_or_wifi = !ifa.ifa_name.is_null() && std::ffi::CStr::from_ptr(ifa.ifa_name).to_bytes().starts_with(b"en");
+            if up && wired_or_wifi && !ifa.ifa_addr.is_null() && i32::from((*ifa.ifa_addr).sa_family) == libc::AF_INET {
                 let addr = &*(ifa.ifa_addr as *const libc::sockaddr_in);
                 let ip = Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr));
                 if !ip.is_link_local() && !addresses.contains(&ip) {
@@ -364,7 +375,11 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
     let parts: Vec<&str> = path.iter().map(String::as_str).collect();
     let method = req.method().clone();
     Ok(match (method, parts.as_slice()) {
-        (Method::GET, ["v1", "hello"]) => reply(StatusCode::OK, &serde_json::json!({ "name": computer_name(), "version": env!("CARGO_PKG_VERSION") })),
+        // Where Brain is reachable now: the phone keeps the list current, so a new address of
+        // the Mac needs no new pairing.
+        (Method::GET, ["v1", "hello"]) => {
+            reply(StatusCode::OK, &serde_json::json!({ "name": computer_name(), "version": env!("CARGO_PKG_VERSION"), "hosts": hosts() }))
+        }
         (Method::GET, ["v1", "sessions"]) => {
             let sessions = state.sessions.read().map(|s| s.clone()).unwrap_or_default();
             reply(StatusCode::OK, &sessions)
@@ -525,6 +540,8 @@ mod tests {
         let bearer = format!("Authorization: Bearer {token}");
 
         assert!(curl(&["BASE/v1/sessions"]).ends_with("401"));
+        let hello = curl(&["-H", &bearer, "BASE/v1/hello"]);
+        assert!(hello.ends_with("200") && hello.contains("\"hosts\":["), "{hello}");
         assert!(curl(&["-H", "Authorization: Bearer wrong", "BASE/v1/sessions"]).ends_with("401"));
         let listed = curl(&["-H", &bearer, "BASE/v1/sessions"]);
         assert!(listed.ends_with("200") && listed.contains("\"name\":\"fin\""), "{listed}");
@@ -560,7 +577,9 @@ mod tests {
             r#"{"type":"assistant","timestamp":"2026-10-10T09:04:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Der Export ist fertig: Datum, Betrag, Konto und Kategorie, UTF-8 mit BOM, damit Excel die Umlaute richtig zeigt. Soll ich ihn auch ins Menü hängen?"}]}}"#,
         ];
         std::fs::write(project.join("0331aa00-1111-2222-3333-444455556666.jsonl"), lines.join("\n")).unwrap();
-        let link = Link::start_in(dir.join("link"), PORT, vec![account]).unwrap();
+        // Next to Brain's own port, so it runs while Brain (with Brain Link on) does.
+        let port = PORT + 1;
+        let link = Link::start_in(dir.join("link"), port, vec![account]).unwrap();
         let now = chrono::Utc::now().timestamp_millis();
         let view = |id: &str, name: &str, phase: &'static str, group: &'static str, headline: &str, minutes: i64| View {
             account: "main".into(),
@@ -587,7 +606,7 @@ mod tests {
             .map(|b| format!("{b:02x}"))
             .collect();
         let token = std::fs::read_to_string(dir.join("link/token")).unwrap();
-        let url = format!("brainlink://pair?v=1&n=Demo-Mac&h=127.0.0.1&p={PORT}&t={token}&f={fingerprint}");
+        let url = format!("brainlink://pair?v=1&n=Demo-Mac&h=127.0.0.1&p={port}&t={token}&f={fingerprint}");
         std::fs::write(dir.join("pairing.txt"), &url).unwrap();
         std::fs::write(dir.join("pairing.bmp"), qr_bmp(&url)).unwrap();
         println!("{url}");
