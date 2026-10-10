@@ -179,6 +179,12 @@ impl Model {
         let mut claimed: Vec<(String, u32)> = Vec::new();
         for account in &self.accounts {
             for file in read_session_files(account) {
+                if file.spare {
+                    // Its start was reported like a session's; it becomes one once claimed.
+                    self.board.remove(&SessionKey::for_session(&account.id, file.session_id.as_deref(), file.pid));
+                    claimed.push((account.id.clone(), file.pid));
+                    continue;
+                }
                 let alive = pid_alive(file.pid);
                 seen.push(self.board.apply_session_file(&account.id, &file, alive));
                 claimed.push((account.id.clone(), file.pid));

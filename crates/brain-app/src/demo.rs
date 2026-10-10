@@ -160,6 +160,7 @@ pub fn build() -> Demo {
                 started_at: Some(ms(spec.minutes_ago + 50)),
                 updated_at: Some(ms(spec.minutes_ago)),
                 status_updated_at: Some(ms(spec.minutes_ago)),
+                spare: false,
             },
             true,
         );

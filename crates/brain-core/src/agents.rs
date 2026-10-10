@@ -18,12 +18,20 @@ pub struct BackgroundAgent {
     /// `starting`, `running`, `working`, `idle`, `blocked`, `done`, `failed` or `stopped`.
     pub state: String,
     pub started_ms: Option<i64>,
+    /// The process, while it runs. `done` is also what a session reports whose task finished
+    /// while its process stays and waits for the next prompt: only without a pid has it exited.
+    pub pid: Option<u32>,
 }
 
 impl BackgroundAgent {
-    /// Whether the agent still runs (as opposed to done, failed or stopped).
+    /// Whether the agent still runs (as opposed to done, failed or stopped and exited).
     pub fn is_active(&self) -> bool {
-        !matches!(self.state.as_str(), "done" | "failed" | "stopped")
+        self.pid.is_some() || !self.has_exited_state()
+    }
+
+    /// A state that ends a session once its process is gone.
+    pub fn has_exited_state(&self) -> bool {
+        matches!(self.state.as_str(), "done" | "failed" | "stopped")
     }
 }
 
@@ -37,6 +45,7 @@ struct Row {
     cwd: Option<String>,
     state: Option<String>,
     started_at: Option<i64>,
+    pid: Option<u32>,
 }
 
 /// The background sessions in `claude agents --json` output; interactive ones are left out
@@ -54,6 +63,7 @@ pub fn parse(json: &str) -> Vec<BackgroundAgent> {
                 cwd: row.cwd,
                 state: row.state.unwrap_or_default(),
                 started_ms: row.started_at,
+                pid: row.pid,
             })
         })
         .collect()
@@ -162,14 +172,19 @@ mod tests {
         let json = r#"[
             {"id":"1f82d2ba","cwd":"/w/app","kind":"background","startedAt":1782809377133,"sessionId":"1f82d2ba-c668","name":"Fix banking","state":"blocked"},
             {"pid":4200,"cwd":"/w/fin","kind":"interactive","sessionId":"0331","name":"fin","status":"idle"},
-            {"cwd":"/w/x","kind":"background","state":"done"}
+            {"cwd":"/w/x","kind":"background","state":"done"},
+            {"id":"8d1d90d3","pid":1568,"kind":"background","sessionId":"8d1d90d3-2a87","state":"done","status":"idle"},
+            {"id":"3fc9d989","kind":"background","sessionId":"3fc9d989-4f87","state":"done"}
         ]"#;
 
         let agents = parse(json);
 
-        assert_eq!(agents.len(), 1);
+        assert_eq!(agents.len(), 3);
         assert_eq!((agents[0].id.as_str(), agents[0].session_id.as_str(), agents[0].state.as_str()), ("1f82d2ba", "1f82d2ba-c668", "blocked"));
         assert!(agents[0].is_active());
+        // Done with a process: it waits for the next prompt. Done without one: it exited.
+        assert!(agents[1].is_active());
+        assert!(!agents[2].is_active());
         assert!(parse("not json").is_empty());
     }
 }

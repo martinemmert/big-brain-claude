@@ -507,7 +507,7 @@ fn markers<'a>(brain: &'a Brain, s: &Session) -> Vec<Element<'a, Message>> {
         let label = match agent.state.as_str() {
             "blocked" => t("Hintergrund · wartet", "background · blocked"),
             "failed" => t("Hintergrund · fehlgeschlagen", "background · failed"),
-            "done" => t("Hintergrund · fertig", "background · done"),
+            "done" if agent.pid.is_none() => t("Hintergrund · fertig", "background · done"),
             "stopped" => t("Hintergrund · gestoppt", "background · stopped"),
             _ => t("Hintergrund", "background"),
         };

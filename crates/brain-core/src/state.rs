@@ -179,7 +179,9 @@ impl Session {
                 "blocked" => return Phase::NeedsYou,
                 "idle" => return Phase::YourTurn,
                 "starting" | "running" | "working" if !process_idle => return Phase::Working,
-                "done" | "failed" | "stopped" => return Phase::Ended,
+                // With its process still there it waits for the next prompt: the usual rules
+                // (status file, hooks) tell which phase.
+                _ if agent.pid.is_none() && agent.has_exited_state() => return Phase::Ended,
                 _ => {}
             }
         }
@@ -546,6 +548,7 @@ mod tests {
             started_at: None,
             updated_at: Some((1_790_000_000 + secs) * 1000),
             status_updated_at: Some((1_790_000_000 + secs) * 1000),
+            spare: false,
         }
     }
 
@@ -726,6 +729,7 @@ mod tests {
             cwd: None,
             state: state.into(),
             started_ms: Some(0),
+            pid: None,
         };
 
         board.set_agents("second", &[agent("working")]);
@@ -740,6 +744,13 @@ mod tests {
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::Ended);
         board.set_agents("second", &[]);
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::Working);
+
+        // `done` while its process is still there: the task finished, the session waits.
+        board.apply_session_file("second", &file("idle", 30), true);
+        board.set_agents("second", &[BackgroundAgent { pid: Some(4200), ..agent("done") }]);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::YourTurn);
+        board.set_agents("second", &[agent("done")]);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::Ended);
     }
 
     #[test]

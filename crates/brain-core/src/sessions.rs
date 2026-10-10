@@ -16,6 +16,9 @@ pub struct SessionFile {
     pub started_at: Option<i64>,
     pub updated_at: Option<i64>,
     pub status_updated_at: Option<i64>,
+    /// A process Claude Code keeps warm for the next background session: not a session yet.
+    #[serde(default)]
+    pub spare: bool,
 }
 
 pub fn read_session_files(account: &Account) -> Vec<SessionFile> {

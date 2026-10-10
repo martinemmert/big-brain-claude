@@ -87,12 +87,11 @@ export function register(on) {
     return next(e)
   }).catch(passOn)
 
-  // The user is about to be asked for permission.
-  on('tool.check', async ($, e, next) => {
-    const decided = await next(e)
-    const decision = typeof decided === 'string' ? decided : decided?.decision
-    if (decision === 'ask' && !e.agentId) await hook($, 'Notification', { message: 'Claude needs your permission to use ' + e.tool })
-    return decided
+  // Claude Code tells the user it needs them: a permission dialog, or the idle reminder. (A
+  // `tool.check` verdict of `ask` is not that: in auto mode the classifier decides most of them.)
+  on('classic.Notification', async ($, e, next) => {
+    await hook($, 'Notification', { message: e.message, notification_type: e.notification_type })
+    return next(e)
   }).catch(passOn)
 
   on('turn.complete', async ($, e, next) => {
