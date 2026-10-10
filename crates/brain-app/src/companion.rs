@@ -576,6 +576,7 @@ mod tests {
         let token = std::fs::read_to_string(dir.join("link/token")).unwrap();
         let url = format!("brainlink://pair?v=1&n=Demo-Mac&h=127.0.0.1&p={PORT}&t={token}&f={fingerprint}");
         std::fs::write(dir.join("pairing.txt"), &url).unwrap();
+        std::fs::write(dir.join("pairing.bmp"), qr_bmp(&url)).unwrap();
         println!("{url}");
         for _ in 0..1800 {
             for command in link.take_commands() {
@@ -583,6 +584,40 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(500));
         }
+    }
+
+    /// The pairing code as a 24-bit BMP (8 px per module, 4 modules of quiet zone), for a phone
+    /// to scan off the screen.
+    fn qr_bmp(url: &str) -> Vec<u8> {
+        let (width, modules) = qr_modules(url).unwrap();
+        let (scale, quiet) = (8, 4);
+        let side = (width + 2 * quiet) * scale;
+        let row_len = (side * 3 + 3) / 4 * 4;
+        let mut out = Vec::new();
+        let size = 54 + row_len * side;
+        out.extend(b"BM");
+        out.extend((size as u32).to_le_bytes());
+        out.extend([0u8; 4]);
+        out.extend(54u32.to_le_bytes());
+        out.extend(40u32.to_le_bytes());
+        out.extend((side as i32).to_le_bytes());
+        out.extend((side as i32).to_le_bytes());
+        out.extend(1u16.to_le_bytes());
+        out.extend(24u16.to_le_bytes());
+        out.extend([0u8; 24]);
+        // Rows bottom-up.
+        for y in (0..side).rev() {
+            let mut row = Vec::with_capacity(row_len);
+            for x in 0..side {
+                let (mx, my) = ((x / scale) as isize - quiet as isize, (y / scale) as isize - quiet as isize);
+                let inside = mx >= 0 && my >= 0 && (mx as usize) < width && (my as usize) < width;
+                let dark = inside && modules[my as usize * width + mx as usize];
+                row.extend(if dark { [0, 0, 0] } else { [255, 255, 255] });
+            }
+            row.resize(row_len, 0);
+            out.extend(row);
+        }
+        out
     }
 
     #[test]
