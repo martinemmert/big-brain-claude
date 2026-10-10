@@ -493,7 +493,7 @@ impl<'a> TerminalView<'a> {
         state: &'b TerminalViewState,
         layout: iced::advanced::Layout<'_>,
     ) -> InputMethod<&'b str> {
-        if !state.is_focused() {
+        if !state.is_focused() || !state.window_focused {
             return InputMethod::Disabled;
         }
 
@@ -599,8 +599,17 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
         let is_cursor_in_layout = self.is_cursor_in_layout(cursor, layout);
         self.handle_focus(event, state, is_cursor_in_layout);
 
-        if matches!(event, iced::Event::Window(iced::window::Event::RedrawRequested(_))) {
-            shell.request_input_method(&self.input_method(state, layout));
+        match event {
+            iced::Event::Window(iced::window::Event::Focused) => state.window_focused = true,
+            iced::Event::Window(iced::window::Event::Unfocused) => {
+                state.window_focused = false;
+                state.ime_preedit = None;
+                shell.request_input_method(&InputMethod::<&str>::Disabled);
+            },
+            iced::Event::Window(iced::window::Event::RedrawRequested(_)) => {
+                shell.request_input_method(&self.input_method(state, layout));
+            },
+            _ => {},
         }
 
         let commands = match event {
@@ -684,6 +693,10 @@ struct TerminalViewState {
     mouse_position_on_grid: TerminalGridPoint,
     terminal_id: u64,
     ime_preedit: Option<input_method::Preedit>,
+    /// Brain: whether the window has the keyboard. The input method is only asked for then:
+    /// asked for from a window in the background, macOS handed the keyboard back to it, and no
+    /// other app (not even ⌘Tab) could take it.
+    window_focused: bool,
 }
 
 impl TerminalViewState {
@@ -698,6 +711,7 @@ impl TerminalViewState {
             mouse_position_on_grid: TerminalGridPoint::default(),
             terminal_id,
             ime_preedit: None,
+            window_focused: true,
         }
     }
 }
