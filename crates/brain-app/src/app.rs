@@ -3625,12 +3625,25 @@ fn app_is_active() -> bool {
 }
 
 /// Diagnostics: a key that reached Brain while another app was active, one line per key in
-/// `~/.claude-brain/keys-while-inactive.log`.
+/// `~/.claude-brain/keys-while-inactive.log` (owner-only, at most 200 lines). What was typed is
+/// never written: only shortcuts (with ⌘ or ⌃) name their key, other keys show as `<key>`.
 fn note_key_while_inactive(key: &keyboard::Key, modifiers: keyboard::Modifiers) {
     use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    const MAX_LINES: usize = 200;
     let path = brain_core::account::home_dir().join(".claude-brain/keys-while-inactive.log");
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{} {:?} {:?}", chrono::Local::now().format("%H:%M:%S"), modifiers, key);
+    let lines = std::fs::read_to_string(&path).map(|t| t.lines().count()).unwrap_or(0);
+    if lines >= MAX_LINES {
+        return;
+    }
+    let shortcut = modifiers.command() || modifiers.control();
+    let what = match key {
+        keyboard::Key::Named(named) => format!("{named:?}"),
+        keyboard::Key::Character(c) if shortcut => c.to_string(),
+        _ => "<key>".to_string(),
+    };
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(path) {
+        let _ = writeln!(file, "{} {:?} {what}", chrono::Local::now().format("%H:%M:%S"), modifiers);
     }
 }
 
