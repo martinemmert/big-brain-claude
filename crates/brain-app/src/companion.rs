@@ -73,8 +73,9 @@ pub enum Command {
 pub struct Pairing {
     pub url: String,
     pub hosts: Vec<String>,
-    /// The first 8 hex digits of the certificate's fingerprint (`071f 6895`). The phone shows
-    /// the same before it pairs: name and addresses in a link can be made up, this can't.
+    /// The first 16 hex digits of the certificate's fingerprint (`071f 6895 1f9e 01d6`: 64 bits,
+    /// too many to grind a lookalike certificate for). The phone shows the same before it pairs:
+    /// name and addresses in a link can be made up, this can't.
     pub code: String,
 }
 
@@ -258,7 +259,7 @@ fn pairing_url(hosts: &[String], identity: &Identity) -> String {
 }
 
 fn short_code(fingerprint: &str) -> String {
-    format!("{} {}", &fingerprint[..4], &fingerprint[4..8])
+    (0..4).map(|i| &fingerprint[i * 4..i * 4 + 4]).collect::<Vec<_>>().join(" ")
 }
 
 fn encode(text: &str) -> String {
@@ -475,6 +476,11 @@ mod tests {
     fn encodes_the_pairing_url_parts() {
         assert_eq!(encode("Martin's Mac"), "Martin%27s%20Mac");
         assert_eq!(encode("a.local,192.168.1.2"), "a.local%2C192.168.1.2");
+    }
+
+    #[test]
+    fn the_pairing_code_is_the_fingerprints_first_64_bits() {
+        assert_eq!(short_code("071f68951f9e01d62362164a55c07d800e580a1f6e35ae51114555ae3f590238"), "071f 6895 1f9e 01d6");
     }
 
     #[test]

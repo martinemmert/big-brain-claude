@@ -133,7 +133,7 @@ für dich ein, auch in Hintergrund-Sessions, die gerade in keinem Terminal offen
 
 1. ⌘K → **„iPhone koppeln (Brain Link)“**. Brain schaltet Brain Link ein und zeigt einen QR-Code.
 2. Kamera des iPhones auf den Code richten, „In Brain öffnen“ tippen.
-3. Die App fragt nach und zeigt eine **Kennung** (z. B. `071f 6895`). Sie muss mit der Kennung
+3. Die App fragt nach und zeigt eine **Kennung** (z. B. `071f 6895 1f9e 01d6`). Sie muss mit der Kennung
    unter dem Code in Brain übereinstimmen – nur dann „Koppeln“.
 
 Brain Link ist aus, bis du koppelst, und startet danach mit Brain. Die Verbindung ist
