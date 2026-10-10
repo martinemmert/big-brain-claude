@@ -125,6 +125,24 @@ Die Tabs (`←` `→`):
 Tasten, die zweimal gedrückt werden wollen, fragen im Rechtsklick-Menü nicht nach: Der Klick
 zählt als Bestätigung.
 
+## Brain auf dem iPhone (Brain Link)
+
+Mit der App **Brain Companion** (Projekt `brain-companion` neben diesem) siehst du unterwegs,
+welche Session dich braucht, liest mit, antwortest und gibst Freigaben. Brain auf dem Mac tippt es
+für dich ein, auch in Hintergrund-Sessions, die gerade in keinem Terminal offen sind.
+
+1. ⌘K → **„iPhone koppeln (Brain Link)“**. Brain schaltet Brain Link ein und zeigt einen QR-Code.
+2. Kamera des iPhones auf den Code richten, „In Brain öffnen“ tippen. Fertig.
+
+Brain Link ist aus, bis du koppelst, und startet danach mit Brain. Die Verbindung ist
+verschlüsselt; die App prüft Brains Zertifikat am Fingerabdruck aus dem Code und schickt bei jeder
+Anfrage den Schlüssel mit – ohne ihn kommt niemand rein. Eine Freigabe vom Handy gilt nur für den
+Dialog, den das Handy gezeigt hat: Ist inzwischen ein anderer offen, antwortet Brain nicht.
+
+Unterwegs: Mit [Tailscale](https://tailscale.com) auf Mac und iPhone erreicht die App Brain auch
+außer Haus. Im Kopplungsdialog: **„Alle Handys abmelden“** (neuer Schlüssel, alte Kopplungen
+gelten nicht mehr) und **„Brain Link ausschalten“**.
+
 ## Nutzung und Limits
 
 Unter der Liste steht pro Konto, wie viel vom 5-Stunden- und vom Wochenlimit verbraucht ist und

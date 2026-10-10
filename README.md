@@ -144,6 +144,22 @@ and lists that folder in `env.CLAUDE_CODE_PLUGIN_DIRS` of every account's `setti
 `brain uninstall` removes it. The settings hooks stay for now as a fallback: once a session
 reports through the mod, Brain leaves out its hook events.
 
+## Brain Link (the iPhone companion)
+
+**Brain Companion** (repo `brain-companion`, .NET MAUI) shows the sessions on the iPhone, reads
+along, replies and answers permission dialogs; Brain carries those out on the Mac as it does for a
+reply typed in Brain. ⌘K → *Pair a phone (Brain Link)* turns the server on and shows a QR code;
+the iPhone camera opens it in the app.
+
+- Off until paired, then it starts with Brain. HTTPS on port 48620 on every interface, so the
+  phone reaches it in the same Wi-Fi or a tailnet.
+- The code carries the Mac's addresses, a random token (required on every request, compared in
+  constant time) and the SHA-256 of Brain's self-signed certificate, which the app pins.
+- Certificate, key and token live in `~/.claude-brain/link` (0700). *Sign out all phones* makes a
+  new token; *Turn Brain Link off* closes the server.
+- A permission answer carries when the dialog it answers opened; Brain sends it only while that
+  same dialog is open.
+
 ## Install
 
 Requirements: macOS 13+ (Apple Silicon for the release builds).

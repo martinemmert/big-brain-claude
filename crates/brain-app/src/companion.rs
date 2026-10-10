@@ -531,6 +531,60 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// For trying the phone app against a real server without Brain: example sessions in a
+    /// temporary folder, the pairing data in `pairing.txt` there, every command printed.
+    /// `BRAIN_LINK_DEMO=/tmp/x cargo test -p brain-app demo_server -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn demo_server() {
+        let dir = PathBuf::from(std::env::var("BRAIN_LINK_DEMO").expect("BRAIN_LINK_DEMO"));
+        let account = Account { id: "main".into(), config_dir: dir.join("claude") };
+        let project = account.config_dir.join("projects").join("-w-fin");
+        std::fs::create_dir_all(&project).unwrap();
+        let lines = [
+            r#"{"type":"user","timestamp":"2026-10-10T09:00:00Z","message":{"role":"user","content":"Bau mir bitte den CSV-Export für die Buchungen."}}"#,
+            r#"{"type":"assistant","timestamp":"2026-10-10T09:00:20Z","message":{"role":"assistant","content":[{"type":"text","text":"Mach ich. Ich schaue mir zuerst an, wie die Buchungen gespeichert sind."},{"type":"tool_use","id":"t1","name":"Grep","input":{"pattern":"Booking"}}]}}"#,
+            r#"{"type":"assistant","timestamp":"2026-10-10T09:04:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Der Export ist fertig: Datum, Betrag, Konto und Kategorie, UTF-8 mit BOM, damit Excel die Umlaute richtig zeigt. Soll ich ihn auch ins Menü hängen?"}]}}"#,
+        ];
+        std::fs::write(project.join("0331aa00-1111-2222-3333-444455556666.jsonl"), lines.join("\n")).unwrap();
+        let link = Link::start_in(dir.join("link"), PORT, vec![account]).unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        let view = |id: &str, name: &str, phase: &'static str, group: &'static str, headline: &str, minutes: i64| View {
+            account: "main".into(),
+            id: id.into(),
+            name: name.into(),
+            phase,
+            group,
+            headline: Some(headline.into()),
+            since_ms: now - minutes * 60_000,
+            folder: Some(name.to_lowercase()),
+            permission_open: phase == "needs_you",
+            permission_since_ms: (phase == "needs_you").then_some(now - minutes * 60_000),
+            can_reply: phase != "ended",
+        };
+        link.publish(vec![
+            view("9a1527b8-0000-0000-0000-000000000001", "Phoenix", "needs_you", "attention", "Bash: composer test --filter BookingExport", 2),
+            view("0331aa00-1111-2222-3333-444455556666", "Finanzen", "your_turn", "attention", "Der Export ist fertig. Soll ich ihn auch ins Menü hängen?", 6),
+            view("be75a6ae-0000-0000-0000-000000000003", "FUX", "working", "working", "Baut die Datepicker-Varianten …", 0),
+            view("4d4aa5f4-0000-0000-0000-000000000004", "Haushalt", "ended", "ended", "Bank-Import läuft wieder", 180),
+        ]);
+        let fingerprint: String = ring::digest::digest(&ring::digest::SHA256, &std::fs::read(dir.join("link/cert.der")).unwrap())
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let token = std::fs::read_to_string(dir.join("link/token")).unwrap();
+        let url = format!("brainlink://pair?v=1&n=Demo-Mac&h=127.0.0.1&p={PORT}&t={token}&f={fingerprint}");
+        std::fs::write(dir.join("pairing.txt"), &url).unwrap();
+        println!("{url}");
+        for _ in 0..1800 {
+            for command in link.take_commands() {
+                println!("COMMAND {command:?}");
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
     #[test]
     fn draws_a_square_qr_code() {
         let (width, modules) = qr_modules("brainlink://pair?v=1&t=abc").unwrap();
