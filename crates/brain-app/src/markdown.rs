@@ -118,6 +118,12 @@ fn short_tool_name(tool: &str) -> String {
 
 // ---- Markdown ------------------------------------------------------------------------
 
+/// Markdown in the system font (code in Menlo), for text that isn't part of the terminal-like
+/// conversation.
+pub fn prose<'a, M: 'a>(source: &str, size: f32) -> Element<'a, M> {
+    body_in(&ChatFont { regular: UI, bold: style::semibold(), code: style::MONO, size }, source)
+}
+
 fn body_in<'a, M: 'a>(font: &ChatFont, source: &str) -> Element<'a, M> {
     column(markdown::parse(source).into_iter().map(|b| block(font, b))).spacing(font.size * 0.6).into()
 }
@@ -137,7 +143,7 @@ fn block<'a, M: 'a>(font: &ChatFont, block: Block) -> Element<'a, M> {
             .padding(Padding { left: indent as f32 * font.size * 0.62 * 2.0, ..Padding::ZERO })
             .into()
         }
-        Block::Code { text: code, .. } => container(text(code).size(font.size).color(style::CODE).font(font.regular).line_height(1.45))
+        Block::Code { text: code, .. } => container(text(code).size(font.size).color(style::CODE).font(font.code).line_height(1.45))
             .padding(Padding { left: font.size * 0.62 * 2.0, ..Padding::ZERO })
             .into(),
         Block::Quote(quote) => row![
@@ -183,7 +189,7 @@ fn styled<'a, M: 'a>(font: &ChatFont, inline: &Inline, color: Color, strong: boo
         let piece = inline.text[range.clone()].to_string();
         spans.push(match kind {
             Span::Bold => span(piece).font(font.bold).color(TEXT_STRONG),
-            Span::Code => span(piece).font(font.regular).color(style::CODE).background(alpha(WORKING, 0x1a)),
+            Span::Code => span(piece).font(font.code).color(style::CODE).background(alpha(WORKING, 0x1a)),
             Span::Link => span(piece).font(base).color(WORKING).underline(true),
         });
         at = range.end;

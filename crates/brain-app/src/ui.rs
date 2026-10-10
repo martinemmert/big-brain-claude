@@ -809,6 +809,7 @@ fn session_pane(brain: &Brain, now: i64) -> Element<'_, Message> {
         DetailTab::Changes => changes(brain, s),
         DetailTab::Files => with_reader(brain, files(brain, s)),
         DetailTab::Questions => questions(brain, s),
+        DetailTab::Konsil => scrollable(crate::konsil::view(brain, &s.key)).height(Fill).style(scrollbar).into(),
         DetailTab::Terminal => terminal(brain, s),
     };
     column![
@@ -998,14 +999,19 @@ fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     let change_count = brain.changes.as_ref().filter(|c| c.key == s.key).and_then(|c| c.changes.as_ref()).map_or(0, |c| c.files.len());
     let file_count = brain.files.as_ref().filter(|f| f.key == s.key).map(|f| f.files.len());
     let question_count = brain.qa.as_ref().filter(|q| q.key == s.key).map(|q| q.exchanges.len());
-    let tabs = [
+    let konsil_count = brain.konsil.as_ref().filter(|k| k.key == s.key).map_or(0, |k| k.councils.len());
+    let mut tabs = vec![
         (DetailTab::Messages, t("Nachrichten", "Messages"), Some(message_count)),
         (DetailTab::Timeline, t("Verlauf", "Timeline"), Some(s.timeline.len())),
         (DetailTab::Changes, t("Änderungen", "Changes"), Some(change_count)),
         (DetailTab::Files, t("Dateien", "Files"), file_count),
         (DetailTab::Questions, t("Fragen", "Questions"), question_count),
-        (DetailTab::Terminal, "Terminal", None),
     ];
+    // Only sessions that held a council have the tab.
+    if konsil_count > 0 || brain.tab == DetailTab::Konsil {
+        tabs.push((DetailTab::Konsil, "Konsil", Some(konsil_count)));
+    }
+    tabs.push((DetailTab::Terminal, "Terminal", None));
     let buttons = tabs.into_iter().map(|(tab, label, count)| {
         let active = brain.tab == tab;
         let content = column![

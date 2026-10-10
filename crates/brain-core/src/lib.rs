@@ -11,6 +11,7 @@ pub mod event;
 pub mod files;
 pub mod github;
 pub mod history;
+pub mod konsil;
 pub mod hook;
 pub mod install;
 pub mod markdown;

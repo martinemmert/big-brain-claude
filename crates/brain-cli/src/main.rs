@@ -46,6 +46,12 @@ enum Command {
         /// One line of text.
         text: Vec<String>,
     },
+    /// Mark a council of the konsil skill; Brain reads its course from the transcript and shows
+    /// it in the Konsil tab.
+    Konsil {
+        #[command(subcommand)]
+        step: KonsilStep,
+    },
     /// Install hooks and the protocol section into every Claude account.
     Install,
     /// Remove Brain's hooks and protocol section from every Claude account.
@@ -84,6 +90,27 @@ enum Command {
     },
 }
 
+#[derive(Subcommand)]
+enum KonsilStep {
+    /// The council begins.
+    Start {
+        /// The topic in one line.
+        topic: Vec<String>,
+    },
+    /// Where the two stand after a round; points separated by `;`.
+    Stand {
+        #[arg(long, alias = "agreed", default_value = "")]
+        einig: String,
+        #[arg(long, alias = "disputed", default_value = "")]
+        strittig: String,
+    },
+    /// The user decided.
+    End {
+        /// The decision in one line.
+        decision: Vec<String>,
+    },
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let home = home_dir();
@@ -117,6 +144,13 @@ fn main() -> ExitCode {
             };
             run_report(&store, &accounts, kind, &text.join(" "))
         }
+        // The marks themselves are read from the transcript; start and end also report, so the
+        // timeline and Today show the council.
+        Command::Konsil { step } => match step {
+            KonsilStep::Start { topic } => run_report(&store, &accounts, Kind::Doing, &format!("Konsil: {}", topic.join(" "))),
+            KonsilStep::Stand { .. } => ExitCode::SUCCESS,
+            KonsilStep::End { decision } => run_report(&store, &accounts, Kind::Done, &format!("Konsil: {}", decision.join(" "))),
+        },
         Command::Install => run_install(&accounts),
         Command::Uninstall => run_uninstall(&accounts),
         Command::Status => run_status(&store, &accounts),

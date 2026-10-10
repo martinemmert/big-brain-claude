@@ -11,6 +11,8 @@ use objc2_foundation::NSString;
 pub struct ChatFont {
     pub regular: Font,
     pub bold: Font,
+    /// Code spans and blocks: the same font in the chat, Menlo in prose drawn in the system font.
+    pub code: Font,
     pub size: f32,
 }
 
@@ -22,11 +24,11 @@ pub fn init() {
     // Iced names fonts by `&'static str`; the family is chosen once per run.
     let family: &'static str = Box::leak(family.into_boxed_str());
     let regular = Font::with_name(family);
-    let _ = CHAT_FONT.set(ChatFont { regular, bold: Font { weight: font::Weight::Bold, ..regular }, size });
+    let _ = CHAT_FONT.set(ChatFont { regular, bold: Font { weight: font::Weight::Bold, ..regular }, code: regular, size });
 }
 
 pub fn get() -> &'static ChatFont {
-    CHAT_FONT.get_or_init(|| ChatFont { regular: Font::with_name("Menlo"), bold: Font { weight: font::Weight::Bold, ..Font::with_name("Menlo") }, size: 13.0 })
+    CHAT_FONT.get_or_init(|| ChatFont { regular: Font::with_name("Menlo"), bold: Font { weight: font::Weight::Bold, ..Font::with_name("Menlo") }, code: Font::with_name("Menlo"), size: 13.0 })
 }
 
 fn configured() -> Option<(String, f32)> {

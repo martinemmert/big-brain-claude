@@ -47,6 +47,9 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   Markdown files it created. A click opens one.
 - **Questions.** Every question Claude asked (AskUserQuestion, or a reply ending in a question)
   with your answer, newest first; unanswered ones stand out.
+- **Konsil.** A council of the konsil skill (the lazy senior against his buddy) as a stage: both
+  figures, where they agree and where they still fight, every round in full. The skill marks it
+  with `brain konsil start|stand|end`; the tab shows once a session held one.
 - **Composer.** `⌘E`: a large editor for a longer prompt, with your templates, dictation and
   screenshots pasted with `⌘V`; `⌘⏎` sends it as one paste.
 - **Screenshots, offered.** A new screenshot shows above the footer: into the waiting session's

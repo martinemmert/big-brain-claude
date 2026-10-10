@@ -109,6 +109,8 @@ pub enum DetailTab {
     Files,
     /// Claude's questions and the answers given.
     Questions,
+    /// The councils of the konsil skill (shown once the session has one).
+    Konsil,
     /// A real terminal running the session inside Brain (`claude attach` / `claude --resume`).
     Terminal,
 }
@@ -136,6 +138,13 @@ pub struct QaCache {
     pub key: SessionKey,
     pub len: u64,
     pub exchanges: Vec<brain_core::qa::Exchange>,
+}
+
+/// The councils of one session, as of a transcript size.
+pub struct KonsilCache {
+    pub key: SessionKey,
+    pub len: u64,
+    pub councils: Vec<brain_core::konsil::Council>,
 }
 
 /// The files of one session, as of a transcript size.
@@ -220,6 +229,11 @@ pub enum Message {
     DiscardChange(String),
     FilesLoaded(SessionKey, u64, Vec<brain_core::files::SessionFile>),
     QaLoaded(SessionKey, u64, Vec<brain_core::qa::Exchange>),
+    KonsilLoaded(SessionKey, u64, Vec<brain_core::konsil::Council>),
+    /// Open a council of the Konsil tab by its index.
+    KonsilPick(usize),
+    /// Fold or unfold a round of the open council.
+    KonsilRound(usize),
     BriefLoaded(SessionKey, brain_core::brief::Brief),
     Palette(String),
     PaletteRun(PaletteCommand),
@@ -439,6 +453,12 @@ pub struct Brain {
     /// The changed file whose diff is open: session, path, and the diff once loaded.
     pub diff: Option<(SessionKey, String, Option<Vec<(brain_core::changes::DiffKind, String)>>)>,
     pub qa: Option<QaCache>,
+    pub konsil: Option<KonsilCache>,
+    konsil_loading: bool,
+    /// The council open in the Konsil tab (`None`: the newest) and the rounds folded against
+    /// their default (only the newest round is open).
+    pub konsil_pick: Option<usize>,
+    pub konsil_toggled: HashSet<usize>,
     /// The selected ended session in a few lines (shown before resuming it).
     pub brief: Option<(SessionKey, brain_core::brief::Brief)>,
     brief_loading: Option<SessionKey>,
@@ -594,6 +614,10 @@ impl Brain {
             files: None,
             diff: None,
             qa: None,
+            konsil: None,
+            konsil_loading: false,
+            konsil_pick: None,
+            konsil_toggled: HashSet::new(),
             brief: None,
             brief_loading: None,
             qa_loading: false,
@@ -659,6 +683,12 @@ impl Brain {
         if let Some(path) = std::env::var_os("BRAIN_DEMO_READER").filter(|_| demo) {
             brain.reader = Some(read_file(std::path::PathBuf::from(path)));
             brain.tab = DetailTab::Terminal;
+        }
+        // For screenshots of the Konsil tab: `BRAIN_DEMO=1 BRAIN_DEMO_KONSIL=<transcript>`.
+        if let (Some(path), Some(key)) = (std::env::var_os("BRAIN_DEMO_KONSIL").filter(|_| demo), brain.selected.clone()) {
+            let councils = brain_core::konsil::councils(std::path::Path::new(&path));
+            brain.konsil = Some(KonsilCache { key, len: 0, councils });
+            brain.tab = DetailTab::Konsil;
         }
         let checks = if demo { Task::none() } else { Task::batch([Task::done(Message::CheckPrs), Task::done(Message::CheckUpdate)]) };
         (brain, Task::batch([synced, checks]))
@@ -924,6 +954,26 @@ impl Brain {
             Message::QaLoaded(key, len, exchanges) => {
                 self.qa = Some(QaCache { key, len, exchanges });
                 self.qa_loading = false;
+                Task::none()
+            }
+            Message::KonsilLoaded(key, len, councils) => {
+                if self.konsil.as_ref().is_none_or(|k| k.key != key) {
+                    self.konsil_pick = None;
+                    self.konsil_toggled.clear();
+                }
+                self.konsil = Some(KonsilCache { key, len, councils });
+                self.konsil_loading = false;
+                Task::none()
+            }
+            Message::KonsilPick(index) => {
+                self.konsil_pick = Some(index);
+                self.konsil_toggled.clear();
+                Task::none()
+            }
+            Message::KonsilRound(index) => {
+                if !self.konsil_toggled.remove(&index) {
+                    self.konsil_toggled.insert(index);
+                }
                 Task::none()
             }
             Message::FilesLoaded(key, len, files) => {
@@ -1314,8 +1364,9 @@ impl Brain {
         let files = self.load_files();
         let history = self.load_history();
         let qa = self.load_qa();
+        let konsil = self.load_konsil();
         let brief = self.load_brief();
-        Task::batch([scroll, attach, files, history, qa, brief])
+        Task::batch([scroll, attach, files, history, qa, konsil, brief])
     }
 
     /// Background sessions open in Brain's terminal: when one gets selected (or Brain started it
@@ -1669,6 +1720,9 @@ impl Brain {
             all.push((t("In der Session suchen", "Find in the session").to_string(), "⌘F", PaletteCommand::Find));
             all.push((t("Dateien der Session", "The session's files").to_string(), "", PaletteCommand::Tab(DetailTab::Files)));
             all.push((t("Änderungen (git)", "Changes (git)").to_string(), "", PaletteCommand::Tab(DetailTab::Changes)));
+            if self.has_konsil() {
+                all.push((t("Konsil: die Beratungen der Session", "Konsil: the session's councils").to_string(), "", PaletteCommand::Tab(DetailTab::Konsil)));
+            }
             all.push((t("Umbenennen", "Rename").to_string(), "R", PaletteCommand::Act(Action::StartRename)));
             all.push((t("Anheften / lösen", "Pin / unpin").to_string(), "P", PaletteCommand::Act(Action::Pin)));
             all.push((t("Stumm / laut", "Mute / unmute").to_string(), "M", PaletteCommand::Act(Action::Mute)));
@@ -1903,6 +1957,31 @@ impl Brain {
         let path = path.to_path_buf();
         self.qa_loading = true;
         Task::perform(off_thread(move || brain_core::qa::exchanges(&path)), move |exchanges| Message::QaLoaded(key.clone(), len, exchanges))
+    }
+
+    /// Reads the selected session's councils when it was selected, and as its transcript grows
+    /// while the Konsil tab shows or no council was found yet (so the tab appears).
+    fn load_konsil(&mut self) -> Task<Message> {
+        if self.konsil_loading {
+            return Task::none();
+        }
+        let Some(key) = self.selected.clone() else { return Task::none() };
+        let Some((path, len)) = self.conversation.as_ref().filter(|c| c.key == key).and_then(|c| c.transcript()) else {
+            return Task::none();
+        };
+        if let Some(cache) = self.konsil.as_ref().filter(|k| k.key == key) {
+            if cache.len == len || (self.tab != DetailTab::Konsil && !cache.councils.is_empty()) {
+                return Task::none();
+            }
+        }
+        let path = path.to_path_buf();
+        self.konsil_loading = true;
+        Task::perform(off_thread(move || brain_core::konsil::councils(&path)), move |councils| Message::KonsilLoaded(key.clone(), len, councils))
+    }
+
+    /// Whether the selected session has a council, so the Konsil tab shows.
+    pub fn has_konsil(&self) -> bool {
+        self.konsil.as_ref().is_some_and(|k| Some(&k.key) == self.selected.as_ref() && !k.councils.is_empty())
     }
 
     /// Reads the selected session's files when the Files tab shows and its transcript grew.
@@ -2619,7 +2698,8 @@ impl Brain {
                     DetailTab::Timeline => DetailTab::Changes,
                     DetailTab::Changes => DetailTab::Files,
                     DetailTab::Files => DetailTab::Questions,
-                    DetailTab::Questions => DetailTab::Terminal,
+                    DetailTab::Questions if self.has_konsil() => DetailTab::Konsil,
+                    DetailTab::Questions | DetailTab::Konsil => DetailTab::Terminal,
                     DetailTab::Terminal => DetailTab::Messages,
                 };
                 return Task::batch([self.load_changes(), self.load_files()]);
@@ -2631,6 +2711,8 @@ impl Brain {
                     DetailTab::Changes => DetailTab::Timeline,
                     DetailTab::Files => DetailTab::Changes,
                     DetailTab::Questions => DetailTab::Files,
+                    DetailTab::Konsil => DetailTab::Questions,
+                    DetailTab::Terminal if self.has_konsil() => DetailTab::Konsil,
                     DetailTab::Terminal => DetailTab::Questions,
                 };
                 return Task::batch([self.load_changes(), self.load_files()]);

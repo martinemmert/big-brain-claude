@@ -10,6 +10,7 @@ mod format;
 mod hotkey;
 mod i18n;
 mod iterm;
+mod konsil;
 mod links;
 mod markdown;
 mod menubar;
