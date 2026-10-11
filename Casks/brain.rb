@@ -1,6 +1,6 @@
 cask "brain" do
-  version "0.10.0"
-  sha256 "26a0b561f1f8979b3651bc11a9ab4cc61901731f97333113e4aa34b888472fb2"
+  version "0.10.1"
+  sha256 "55ee57d066d39499d95cc6f64d8a60ffdcdb3b45fd8521fc71afc7f371dc5890"
 
   url "https://github.com/martinemmert/big-brain-claude/releases/download/v#{version}/Brain-#{version}-macos-arm64.zip"
   name "Brain"
