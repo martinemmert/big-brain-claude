@@ -60,16 +60,14 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         .width(Fill)
         .height(Fill)
         .style(|_| container::Style { background: Some(Background::Color(INK)), text_color: Some(TEXT), ..container::Style::default() });
-    if brain.mode == Mode::Palette {
-        return stack![window, palette(brain)].into();
-    }
-    if brain.mode == Mode::Composer {
-        return stack![window, composer(brain)].into();
-    }
-    match context_menu(brain) {
-        Some(menu) => stack![window, menu].into(),
-        None => window.into(),
-    }
+    // Always a stack, with an empty layer when nothing lies on top: a root that changed shape
+    // when a menu opened would cost the list its state, and with it its scroll position.
+    let overlay: Element<'_, Message> = match brain.mode {
+        Mode::Palette => palette(brain),
+        Mode::Composer => composer(brain),
+        _ => context_menu(brain).unwrap_or_else(|| Space::new().into()),
+    };
+    stack![window, overlay].into()
 }
 
 /// ⌘E: a longer prompt for the selected session, with templates and pasted screenshots.

@@ -567,6 +567,8 @@ pub struct Brain {
     /// What the detail pane showed last; when it changes, the message list is built anew and
     /// starts at its newest message again.
     detail_shape: (Layout, Mode, DetailTab),
+    /// A click selected a session: once its terminal shows, it gets the keys.
+    focus_on_select: bool,
     /// Brain Link, the companion app's server, while it runs.
     link: Option<crate::companion::Link>,
     /// The pairing code as an image.
@@ -668,6 +670,7 @@ impl Brain {
             dragging_sidebar: false,
             titlebar_ready: false,
             detail_shape: (Layout::Status, Mode::Normal, DetailTab::Messages),
+            focus_on_select: false,
             link: None,
             link_qr: None,
         };
@@ -748,7 +751,10 @@ impl Brain {
             Message::Tick => self.tick(),
             Message::Key(event, captured) => self.on_key(event, captured),
             Message::Select(key) => {
+                // A click means this session: its terminal gets the keys, so typing goes there and
+                // not to the list's one-letter shortcuts. (Arrow keys keep them for the list.)
                 self.selected = Some(key);
+                self.focus_on_select = true;
                 Task::none()
             }
             Message::OpenEntry(key) => {
@@ -1387,17 +1393,19 @@ impl Brain {
         }
         let current = self.selection_state();
         let attachable = current.as_ref().is_some_and(|(_, a)| *a);
+        let clicked = std::mem::take(&mut self.focus_on_select);
         if current == self.synced_selection {
-            return Task::none();
+            // A click on the session that is already selected enters its terminal too.
+            return if clicked && self.has_terminal() { self.focus_terminal() } else { Task::none() };
         }
         self.synced_selection = current;
         self.focused_terminal = None;
         let has_terminal = self.has_terminal();
         if attachable || has_terminal {
             self.tab = DetailTab::Terminal;
-            // Selecting a session shows its terminal but keeps the keys for the list; a session
-            // started a moment ago gets them, its prompt is next.
-            return self.open_terminal(just_started);
+            // Selecting a session with the keys shows its terminal but keeps the keys for the
+            // list; a click, or a session started a moment ago, gives them to the terminal.
+            return self.open_terminal(just_started || clicked);
         }
         if self.tab == DetailTab::Terminal {
             self.tab = DetailTab::Messages;
@@ -2735,7 +2743,7 @@ impl Brain {
             "m" => self.toggle_mute(),
             "s" => self.cycle_snooze(),
             "a" => return self.move_to_other_account(false),
-            "x" => self.end_selected(false),
+            "x" => return self.end_selected(false),
             "c" => {
                 self.armed = None;
                 self.mode = Mode::Cleanup;
@@ -2945,7 +2953,7 @@ impl Brain {
             Action::Mute => self.toggle_mute(),
             Action::Snooze => self.cycle_snooze(),
             Action::OtherAccount => return self.move_to_other_account(confirmed),
-            Action::End => self.end_selected(confirmed),
+            Action::End => return self.end_selected(confirmed),
             Action::Hide => self.hide_selected(confirmed),
             Action::Trash => self.trash_selected(confirmed),
             Action::Resume => self.resume_selected(),
@@ -3023,7 +3031,7 @@ impl Brain {
             ));
             return Task::none();
         }
-        if !self.capabilities().type_text {
+        if !self.can_type_into_selected() {
             self.set_status(t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal."));
             return Task::none();
         }
@@ -3035,10 +3043,11 @@ impl Brain {
     fn submit_rename(&mut self) -> Task<Message> {
         self.mode = Mode::Normal;
         let name = self.rename.trim().to_string();
+        let mut typed = Task::none();
         if !name.is_empty() && !self.blocked_in_demo() {
-            self.type_into_selected(&format!("/rename {name}"), tr!("„{name}“ an die Session geschickt.", "Sent “{name}” to the session."));
+            typed = self.type_into_selected(&format!("/rename {name}"), tr!("„{name}“ an die Session geschickt.", "Sent “{name}” to the session."));
         }
-        unfocus()
+        Task::batch([typed, unfocus()])
     }
 
     fn start_reply(&mut self) -> Task<Message> {
@@ -3050,7 +3059,7 @@ impl Brain {
             ));
             return Task::none();
         }
-        if !self.capabilities().type_text {
+        if !self.can_type_into_selected() {
             self.set_status(t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal."));
             return Task::none();
         }
@@ -3062,23 +3071,37 @@ impl Brain {
     fn submit_reply(&mut self) -> Task<Message> {
         self.mode = Mode::Normal;
         let text = self.reply.trim().to_string();
+        let mut typed = Task::none();
         if !text.is_empty() && !self.blocked_in_demo() {
-            self.type_into_selected(&text, t("Antwort geschickt.", "Reply sent.").into());
+            typed = self.type_into_selected(&text, t("Antwort geschickt.", "Reply sent.").into());
         }
         self.reply.clear();
-        unfocus()
+        Task::batch([typed, unfocus()])
     }
 
-    /// Types text plus Return, but only if the session still accepts input right now.
-    fn type_into_selected(&mut self, text: &str, done: String) {
-        let Some(key) = self.selected.clone() else { return };
+    /// Types text plus Return, but only if the session still accepts input right now: into its
+    /// terminal in Brain when it runs there, else through the terminal app it runs in.
+    fn type_into_selected(&mut self, text: &str, done: String) -> Task<Message> {
+        let Some(key) = self.selected.clone() else { return Task::none() };
         if !self.model.board.get(&key).is_some_and(|s| s.accepts_input()) {
             self.set_status(t("Die Session arbeitet inzwischen wieder – nichts geschickt.", "The session is working again – nothing sent."));
-            return;
+            return Task::none();
         }
-        let Some(pid) = self.model.board.get(&key).map(|s| s.pid) else { return };
+        if self.terminals.contains_key(&key) {
+            let task = self.send_text(&key, text);
+            self.set_status(done);
+            return task;
+        }
+        let Some(pid) = self.model.board.get(&key).map(|s| s.pid) else { return Task::none() };
         let outcome = terminal::type_text(pid, text);
         self.report(outcome, Some(done));
+        Task::none()
+    }
+
+    /// Whether Brain can type into the selected session: its terminal in Brain, or a terminal
+    /// app that takes typed text.
+    fn can_type_into_selected(&self) -> bool {
+        self.selected.as_ref().is_some_and(|k| self.terminals.contains_key(k)) || self.capabilities().type_text
     }
 
     /// Y / N on an open permission dialog: Return picks its default "Yes", Esc declines.
@@ -3163,18 +3186,18 @@ impl Brain {
     }
 
     /// `X` twice: ends a waiting session with `/exit` (a background one with `claude stop`).
-    fn end_selected(&mut self, confirmed: bool) {
-        let Some(session) = self.selected_session() else { return };
+    fn end_selected(&mut self, confirmed: bool) -> Task<Message> {
+        let Some(session) = self.selected_session() else { return Task::none() };
         let key = session.key.clone();
         if let Some(agent) = session.agent.clone().filter(|a| a.is_active()) {
             if !confirmed && !self.arm('x', &key) {
                 self.set_status(t("Nochmal X stoppt die Hintergrund-Session (das Gespräch bleibt).", "Press X again to stop the background session (its conversation is kept)."));
-                return;
+                return Task::none();
             }
             if self.blocked_in_demo() {
-                return;
+                return Task::none();
             }
-            let Some(account) = self.model.account(&key.account).cloned() else { return };
+            let Some(account) = self.model.account(&key.account).cloned() else { return Task::none() };
             match brain_core::agents::stop(&account, &agent.id) {
                 Ok(()) => {
                     self.model.relist_transcripts();
@@ -3182,24 +3205,24 @@ impl Brain {
                 }
                 Err(err) => self.set_status(tr!("Stoppen fehlgeschlagen: {err}", "Stopping failed: {err}")),
             }
-            return;
+            return Task::none();
         }
         if session.phase() == Phase::Ended {
             self.set_status(t("Die Session ist schon beendet.", "The session has already ended."));
-            return;
+            return Task::none();
         }
         if !session.accepts_input() {
             self.set_status(t("Beenden geht, sobald die Session fertig ist und auf dich wartet.", "Ending works once the session has finished and waits for you."));
-            return;
+            return Task::none();
         }
         if !confirmed && !self.arm('x', &key) {
             self.set_status(t("Nochmal X beendet die Session (fortsetzen mit ⏎).", "Press X again to end the session (⏎ resumes it)."));
-            return;
+            return Task::none();
         }
         if self.blocked_in_demo() {
-            return;
+            return Task::none();
         }
-        self.type_into_selected("/exit", t("Session beendet – ⏎ setzt sie fort, P merkt sie dir.", "Session ended – ⏎ resumes it, P saves it for later.").into());
+        self.type_into_selected("/exit", t("Session beendet – ⏎ setzt sie fort, P merkt sie dir.", "Session ended – ⏎ resumes it, P saves it for later.").into())
     }
 
     /// `A` twice: continues a session in the next account. The transcript is copied and resumed
@@ -3610,7 +3633,7 @@ impl Brain {
     fn take_over(&mut self, confirmed: bool) {
         let Some(session) = self.selected_session() else { return };
         let key = session.key.clone();
-        if session.agent.is_some() {
+        if session.agent.is_some() || self.terminals.contains_key(&key) {
             self.set_status(t("Diese Session läuft schon in Brain.", "This session already runs in Brain."));
             return;
         }
@@ -3627,7 +3650,8 @@ impl Brain {
             return;
         }
         if !ended {
-            self.type_into_selected("/exit", t("Beende die Session in iTerm …", "Ending the session in iTerm …").into());
+            // Never one in Brain's terminal (see above): typing goes through iTerm, no task.
+            let _ = self.type_into_selected("/exit", t("Beende die Session in iTerm …", "Ending the session in iTerm …").into());
         }
         self.takeover = Some(key);
     }
