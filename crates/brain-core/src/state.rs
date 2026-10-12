@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::agents::BackgroundAgent;
-use crate::event::{BackgroundTask, Event, Kind, Source};
+use crate::event::{BackgroundTask, Event, Kind, Question, Source};
 use crate::sessions::SessionFile;
 use crate::transcript::{Insight, Turn};
 
@@ -35,7 +35,7 @@ impl Signal {
             Kind::Permission => Some(Signal::Waiting),
             Kind::Stop | Kind::SessionStart => Some(Signal::Idle),
             Kind::SessionEnd => Some(Signal::Ended),
-            Kind::Doing | Kind::Waiting | Kind::Done => None,
+            Kind::Doing | Kind::Waiting | Kind::Done | Kind::Question | Kind::Answered => None,
         }
     }
 
@@ -85,6 +85,8 @@ pub struct Session {
     doing: Option<String>,
     question: Option<String>,
     permission: Option<String>,
+    /// An open AskUserQuestion.
+    pub asking: Option<Vec<Question>>,
     done: Option<String>,
     reply: Option<String>,
 
@@ -123,6 +125,7 @@ impl Session {
             doing: None,
             question: None,
             permission: None,
+            asking: None,
             done: None,
             reply: None,
             insight: Insight::default(),
@@ -304,11 +307,13 @@ impl Session {
                 self.permission = None;
                 self.done = None;
                 self.reply = None;
+                self.asking = None;
             }
             Kind::Permission => self.permission = text,
             Kind::Stop => {
                 self.reply = text;
                 self.permission = None;
+                self.asking = None;
                 self.background = event.tasks.clone().unwrap_or_default();
             }
             Kind::Doing => self.doing = text,
@@ -317,8 +322,13 @@ impl Session {
                 self.done = text;
                 self.question = None;
             }
-            Kind::SessionEnd => self.background.clear(),
+            Kind::SessionEnd => {
+                self.background.clear();
+                self.asking = None;
+            }
             Kind::SessionStart => {}
+            Kind::Question => self.asking = event.questions.clone(),
+            Kind::Answered => self.asking = None,
         }
 
         if matches!(event.source, Source::Hook | Source::Mod) {
@@ -531,6 +541,7 @@ mod tests {
             text: text.map(str::to_string),
             tasks: None,
             name: None,
+            questions: None,
         }
     }
 

@@ -192,6 +192,7 @@ fn run_hook(store: &Store, accounts: &[Account], input: &str, source: Source) ->
             text: payload.text(),
             tasks: (kind == Kind::Stop).then(|| payload.background_tasks.clone().unwrap_or_default()),
             name,
+            questions: payload.questions(),
         })
         .ok()
 }
@@ -254,6 +255,7 @@ fn run_report(store: &Store, accounts: &[Account], kind: Kind, text: &str) -> Ex
         text: Some(text),
         tasks: None,
         name: session.as_ref().and_then(|s| s.name.clone()),
+        questions: None,
     };
     match store.append(&event) {
         Ok(()) => {
@@ -354,7 +356,7 @@ fn run_install(accounts: &[Account]) -> ExitCode {
         eprintln!("brain install: no ~/.claude or ~/.claude-* directories found");
         return ExitCode::FAILURE;
     }
-    println!("\nHooks: {}", install::HOOK_EVENTS.join(", "));
+    println!("\nHooks: {}, {} (AskUserQuestion)", install::HOOK_EVENTS.join(", "), install::QUESTION_EVENTS.join(", "));
     if let Some(dir) = &mod_dir {
         println!("Mod: {dir}");
     }

@@ -2541,6 +2541,11 @@ impl Brain {
         }
     }
 
+    /// The selected session's open AskUserQuestion.
+    pub fn open_questions(&self) -> &[brain_core::event::Question] {
+        self.selected_session().and_then(|s| s.asking.as_deref()).unwrap_or_default()
+    }
+
     /// Why Brain can't type into the selected session's terminal.
     pub fn typing_limit(&self) -> Option<&Limit> {
         match &self.host {
@@ -3149,6 +3154,10 @@ impl Brain {
         let Some(session) = self.selected_session() else { return };
         if !session.awaiting_permission() {
             self.set_status(t("Gerade ist keine Freigabe offen.", "No permission request is open right now."));
+            return;
+        }
+        if !self.open_questions().is_empty() {
+            self.set_status(t("Das ist eine Rückfrage, keine Freigabe – in der Session beantworten.", "That's a question, not a permission – answer it in the session."));
             return;
         }
         if !self.capabilities().keys {

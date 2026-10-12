@@ -83,8 +83,12 @@ export function register(on) {
   // Claude asks the user something: the session needs them.
   on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
     const question = e.questions?.[0]?.question
+    const tool = { tool_name: 'AskUserQuestion', tool_input: { questions: e.questions ?? [] } }
+    await hook($, 'PreToolUse', tool)
     await hook($, 'Notification', { message: question ? 'Claude asks: ' + question : 'Claude has a question for you' })
-    return next(e)
+    const result = await next(e)
+    await hook($, 'PostToolUse', tool)
+    return result
   }).catch(passOn)
 
   // Claude Code tells the user it needs them: a permission dialog, or the idle reminder. (A

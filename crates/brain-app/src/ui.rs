@@ -976,7 +976,17 @@ fn callout<'a>(brain: &'a Brain, s: &'a Session, now: i64, caps: brain_terminal:
         }
     }
     let mut actions: Vec<Element<'a, Message>> = Vec::new();
-    if s.awaiting_permission() {
+    let questions = brain.open_questions();
+    if !questions.is_empty() {
+        for q in questions {
+            body = body.push(text(q.question.clone()).size(13).color(TEXT_STRONG).font(style::semibold()));
+            for (i, option) in q.options.iter().enumerate() {
+                let description = if option.description.is_empty() { String::new() } else { format!(" – {}", option.description) };
+                body = body.push(text(format!("{}. {}{description}", i + 1, option.label)).size(12.5).color(TEXT).font(UI));
+            }
+        }
+        actions.push(action(t("Zur Session", "Go to session"), "⏎", true, Some(Message::Do(Action::Open))));
+    } else if s.awaiting_permission() {
         actions.push(action(t("Erlauben", "Allow"), "Y", true, caps.keys.then_some(Message::Do(Action::Allow))));
         actions.push(action(t("Ablehnen", "Deny"), "N", false, caps.keys.then_some(Message::Do(Action::Deny))));
     } else if s.accepts_input() && brain.mode != Mode::Reply {

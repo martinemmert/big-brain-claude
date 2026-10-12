@@ -246,6 +246,11 @@ fn timeline_entry<'a, M: 'a>(event: &Event) -> Element<'a, M> {
         Kind::Doing => (WORKING, raw),
         Kind::Waiting => (style::CALLS, format!("{}: {raw}", t("Frage", "Question"))),
         Kind::Done => (style::DONE, format!("{}: {raw}", t("Erledigt", "Done"))),
+        Kind::Question => {
+            let asked = event.questions.as_ref().and_then(|q| q.first()).map(|q| q.question.clone()).unwrap_or_default();
+            (style::CALLS, format!("{}: {asked}", t("Rückfrage", "Question")))
+        }
+        Kind::Answered => (TEXT_FAINT, t("Rückfrage beantwortet", "Question answered").into()),
     };
     let reported = event.source == Source::Report;
     let time = event.ts.with_timezone(&Local).format("%H:%M").to_string();
