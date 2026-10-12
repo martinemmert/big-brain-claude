@@ -1448,7 +1448,9 @@ impl Brain {
             if self.prefs.is_muted(&key) || self.prefs.snoozed_until(&key, now).is_some() || self.filtered_background(&key) {
                 continue;
             }
-            let entry = self.reminders.entry(key.clone()).or_insert((since, 0));
+            // A session seen waiting for the first time (start, shown again, unmuted) gets no backlog.
+            let missed = ((now - since) / interval).clamp(0, MAX_REMINDERS as i64) as u32;
+            let entry = self.reminders.entry(key.clone()).or_insert((since, missed));
             if entry.0 != since {
                 *entry = (since, 0);
             }
