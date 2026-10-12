@@ -1,36 +1,26 @@
-//! On Wayland GPUI's copy needs a recent key press, so a click copies via the system tools.
-//! GPUI keeps the text too, for pasting inside Brain.
+//! Pictures on the clipboard (a screenshot copied with the desktop's tool) saved as files, so
+//! they can be pasted into a terminal as a path. Read with `wl-paste` (Wayland) or `xclip` (X11).
 
-use std::io::Write;
 use std::process::{Command, Stdio};
 
-use gpui::{App, ClipboardItem};
-
-pub fn copy(text: &str, cx: &mut App) {
-    cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
-    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
-    let _ = (wayland && pipe("wl-copy", &[], text)) || klipper(text) || pipe("xclip", &["-selection", "clipboard"], text)
-        || pipe("xsel", &["--clipboard", "--input"], text);
+/// Saves a PNG on the clipboard to `~/.claude-brain/attachments/` and returns its path; `None`
+/// when the clipboard holds no picture (or also text, which the terminal pastes itself).
+pub fn save_image() -> Option<std::path::PathBuf> {
+    let types = read(&["wl-paste", "--list-types"]).or_else(|| read(&["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"]))?;
+    let types = String::from_utf8_lossy(&types);
+    if types.lines().any(|t| t.starts_with("text/plain") || t == "UTF8_STRING") || !types.lines().any(|t| t == "image/png") {
+        return None;
+    }
+    let data = read(&["wl-paste", "--type", "image/png"]).or_else(|| read(&["xclip", "-selection", "clipboard", "-t", "image/png", "-o"]))?;
+    let dir = brain_core::account::home_dir().join(".claude-brain/attachments");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(format!("paste-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S")));
+    std::fs::write(&path, data).ok()?;
+    Some(path)
 }
 
-/// False if `program` isn't installed.
-fn pipe(program: &str, args: &[&str], text: &str) -> bool {
-    let Ok(mut child) = Command::new(program).args(args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
-    else {
-        return false;
-    };
-    let written = child.stdin.take().is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
-    // The tool keeps serving the clipboard; reap it off the UI thread.
-    std::thread::spawn(move || child.wait());
-    written
-}
-
-fn klipper(text: &str) -> bool {
-    Command::new("dbus-send")
-        .args(["--session", "--print-reply", "--dest=org.kde.klipper", "/klipper", "org.kde.klipper.klipper.setClipboardContents"])
-        .arg(format!("string:{text}"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+/// The tool's output; `None` if it isn't installed or fails (e.g. `wl-paste` outside Wayland).
+fn read(command: &[&str]) -> Option<Vec<u8>> {
+    let out = Command::new(command[0]).args(&command[1..]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    (out.status.success() && !out.stdout.is_empty()).then_some(out.stdout)
 }

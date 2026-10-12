@@ -25,9 +25,21 @@ pub struct Prefs {
     muted: BTreeSet<String>,
     #[serde(default)]
     pub layout: Layout,
+    /// Show Claude Code's background sessions (`claude --bg`); off by default.
+    #[serde(default)]
+    pub show_background: bool,
+    /// Show sessions programs started (SDK reviews, `claude -p`); off by default.
+    #[serde(default)]
+    pub show_automated: bool,
+    /// Width of the session list in points, as dragged.
+    #[serde(default)]
+    pub sidebar_width: Option<f32>,
     /// Session id → snoozed until (epoch ms).
     #[serde(default)]
     snoozed: BTreeMap<String, i64>,
+    /// Session id → when it was hidden (epoch ms). New activity brings it back.
+    #[serde(default)]
+    hidden: BTreeMap<String, i64>,
 }
 
 /// Sessions are remembered by account and session id, so a pin outlives the process.
@@ -41,13 +53,20 @@ impl Prefs {
     }
 
     pub fn load() -> Self {
+        if crate::demo::enabled() {
+            return Self::default();
+        }
         std::fs::read(Self::path())
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default()
     }
 
+    /// Writes the choices back; the demo never touches the user's real file.
     pub fn save(&self) {
+        if crate::demo::enabled() {
+            return;
+        }
         let path = Self::path();
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -55,6 +74,15 @@ impl Prefs {
         if let Ok(json) = serde_json::to_vec_pretty(self) {
             let _ = std::fs::write(path, json);
         }
+    }
+
+    /// Every pinned or saved session (`account:session id`).
+    pub fn pinned_keys(&self) -> Vec<SessionKey> {
+        self.pinned
+            .iter()
+            .filter_map(|entry| entry.split_once(':'))
+            .map(|(account, id)| SessionKey { account: account.to_string(), id: id.to_string() })
+            .collect()
     }
 
     pub fn is_pinned(&self, key: &SessionKey) -> bool {
@@ -103,6 +131,28 @@ impl Prefs {
         changed
     }
 
+    /// Hidden, and nothing happened in the session since.
+    pub fn is_hidden(&self, key: &SessionKey, last_activity_ms: i64) -> bool {
+        self.hidden.get(&id(key)).is_some_and(|at| *at >= last_activity_ms)
+    }
+
+    pub fn hide(&mut self, key: &SessionKey, now_ms: i64) {
+        self.hidden.insert(id(key), now_ms);
+    }
+
+    pub fn unhide(&mut self, key: &SessionKey) {
+        self.hidden.remove(&id(key));
+    }
+
+    /// Drops everything remembered about a session that no longer exists.
+    pub fn forget(&mut self, key: &SessionKey) {
+        let id = id(key);
+        self.pinned.remove(&id);
+        self.muted.remove(&id);
+        self.snoozed.remove(&id);
+        self.hidden.remove(&id);
+    }
+
     pub fn snooze(&mut self, key: &SessionKey, until: Option<i64>) {
         match until {
             Some(until) => self.snoozed.insert(id(key), until),
@@ -123,6 +173,15 @@ fn toggle(set: &mut BTreeSet<String>, id: String) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hidden_session_comes_back_with_new_activity() {
+        let mut prefs = Prefs::default();
+        let key = SessionKey { account: "main".into(), id: "abc".into() };
+        prefs.hide(&key, 1_000);
+        assert!(prefs.is_hidden(&key, 900));
+        assert!(!prefs.is_hidden(&key, 1_500));
+    }
 
     #[test]
     fn pid_entries_move_to_the_running_session_or_are_dropped() {

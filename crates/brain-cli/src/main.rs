@@ -27,7 +27,13 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Called by Claude Code hooks; reads the hook JSON from stdin.
-    Hook,
+    Hook {
+        /// The hook JSON in a file of `~/.claude-brain/inbox/` instead (Brain's mod, which can't
+        /// write to stdin); the file is deleted after reading. A file, not an argument: arguments
+        /// show in the process list, and the JSON holds prompts and answers.
+        #[arg(long)]
+        json_file: Option<std::path::PathBuf>,
+    },
     /// Report what this Claude session is doing or waiting for.
     #[command(group(ArgGroup::new("kind").required(true).args(["doing", "waiting", "done"])))]
     Report {
@@ -40,6 +46,12 @@ enum Command {
         /// One line of text.
         text: Vec<String>,
     },
+    /// Mark a council of the konsil skill; Brain reads its course from the transcript and shows
+    /// it in the Konsil tab.
+    Konsil {
+        #[command(subcommand)]
+        step: KonsilStep,
+    },
     /// Install hooks and the protocol section into every Claude account.
     Install,
     /// Remove Brain's hooks and protocol section from every Claude account.
@@ -51,6 +63,10 @@ enum Command {
         /// The status line command to run afterwards, with the same input.
         #[arg(long)]
         then: Option<String>,
+        /// The status line JSON in a file of `~/.claude-brain/inbox/` instead of stdin (Brain's
+        /// mod); the file is deleted after reading, and nothing runs after.
+        #[arg(long)]
+        json_file: Option<std::path::PathBuf>,
     },
     /// List the sessions that have not ended, in triage order.
     #[command(group(ArgGroup::new("format").required(true).args(["alfred", "json"])))]
@@ -74,6 +90,27 @@ enum Command {
     },
 }
 
+#[derive(Subcommand)]
+enum KonsilStep {
+    /// The council begins.
+    Start {
+        /// The topic in one line.
+        topic: Vec<String>,
+    },
+    /// Where the two stand after a round; points separated by `;`.
+    Stand {
+        #[arg(long, alias = "agreed", default_value = "")]
+        einig: String,
+        #[arg(long, alias = "disputed", default_value = "")]
+        strittig: String,
+    },
+    /// The user decided.
+    End {
+        /// The decision in one line.
+        decision: Vec<String>,
+    },
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let home = home_dir();
@@ -81,9 +118,19 @@ fn main() -> ExitCode {
     let accounts = discover_accounts(&home);
 
     match cli.command {
-        Command::Hook => {
+        Command::Hook { json_file } => {
             // Hooks must never disturb Claude: no output, always success.
-            let _ = run_hook(&store, &accounts);
+            let source = if json_file.is_some() { Source::Mod } else { Source::Hook };
+            let input = match json_file {
+                Some(file) => take_inbox_file(&file),
+                None => {
+                    let mut input = String::new();
+                    std::io::stdin().read_to_string(&mut input).ok().map(|_| input)
+                }
+            };
+            if let Some(input) = input {
+                let _ = run_hook(&store, &accounts, &input, source);
+            }
             ExitCode::SUCCESS
         }
         Command::Report { doing, waiting, done, text } => {
@@ -97,21 +144,26 @@ fn main() -> ExitCode {
             };
             run_report(&store, &accounts, kind, &text.join(" "))
         }
+        // The marks themselves are read from the transcript; start and end also report, so the
+        // timeline and Today show the council.
+        Command::Konsil { step } => match step {
+            KonsilStep::Start { topic } => run_report(&store, &accounts, Kind::Doing, &format!("Konsil: {}", topic.join(" "))),
+            KonsilStep::Stand { .. } => ExitCode::SUCCESS,
+            KonsilStep::End { decision } => run_report(&store, &accounts, Kind::Done, &format!("Konsil: {}", decision.join(" "))),
+        },
         Command::Install => run_install(&accounts),
         Command::Uninstall => run_uninstall(&accounts),
         Command::Status => run_status(&store, &accounts),
-        Command::Statusline { then } => statusline::run(then, &accounts),
+        Command::Statusline { then, json_file } => statusline::run(then, json_file.and_then(|f| take_inbox_file(&f)), &accounts),
         Command::Sessions { alfred, json: _ } => run_sessions(&store, &accounts, alfred),
         Command::Open { session } => run_open(&accounts, &session),
         Command::Show { session } => run_show(&session),
     }
 }
 
-fn run_hook(store: &Store, accounts: &[Account]) -> Option<()> {
-    let mut input = String::new();
-    std::io::stdin().read_to_string(&mut input).ok()?;
-    capture_raw_hook(&input);
-    let payload: HookPayload = serde_json::from_str(&input).ok()?;
+fn run_hook(store: &Store, accounts: &[Account], input: &str, source: Source) -> Option<()> {
+    capture_raw_hook(input);
+    let payload: HookPayload = serde_json::from_str(input).ok()?;
     let kind = payload.kind()?;
 
     let session_id = payload.session_id.as_deref();
@@ -135,7 +187,7 @@ fn run_hook(store: &Store, accounts: &[Account]) -> Option<()> {
             pid,
             session_id: payload.session_id.clone(),
             cwd: payload.cwd.clone(),
-            source: Source::Hook,
+            source,
             kind,
             text: payload.text(),
             tasks: (kind == Kind::Stop).then(|| payload.background_tasks.clone().unwrap_or_default()),
@@ -215,6 +267,53 @@ fn run_report(store: &Store, accounts: &[Account], kind: Kind, text: &str) -> Ex
     }
 }
 
+/// Where Brain's mod hands over its events: a folder only the user can open.
+fn inbox_dir() -> std::path::PathBuf {
+    home_dir().join(".claude-brain/inbox")
+}
+
+/// Reads and deletes a file the mod left in the inbox. Any other path is refused, so the CLI
+/// never reads or deletes files elsewhere.
+fn take_inbox_file(file: &std::path::Path) -> Option<String> {
+    let inbox = inbox_dir().canonicalize().ok()?;
+    let file = file.canonicalize().ok()?;
+    if file.parent() != Some(inbox.as_path()) || file.extension().is_none_or(|e| e != "json") {
+        return None;
+    }
+    let text = std::fs::read_to_string(&file).ok();
+    let _ = std::fs::remove_file(&file);
+    text
+}
+
+/// Creates the inbox, readable only by the user.
+fn create_inbox() -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = inbox_dir();
+    std::fs::create_dir_all(&dir)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+}
+
+/// Brain's Claude Code mod, built into the CLI so every install has the matching version.
+const MOD_FILES: [(&str, &str); 3] = [
+    (".claude-plugin/plugin.json", include_str!("../../../mod/brain/.claude-plugin/plugin.json")),
+    ("hooks/hooks.json", include_str!("../../../mod/brain/hooks/hooks.json")),
+    ("hooks/register.js", include_str!("../../../mod/brain/hooks/register.js")),
+];
+
+/// Writes the mod to `~/.claude-brain/mod/brain` and returns that directory.
+fn install_mod() -> std::io::Result<std::path::PathBuf> {
+    create_inbox()?;
+    let dir = home_dir().join(".claude-brain/mod/brain");
+    for (path, content) in MOD_FILES {
+        let file = dir.join(path);
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(file, content)?;
+    }
+    Ok(dir)
+}
+
 fn run_install(accounts: &[Account]) -> ExitCode {
     let exe = match std::env::current_exe().and_then(|p| p.canonicalize()) {
         Ok(exe) => exe,
@@ -225,13 +324,21 @@ fn run_install(accounts: &[Account]) -> ExitCode {
     };
     let hook_command = format!("{} hook", shell_quote(&exe.to_string_lossy()));
     let mut failed = false;
+    // The mod reports from inside Claude Code; the hooks stay as a fallback for one release.
+    let mod_dir = match install_mod() {
+        Ok(dir) => Some(dir.to_string_lossy().into_owned()),
+        Err(err) => {
+            println!("mod ✗ not written, sessions report through hooks only: {err}");
+            None
+        }
+    };
 
     for account in accounts {
         println!("{} ({})", account.id, account.config_dir.display());
 
         let settings = account.config_dir.join("settings.json");
         let settings_text = std::fs::read_to_string(&settings).unwrap_or_default();
-        match install::patch_settings_text(&settings_text, &hook_command) {
+        match install::patch_settings_text(&settings_text, &hook_command, mod_dir.as_deref()) {
             Ok(patched) => report_change("settings.json", install::rewrite_file(&settings, |_| patched), UP_TO_DATE),
             Err(err) => {
                 failed = true;
@@ -247,7 +354,11 @@ fn run_install(accounts: &[Account]) -> ExitCode {
         eprintln!("brain install: no ~/.claude or ~/.claude-* directories found");
         return ExitCode::FAILURE;
     }
-    println!("\nHooks: {}\nNew Claude sessions pick this up on start.", install::HOOK_EVENTS.join(", "));
+    println!("\nHooks: {}", install::HOOK_EVENTS.join(", "));
+    if let Some(dir) = &mod_dir {
+        println!("Mod: {dir}");
+    }
+    println!("New Claude sessions pick this up on start.");
     if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
 

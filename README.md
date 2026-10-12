@@ -14,10 +14,60 @@ sessions here.*
 
 ![Brain with demo data](docs/screenshot.png)
 
-Built with [GPUI](https://gpui.rs), the GPU-accelerated UI framework from Zed. The interface
-follows your system language: English or German.
+Built in Rust with [Iced](https://iced.rs) (native text input with dead keys and input methods,
+undo, selection) and, on macOS, AppKit for the menu bar item, notifications and `brain://`
+links. The interface follows your system language: English or German.
+
+A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.md).
 
 ## What it does
+
+- **Sessions run in Brain.** `⌘N` starts a session as a Claude Code background session
+  (`claude --bg`) and opens it in Brain's own terminal: Claude Code exactly as in your terminal,
+  in your iTerm2 font and colours, at a readable width. It keeps running when Brain quits, and
+  `claude attach <id>` opens it from any terminal. `I` twice moves a session from an iTerm tab
+  into Brain without losing its conversation (`/exit` there, `claude --bg --resume` here).
+- **Screenshots and files in.** Drag files onto the terminal or paste a copied screenshot with
+  `⌘V`: Brain inserts the path, and Claude reads the picture. `⌘`-click a path or URL in the
+  output: Markdown opens in [YAMV](https://github.com/martinemmert/yet-another-markdown-viewer)
+  (math, Mermaid, extended Markdown; the text editor if YAMV isn't installed), other files in a
+  reader beside the terminal (code highlighted, images shown; `⌘⏎` opens it in your editor),
+  URLs in the browser.
+- **The terminal, made for sessions.** Multi-line pastes arrive as one paste, dead keys and
+  dictation work, the title Claude Code sets shows beside the session, and a bell from a session
+  you're not looking at marks it. `⌘D` keeps one terminal on screen beside the next session you
+  pick; `⌘⇧A` shows every session that runs in Brain as a live preview.
+- **Quick terminal.** A key you pick, e.g. `"quick_terminal": "cmd+shift+b"` in
+  `~/.claude-brain/config.json`, brings Brain forward from any app with the longest-waiting
+  session's terminal; again hides Brain. Off until set: a global key takes the combination
+  everywhere, also from macOS (⌃⌥Space switches the input source).
+- **Command palette.** `⌘K`: every action, `/compact`, `/context`, `/model` and other slash
+  commands for the session, and any text sent to it or to every session whose turn it is.
+- **Files.** Every file a session wrote, edited, read or was given, newest first: find the
+  Markdown files it created. A click opens one.
+- **Questions.** Every question Claude asked (AskUserQuestion, or a reply ending in a question)
+  with your answer, newest first; unanswered ones stand out.
+- **Konsil.** A council of the konsil skill (the lazy senior against his buddy) as a stage: both
+  figures, where they agree and where they still fight, every round in full. The skill marks it
+  with `brain konsil start|stand|end`; the tab shows once a session held one.
+- **Composer.** `⌘E`: a large editor for a longer prompt, with your templates, dictation and
+  screenshots pasted with `⌘V`; `⌘⏎` sends it as one paste.
+- **Screenshots, offered.** A new screenshot shows above the footer: into the waiting session's
+  terminal or into the composer. `"screenshot_folder"` in the config changes the folder
+  (`"off"` turns it off).
+- **Reply from the notification.** "Session waits" notifications have a reply field (only on an
+  unlocked Mac); the text goes into the session.
+- **Shell per project.** `⌘T` opens a login shell in the session's folder below its terminal.
+- **Context gauge.** From 80 % context the gauge turns amber and offers `/compact`.
+- **Diffs.** A click on a file in Changes shows its diff; "Discard change" (twice) puts the
+  current version in the Trash and restores HEAD's.
+- **Before resuming.** An ended session's Terminal tab sums it up: how it began, what was asked
+  last, the last answer, an open question, the files it changed.
+- **Usage forecast.** "full ~Thu 14:00" when a limit would run out at this pace, and which
+  account has room.
+- **Find in the whole session.** `⌘F` searches the entire conversation, "Your prompts" lists
+  everything you asked, `⌘⇧C` copies Claude's last answer, "As Markdown" opens the whole
+  conversation in YAMV.
 
 - **Triage inbox.** Sessions that wait for you come first, longest wait on top: red when
   Claude asks a question or needs a permission, amber when a turn finished, quiet blue when the
@@ -39,6 +89,18 @@ follows your system language: English or German.
   from their transcripts, and a softer hint when they change files in the same checkout.
 - **Today.** What every session reported as done today, per project; copy it as Markdown.
 - **Timeline.** Every hook event and report of a session.
+- **The conversation reads like the terminal:** your prompts as `> …`, Claude's replies and tool
+  calls with `●`, in your terminal's font (iTerm2's default profile, e.g. JetBrains Mono 13).
+  `"chat_font"` and `"chat_font_size"` in `~/.claude-brain/config.json` pick another one.
+- **Keep the list short.** Sessions that never got a prompt don't show up; the "resting" group
+  is folded (`H`); ended sessions show for a day, older ones through the search. `⌫` twice hides
+  a session until something new happens in it; `⌘⌫` twice moves an ended session's transcript to
+  the **Trash**. `C` opens *Clean up*: everything ended (or in the background) and quiet for 1, 3,
+  7 or 14 days, to hide or trash at once. Pinned and saved sessions always stay.
+- **Claude Code's background sessions** (`claude --bg`, listed by `claude agents`) are hidden
+  by default; the title bar counts them, and `B` (or a click on the count) shows them with their
+  own state (blocked, failed, done …). Hidden ones don't notify. `⏎` attaches to one in a new tab, `X X` stops it,
+  `⌘⌫ ⌘⌫` stops it, moves its transcript to the Trash and runs `claude rm`.
 - **End now, resume later.** `X` twice ends a waiting session (`/exit`); closing the tab works
   too. Ended sessions stay in the list as long as Claude Code keeps their transcript
   (`cleanupPeriodDays`, 30 days by default), with their name, last message and how many days are
@@ -74,6 +136,35 @@ sources:
 
 Without hooks Brain still shows a coarse state from Claude Code's own
 `<config>/sessions/<pid>.json` files.
+
+## The Brain mod
+
+Claude Code [mods](https://code.claude.com/docs/en/plugins/mods/overview) run inside Claude
+Code (v2.1.287 or later). Brain's mod (`mod/brain`, built into the `brain` CLI) reports each
+session from there: start, prompts, questions (AskUserQuestion) and permission requests, turn ends
+with the subagents still running, the end, and after every turn the context fill and plan limits
+— what the status line wrapper recorded. `brain install` writes it to `~/.claude-brain/mod/brain`
+and lists that folder in `env.CLAUDE_CODE_PLUGIN_DIRS` of every account's `settings.json`;
+`brain uninstall` removes it. The settings hooks stay for now as a fallback: once a session
+reports through the mod, Brain leaves out its hook events.
+
+## Brain Link (the iPhone companion)
+
+**Brain Companion** (repo `brain-companion`, .NET MAUI) shows the sessions on the iPhone, reads
+along, replies and answers permission dialogs; Brain carries those out on the Mac as it does for a
+reply typed in Brain. ⌘K → *Pair a phone (Brain Link)* turns the server on and shows a QR code;
+the iPhone camera opens it in the app.
+
+- Off until paired, then it starts with Brain. HTTPS on port 48620 on every interface, so the
+  phone reaches it while both are in the same Wi-Fi. The pairing offers the Mac's Bonjour name
+  and its Wi-Fi/Ethernet addresses (no VM bridges or VPN tunnels); `/v1/hello` tells the phone
+  the current ones, so a new address needs no new pairing.
+- The code carries the Mac's addresses, a random token (required on every request, compared in
+  constant time) and the SHA-256 of Brain's self-signed certificate, which the app pins.
+- Certificate, key and token live in `~/.claude-brain/link` (0700). *Sign out all phones* makes a
+  new token; *Turn Brain Link off* closes the server.
+- A permission answer carries when the dialog it answers opened; Brain sends it only while that
+  same dialog is open.
 
 ## Install
 
@@ -164,11 +255,14 @@ What differs from macOS:
   recognised but not controlled; Brain shows what to change when it can't type.
 - New sessions open in a new tab of Konsole, else of Ptyxis, GNOME Terminal or GNOME
   Console, else in `x-terminal-emulator`.
-- Copying by click needs `wl-copy` (package `wl-clipboard`) on Wayland, except on KDE, where
-  Brain uses Klipper; on X11 `xclip` or `xsel`. On GNOME: `sudo apt install wl-clipboard`.
-- On GNOME (and other desktops that leave the window frame to the app) Brain draws its own:
-  drag the title bar to move, double-click to maximize, right-click for the window menu,
-  the edges to resize.
+- Pasting a copied screenshot needs `wl-paste` (package `wl-clipboard`) on Wayland, `xclip`
+  on X11.
+- The desktop draws the window frame; Brain's title bar below it still moves the window.
+- No quick-terminal hotkey yet (Wayland leaves global keys to the compositor).
+- Brain's terminal and chat use your desktop's monospace font and Brain's own colours (or
+  `chat_font` from the config); there is no iTerm2 profile to borrow them from.
+- Markdown files open in the desktop's app for Markdown instead of YAMV; deleted files go to
+  the desktop's trash (`gio trash`, on KDE `kioclient`).
 - `brain show` is not supported yet.
 
 ### Alfred
@@ -202,19 +296,38 @@ On Linux delete `~/.local/bin/brain`, `~/.local/bin/brain-app`,
 | Key | Action |
 |---|---|
 | `↑` `↓` / `j` `k` | select |
-| `⏎`, double-click | open the session's terminal (resume it if it ended) |
+| `⏎`, double-click | open the session: in Brain's terminal if it runs in Brain, else its terminal app (an ended one resumes) |
+| `⌥⏎` | open it in iTerm instead |
+| `⌘J` / `⌘[` | keyboard into the terminal / back to the list |
+| `I` `I` | move a session from its iTerm tab into Brain |
+| `⌘`-click | open a path (Markdown in YAMV, else the reader) or URL from the terminal output |
 | `1`–`9` | open the n-th session |
 | `Y` / `N` | allow / deny an open permission prompt |
 | `T` | reply to a session that waits for you (then `1`–`9` for a quick reply) |
 | `R`, click the name | rename (only while the session waits for you) |
-| `/`, `⌘F` | search (`esc` clears) |
+| `/` | search the session list (`esc` clears) |
+| `⌘F` | find in the selected session's whole conversation |
+| `⌘⇧C` | copy Claude's last answer |
+| `⌘K` | command palette |
+| `⌘E` | composer: a longer prompt for the session (`⌘⏎` sends) |
+| `⌘T` | shell in the session's folder (again: hide) |
+| `⌘D` | split: keep this terminal beside the next session (again: end) |
+| `⌘⇧A` | all terminals as live previews |
+| your `quick_terminal` key | from any app: Brain with the waiting session's terminal (again: hide) |
+| right-click | a session's actions |
 | `P` / `M` | pin (an ended session: save it to resume) / mute notifications |
 | `S` | snooze: 15 min → 1 h → until tomorrow 9:00 → off |
 | `G` / `D` | group by project / today's digest (`⌘C` copies it) |
-| `X` `X` | end the session (`/exit`); it stays resumable |
+| `X` `X` | end the session (`/exit`; a background session: `claude stop`); it stays resumable |
+| `⌫` `⌫` | hide the session until something new happens in it (again: show it) |
+| `⌘⌫` `⌘⌫` | move an ended session's transcript to the Trash |
+| `C` | clean up: hide or trash everything quiet for N days |
+| `H` | fold / unfold the resting group |
+| `B` | show / hide Claude Code's background sessions |
+| `U` | show / hide sessions programs started (security reviews, SDK scripts, `claude -p`) |
 | `A` `A` | move the session to the next account (an ended one resumes there) |
-| `⌘N` | start a new session |
-| `←` `→` | switch between messages, timeline and changes |
+| `⌘N` | start a new session (in Brain; `⌘I` in the dialog: in iTerm) |
+| `←` `→` | switch between messages, timeline, changes, files, questions and terminal |
 | `⇥` | cycle the account filter |
 | `E` | show ended sessions |
 
@@ -261,7 +374,10 @@ the zipped app, the `brain` binary, the Alfred workflow and SHA-256 checksums, t
 - `crates/brain-terminal`: terminal adapters (iTerm2, Terminal.app, tmux, VS Code, Cursor)
 - `crates/brain-cli`: the `brain` binary (`hook`, `report`, `install`, `uninstall`, `status`,
   `sessions`, `open`, `show`)
-- `crates/brain-app`: the GPUI app
+- `crates/brain-app`: the Iced app
+- `crates/iced-term`: Brain's fork of [iced_term](https://github.com/Harzu/iced_term) (MIT,
+  Ilya Shvyryalkin): Ctrl keys, ⇧⏎ and back-tab for Claude Code, clickable file paths, plain
+  look-alikes for glyphs that would fall back to colour emoji
 
 Design notes: [`docs/superpowers/specs/2026-10-02-claude-brain-design.md`](docs/superpowers/specs/2026-10-02-claude-brain-design.md)
 

@@ -160,6 +160,7 @@ pub fn build() -> Demo {
                 started_at: Some(ms(spec.minutes_ago + 50)),
                 updated_at: Some(ms(spec.minutes_ago)),
                 status_updated_at: Some(ms(spec.minutes_ago)),
+                spare: false,
             },
             true,
         );
@@ -229,6 +230,7 @@ pub fn build() -> Demo {
                 cost_usd: Some(cost),
                 title: None,
                 edited: Vec::new(),
+                entrypoint: Some("cli".into()),
             },
         );
     }

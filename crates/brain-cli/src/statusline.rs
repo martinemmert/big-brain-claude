@@ -10,7 +10,12 @@ use brain_core::process::{find_claude_session, ProcessTable};
 use brain_core::sessions::read_session_files;
 use brain_core::usage::{self, Snapshot};
 
-pub fn run(then: Option<String>, accounts: &[Account]) -> ExitCode {
+pub fn run(then: Option<String>, json: Option<String>, accounts: &[Account]) -> ExitCode {
+    // From Brain's mod: only record, there's no status line to pass the input on to.
+    if let Some(input) = json {
+        let _ = record(&input, accounts);
+        return ExitCode::SUCCESS;
+    }
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
 

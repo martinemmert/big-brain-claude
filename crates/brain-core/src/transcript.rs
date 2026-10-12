@@ -59,9 +59,21 @@ pub fn find_transcript(account: &Account, session_id: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-/// The ids of every session whose transcript Claude Code still keeps for this account, i.e. the
-/// sessions that can still be resumed.
-pub fn kept_session_ids(account: &Account) -> std::collections::HashSet<String> {
+/// A session's files: its transcript and, if there is one, the folder of its subagents' transcripts
+/// and tool output.
+pub fn session_files(account: &Account, session_id: &str) -> Vec<PathBuf> {
+    let Some(transcript) = find_transcript(account, session_id) else { return Vec::new() };
+    let folder = transcript.with_extension("");
+    let mut files = vec![transcript];
+    if folder.is_dir() {
+        files.push(folder);
+    }
+    files
+}
+
+/// Every session whose transcript Claude Code still keeps for this account (the sessions that
+/// can still be resumed), by id, with the transcript's path.
+pub fn kept_transcripts(account: &Account) -> std::collections::HashMap<String, PathBuf> {
     std::fs::read_dir(account.config_dir.join("projects"))
         .into_iter()
         .flatten()
@@ -69,9 +81,22 @@ pub fn kept_session_ids(account: &Account) -> std::collections::HashSet<String> 
         .flat_map(|project| std::fs::read_dir(project.path()).into_iter().flatten().flatten())
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
-            name.strip_suffix(".jsonl").map(str::to_string)
+            Some((name.strip_suffix(".jsonl")?.to_string(), entry.path()))
         })
         .collect()
+}
+
+/// How a session was started (`entrypoint` of its first entries, see [`Insight::entrypoint`]);
+/// reads only the start of the transcript.
+pub fn entrypoint_of(transcript: &Path) -> Option<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(transcript).ok()?;
+    std::io::BufReader::new(file)
+        .lines()
+        .take(60)
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+        .find_map(|entry| entry.get("entrypoint")?.as_str().map(str::to_string))
 }
 
 /// Copies a session's transcript (and its folder of subagent transcripts and tool output, if any)
@@ -104,6 +129,12 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Every message of the transcript, oldest first (search and export need the whole session).
+pub fn read_all_messages(transcript: &Path) -> Vec<Message> {
+    let len = std::fs::metadata(transcript).map(|m| m.len()).unwrap_or(0);
+    read_tail(transcript, len, len)
 }
 
 /// The last `limit` messages, oldest first. Reads from the end of the file and
@@ -173,6 +204,49 @@ pub struct Insight {
     pub title: Option<String>,
     /// Files this session wrote or edited (Write, Edit, MultiEdit, NotebookEdit), most recent last.
     pub edited: Vec<String>,
+    /// How the session was started: `cli` (a terminal), `claude-desktop`, or `sdk-py`,
+    /// `sdk-ts`, `sdk-cli` for sessions a program started (reviews, `claude -p` scripts).
+    pub entrypoint: Option<String>,
+}
+
+impl Insight {
+    /// Started by a program through the Agent SDK or `claude -p`, not by the user.
+    pub fn is_automated(&self) -> bool {
+        self.entrypoint.as_deref().is_some_and(|e| e.starts_with("sdk-"))
+    }
+}
+
+/// The folder a session ran in: the `cwd` of its first entry that has one.
+pub fn cwd_of(transcript: &Path) -> Option<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(transcript).ok()?;
+    std::io::BufReader::new(file)
+        .lines()
+        .take(400)
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+        .find_map(|entry| entry.get("cwd")?.as_str().map(str::to_string))
+}
+
+/// A session's name from its whole transcript: the last `/rename` (`custom-title`), else
+/// Claude Code's latest generated title (`ai-title`). Reads the full file, so only for sessions
+/// Brain knows nothing else about.
+pub fn title_of(transcript: &Path) -> Option<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(transcript).ok()?;
+    let (mut custom, mut generated) = (None, None);
+    for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+        if !line.contains("-title\"") {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<Value>(&line) else { continue };
+        match entry.get("type").and_then(Value::as_str) {
+            Some("custom-title") => custom = entry.get("customTitle").and_then(Value::as_str).map(str::to_string),
+            Some("ai-title") => generated = entry.get("aiTitle").and_then(Value::as_str).map(str::to_string),
+            _ => {}
+        }
+    }
+    custom.or(generated)
 }
 
 /// Reads the last 512 KiB of a transcript.
@@ -192,6 +266,9 @@ pub fn insight(transcript: &Path) -> Insight {
             .and_then(|t| t.parse::<DateTime<Utc>>().ok())
             .map(|t| t.timestamp_millis());
         let field = |key: &str| entry.get(key).and_then(Value::as_str).map(str::to_string);
+        if out.entrypoint.is_none() {
+            out.entrypoint = field("entrypoint");
+        }
         match entry.get("type").and_then(Value::as_str).unwrap_or_default() {
             "system" if field("subtype").as_deref() == Some("turn_duration") => {
                 if let Some(ts) = ts {
@@ -398,6 +475,18 @@ mod tests {
         let path = dir.path().join("s.jsonl");
         std::fs::write(&path, lines.join("\n")).unwrap();
         (dir, path)
+    }
+
+    #[test]
+    fn sessions_started_through_the_sdk_are_automated() {
+        let review = [r#"{"type":"user","entrypoint":"sdk-py","message":{"role":"user","content":"Review this change"},"timestamp":"2026-10-09T20:00:00Z"}"#];
+        let (_dir, path) = transcript(&review);
+        assert!(insight(&path).is_automated());
+
+        let mine = [r#"{"type":"user","entrypoint":"cli","message":{"role":"user","content":"Fix it"},"timestamp":"2026-10-09T20:00:00Z"}"#];
+        let (_dir, path) = transcript(&mine);
+        assert_eq!(insight(&path).entrypoint.as_deref(), Some("cli"));
+        assert!(!insight(&path).is_automated());
     }
 
     #[test]

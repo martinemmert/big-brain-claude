@@ -1,0 +1,7 @@
+{
+  "name": "brain",
+  "version": "0.1.0",
+  "description": "Reports each Claude Code session to the Brain dashboard: start, prompts, questions and permission requests, turn ends with running subagents, context and plan limits.",
+  "author": { "name": "Martin Emmert" },
+  "homepage": "https://github.com/martinemmert/big-brain-claude"
+}

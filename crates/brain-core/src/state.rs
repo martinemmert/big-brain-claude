@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::agents::BackgroundAgent;
 use crate::event::{BackgroundTask, Event, Kind, Source};
 use crate::sessions::SessionFile;
 use crate::transcript::{Insight, Turn};
@@ -91,12 +92,17 @@ pub struct Session {
     pub insight: Insight,
     /// What the last stop left running in the background.
     background: Vec<BackgroundTask>,
+    /// Set when the session is one of Claude Code's background sessions (`claude --bg`).
+    pub agent: Option<BackgroundAgent>,
 
     hook_signal: Option<(Signal, i64)>,
     file_signal: Option<(Signal, i64)>,
     transcript_signal: Option<(Signal, i64)>,
     /// Whether the last turn hook was a prompt (`true`) or a stop (`false`).
     turn_open: Option<bool>,
+    /// Brain's mod reports this session: the settings hooks, which still run as a fallback,
+    /// would say everything twice.
+    reports_by_mod: bool,
 }
 
 const TIMELINE_LIMIT: usize = 200;
@@ -121,9 +127,11 @@ impl Session {
             reply: None,
             insight: Insight::default(),
             background: Vec::new(),
+            agent: None,
             hook_signal: None,
             file_signal: None,
             transcript_signal: None,
+            reports_by_mod: false,
             turn_open: None,
         }
     }
@@ -162,6 +170,21 @@ impl Session {
     }
 
     pub fn phase(&self) -> Phase {
+        // A background session's state comes from `claude agents`, which knows it best.
+        if let Some(agent) = &self.agent {
+            // `claude agents` updates "working" late; the process's own status file says at once
+            // when the turn ended, so an idle process falls through to the usual rules.
+            let process_idle = matches!(self.current_signal(), Some((Signal::Idle | Signal::Waiting, _)));
+            match agent.state.as_str() {
+                "blocked" => return Phase::NeedsYou,
+                "idle" => return Phase::YourTurn,
+                "starting" | "running" | "working" if !process_idle => return Phase::Working,
+                // With its process still there it waits for the next prompt: the usual rules
+                // (status file, hooks) tell which phase.
+                _ if agent.pid.is_none() && agent.has_exited_state() => return Phase::Ended,
+                _ => {}
+            }
+        }
         if !self.alive || matches!(self.hook_signal, Some((Signal::Ended, _))) {
             return Phase::Ended;
         }
@@ -180,8 +203,9 @@ impl Session {
 
     /// True when the turn has ended, so text typed into the terminal lands in
     /// Claude Code's prompt box (and not in a permission dialog or a running turn).
+    /// Background sessions have no terminal of their own.
     pub fn accepts_input(&self) -> bool {
-        self.alive && matches!(self.current_signal(), Some((Signal::Idle, _)))
+        self.agent.is_none() && self.alive && matches!(self.current_signal(), Some((Signal::Idle, _)))
     }
 
     /// Whether the session matches every whitespace-separated term of `query`
@@ -196,6 +220,14 @@ impl Session {
         )
         .to_lowercase();
         query.to_lowercase().split_whitespace().all(|term| haystack.contains(term))
+    }
+
+    /// Nothing ever happened in it: no prompt, no reply, no report (opened and closed again, or
+    /// a `/clear` that was never used).
+    pub fn is_empty(&self) -> bool {
+        self.agent.is_none()
+            && self.insight.title.is_none()
+            && !self.timeline.iter().any(|e| matches!(e.kind, Kind::Prompt | Kind::Stop) || e.source == Source::Report)
     }
 
     /// When the current phase began (epoch ms).
@@ -235,6 +267,11 @@ impl Session {
     }
 
     fn apply(&mut self, event: &Event) {
+        match event.source {
+            Source::Mod => self.reports_by_mod = true,
+            Source::Hook if self.reports_by_mod => return,
+            _ => {}
+        }
         let ts = event.ts.timestamp_millis();
         self.last_activity_ms = self.last_activity_ms.max(ts);
         if event.session_id.is_some() {
@@ -284,7 +321,7 @@ impl Session {
             Kind::SessionStart => {}
         }
 
-        if event.source == Source::Hook {
+        if matches!(event.source, Source::Hook | Source::Mod) {
             match event.kind {
                 Kind::Prompt => self.turn_open = Some(true),
                 Kind::Stop | Kind::SessionStart => self.turn_open = Some(false),
@@ -354,6 +391,14 @@ impl Board {
 
     /// What the end of the session's transcript says (a third source next to hooks and the
     /// status file; it sees denied permissions and interruptions that fire no hook).
+    /// How an ended session was started, read from its transcript's start (live sessions get it
+    /// with their insight).
+    pub fn set_entrypoint(&mut self, key: &SessionKey, entrypoint: Option<String>) {
+        if let Some(session) = self.sessions.get_mut(key) {
+            session.insight.entrypoint = entrypoint;
+        }
+    }
+
     pub fn apply_insight(&mut self, key: &SessionKey, insight: Insight) {
         let Some(session) = self.sessions.get_mut(key) else { return };
         session.transcript_signal = insight.turn.map(|(turn, ts)| {
@@ -378,6 +423,57 @@ impl Board {
     /// The running session of a process, e.g. for a `brain://session/<account>/<pid>` link.
     pub fn live_by_pid(&self, account: &str, pid: u32) -> Option<&Session> {
         self.sessions.values().filter(|s| s.key.account == account && s.pid == pid && s.alive).max_by_key(|s| s.last_activity_ms)
+    }
+
+    /// The background sessions of an account as `claude agents` lists them now: each one's
+    /// session gets its state (and is created if Brain never saw it); sessions no longer
+    /// listed lose theirs.
+    pub fn set_agents(&mut self, account: &str, agents: &[BackgroundAgent]) {
+        for session in self.sessions.values_mut().filter(|s| s.key.account == account) {
+            session.agent = None;
+        }
+        for agent in agents {
+            let key = SessionKey { account: account.to_string(), id: agent.session_id.clone() };
+            let session = self.sessions.entry(key.clone()).or_insert_with(|| Session::new(key, 0));
+            session.session_id.get_or_insert_with(|| agent.session_id.clone());
+            if session.name.is_none() {
+                session.name = agent.name.clone();
+            }
+            if session.cwd.is_none() {
+                session.cwd = agent.cwd.clone();
+            }
+            if session.started_ms.is_none() {
+                session.started_ms = agent.started_ms;
+            }
+            session.last_activity_ms = session.last_activity_ms.max(agent.started_ms.unwrap_or(0));
+            session.agent = Some(agent.clone());
+        }
+    }
+
+    /// Moves a session's last activity forward, e.g. to its transcript's modification time.
+    pub fn touch(&mut self, key: &SessionKey, at_ms: i64) {
+        if let Some(session) = self.sessions.get_mut(key) {
+            session.last_activity_ms = session.last_activity_ms.max(at_ms);
+        }
+    }
+
+    /// An ended session Brain has no events for (they predate its hooks, or never fired), known
+    /// only from its transcript: e.g. one the user saved to resume.
+    pub fn add_ended(&mut self, key: SessionKey, cwd: Option<String>, mut insight: Insight, last_activity_ms: i64) {
+        let folder = cwd.as_deref().and_then(|c| c.rsplit('/').next()).map(str::to_string);
+        insight.title = insight.title.or(folder);
+        let session = self.sessions.entry(key.clone()).or_insert_with(|| Session::new(key.clone(), 0));
+        session.session_id.get_or_insert(key.id);
+        session.cwd = session.cwd.take().or(cwd);
+        session.alive = false;
+        session.last_activity_ms = session.last_activity_ms.max(last_activity_ms);
+        session.name = session.name.take().or(insight.title.clone());
+        session.insight = insight;
+    }
+
+    /// Forgets a session, e.g. after its transcript went to the Trash.
+    pub fn remove(&mut self, key: &SessionKey) {
+        self.sessions.remove(key);
     }
 
     pub fn get(&self, key: &SessionKey) -> Option<&Session> {
@@ -409,6 +505,19 @@ mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
 
+    #[test]
+    fn once_the_mod_reports_a_session_its_hook_events_are_left_out() {
+        let mut board = Board::default();
+        board.apply_event(&ev(0, Source::Hook, Kind::SessionStart, None));
+        board.apply_event(&ev(1, Source::Mod, Kind::Prompt, Some("Build it")));
+        board.apply_event(&ev(1, Source::Hook, Kind::Prompt, Some("Build it")));
+        board.apply_event(&ev(9, Source::Mod, Kind::Stop, Some("Built.")));
+        board.apply_event(&ev(9, Source::Hook, Kind::Stop, Some("Built.")));
+        let session = board.sessions.values().next().unwrap();
+        let kinds: Vec<Kind> = session.timeline.iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, [Kind::SessionStart, Kind::Prompt, Kind::Stop]);
+    }
+
     fn ev(secs: i64, source: Source, kind: Kind, text: Option<&str>) -> Event {
         Event {
             v: 1,
@@ -439,6 +548,7 @@ mod tests {
             started_at: None,
             updated_at: Some((1_790_000_000 + secs) * 1000),
             status_updated_at: Some((1_790_000_000 + secs) * 1000),
+            spare: false,
         }
     }
 
@@ -606,6 +716,61 @@ mod tests {
         assert_eq!(key2, SessionKey { account: "second".into(), id: "s2".into() });
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::Ended);
         assert_eq!(board.get(&key2).unwrap().phase(), Phase::Working);
+    }
+
+    #[test]
+    fn background_sessions_take_their_phase_from_claude_agents_until_unlisted() {
+        let mut board = Board::default();
+        board.apply_session_file("second", &file("busy", 0), true);
+        let agent = |state: &str| BackgroundAgent {
+            id: "s1".into(),
+            session_id: "s1".into(),
+            name: Some("Filter chip".into()),
+            cwd: None,
+            state: state.into(),
+            started_ms: Some(0),
+            pid: None,
+        };
+
+        board.set_agents("second", &[agent("working")]);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::Working);
+        board.apply_session_file("second", &file("idle", 10), true);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::YourTurn, "an idle process beats a late 'working'");
+        board.apply_session_file("second", &file("busy", 20), true);
+                board.set_agents("second", &[agent("blocked")]);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::NeedsYou);
+        assert!(!board.get(&key()).unwrap().accepts_input());
+        board.set_agents("second", &[agent("failed")]);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::Ended);
+        board.set_agents("second", &[]);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::Working);
+
+        // `done` while its process is still there: the task finished, the session waits.
+        board.apply_session_file("second", &file("idle", 30), true);
+        board.set_agents("second", &[BackgroundAgent { pid: Some(4200), ..agent("done") }]);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::YourTurn);
+        board.set_agents("second", &[agent("done")]);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::Ended);
+    }
+
+    #[test]
+    fn a_session_known_only_from_its_transcript_is_ended_and_named() {
+        let mut board = Board::default();
+        board.add_ended(key(), Some("/w/phoenix-fux".into()), Insight::default(), 1_000);
+        let s = board.get(&key()).unwrap();
+        assert_eq!((s.phase(), s.display_name().as_str(), s.is_empty()), (Phase::Ended, "phoenix-fux", false));
+        let other = SessionKey { account: "second".into(), id: "s2".into() };
+        board.add_ended(other.clone(), None, Insight { title: Some("QA Autopilot".into()), ..Insight::default() }, 1_000);
+        assert_eq!(board.get(&other).unwrap().display_name(), "QA Autopilot");
+    }
+
+    #[test]
+    fn a_session_without_prompt_reply_or_report_is_empty() {
+        let mut board = Board::default();
+        board.apply_event(&ev(0, Source::Hook, Kind::SessionStart, None));
+        assert!(board.get(&key()).unwrap().is_empty());
+        board.apply_event(&ev(1, Source::Hook, Kind::Prompt, Some("go")));
+        assert!(!board.get(&key()).unwrap().is_empty());
     }
 
     #[test]

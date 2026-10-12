@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/brain-core", "crates/brain-terminal", "crates/brain-cli", "crates/brain-app"]
+members = ["crates/brain-core", "crates/brain-terminal", "crates/brain-cli", "crates/brain-app", "crates/iced-term"]
 
 [workspace.package]
 edition = "2021"
-version = "0.6.0"
+version = "0.10.1"
 
 [workspace.dependencies]
 brain-core = { path = "crates/brain-core" }

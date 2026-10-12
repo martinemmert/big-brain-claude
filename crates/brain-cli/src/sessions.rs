@@ -139,6 +139,7 @@ mod tests {
             started_at: None,
             updated_at: Some(1_790_000_000_000),
             status_updated_at: Some(1_790_000_000_000),
+            spare: false,
         };
         board.apply_session_file("second", &file, true);
         let event = brain_core::event::Event {

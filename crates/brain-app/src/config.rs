@@ -14,6 +14,55 @@ pub fn remind_after_ms() -> Option<i64> {
     (minutes > 0).then_some(minutes * 60 * 1000)
 }
 
+/// The quick-terminal hotkey (`quick_terminal`), e.g. "cmd+shift+b". Off unless set: a global
+/// key overrides the same combination everywhere, including macOS' own shortcuts (⌃⌥Space
+/// switches the input source), so only a key the user picked is taken.
+pub fn quick_terminal() -> Option<String> {
+    let spec = read().and_then(|v| v.get("quick_terminal")?.as_str().map(str::to_string))?;
+    (!spec.trim().is_empty() && spec.trim() != "off").then_some(spec)
+}
+
+/// Where new screenshots are watched for: `screenshot_folder`, else macOS' screenshot location
+/// (`defaults read com.apple.screencapture location`), else the Desktop; on Linux the
+/// Screenshots folder in Pictures. "off" turns it off.
+pub fn screenshot_folder() -> Option<std::path::PathBuf> {
+    let home = brain_core::account::home_dir();
+    let configured = read().and_then(|v| v.get("screenshot_folder")?.as_str().map(str::to_string));
+    match configured.as_deref().map(str::trim) {
+        Some("off") | Some("") => None,
+        Some(folder) => Some(match folder.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => folder.into(),
+        }),
+        None if !cfg!(target_os = "macos") => {
+            // GNOME and KDE save to ~/Pictures/Screenshots (localised by xdg-user-dirs).
+            let out = std::process::Command::new("xdg-user-dir").arg("PICTURES").output().ok();
+            let pictures = out.filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|l| !l.is_empty());
+            let pictures = pictures.map(std::path::PathBuf::from).unwrap_or_else(|| home.join("Pictures"));
+            Some([pictures.join("Screenshots"), pictures].into_iter().find(|p| p.is_dir()).unwrap_or_else(|| home.join("Pictures/Screenshots")))
+        }
+        None => {
+            let out = std::process::Command::new("defaults").args(["read", "com.apple.screencapture", "location"]).output().ok();
+            let location = out.filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|l| !l.is_empty());
+            Some(location.map(|l| match l.strip_prefix("~/") {
+                Some(rest) => home.join(rest),
+                None => l.into(),
+            }).unwrap_or_else(|| home.join("Desktop")))
+        }
+    }
+}
+
+/// The chat history's font family (`chat_font`), e.g. "JetBrains Mono"; by default the
+/// terminal's.
+pub fn chat_font() -> Option<String> {
+    read().and_then(|v| v.get("chat_font")?.as_str().map(str::to_string)).filter(|f| !f.trim().is_empty())
+}
+
+/// The chat history's font size (`chat_font_size`) in points.
+pub fn chat_font_size() -> Option<f32> {
+    read().and_then(|v| v.get("chat_font_size")?.as_f64()).map(|s| s.clamp(9.0, 24.0) as f32)
+}
+
 /// Canned replies for `T` then `1`–`9`: `quick_replies` in config.json, or a default set in the
 /// UI language.
 pub fn quick_replies() -> Vec<String> {
