@@ -76,7 +76,7 @@ fn composer(brain: &Brain) -> Element<'_, Message> {
     let editor = iced::widget::text_editor(&brain.composer)
         .id(app::COMPOSER)
         .on_action(Message::ComposerEdit)
-        .placeholder(t("Prompt schreiben … (⌘V fügt einen Screenshot ein)", "Write the prompt … (⌘V adds a screenshot)"))
+        .placeholder(style::keys(t("Prompt schreiben … (⌘V fügt einen Screenshot ein)", "Write the prompt … (⌘V adds a screenshot)")))
         .height(260)
         .padding(12)
         .size(14)
@@ -145,7 +145,7 @@ fn palette(brain: &Brain) -> Element<'_, Message> {
     let first = brain.palette_index.saturating_sub(SHOWN - 1);
     let rows = entries.into_iter().enumerate().skip(first).take(SHOWN).map(|(i, (label, keys, command))| -> Element<'_, Message> {
         let chosen = i == brain.palette_index;
-        button(row![text(label).size(13).color(if chosen { TEXT_STRONG } else { TEXT }).font(UI).width(Fill), text(keys).size(11.5).color(TEXT_FAINT).font(UI)].spacing(12).align_y(iced::Center))
+        button(row![text(label).size(13).color(if chosen { TEXT_STRONG } else { TEXT }).font(UI).width(Fill), text(style::keys(keys)).size(11.5).color(TEXT_FAINT).font(UI)].spacing(12).align_y(iced::Center))
             .padding([7, 12])
             .width(Fill)
             .on_press(Message::PaletteRun(command))
@@ -157,7 +157,7 @@ fn palette(brain: &Brain) -> Element<'_, Message> {
             .into()
     });
     let list = column(rows).spacing(1);
-    let panel = container(column![container(row![text("⌘K").size(12).color(TEXT_FAINT), field].spacing(10).align_y(iced::Center)).padding([0, 8]), divider(), list].spacing(6))
+    let panel = container(column![container(row![text(style::keys("⌘K")).size(12).color(TEXT_FAINT), field].spacing(10).align_y(iced::Center)).padding([0, 8]), divider(), list].spacing(6))
         .padding(8)
         .width(620)
         .style(|_| container::Style {
@@ -299,7 +299,7 @@ fn context_menu(brain: &Brain) -> Option<Element<'_, Message>> {
         };
         let color = if danger { CALLS_SOFT } else { TEXT };
         button(
-            row![text(label).size(13).color(color).font(UI).width(Fill), text(keys).size(11.5).color(TEXT_FAINT).font(UI)]
+            row![text(label).size(13).color(color).font(UI).width(Fill), text(style::keys(keys)).size(11.5).color(TEXT_FAINT).font(UI)]
                 .spacing(12)
                 .align_y(iced::Center),
         )
@@ -1792,7 +1792,7 @@ fn new_session(brain: &Brain) -> Element<'_, Message> {
     content = content.push(scrollable(column(choices).spacing(2)).height(Fill).style(scrollbar));
     content = content.push(
         container(
-            text(t("⏎ wählen/starten · ↑↓ · ⇥ Konto · ⌘I Brain/iTerm · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc", "⏎ pick/start · ↑↓ · ⇥ account · ⌘I Brain/iTerm · ⌘E edit template · ⌘⇧N new template · esc"))
+            text(style::keys(t("⏎ wählen/starten · ↑↓ · ⇥ Konto · ⌘I Brain/iTerm · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc", "⏎ pick/start · ↑↓ · ⇥ account · ⌘I Brain/iTerm · ⌘E edit template · ⌘⇧N new template · esc")))
                 .size(11.5)
                 .color(TEXT_FAINT)
                 .font(UI),
@@ -1838,7 +1838,7 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
         text(summary).size(12.5).color(TEXT_MUTED).font(UI),
         scrollable(column(rows).spacing(2)).height(Fill).style(scrollbar),
         container(
-            text(t("H alle ausblenden · ⌘⌫ ⌘⌫ alle in den Papierkorb · ⇥ Alter · esc", "H hide all · ⌘⌫ ⌘⌫ move all to the Trash · ⇥ age · esc"))
+            text(style::keys(t("H alle ausblenden · ⌘⌫ ⌘⌫ alle in den Papierkorb · ⇥ Alter · esc", "H hide all · ⌘⌫ ⌘⌫ move all to the Trash · ⇥ age · esc")))
                 .size(11.5)
                 .color(TEXT_FAINT)
                 .font(UI),

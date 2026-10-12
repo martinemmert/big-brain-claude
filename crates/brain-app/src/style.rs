@@ -142,9 +142,34 @@ pub fn terminal_palette() -> iced_term::ColorPalette {
     }
 }
 
+/// macOS key symbols as Linux labels; shortcuts that also work from a terminal take Ctrl+Shift.
+pub fn keys(label: &str) -> String {
+    if cfg!(target_os = "macos") {
+        return label.to_string();
+    }
+    let mut out = String::new();
+    let mut chars = label.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '⌘' if chars.peek() == Some(&'-') => out.push_str(crate::i18n::t("Strg", "Ctrl")),
+            '⌘' => {
+                let shift = chars.next_if_eq(&'⇧').is_some() || chars.peek().is_some_and(|k| "12JDTKEAV[".contains(k.to_ascii_uppercase()));
+                out.push_str(crate::i18n::t("Strg+", "Ctrl+"));
+                if shift {
+                    out.push_str("Shift+");
+                }
+            }
+            '⇧' => out.push_str("Shift+"),
+            '⌥' => out.push_str("Alt+"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// A key cap like `⏎` or `/`.
 pub fn kbd<'a, M: 'a>(label: impl Into<String>) -> Element<'a, M> {
-    container(text(label.into()).size(10.5).color(TEXT_MUTED).font(UI))
+    container(text(keys(&label.into())).size(10.5).color(TEXT_MUTED).font(UI))
         .padding([1, 5])
         .height(18)
         .center_y(18)
@@ -296,4 +321,20 @@ pub fn rail<'a, M: 'a>(color: Color, radius: f32) -> Element<'a, M> {
             ..container::Style::default()
         })
         .into()
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod tests {
+    use super::keys;
+    use crate::i18n::t;
+
+    #[test]
+    fn mac_symbols_become_linux_keys() {
+        let ctrl = t("Strg+", "Ctrl+");
+        assert_eq!(keys("⌘F"), format!("{ctrl}F"));
+        assert_eq!(keys("⌘K"), format!("{ctrl}Shift+K"));
+        assert_eq!(keys("⌘⇧C"), format!("{ctrl}Shift+C"));
+        assert_eq!(keys("⌥⏎ ⌘⌫"), format!("Alt+⏎ {ctrl}⌫"));
+        assert_eq!(keys("⌘-Klick"), format!("{}-Klick", t("Strg", "Ctrl")));
+    }
 }

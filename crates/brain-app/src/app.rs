@@ -2846,7 +2846,7 @@ impl Brain {
     }
 
     pub fn set_status(&mut self, message: impl Into<String>) {
-        self.status = Some((message.into(), Instant::now()));
+        self.status = Some((crate::style::keys(&message.into()), Instant::now()));
     }
 
     /// Demo pids are made up and may belong to unrelated processes: nothing is ever sent.
@@ -3873,7 +3873,7 @@ fn read_file(path: std::path::PathBuf) -> Reader {
     } else {
         match std::fs::read_to_string(&path) {
             Ok(text) => ReaderKind::Code(iced::widget::text_editor::Content::with_text(&text), extension),
-            Err(_) if extension == "pdf" => ReaderKind::Unreadable(t("Ein PDF – ⌘⏎ öffnet es in der Vorschau.", "A PDF – ⌘⏎ opens it in Preview.").into()),
+            Err(_) if extension == "pdf" => ReaderKind::Unreadable(crate::style::keys(t("Ein PDF – ⌘⏎ öffnet es in der Vorschau.", "A PDF – ⌘⏎ opens it in Preview."))),
             Err(_) => ReaderKind::Unreadable(t("Keine Textdatei – der Reader zeigt sie nicht.", "Not a text file – the reader can't show it.").into()),
         }
     };

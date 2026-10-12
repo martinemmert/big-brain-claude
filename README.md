@@ -247,7 +247,8 @@ What differs from macOS:
 
 - Notifications go through the desktop's notification service, with the same actions.
 - No menu bar count; the window title shows it.
-- Shortcuts use `Ctrl` where macOS uses `⌘`.
+- Shortcuts use `Ctrl` where macOS uses `⌘`; while a terminal has the keyboard, `Ctrl+Shift`
+  (plain `Ctrl` keys go to the program in it).
 - Answering and jumping to a session work in Konsole and tmux. For answering in Konsole,
   turn on *Enable the security sensitive parts of the DBus API* in Konsole's settings
   (General) and restart Konsole windows that were already open, they keep the old setting;
