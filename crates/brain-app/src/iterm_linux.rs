@@ -1,4 +1,4 @@
-//! iTerm2 exists only on macOS; Brain falls back to its own font and colours.
+//! No iTerm2 on Linux.
 
 pub fn font() -> Option<(String, f32)> {
     None

@@ -17,7 +17,7 @@ const ACTION_DEFAULT: &str = "default";
 pub enum Response {
     Open(SessionKey),
     Snooze(SessionKey),
-    /// Text typed into the notification's reply field (macOS only so far).
+    /// macOS only so far.
     #[allow(dead_code)]
     Reply(SessionKey, String),
 }

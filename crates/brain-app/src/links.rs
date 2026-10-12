@@ -67,8 +67,7 @@ pub fn listen_for_urls() {
     std::mem::forget(handler);
 }
 
-/// `brain://` links given on the command line (`brain-app brain://session/…`); Linux desktops
-/// have no URL events for a running app.
+/// Linux: only links given on the command line.
 #[cfg(not(target_os = "macos"))]
 pub fn listen_for_urls() {
     OPENED.lock().unwrap().extend(std::env::args().skip(1).filter(|a| a.starts_with("brain://")));

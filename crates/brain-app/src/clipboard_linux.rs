@@ -1,10 +1,8 @@
-//! Pictures on the clipboard (a screenshot copied with the desktop's tool) saved as files, so
-//! they can be pasted into a terminal as a path. Read with `wl-paste` (Wayland) or `xclip` (X11).
+//! A picture on the clipboard saved as a file, via `wl-paste` or `xclip`.
 
 use std::process::{Command, Stdio};
 
-/// Saves a PNG on the clipboard to `~/.claude-brain/attachments/` and returns its path; `None`
-/// when the clipboard holds no picture (or also text, which the terminal pastes itself).
+/// `None` without a picture or with text, which the terminal pastes itself.
 pub fn save_image() -> Option<std::path::PathBuf> {
     let types = read(&["wl-paste", "--list-types"]).or_else(|| read(&["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"]))?;
     let types = String::from_utf8_lossy(&types);
@@ -19,7 +17,6 @@ pub fn save_image() -> Option<std::path::PathBuf> {
     Some(path)
 }
 
-/// The tool's output; `None` if it isn't installed or fails (e.g. `wl-paste` outside Wayland).
 fn read(command: &[&str]) -> Option<Vec<u8>> {
     let out = Command::new(command[0]).args(&command[1..]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     (out.status.success() && !out.stdout.is_empty()).then_some(out.stdout)

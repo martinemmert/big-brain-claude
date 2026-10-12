@@ -23,8 +23,7 @@ pub fn quick_terminal() -> Option<String> {
 }
 
 /// Where new screenshots are watched for: `screenshot_folder`, else macOS' screenshot location
-/// (`defaults read com.apple.screencapture location`), else the Desktop; on Linux the
-/// Screenshots folder in Pictures. "off" turns it off.
+/// (`defaults read com.apple.screencapture location`), else the Desktop (Linux: Pictures/Screenshots). "off" turns it off.
 pub fn screenshot_folder() -> Option<std::path::PathBuf> {
     let home = brain_core::account::home_dir();
     let configured = read().and_then(|v| v.get("screenshot_folder")?.as_str().map(str::to_string));
@@ -35,7 +34,6 @@ pub fn screenshot_folder() -> Option<std::path::PathBuf> {
             None => folder.into(),
         }),
         None if !cfg!(target_os = "macos") => {
-            // GNOME and KDE save to ~/Pictures/Screenshots (localised by xdg-user-dirs).
             let out = std::process::Command::new("xdg-user-dir").arg("PICTURES").output().ok();
             let pictures = out.filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|l| !l.is_empty());
             let pictures = pictures.map(std::path::PathBuf::from).unwrap_or_else(|| home.join("Pictures"));

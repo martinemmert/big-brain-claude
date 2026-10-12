@@ -1,5 +1,4 @@
-//! Moving files to the desktop's trash (freedesktop.org Trash), where the file manager can
-//! restore them: `gio trash` (GNOME, most desktops), else `kioclient` (KDE).
+//! The desktop's trash: `gio trash`, else `kioclient` (KDE).
 
 use std::path::Path;
 use std::process::Command;

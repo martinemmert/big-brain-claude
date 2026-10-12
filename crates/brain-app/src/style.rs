@@ -36,7 +36,6 @@ pub const CODE: Color = color!(0xc8d4ff);
 pub const UI: Font = Font::with_name(".SF NS");
 #[cfg(target_os = "macos")]
 pub const MONO: Font = Font::with_name("Menlo");
-/// The desktop's sans-serif and monospace fonts.
 #[cfg(not(target_os = "macos"))]
 pub const UI: Font = Font::DEFAULT;
 #[cfg(not(target_os = "macos"))]

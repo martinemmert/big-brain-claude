@@ -1,6 +1,6 @@
 //! The chat history's font: the one your terminal uses, so Brain's conversation reads like the
 //! session itself. Order: `chat_font` / `chat_font_size` in config.json, then the font of
-//! iTerm2's default profile, then Menlo 13 (the system's monospace font on Linux).
+//! iTerm2's default profile, then Menlo 13 (Linux: system monospace).
 
 use std::sync::OnceLock;
 

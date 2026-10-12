@@ -66,8 +66,7 @@ fn platform_window() -> iced::window::settings::PlatformSpecific {
     iced::window::settings::PlatformSpecific { title_hidden: true, titlebar_transparent: true, fullsize_content_view: true }
 }
 
-/// cosmic-text names fixed defaults ("Open Sans", "Noto Sans Mono") that many desktops lack, and
-/// then falls back to any font; Brain takes the desktop's own from fontconfig instead.
+/// cosmic-text's fixed defaults ("Open Sans") are often missing; take fontconfig's.
 #[cfg(target_os = "linux")]
 fn desktop_fonts() {
     let family = |pattern: &str| {
@@ -87,7 +86,7 @@ fn desktop_fonts() {
     }
 }
 
-/// Matches brain.desktop, so Linux taskbars show Brain's icon.
+/// Matches brain.desktop.
 #[cfg(target_os = "linux")]
 fn platform_window() -> iced::window::settings::PlatformSpecific {
     iced::window::settings::PlatformSpecific { application_id: "brain".into(), ..Default::default() }

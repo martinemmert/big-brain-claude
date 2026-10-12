@@ -2542,6 +2542,10 @@ impl Brain {
             _ => None,
         };
         let cmd = modifiers.command();
+
+        // Linux: Ctrl belongs to the terminal, so shortcuts from inside it need Ctrl+Shift.
+        let in_terminal = (self.tab == DetailTab::Terminal || self.overview) && (self.focused_terminal.is_some() || self.focused_shell.is_some());
+        let global = cmd && (cfg!(target_os = "macos") || !in_terminal || modifiers.shift());
         if self.context_menu.take().is_some() && named == Some(Named::Escape) {
             return Task::none();
         }
@@ -2556,7 +2560,7 @@ impl Brain {
         if named == Some(Named::Escape) && !terminal_keeps_keys {
             return self.escape();
         }
-        if cmd && self.tab == DetailTab::Terminal && self.focused_terminal.is_some() && character.as_deref() == Some("v") {
+        if global && self.tab == DetailTab::Terminal && self.focused_terminal.is_some() && character.as_deref() == Some("v") {
             // A copied screenshot: the terminal pastes text only, so Brain saves the picture and
             // pastes its path, which Claude Code turns into an attachment.
             if let Some(path) = crate::clipboard::save_image() {
@@ -2572,7 +2576,7 @@ impl Brain {
             return Task::none();
         }
         // ⌘2 / ⌘J: keyboard into the terminal; ⌘1 / ⌘[: back to the session list.
-        if cmd && matches!(character.as_deref(), Some("2") | Some("j")) {
+        if global && matches!(character.as_deref(), Some("2") | Some("j")) {
             return if self.has_terminal() {
                 self.tab = DetailTab::Terminal;
                 self.focus_terminal()
@@ -2581,22 +2585,22 @@ impl Brain {
             };
         }
         // ⌘D splits the terminal, ⌘⇧A shows all of them: also from inside a terminal.
-        if cmd && character.as_deref() == Some("d") && self.tab == DetailTab::Terminal {
+        if global && character.as_deref() == Some("d") && self.tab == DetailTab::Terminal {
             return self.update(Message::ToggleSplit);
         }
-        if cmd && modifiers.shift() && character.as_deref() == Some("a") {
+        if global && modifiers.shift() && character.as_deref() == Some("a") {
             return self.update(Message::ToggleOverview);
         }
         // ⌘T: the session's shell, also from inside a terminal.
-        if cmd && character.as_deref() == Some("t") && self.mode == Mode::Normal {
+        if global && character.as_deref() == Some("t") && self.mode == Mode::Normal {
             return self.toggle_shell();
         }
         // ⌘K: the command palette, ⌘E: the composer, also from inside the terminal.
-        if cmd && character.as_deref() == Some("k") {
+        if global && character.as_deref() == Some("k") {
             return self.open_palette();
         }
         // Only from the normal view: in the new-session dialog ⌘E opens the template in an editor.
-        if cmd && character.as_deref() == Some("e") && self.mode == Mode::Normal {
+        if global && character.as_deref() == Some("e") && self.mode == Mode::Normal {
             return self.open_composer();
         }
         if self.mode == Mode::Composer {
@@ -2625,7 +2629,7 @@ impl Brain {
             }
             return Task::none();
         }
-        if cmd && matches!(character.as_deref(), Some("1") | Some("[")) {
+        if global && matches!(character.as_deref(), Some("1") | Some("[")) {
             self.focused_terminal = None;
             self.focused_shell = None;
             if self.mode == Mode::Search {
@@ -3754,7 +3758,6 @@ fn lookup_prs(sessions: Vec<(SessionKey, String)>) -> HashMap<SessionKey, brain_
     out
 }
 
-/// Opens files and links with the app the system uses for their type.
 const OPEN: &str = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
 
 /// Opens a file with the app the system uses for its type (your Markdown editor for templates).
@@ -3778,8 +3781,7 @@ fn open_reader_file(reader: &Reader) {
     let _ = command.arg(&reader.path).spawn();
 }
 
-/// Linux has no "open -t": the system's app for the type, but only for text, pictures and PDFs
-/// (an executable script would otherwise run).
+/// Only text, pictures and PDFs: a script would run.
 #[cfg(not(target_os = "macos"))]
 fn open_reader_file(reader: &Reader) {
     let extension = reader.path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
@@ -3797,7 +3799,6 @@ fn app_is_active() -> bool {
     objc2::MainThreadMarker::new().is_none_or(|mtm| objc2_app_kit::NSApplication::sharedApplication(mtm).isActive())
 }
 
-/// Linux: iced only sends keys to the focused window, so Brain counts as active.
 #[cfg(not(target_os = "macos"))]
 fn app_is_active() -> bool {
     true
@@ -3853,7 +3854,6 @@ fn open_markdown(path: std::path::PathBuf) -> Task<Message> {
             }
             in_yamv
         }
-        // YAMV is a macOS app; the system's Markdown app instead, so nothing is missing.
         #[cfg(not(target_os = "macos"))]
         {
             let _ = std::process::Command::new(OPEN).arg(&path).status();

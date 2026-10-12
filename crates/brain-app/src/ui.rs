@@ -18,8 +18,7 @@ use crate::style::{
 };
 use crate::tr;
 
-/// Room for the window's traffic lights at the left of the title bar (macOS; elsewhere the
-/// desktop's frame holds the window buttons).
+/// Room for the window's traffic lights at the left of the title bar.
 const TRAFFIC_LIGHTS: f32 = if cfg!(target_os = "macos") { 78.0 } else { 14.0 };
 
 pub fn view(brain: &Brain) -> Element<'_, Message> {
