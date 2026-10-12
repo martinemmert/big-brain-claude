@@ -67,7 +67,24 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::Composer => composer(brain),
         _ => context_menu(brain).unwrap_or_else(|| Space::new().into()),
     };
-    stack![window, overlay].into()
+    stack![window, overlay, error_toast(brain)].into()
+}
+
+/// Above the footer at the bottom right; a click dismisses it.
+fn error_toast(brain: &Brain) -> Element<'_, Message> {
+    let Some((message, _)) = &brain.error else { return Space::new().into() };
+    let toast = mouse_area(
+        container(row![text("!").size(13).color(CALLS).font(style::bold()), text(message.as_str()).size(12.5).color(TEXT_STRONG).font(UI).line_height(1.4)].spacing(10))
+            .padding([10, 14])
+            .max_width(460)
+            .style(|_| container::Style {
+                shadow: iced::Shadow { color: alpha(CALLS, 0x40), offset: iced::Vector::new(0.0, 4.0), blur_radius: 18.0 },
+                ..boxed(RAISED, CALLS, 8.0)
+            }),
+    )
+    .on_press(Message::DismissError)
+    .interaction(iced::mouse::Interaction::Pointer);
+    container(toast).width(Fill).height(Fill).align_right(Fill).align_bottom(Fill).padding(Padding { bottom: 44.0, right: 16.0, ..Padding::ZERO }).into()
 }
 
 /// ⌘E: a longer prompt for the selected session, with templates and pasted screenshots.

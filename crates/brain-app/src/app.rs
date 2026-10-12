@@ -27,6 +27,7 @@ pub const RESTING_AFTER_MS: i64 = 2 * 60 * 60 * 1000;
 /// Ended sessions show in the list for a day; older ones through the search.
 pub const ENDED_RECENT_MS: i64 = 24 * 60 * 60 * 1000;
 const SNOOZE_MS: i64 = 15 * 60 * 1000;
+const ERROR_SECS: u64 = 30;
 /// How long after typing into a terminal its program may still write the clipboard (OSC 52):
 /// long enough for `/copy` and its picker, too short for output that arrives later.
 const CLIPBOARD_AFTER_TYPING: Duration = Duration::from_secs(10);
@@ -254,6 +255,7 @@ pub enum Message {
     /// A search hit or a prompt clicked open (its index in the history), or closed again.
     Expand(Option<usize>),
     CopyText(String),
+    DismissError,
     Exported(Result<std::path::PathBuf, String>),
     FileFilter(FileFilter),
     /// A file from the Files tab: Markdown opens in YAMV, the rest in the reader.
@@ -447,6 +449,8 @@ pub struct Brain {
     /// The clean-up dialog's age choice (index into CLEANUP_DAYS).
     pub cleanup_age: usize,
     pub status: Option<(String, Instant)>,
+    /// A failed terminal action; stays until clicked away or `ERROR_SECS` pass.
+    pub error: Option<(String, Instant)>,
     pub tab: DetailTab,
     pub conversation: Option<Conversation>,
     pub files: Option<FilesCache>,
@@ -597,6 +601,7 @@ impl Brain {
             show_resting: false,
             cleanup_age: 1,
             status: None,
+            error: None,
             tab: DetailTab::Messages,
             conversation: None,
             mode: Mode::Normal,
@@ -939,6 +944,10 @@ impl Brain {
             }
             Message::Expand(index) => {
                 self.expanded = index;
+                Task::none()
+            }
+            Message::DismissError => {
+                self.error = None;
                 Task::none()
             }
             Message::CopyText(text) => {
@@ -1329,6 +1338,9 @@ impl Brain {
         tasks.push(self.continue_takeover());
         if self.status.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(6)) {
             self.status = None;
+        }
+        if self.error.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(ERROR_SECS)) {
+            self.error = None;
         }
         Task::batch(tasks)
     }
@@ -2854,6 +2866,10 @@ impl Brain {
         self.filter = options[next].clone();
     }
 
+    fn set_error(&mut self, message: impl Into<String>) {
+        self.error = Some((crate::style::keys(&message.into()), Instant::now()));
+    }
+
     pub fn set_status(&mut self, message: impl Into<String>) {
         self.status = Some((crate::style::keys(&message.into()), Instant::now()));
     }
@@ -2873,12 +2889,12 @@ impl Brain {
                     self.set_status(message);
                 }
             }
-            Outcome::NoTerminal => self.set_status(t(
+            Outcome::NoTerminal => self.set_error(t(
                 "Kein Terminal zu dieser Session gefunden (beendet oder ohne Terminal gestartet).",
                 "No terminal found for this session (it ended or runs without one).",
             )),
-            Outcome::Unsupported(reason) => self.set_status(reason),
-            Outcome::Failed(reason) => self.set_status(tr!("Fehlgeschlagen: {reason}", "Failed: {reason}")),
+            Outcome::Unsupported(reason) => self.set_error(reason),
+            Outcome::Failed(reason) => self.set_error(tr!("Fehlgeschlagen: {reason}", "Failed: {reason}")),
         }
     }
 
