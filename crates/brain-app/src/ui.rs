@@ -967,12 +967,41 @@ fn callout<'a>(brain: &'a Brain, s: &'a Session, now: i64, caps: brain_terminal:
     }
     if !actions.is_empty() {
         body = body.push(row(actions).spacing(8));
+        let blocked = !brain.terminals.contains_key(&s.key) && if s.awaiting_permission() { !caps.keys } else { !caps.type_text };
+        if let Some(limit) = brain.typing_limit().filter(|_| blocked) {
+            body = body.push(text(limit_help(limit)).size(12).color(TEXT_MUTED).font(UI).line_height(1.4));
+        }
     }
     container(row![rail(color, 10.0), container(body).padding(Padding { top: 12.0, right: 14.0, bottom: 12.0, left: 12.0 }).width(Fill)].height(Length::Shrink))
         .width(Fill)
         .clip(true)
         .style(move |_| boxed(alpha(color, 0x14), alpha(color, 0x3a), 10.0))
         .into()
+}
+
+/// What to change so Brain can type into the terminal.
+fn limit_help(limit: &brain_terminal::Limit) -> String {
+    use brain_terminal::Limit;
+    let supported = if cfg!(target_os = "macos") { t("iTerm2 oder tmux", "iTerm2 or tmux") } else { t("Konsole oder tmux", "Konsole or tmux") };
+    match limit {
+        Limit::KonsoleLocked => t(
+            "Konsole lässt Brain nicht tippen. In Konsole: Einstellungen → Konsole einrichten → Allgemein → „Sicherheitsrelevante Teile der D-Bus-Schnittstelle aktivieren“. Danach dieses Konsole-Fenster schließen, neu öffnen und die Session mit claude --resume fortsetzen.",
+            "Konsole doesn't let Brain type. In Konsole: Settings → Configure Konsole → General → “Enable the security sensitive parts of the DBus API”. Then close this Konsole window, open a new one and continue the session with claude --resume.",
+        )
+        .to_string(),
+        Limit::TerminalApp => tr!(
+            "In Terminal.app kann Brain nur das Fenster nach vorne holen. Zum Antworten aus Brain die Session in {supported} starten.",
+            "In Terminal.app Brain can only bring the window forward. To reply from Brain, start the session in {supported}."
+        ),
+        Limit::Editor => tr!(
+            "Ins Terminal von VS Code und Cursor kann Brain nicht tippen. Zum Antworten aus Brain die Session in {supported} starten.",
+            "Brain can't type into the terminal of VS Code or Cursor. To reply from Brain, start the session in {supported}."
+        ),
+        Limit::Unknown(name) => tr!(
+            "Das Terminal „{name}“ kann Brain nicht steuern. Zum Antworten aus Brain die Session in {supported} starten.",
+            "Brain can't control the terminal “{name}”. To reply from Brain, start the session in {supported}."
+        ),
+    }
 }
 
 /// "Edits the same files as X: a.rs, b.rs" and "Works in the same checkout as Y".

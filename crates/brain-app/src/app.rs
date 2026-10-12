@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use brain_core::state::{Phase, Session, SessionKey};
-use brain_terminal::{self as terminal, Capabilities, Key, Outcome};
+use brain_terminal::{self as terminal, Capabilities, Key, Limit, Outcome};
 use iced::keyboard::{self, key::Named};
 use iced::widget::{operation, scrollable};
 use iced::{window, Subscription, Task};
@@ -493,7 +493,7 @@ pub struct Brain {
     /// Reminders sent while a session keeps waiting: since when it waits, and how many.
     reminders: HashMap<SessionKey, (i64, u32)>,
     /// The terminal hosting the selected session and what Brain can do with it.
-    host: Option<(SessionKey, Capabilities)>,
+    host: Option<(SessionKey, Capabilities, Option<Limit>)>,
     /// Project name and worktree per session.
     pub projects: HashMap<SessionKey, (String, Option<String>)>,
     /// The checked-out working tree per session (for conflicts and PR lookups).
@@ -2227,12 +2227,13 @@ impl Brain {
             self.host = None;
             return;
         };
-        if self.model.is_demo() || self.host.as_ref().is_some_and(|(k, _)| *k == key) {
+        if self.model.is_demo() || self.host.as_ref().is_some_and(|(k, ..)| *k == key) {
             return;
         }
         let Some(pid) = self.model.board.get(&key).map(|s| s.pid) else { return };
-        let caps = terminal::host_of(pid).map(|host| terminal::capabilities(&host)).unwrap_or(Capabilities { focus: false, type_text: false, keys: false });
-        self.host = Some((key, caps));
+        let host = terminal::host_of(pid);
+        let caps = host.as_ref().map(terminal::capabilities).unwrap_or(Capabilities { focus: false, type_text: false, keys: false });
+        self.host = Some((key, caps, host.as_ref().and_then(terminal::limit)));
     }
 
     /// Project names for the sessions (git is asked once per directory).
@@ -2516,8 +2517,16 @@ impl Brain {
             return Capabilities { focus: true, type_text: true, keys: true };
         }
         match &self.host {
-            Some((key, caps)) if Some(key) == self.selected.as_ref() => *caps,
+            Some((key, caps, _)) if Some(key) == self.selected.as_ref() => *caps,
             _ => Capabilities { focus: false, type_text: false, keys: false },
+        }
+    }
+
+    /// Why Brain can't type into the selected session's terminal.
+    pub fn typing_limit(&self) -> Option<&Limit> {
+        match &self.host {
+            Some((key, _, limit)) if Some(key) == self.selected.as_ref() => limit.as_ref(),
+            _ => None,
         }
     }
 
