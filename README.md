@@ -64,7 +64,8 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
 - **Before resuming.** An ended session's Terminal tab sums it up: how it began, what was asked
   last, the last answer, an open question, the files it changed.
 - **Usage forecast.** "full ~Thu 14:00" when a limit would run out at this pace, and which
-  account has room.
+  account has room. The weekly limit goes by the last 24 hours (its state is kept every ten
+  minutes in `~/.claude-brain/usage-history/`), the five-hour one by its window so far.
 - **Find in the whole session.** `⌘F` searches the entire conversation, "Your prompts" lists
   everything you asked, `⌘⇧C` copies Claude's last answer, "As Markdown" opens the whole
   conversation in YAMV.
