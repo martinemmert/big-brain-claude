@@ -31,6 +31,7 @@ mod notify;
 mod prefs;
 mod shell_env;
 mod style;
+mod sticky;
 #[cfg_attr(target_os = "linux", path = "trash_linux.rs")]
 #[cfg_attr(target_os = "macos", path = "trash_macos.rs")]
 mod trash;

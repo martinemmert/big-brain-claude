@@ -1446,7 +1446,7 @@ fn reader_pane(reader: &crate::app::Reader) -> Element<'_, Message> {
 fn messages(brain: &Brain) -> Element<'_, Message> {
     let body: Element<'_, Message> = if brain.find.trim().is_empty() && !brain.prompts_only {
         let list = brain.conversation.as_ref().map(|c| c.messages.as_slice()).unwrap_or_default();
-        let children = if list.is_empty() { vec![hint(t("Diese Session hat noch keine Nachrichten.", "This session has no messages yet."))] } else { markdown::conversation(list) };
+        let children = if list.is_empty() { vec![hint(t("Diese Session hat noch keine Nachrichten.", "This session has no messages yet."))] } else { markdown::conversation(list, Message::CopyText) };
         scrollable(column(children).spacing(14).padding(Padding { top: 4.0, right: 12.0, bottom: 24.0, left: 0.0 }))
             .id(app::MESSAGES)
             .on_scroll(Message::MessagesScrolled)
@@ -1529,7 +1529,7 @@ fn whole_session(brain: &Brain) -> Element<'_, Message> {
         let open = brain.expanded == Some(i);
         let content: Element<'_, Message> = if open {
             column![
-                column(markdown::conversation(std::slice::from_ref(message))).spacing(8),
+                column(markdown::conversation(std::slice::from_ref(message), Message::CopyText)).spacing(8),
                 row![action(t("Kopieren", "Copy"), "", false, Some(Message::CopyText(message.text.clone())))],
             ]
             .spacing(8)
