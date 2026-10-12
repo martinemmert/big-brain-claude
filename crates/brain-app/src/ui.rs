@@ -1879,10 +1879,10 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
         };
         row![
             style::dot(phase_color(s.phase()), 7.0),
-            name_label(s, 12.5, TEXT_STRONG),
+            container(name_label(s, 12.5, TEXT_STRONG)).width(Fill),
             account_badge(&s.key.account, brain.account_index(&s.key.account)),
-            text(kind).size(12.5).color(TEXT_FAINT).font(UI),
-            text(ago_phrase(s.last_activity_ms, now)).size(12.5).color(TEXT_MUTED).font(UI),
+            container(text(kind).size(12.5).color(TEXT_FAINT).font(UI)).width(220),
+            container(text(ago_phrase(s.last_activity_ms, now)).size(12.5).color(TEXT_MUTED).font(UI)).width(140),
         ]
         .spacing(10)
         .align_y(iced::Center)
@@ -1903,6 +1903,7 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
         .padding(Padding { bottom: 16.0, ..Padding::ZERO }),
     ]
     .spacing(14)
+    .width(Fill)
     .padding(Padding { top: 24.0, right: 28.0, bottom: 0.0, left: 28.0 })
     .into()
 }
