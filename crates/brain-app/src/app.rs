@@ -220,6 +220,7 @@ pub enum Message {
     OpenUrl(String),
     ListScrolled(scrollable::Viewport),
     MessagesScrolled(scrollable::Viewport),
+    MessagesToEnd,
     CheckPrs,
     PrsLoaded(HashMap<SessionKey, brain_core::github::PullRequest>),
     ChangesLoaded(SessionKey, Option<brain_core::changes::Changes>),
@@ -534,7 +535,7 @@ pub struct Brain {
     pub update: Option<crate::links::Update>,
     /// What the list and the message pane show, to keep the selection and new messages in view.
     list_viewport: Option<(f32, f32)>,
-    messages_at_bottom: bool,
+    pub messages_at_bottom: bool,
     /// Terminals running sessions inside Brain, per session; they keep running while another
     /// session is selected.
     pub terminals: HashMap<SessionKey, iced_term::Terminal>,
@@ -875,6 +876,10 @@ impl Brain {
             Message::ListScrolled(viewport) => {
                 self.list_viewport = Some((viewport.absolute_offset().y, viewport.bounds().height));
                 Task::none()
+            }
+            Message::MessagesToEnd => {
+                self.messages_at_bottom = true;
+                operation::snap_to_end(MESSAGES)
             }
             Message::MessagesScrolled(viewport) => {
                 self.messages_at_bottom = viewport.relative_offset().y >= 0.98 || viewport.content_bounds().height <= viewport.bounds().height;

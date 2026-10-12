@@ -1447,12 +1447,23 @@ fn messages(brain: &Brain) -> Element<'_, Message> {
     let body: Element<'_, Message> = if brain.find.trim().is_empty() && !brain.prompts_only {
         let list = brain.conversation.as_ref().map(|c| c.messages.as_slice()).unwrap_or_default();
         let children = if list.is_empty() { vec![hint(t("Diese Session hat noch keine Nachrichten.", "This session has no messages yet."))] } else { markdown::conversation(list, Message::CopyText) };
-        scrollable(column(children).spacing(14).padding(Padding { top: 4.0, right: 12.0, bottom: 24.0, left: 0.0 }))
+        let list = scrollable(column(children).spacing(14).padding(Padding { top: 4.0, right: 12.0, bottom: 24.0, left: 0.0 }))
             .id(app::MESSAGES)
             .on_scroll(Message::MessagesScrolled)
             .height(Fill)
-            .style(scrollbar)
-            .into()
+            .style(scrollbar);
+        let to_end: Element<'_, Message> = if brain.messages_at_bottom {
+            Space::new().into()
+        } else {
+            container(style::text_button(t("↓ Ans Ende", "↓ To the end"), true, Message::MessagesToEnd))
+                .width(Fill)
+                .height(Fill)
+                .align_right(Fill)
+                .align_bottom(Fill)
+                .padding(Padding { bottom: 12.0, right: 24.0, ..Padding::ZERO })
+                .into()
+        };
+        stack![list, to_end].into()
     } else {
         whole_session(brain)
     };
