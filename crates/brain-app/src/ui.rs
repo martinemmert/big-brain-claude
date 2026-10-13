@@ -1870,7 +1870,7 @@ fn new_session(brain: &Brain) -> Element<'_, Message> {
     content = content.push(scrollable(column(choices).spacing(2)).height(Fill).style(scrollbar));
     content = content.push(
         container(
-            text(style::keys(t("⏎ wählen/starten · ↑↓ · ⇥ Konto · ⌘I Brain/iTerm · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc", "⏎ pick/start · ↑↓ · ⇥ account · ⌘I Brain/iTerm · ⌘E edit template · ⌘⇧N new template · esc")))
+            text(style::keys(t("⏎ wählen/starten · ↑↓ · ⇥ Konto, bei Pfad ergänzen · ⌘I Brain/iTerm · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc", "⏎ pick/start · ↑↓ · ⇥ account, completes a path · ⌘I Brain/iTerm · ⌘E edit template · ⌘⇧N new template · esc")))
                 .size(11.5)
                 .color(TEXT_FAINT)
                 .font(UI),
@@ -2001,9 +2001,10 @@ fn footer(brain: &Brain) -> Element<'_, Message> {
         ("⌥⏎", t("in iTerm", "in iTerm")),
         ("I", t("nach Brain holen", "move into Brain")),
     ];
-    let hints: [(&str, &str); 10] = [
+    let hints: [(&str, &str); 11] = [
         ("↑↓", t("wählen", "select")),
         ("⏎", t("öffnen", "open")),
+        ("⌘N", t("neue Session", "new session")),
         ("/", t("suchen", "search")),
         ("T", t("antworten", "reply")),
         ("Y N", t("Freigabe", "permission")),

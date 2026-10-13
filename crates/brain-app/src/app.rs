@@ -340,6 +340,8 @@ pub struct NewSession {
     pub chosen: Option<Chosen>,
     /// ⌥⏎ starts it in an iTerm tab instead of in Brain.
     pub in_iterm: bool,
+    /// Folders in the typed path's parent that match its last part, read when the field changes.
+    pub dirs: Vec<String>,
 }
 
 pub struct Chosen {
@@ -822,8 +824,7 @@ impl Brain {
             }
             Message::RenameSubmit => self.submit_rename(),
             Message::NewInput(text) => {
-                self.new_session.folder = text;
-                self.new_session.pick = 0;
+                self.set_new_session_input(text);
                 Task::none()
             }
             Message::NewSubmit => self.confirm_new_session(),
@@ -3513,10 +3514,15 @@ impl Brain {
         let mut sessions: Vec<&Session> = self.model.board.keys().filter_map(|k| self.model.board.get(k)).collect();
         sessions.sort_by_key(|s| std::cmp::Reverse(s.last_activity_ms));
         let mut folders: Vec<String> = Vec::new();
-        if query.starts_with('/') || query.starts_with('~') {
-            let home = brain_core::account::home_dir().display().to_string();
-            folders.push(query.replacen('~', &home, 1));
-        }
+        let query = match expand_path(query) {
+            Some(path) => {
+                let typed = if path.len() > 1 { path.trim_end_matches('/') } else { &path };
+                folders.push(typed.to_string());
+                folders.extend(self.new_session.dirs.iter().filter(|d| d.as_str() != typed).cloned());
+                path
+            }
+            None => query.to_string(),
+        };
         let terms: Vec<String> = query.to_lowercase().split_whitespace().map(str::to_string).collect();
         for cwd in sessions.iter().filter_map(|s| s.cwd.clone()) {
             let lower = cwd.to_lowercase();
@@ -3587,11 +3593,39 @@ impl Brain {
         match named {
             Some(Named::ArrowDown) => self.new_session.pick = (self.new_session.pick + 1).min(count.saturating_sub(1)),
             Some(Named::ArrowUp) => self.new_session.pick = self.new_session.pick.saturating_sub(1),
+            Some(Named::Tab) if expand_path(&self.new_session.folder).is_some() => return self.complete_path(),
             Some(Named::Tab) => self.new_session.account = (self.new_session.account + 1) % self.model.accounts.len().max(1),
             // Every other key goes to the field (it lost its focus to a click).
             _ => return operation::focus(NEW_SESSION),
         }
         Task::none()
+    }
+
+    fn set_new_session_input(&mut self, text: String) {
+        // The folders below show from two typed letters on, or right after a `/`.
+        let shown = expand_path(&text).is_some_and(|path| path.ends_with('/') || path.rsplit('/').next().is_some_and(|name| name.chars().count() >= 2));
+        self.new_session.dirs = if shown { subfolders(&text).into_iter().map(|p| p.display().to_string()).collect() } else { Vec::new() };
+        self.new_session.folder = text;
+        self.new_session.pick = 0;
+    }
+
+    /// ⇥ on a typed path: completes the folder name as far as it is unambiguous.
+    fn complete_path(&mut self) -> Task<Message> {
+        let query = self.new_session.folder.clone();
+        let names: Vec<String> = subfolders(&query).iter().filter_map(|p| Some(p.file_name()?.to_string_lossy().into_owned())).collect();
+        let Some(first) = names.first() else { return Task::none() };
+        let mut common = first.clone();
+        for name in &names[1..] {
+            let len = common.chars().zip(name.chars()).take_while(|(a, b)| a == b).map(|(a, _)| a.len_utf8()).sum();
+            common.truncate(len);
+        }
+        let head = &query[..query.rfind('/').map_or(0, |i| i + 1)];
+        let completed = if names.len() == 1 { format!("{head}{common}/") } else { format!("{head}{common}") };
+        if completed.len() <= query.len() {
+            return Task::none();
+        }
+        self.set_new_session_input(completed);
+        operation::move_cursor_to_end(NEW_SESSION)
     }
 
     /// ⏎ in the dialog: pick a template or folder, take a placeholder value, or start.
@@ -3921,6 +3955,36 @@ fn read_file(path: std::path::PathBuf) -> Reader {
     Reader { path, kind }
 }
 
+/// A typed path with `~` expanded; None when the text isn't a path.
+fn expand_path(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.starts_with('/') {
+        return Some(text.to_string());
+    }
+    let rest = text.strip_prefix('~').filter(|r| r.is_empty() || r.starts_with('/'))?;
+    Some(format!("{}{rest}", brain_core::account::home_dir().display()))
+}
+
+/// The folders next to the typed path's last part whose name starts with it (any case):
+/// `~/Projekte/bi` → `~/Projekte/big-brain-claude`. Hidden ones only when the part starts with `.`.
+fn subfolders(text: &str) -> Vec<std::path::PathBuf> {
+    let Some(path) = expand_path(text) else { return Vec::new() };
+    let (parent, prefix) = path.rsplit_once('/').unwrap_or(("", &path));
+    let prefix = prefix.to_lowercase();
+    let Ok(entries) = std::fs::read_dir(if parent.is_empty() { "/" } else { parent }) else { return Vec::new() };
+    let mut dirs: Vec<std::path::PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().to_lowercase();
+            name.starts_with(&prefix) && (prefix.starts_with('.') || !name.starts_with('.'))
+        })
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    dirs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3942,4 +4006,20 @@ mod tests {
         assert_eq!(resolve_path("src/app.rs.", &cwd), Some(file));
         assert_eq!(resolve_path("src/missing.rs", &cwd), None);
     }
+
+    #[test]
+    fn typed_paths_list_the_folders_starting_with_their_last_part() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["big-brain", "Bilder", "other", ".bin"] {
+            std::fs::create_dir(dir.path().join(name)).unwrap();
+        }
+        std::fs::write(dir.path().join("bits.txt"), "x").unwrap();
+        let root = dir.path().display().to_string();
+        let names = |text: String| subfolders(&text).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>();
+        assert_eq!(names(format!("{root}/bi")), ["Bilder", "big-brain"]);
+        assert_eq!(names(format!("{root}/.b")), [".bin"]);
+        assert_eq!(names(format!("{root}/")).len(), 3);
+        assert!(subfolders("bi").is_empty());
+    }
 }
+
