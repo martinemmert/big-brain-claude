@@ -74,7 +74,9 @@ pub fn create(sources: &[Account], home: &Path, target: &Path) -> Result<Plan, S
         return Err(format!("{} exists already", target.display()));
     }
     let mut items = Vec::new();
+    // Only the user may look in: settings and MCP servers can hold keys and tokens.
     std::fs::create_dir_all(target.join("sessions")).map_err(|e| e.to_string())?;
+    set_mode(target, 0o700).map_err(|e| e.to_string())?;
     run(sources, home, target, true, &mut items).map_err(|e| e.to_string())?;
     Ok(Plan { target: target.to_path_buf(), items })
 }
@@ -99,13 +101,24 @@ fn read_json(path: &Path) -> Option<Value> {
     std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
 
+/// Writes JSON readable by the user only, like Claude Code's own `.claude.json`: settings
+/// (`env`) and MCP servers can carry API keys.
 fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let mut text = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
     text.push('\n');
-    std::fs::write(path, text)
+    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+    file.write_all(text.as_bytes())?;
+    set_mode(path, 0o600)
+}
+
+fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 
 fn settings(sources: &[Account], target: &Path, write: bool, items: &mut Vec<Item>) -> std::io::Result<()> {
@@ -552,6 +565,9 @@ mod tests {
         assert!(!target.join("projects/-w-app/abc.jsonl").exists());
         assert!(!target.join("history.jsonl").exists());
         assert!(target.join("sessions").is_dir(), "Brain lists it right away");
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &str| std::fs::metadata(target.join(p)).unwrap().permissions().mode() & 0o777;
+        assert_eq!((mode(""), mode("settings.json"), mode(".claude.json")), (0o700, 0o600, 0o600), "keys in settings and MCP servers stay private");
 
         let conflicts: Vec<(&str, &str)> = made.conflicts().collect();
         assert!(conflicts.contains(&("settings.json", "theme: second has \"light\", kept the first")));
