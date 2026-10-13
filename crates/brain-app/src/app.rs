@@ -67,6 +67,8 @@ pub enum Mode {
     Pairing,
     /// A new Claude account made from the existing ones.
     AccountSetup,
+    /// Which account the selected session moves to (`A` with three accounts or more).
+    MoveTarget,
 }
 
 /// What a line of the command palette does.
@@ -183,7 +185,8 @@ pub enum Action {
     OpenBeside,
     /// The whole conversation as a Markdown file, opened in YAMV.
     Export,
-    OtherAccount,
+    /// Continue the selected session in this account (its index among the accounts).
+    MoveTo(usize),
     End,
     Hide,
     Trash,
@@ -1760,8 +1763,9 @@ impl Brain {
             all.push((t("Anheften / lösen", "Pin / unpin").to_string(), "P", PaletteCommand::Act(Action::Pin)));
             all.push((t("Stumm / laut", "Mute / unmute").to_string(), "M", PaletteCommand::Act(Action::Mute)));
             all.push((t("Pausieren", "Snooze").to_string(), "S", PaletteCommand::Act(Action::Snooze)));
-            if self.model.accounts.len() > 1 {
-                all.push((t("Im anderen Konto fortsetzen", "Continue in the other account").to_string(), "A", PaletteCommand::Act(Action::OtherAccount)));
+            for index in self.move_targets() {
+                let id = self.model.accounts[index].id.clone();
+                all.push((tr!("In {id} fortsetzen", "Continue in {id}"), "", PaletteCommand::Act(Action::MoveTo(index))));
             }
             all.push((t("Beenden / Hintergrund-Session stoppen", "End / stop the background session").to_string(), "X", PaletteCommand::Act(Action::End)));
             all.push((t("Ausblenden", "Hide").to_string(), "⌫", PaletteCommand::Act(Action::Hide)));
@@ -2675,6 +2679,15 @@ impl Brain {
                 return Task::none();
             }
             Mode::Pairing | Mode::AccountSetup => return Task::none(),
+            Mode::MoveTarget => {
+                // 1, 2, … pick the account in the order the dialog lists them.
+                let digit = character.as_deref().and_then(|c| c.parse::<usize>().ok()).filter(|d| *d >= 1);
+                let target = digit.and_then(|d| self.move_targets().get(d - 1).copied());
+                return match target {
+                    Some(index) => self.perform(Action::MoveTo(index), true),
+                    None => Task::none(),
+                };
+            }
             Mode::NewSession => return self.on_new_session_key(named, character.as_deref(), cmd, modifiers.shift()),
             Mode::Reply | Mode::Rename => {
                 // The field lost its focus (a click elsewhere): give it back instead of acting.
@@ -2826,7 +2839,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup => {
+            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::MoveTarget => {
                 self.mode = Mode::Normal;
                 unfocus()
             }
@@ -2979,7 +2992,12 @@ impl Brain {
             Action::Export => return self.export_selected(),
             Action::Mute => self.toggle_mute(),
             Action::Snooze => self.cycle_snooze(),
-            Action::OtherAccount => return self.move_to_other_account(confirmed),
+            Action::MoveTo(index) => {
+                if self.mode == Mode::MoveTarget {
+                    self.mode = Mode::Normal;
+                }
+                return self.move_session(index, confirmed);
+            }
             Action::End => return self.end_selected(confirmed),
             Action::Hide => self.hide_selected(confirmed),
             Action::Trash => self.trash_selected(confirmed),
@@ -3256,12 +3274,33 @@ impl Brain {
     /// there in a new tab (`--fork-session`); a running original gets `/exit`.
     /// A session that runs in Brain moves within Brain: it stops here and a copy continues in
     /// the other account's background, attached in Brain.
+    /// The accounts the selected session can move to, as indices among the accounts.
+    pub fn move_targets(&self) -> Vec<usize> {
+        let Some(session) = self.selected_session() else { return Vec::new() };
+        (0..self.model.accounts.len()).filter(|&i| self.model.accounts[i].id != session.key.account).collect()
+    }
+
+    /// `A`: with one other account, `A A` moves there; with more, `A` asks which.
     fn move_to_other_account(&mut self, confirmed: bool) -> Task<Message> {
+        match self.move_targets().as_slice() {
+            [] => {
+                self.set_status(t("Es gibt kein zweites Konto.", "There is no other account."));
+                Task::none()
+            }
+            [only] => self.move_session(*only, confirmed),
+            _ => {
+                self.armed = None;
+                self.mode = Mode::MoveTarget;
+                Task::none()
+            }
+        }
+    }
+
+    /// Continues the selected session in the account at `target_index`.
+    fn move_session(&mut self, target_index: usize, confirmed: bool) -> Task<Message> {
         let Some(session) = self.selected_session() else { return Task::none() };
         let key = session.key.clone();
-        let Some(index) = self.model.accounts.iter().position(|a| a.id == key.account) else { return Task::none() };
-        let next = self.model.accounts.get((index + 1) % self.model.accounts.len()).cloned();
-        let Some(target) = next.filter(|t| t.id != key.account) else {
+        let Some(target) = self.model.accounts.get(target_index).cloned().filter(|t| t.id != key.account) else {
             self.set_status(t("Es gibt kein zweites Konto.", "There is no other account."));
             return Task::none();
         };

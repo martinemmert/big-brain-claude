@@ -28,6 +28,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::Cleanup => cleanup(brain),
         Mode::Pairing => pairing(brain),
         Mode::AccountSetup => account_setup(brain),
+        Mode::MoveTarget => move_target(brain),
         Mode::NewSession => new_session(brain),
         _ if brain.prefs.layout == Layout::Today => today(brain),
         _ => detail(brain, now),
@@ -253,8 +254,12 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
     if !ended {
         keep.push((t("Pausieren (15 min → 1 h → morgen)", "Snooze (15 min → 1 h → tomorrow)").to_string(), "S", Action::Snooze, false));
     }
-    if brain.model.accounts.len() > 1 {
-        keep.push((t("Im anderen Konto fortsetzen", "Continue in the other account").to_string(), "A", Action::OtherAccount, false));
+    // One line per account it can continue in; `A` is the key when there is only one.
+    let targets = brain.move_targets();
+    for &index in &targets {
+        let id = &brain.model.accounts[index].id;
+        let key = if targets.len() == 1 { "A" } else { "" };
+        keep.push((tr!("In {id} fortsetzen", "Continue in {id}"), key, Action::MoveTo(index), false));
     }
     groups.push(keep);
 
@@ -1859,6 +1864,48 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
     ]
     .spacing(14)
     .padding(Padding { top: 24.0, right: 28.0, bottom: 0.0, left: 28.0 })
+    .into()
+}
+
+/// `A` with several accounts: where the selected session continues, each account with how much
+/// of its limits is used, so the one with room is easy to spot.
+fn move_target(brain: &Brain) -> Element<'_, Message> {
+    let name = brain.selected_session().map(|s| s.display_name()).unwrap_or_default();
+    let rows = brain.move_targets().into_iter().enumerate().map(|(nth, index)| {
+        let account = &brain.model.accounts[index];
+        let usage = brain_core::usage::account_limits(&brain.model.usage, &account.id).map(|s| {
+            let part = |label: &str, limit: Option<brain_core::usage::Limit>| limit.map(|l| format!("{label} {:.0}%", l.used_percentage));
+            [part("5h", s.five_hour), part("7d", s.seven_day)].into_iter().flatten().collect::<Vec<_>>().join("  ·  ")
+        });
+        let usage = usage.filter(|u| !u.is_empty()).unwrap_or_else(|| t("noch keine Nutzungsdaten", "no usage yet").to_string());
+        let line = row![
+            kbd(format!("{}", nth + 1)),
+            account_badge(&account.id, index),
+            text(account.config_dir.display().to_string()).size(12).color(TEXT_FAINT).font(UI),
+            Space::new().width(Fill),
+            text(usage).size(12.5).color(TEXT_MUTED).font(UI),
+        ]
+        .spacing(10)
+        .align_y(iced::Center)
+        .padding([8, 12]);
+        mouse_area(container(line).style(|_| boxed(SURFACE, LINE, 8.0)))
+            .on_press(Message::MenuPick(Action::MoveTo(index)))
+            .interaction(iced::mouse::Interaction::Pointer)
+            .into()
+    });
+    column![
+        dialog_title(tr!("„{name}“ fortsetzen in …", "Continue “{name}” in …")),
+        text(t(
+            "Die Session läuft im gewählten Konto weiter, mit ihrem ganzen Verlauf. 1, 2, … oder klicken; esc bricht ab.",
+            "The session goes on in the chosen account, with all of its history. 1, 2, … or click; esc cancels.",
+        ))
+        .size(12.5)
+        .color(TEXT_MUTED)
+        .font(UI),
+        column(rows).spacing(8).max_width(620),
+    ]
+    .spacing(14)
+    .padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 })
     .into()
 }
 

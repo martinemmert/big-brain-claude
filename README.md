@@ -116,8 +116,9 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   in `config.json`, 10 by default, 0 turns them off) and snoozing per session.
 - **New sessions** in a recent folder and any account (`⌘N`), or from a **template**: a
   Markdown file with folder, account, model and a first prompt with placeholders (below).
-- **Move a session to the other account** (`A` twice), e.g. when one hits its five-hour limit:
-  Brain copies the transcript, resumes it there with `claude --resume <id> --fork-session` and
+- **Move a session to another account** (`A`), e.g. when one hits its five-hour limit: with two
+  accounts `A` twice, with more Brain asks which one (`1`, `2`, …, each with its current usage);
+  the right-click menu and ⌘K list one entry per account. Brain copies the transcript, resumes it there with `claude --resume <id> --fork-session` and
   closes the original.
 - **Quick replies.** `T`, then `1`–`9` sends a canned reply; set your own with
   `"quick_replies": ["…", "…"]` in `~/.claude-brain/config.json`.
