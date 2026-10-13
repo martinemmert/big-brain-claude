@@ -55,5 +55,7 @@ fn record(input: &str, accounts: &[Account]) -> Option<()> {
         })
         .or_else(|| find_claude_session(&ProcessTable::snapshot(), std::process::id(), accounts, session_id))?;
     let snapshot = Snapshot::from_statusline(&account.id, pid, chrono::Utc::now().timestamp_millis(), &value);
+    // The forecast's pace needs where the weekly limit stood a day ago.
+    let _ = usage::record_history(&usage::history_dir(&home_dir()), &snapshot);
     usage::store(&usage::status_dir(&home_dir()), &snapshot).ok()
 }

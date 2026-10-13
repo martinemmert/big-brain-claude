@@ -150,7 +150,9 @@ gelten nicht mehr) und **„Brain Link ausschalten“**.
 
 Unter der Liste steht pro Konto, wie viel vom 5-Stunden- und vom Wochenlimit verbraucht ist und
 wann es zurückgesetzt wird. Reicht das Tempo nicht bis zum Reset, steht dort **„voll ~Do 14:00“**,
-und hat ein anderes Konto Luft, nennt Brain es („→ second hat Luft“).
+und hat ein anderes Konto Luft, nennt Brain es („→ second hat Luft“). Beim Wochenlimit zählt das
+Tempo der letzten 24 Stunden (Brain merkt sich dafür alle zehn Minuten den Stand); beim
+5-Stunden-Limit das des laufenden Fensters.
 
 ## Einstellungen
 

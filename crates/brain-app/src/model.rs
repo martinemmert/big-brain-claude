@@ -14,7 +14,7 @@ use brain_core::sessions::read_session_files;
 use brain_core::state::{Board, Phase, Session, SessionKey};
 use brain_core::store::{Store, Tail};
 use brain_core::transcript::{entrypoint_of, find_transcript, insight, kept_transcripts, Message};
-use brain_core::usage::{self, Snapshot};
+use brain_core::usage::{self, Sample, Snapshot};
 use chrono::{Days, Local, NaiveDate};
 
 use crate::demo;
@@ -70,6 +70,10 @@ pub struct Model {
     agents_asked: Option<Instant>,
     /// Status line snapshots (plan limits, context, cost) of all sessions.
     pub usage: Vec<Snapshot>,
+    /// Per account: the weekly limit's states over the last days, for the forecast's pace;
+    /// and when they were read (once a minute is plenty, a state comes every ten).
+    pub usage_history: HashMap<String, Vec<Sample>>,
+    usage_history_read: Option<Instant>,
     /// Fixed conversations in demo mode; `None` reads real transcripts.
     pub demo_messages: Option<HashMap<SessionKey, Vec<Message>>>,
 }
@@ -95,6 +99,8 @@ impl Model {
             agents_pending: None,
             agents_asked: None,
             usage: Vec::new(),
+            usage_history: HashMap::new(),
+            usage_history_read: None,
             demo_messages: None,
         };
         if demo::enabled() {
@@ -211,6 +217,11 @@ impl Model {
         self.refresh_agents();
         self.refresh_transcripts(&seen);
         self.usage = usage::read_all(&usage::status_dir(&home_dir()));
+        if self.usage_history_read.is_none_or(|at| at.elapsed() > Duration::from_secs(60)) {
+            let dir = usage::history_dir(&home_dir());
+            self.usage_history = self.accounts.iter().map(|a| (a.id.clone(), usage::read_history(&dir, &a.id))).collect();
+            self.usage_history_read = Some(Instant::now());
+        }
 
         let mut attention = Vec::new();
         for session in self.board.sorted() {

@@ -586,7 +586,7 @@ dependencies = [
 
 [[package]]
 name = "brain-app"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "base64 0.22.1",
  "block2 0.6.2",
@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "brain-cli"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "brain-core",
  "brain-terminal",
@@ -627,7 +627,7 @@ dependencies = [
 
 [[package]]
 name = "brain-core"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "chrono",
  "libc",
@@ -638,7 +638,7 @@ dependencies = [
 
 [[package]]
 name = "brain-terminal"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "serde",
  "zbus",
