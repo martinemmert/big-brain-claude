@@ -12,7 +12,10 @@ use iced::{window, Subscription, Task};
 
 use crate::config;
 
+mod account;
 mod link;
+
+pub use account::ACCOUNT_NAME;
 use crate::conversation::Conversation;
 use crate::format::{ago, clock, now_ms, plain, shell_quote};
 use crate::i18n::t;
@@ -62,6 +65,8 @@ pub enum Mode {
     Composer,
     /// The code a phone scans to pair with Brain Link.
     Pairing,
+    /// A new Claude account made from the existing ones.
+    AccountSetup,
 }
 
 /// What a line of the command palette does.
@@ -88,6 +93,8 @@ pub enum PaletteCommand {
     Shell,
     /// Turn Brain Link on and show the pairing code.
     PairPhone,
+    /// Set up a new Claude account from the existing ones.
+    SetUpAccount,
 }
 
 /// Slash commands the palette offers for the selected session.
@@ -303,6 +310,11 @@ pub enum Message {
     CloseReader,
     ReaderToEditor,
     NewPlace(bool),
+    /// The new-account dialog: the name typed, its preview, create, and the outcome.
+    AccountSetupName(String),
+    AccountSetupPlanned(u64, brain_core::account_setup::Plan),
+    AccountSetupCreate,
+    AccountSetupDone(Result<String, String>),
     SidebarDrag,
     SidebarTo(f32),
     SidebarDone,
@@ -569,6 +581,8 @@ pub struct Brain {
     detail_shape: (Layout, Mode, DetailTab),
     /// A click selected a session: once its terminal shows, it gets the keys.
     focus_on_select: bool,
+    /// The new-account dialog.
+    pub account_setup: account::AccountSetup,
     /// Brain Link, the companion app's server, while it runs.
     link: Option<crate::companion::Link>,
     /// The pairing code as an image.
@@ -671,6 +685,7 @@ impl Brain {
             titlebar_ready: false,
             detail_shape: (Layout::Status, Mode::Normal, DetailTab::Messages),
             focus_on_select: false,
+            account_setup: account::AccountSetup::default(),
             link: None,
             link_qr: None,
         };
@@ -1197,6 +1212,16 @@ impl Brain {
                 Task::none()
             }
             Message::Close => self.escape(),
+            Message::AccountSetupName(name) => self.account_setup_name(name),
+            Message::AccountSetupPlanned(asked, plan) => {
+                self.account_setup_planned(asked, plan);
+                Task::none()
+            }
+            Message::AccountSetupCreate => self.account_setup_create(),
+            Message::AccountSetupDone(result) => {
+                self.mode = Mode::Normal;
+                self.account_setup_done(result)
+            }
             Message::LinkOff => {
                 self.stop_link();
                 Task::none()
@@ -1747,6 +1772,7 @@ impl Brain {
         all.push((t("Neue Session", "New session").to_string(), "⌘N", PaletteCommand::NewSession));
         all.push((t("Aufräumen", "Clean up").to_string(), "C", PaletteCommand::Cleanup));
         all.push((t("iPhone koppeln (Brain Link)", "Pair a phone (Brain Link)").to_string(), "", PaletteCommand::PairPhone));
+        all.push((t("Neues Claude-Konto einrichten", "Set up a new Claude account").to_string(), "", PaletteCommand::SetUpAccount));
         all.push((t("Beendete Sessions zeigen / verbergen", "Show / hide ended sessions").to_string(), "E", PaletteCommand::ToggleEnded));
         all.push((t("Nach Projekten gruppieren", "Group by project").to_string(), "G", PaletteCommand::ToggleProjects));
         all.push((t("Heute", "Today").to_string(), "D", PaletteCommand::ToggleToday));
@@ -1798,6 +1824,7 @@ impl Brain {
                 self.mode = Mode::Cleanup;
                 Task::none()
             }
+            PaletteCommand::SetUpAccount => self.open_account_setup(),
             PaletteCommand::PairPhone => {
                 self.pair_phone();
                 Task::none()
@@ -2647,7 +2674,7 @@ impl Brain {
                 self.on_cleanup_key(named, character.as_deref(), cmd);
                 return Task::none();
             }
-            Mode::Pairing => return Task::none(),
+            Mode::Pairing | Mode::AccountSetup => return Task::none(),
             Mode::NewSession => return self.on_new_session_key(named, character.as_deref(), cmd, modifiers.shift()),
             Mode::Reply | Mode::Rename => {
                 // The field lost its focus (a click elsewhere): give it back instead of acting.
@@ -2799,7 +2826,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing => {
+            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup => {
                 self.mode = Mode::Normal;
                 unfocus()
             }

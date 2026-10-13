@@ -241,6 +241,14 @@ impl Model {
         attention
     }
 
+    /// Finds the accounts again (after Brain made one).
+    pub fn reload_accounts(&mut self) {
+        if !self.is_demo() {
+            self.accounts = discover_accounts(&home_dir());
+            self.relist_transcripts();
+        }
+    }
+
     /// Lists the transcripts again on the next refresh (after Brain deleted one).
     pub fn relist_transcripts(&mut self) {
         self.kept_age = 0;

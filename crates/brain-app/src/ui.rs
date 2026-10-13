@@ -27,6 +27,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         _ if brain.overview => overview(brain),
         Mode::Cleanup => cleanup(brain),
         Mode::Pairing => pairing(brain),
+        Mode::AccountSetup => account_setup(brain),
         Mode::NewSession => new_session(brain),
         _ if brain.prefs.layout == Layout::Today => today(brain),
         _ => detail(brain, now),
@@ -1859,6 +1860,53 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
     .spacing(14)
     .padding(Padding { top: 24.0, right: 28.0, bottom: 0.0, left: 28.0 })
     .into()
+}
+
+/// A new Claude account from the existing ones: its name, what it gets from where, and where
+/// the accounts differ.
+fn account_setup(brain: &Brain) -> Element<'_, Message> {
+    let dialog = &brain.account_setup;
+    let sources: Vec<&str> = brain.model.accounts.iter().map(|a| a.id.as_str()).collect();
+    let first = sources.first().copied().unwrap_or("main");
+    let all = sources.join(" + ");
+    let intro = tr!(
+        "Brain legt ~/.claude-<name> an und übernimmt aus {all} Einstellungen, CLAUDE.md, Skills, Agents, Commands, Plugins, MCP-Server und das Gedächtnis pro Projekt. Wo sie sich unterscheiden, gewinnt {first}; bei Gedächtnis-Notizen die neuere. Keine Anmeldung, keine Gespräche: Melde dich in der ersten Session mit /login an.",
+        "Brain makes ~/.claude-<name> with the settings, CLAUDE.md, skills, agents, commands, plugins, MCP servers and per-project memory of {all}. Where they differ, {first} wins; for memory notes the newer one. No login, no conversations: log in with /login in its first session."
+    );
+    let field = text_input(t("Name, z. B. work", "Name, e.g. work"), &dialog.name)
+        .id(crate::app::ACCOUNT_NAME)
+        .on_input(Message::AccountSetupName)
+        .on_submit(Message::AccountSetupCreate)
+        .padding([8, 12])
+        .size(14)
+        .style(field_style);
+    let mut body = column![dialog_title(t("Neues Claude-Konto", "New Claude account")), text(intro).size(13).line_height(1.5).color(TEXT).font(UI), field].spacing(14);
+    match &dialog.plan {
+        Some(Err(err)) => body = body.push(text(err.clone()).size(12.5).color(CALLS).font(UI)),
+        Some(Ok(plan)) => {
+            let differences = plan.conflicts().count();
+            let (folder, count) = (plan.target.display().to_string(), plan.items.len());
+            let summary = tr!("{folder} → {count} Einträge, {differences} Unterschiede", "{folder} → {count} items, {differences} differences");
+            body = body.push(text(summary).size(12.5).color(TEXT_MUTED).font(UI));
+            let rows = plan.items.iter().map(|item| {
+                let mut lines = column![row![
+                    text(item.what.clone()).size(12.5).color(TEXT_STRONG).font(UI),
+                    text(item.from.join(" + ")).size(11.5).color(TEXT_FAINT).font(UI),
+                ]
+                .spacing(10)]
+                .spacing(2);
+                for conflict in &item.conflicts {
+                    lines = lines.push(text(format!("≠ {conflict}")).size(11.5).color(TURN).font(UI));
+                }
+                lines.into()
+            });
+            body = body.push(scrollable(column(rows).spacing(6)).height(Fill).style(scrollbar));
+            let label = if dialog.busy { t("Wird eingerichtet …", "Setting up …") } else { t("Konto einrichten", "Set up account") };
+            body = body.push(action(label, "⏎", true, (!dialog.busy).then_some(Message::AccountSetupCreate)));
+        }
+        None => {}
+    }
+    body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
 }
 
 /// Brain Link: the code the iPhone camera scans, where Brain listens, and the way out.

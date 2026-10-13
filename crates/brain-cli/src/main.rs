@@ -52,6 +52,11 @@ enum Command {
         #[command(subcommand)]
         step: KonsilStep,
     },
+    /// Claude accounts: `brain account new <name>` makes one from the existing ones.
+    Account {
+        #[command(subcommand)]
+        action: AccountAction,
+    },
     /// Install hooks and the protocol section into every Claude account.
     Install,
     /// Remove Brain's hooks and protocol section from every Claude account.
@@ -87,6 +92,20 @@ enum Command {
     Show {
         /// The session as <account>:<pid>, e.g. main:4242.
         session: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AccountAction {
+    /// A new account folder `~/.claude-<name>` with the setup and memory of all accounts
+    /// (settings, CLAUDE.md, skills, agents, commands, plugins, MCP servers, memory notes;
+    /// main wins where they differ). Shows what it would do; `--yes` does it. No login, no
+    /// conversations: log in with `/login` in its first session.
+    New {
+        name: String,
+        /// Create it (without: only show the plan).
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -151,6 +170,7 @@ fn main() -> ExitCode {
             KonsilStep::Stand { .. } => ExitCode::SUCCESS,
             KonsilStep::End { decision } => run_report(&store, &accounts, Kind::Done, &format!("Konsil: {}", decision.join(" "))),
         },
+        Command::Account { action: AccountAction::New { name, yes } } => run_account_new(&accounts, &name, yes),
         Command::Install => run_install(&accounts),
         Command::Uninstall => run_uninstall(&accounts),
         Command::Status => run_status(&store, &accounts),
@@ -360,6 +380,49 @@ fn run_install(accounts: &[Account]) -> ExitCode {
     }
     println!("New Claude sessions pick this up on start.");
     if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+}
+
+fn run_account_new(accounts: &[Account], name: &str, yes: bool) -> ExitCode {
+    let home = home_dir();
+    let target = match brain_core::account_setup::target_dir(&home, name) {
+        Ok(target) => target,
+        Err(err) => {
+            eprintln!("brain account new: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if accounts.is_empty() {
+        eprintln!("brain account new: no ~/.claude or ~/.claude-* account to take the setup from");
+        return ExitCode::FAILURE;
+    }
+    let plan = if yes {
+        match brain_core::account_setup::create(accounts, &home, &target) {
+            Ok(plan) => plan,
+            Err(err) => {
+                eprintln!("brain account new: {err}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        brain_core::account_setup::plan(accounts, &home, &target)
+    };
+    let names: Vec<&str> = accounts.iter().map(|a| a.id.as_str()).collect();
+    println!("{} {} from {}", if yes { "Made" } else { "Would make" }, target.display(), names.join(" + "));
+    for item in &plan.items {
+        println!("  {}  ({})", item.what, item.from.join(", "));
+        for conflict in &item.conflicts {
+            println!("      ≠ {conflict}");
+        }
+    }
+    if !yes {
+        println!("\nNothing written yet. `brain account new {name} --yes` makes it.");
+        return ExitCode::SUCCESS;
+    }
+    // Brain's hooks, mod and protocol section into the new account (and the others, as always).
+    let code = run_install(&brain_core::account::discover_accounts(&home));
+    println!("\nLog in with another Claude account in its first session:");
+    println!("  CLAUDE_CONFIG_DIR={} claude   then /login", target.display());
+    code
 }
 
 fn run_uninstall(accounts: &[Account]) -> ExitCode {

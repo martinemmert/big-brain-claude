@@ -146,6 +146,16 @@ sie Brain nach wenigen Sekunden wieder; eine neue Adresse des Macs übernimmt si
 Kopplungsdialog: **„Alle Handys abmelden“** (neuer Schlüssel, alte Kopplungen
 gelten nicht mehr) und **„Brain Link ausschalten“**.
 
+## Ein neues Claude-Konto einrichten
+
+⌘K → **„Neues Claude-Konto einrichten“** (oder `brain account new <name>`) legt `~/.claude-<name>`
+an und übernimmt aus allen Konten Einstellungen, CLAUDE.md, Skills, Agents, Commands, Plugins,
+MCP-Server und das Gedächtnis pro Projekt. Die Vorschau zeigt vorher, was woher kommt und wo sich
+die Konten unterscheiden: Dann gewinnt main, bei Gedächtnis-Notizen die neuere. Die Anmeldung und
+die Gespräche kommen nicht mit – melde dich in der ersten Session des neuen Kontos mit `/login` an;
+Brain öffnet dafür gleich „Neue Session“ mit dem neuen Konto. Plugins werden auf APFS geklont und
+belegen kaum Platz.
+
 ## Nutzung und Limits
 
 Unter der Liste steht pro Konto, wie viel vom 5-Stunden- und vom Wochenlimit verbraucht ist und

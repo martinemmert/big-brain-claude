@@ -148,6 +148,16 @@ and lists that folder in `env.CLAUDE_CODE_PLUGIN_DIRS` of every account's `setti
 `brain uninstall` removes it. The settings hooks stay for now as a fallback: once a session
 reports through the mod, Brain leaves out its hook events.
 
+## A new Claude account
+
+`brain account new <name>` (or ⌘K → *Set up a new Claude account*) makes `~/.claude-<name>` from
+the existing accounts: `settings.json` merged (lists joined, main's values win), `CLAUDE.md`,
+the status line script, skills, agents, commands, output styles, plugins and marketplaces (paths
+rewritten, files cloned on APFS), user MCP servers, and every project's memory notes (the newer
+note wins, `MEMORY.md` joined). Without `--yes` it only shows the plan and the differences. No
+login and no conversations come along: log in with `/login` in the first session. Brain's hooks
+are installed into it right away.
+
 ## Brain Link (the iPhone companion)
 
 **Brain Companion** (repo `brain-companion`, .NET MAUI) shows the sessions on the iPhone, reads
