@@ -2,7 +2,7 @@
 //! you, your turn, working, done), per-account hues, and the small pieces every view uses.
 
 use brain_core::state::Phase;
-use iced::widget::{button, container, row, text, Space};
+use iced::widget::{button, column, container, row, text, Space};
 use iced::{border, color, font, Background, Border, Color, Element, Font, Length, Padding, Shadow, Vector};
 
 // Surfaces, darkest to lightest.
@@ -161,15 +161,16 @@ pub fn keys(label: &str) -> String {
             }
             '⇧' => out.push_str("Shift+"),
             '⌥' => out.push_str("Alt+"),
+            '⌫' => out.push_str("Backspace"),
             c => out.push(c),
         }
     }
     out
 }
 
-/// A key cap like `⏎` or `/`.
+/// A key cap like `⏎` or `/`; at least square, so single keys line up.
 pub fn kbd<'a, M: 'a>(label: impl Into<String>) -> Element<'a, M> {
-    container(text(keys(&label.into())).size(10.5).color(TEXT_MUTED).font(UI))
+    container(column![text(keys(&label.into())).size(10.5).color(TEXT_MUTED).font(UI), Space::new().width(8)].align_x(iced::Center))
         .padding([1, 5])
         .height(18)
         .center_y(18)
@@ -334,7 +335,7 @@ mod tests {
         assert_eq!(keys("⌘F"), format!("{ctrl}F"));
         assert_eq!(keys("⌘K"), format!("{ctrl}Shift+K"));
         assert_eq!(keys("⌘⇧C"), format!("{ctrl}Shift+C"));
-        assert_eq!(keys("⌥⏎ ⌘⌫"), format!("Alt+⏎ {ctrl}⌫"));
+        assert_eq!(keys("⌥⏎ ⌘⌫"), format!("Alt+⏎ {ctrl}Backspace"));
         assert_eq!(keys("⌘-Klick"), format!("{}-Klick", t("Strg", "Ctrl")));
     }
 }

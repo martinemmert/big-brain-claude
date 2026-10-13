@@ -209,7 +209,7 @@ fn screenshot_offer(brain: &Brain) -> Option<Element<'_, Message>> {
 
 // ---- context menu -----------------------------------------------------------------
 
-const MENU_WIDTH: f32 = 250.0;
+const MENU_WIDTH: f32 = 300.0;
 const MENU_ROW: f32 = 28.0;
 const MENU_PADDING: f32 = 5.0;
 /// A separator's height: 1 pt line, 4 pt above and below.
@@ -316,8 +316,9 @@ fn context_menu(brain: &Brain) -> Option<Element<'_, Message>> {
         };
         let color = if danger { CALLS_SOFT } else { TEXT };
         button(
-            row![text(label).size(13).color(color).font(UI).width(Fill), text(style::keys(keys)).size(11.5).color(TEXT_FAINT).font(UI)]
+            row![text(label).size(13).color(color).font(UI).width(Fill), kbd(keys)]
                 .spacing(12)
+                .height(Fill)
                 .align_y(iced::Center),
         )
         .padding([0, 10])
