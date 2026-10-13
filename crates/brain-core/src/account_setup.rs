@@ -359,26 +359,70 @@ fn global_json(account: &Account, home: &Path) -> PathBuf {
     }
 }
 
-/// The user MCP servers only: the rest of that file is the login, caches and per-project state.
+/// From each account's global state, two things only: the user MCP servers, and which folders
+/// were trusted (so the new account doesn't ask again in every one). The rest of that file is
+/// the login, caches and per-project bookkeeping.
 fn mcp_servers(sources: &[Account], home: &Path, target: &Path, write: bool, items: &mut Vec<Item>) -> std::io::Result<()> {
     let mut servers = Value::Object(Map::new());
     let mut from = Vec::new();
     let mut conflicts = Vec::new();
+    let mut trusted: Vec<String> = Vec::new();
     for source in sources {
-        let Some(found) = read_json(&global_json(source, home)).and_then(|v| v.get("mcpServers").cloned()) else { continue };
-        if found.as_object().is_none_or(|m| m.is_empty()) {
-            continue;
+        let Some(state) = read_json(&global_json(source, home)) else { continue };
+        for folder in trusted_folders(&state) {
+            if !trusted.contains(&folder) {
+                trusted.push(folder);
+            }
         }
+        let Some(found) = state.get("mcpServers").filter(|m| m.as_object().is_some_and(|m| !m.is_empty())) else { continue };
         from.push(source.id.clone());
-        merge(&mut servers, &found, "mcpServers", &source.id, &mut conflicts);
+        merge(&mut servers, found, "mcpServers", &source.id, &mut conflicts);
     }
-    let Some(map) = servers.as_object().filter(|m| !m.is_empty()) else { return Ok(()) };
-    if write {
-        write_json(&target.join(".claude.json"), &serde_json::json!({ "mcpServers": map }))?;
+    let map = servers.as_object().cloned().unwrap_or_default();
+    if write && (!map.is_empty() || !trusted.is_empty()) {
+        let projects: Map<String, Value> = trusted.iter().map(|f| (f.clone(), serde_json::json!({ "hasTrustDialogAccepted": true }))).collect();
+        write_json(&target.join(".claude.json"), &serde_json::json!({ "mcpServers": map, "projects": projects }))?;
     }
-    let names: Vec<&str> = map.keys().map(String::as_str).collect();
-    items.push(Item { what: format!("MCP servers: {}", names.join(", ")), from, conflicts });
+    if !map.is_empty() {
+        let names: Vec<&str> = map.keys().map(String::as_str).collect();
+        items.push(Item { what: format!("MCP servers: {}", names.join(", ")), from, conflicts });
+    }
+    if !trusted.is_empty() {
+        items.push(Item { what: format!("trusted folders: {}", trusted.len()), from: sources.iter().map(|s| s.id.clone()).collect(), conflicts: Vec::new() });
+    }
     Ok(())
+}
+
+/// The folders an account's global state marks as trusted.
+fn trusted_folders(state: &Value) -> Vec<String> {
+    state
+        .get("projects")
+        .and_then(Value::as_object)
+        .map(|p| p.iter().filter(|(_, v)| v.get("hasTrustDialogAccepted").and_then(Value::as_bool) == Some(true)).map(|(k, _)| k.clone()).collect())
+        .unwrap_or_default()
+}
+
+/// Marks `folder` as trusted in `target` if `source` trusts it, so a session moved there
+/// doesn't stop at the trust question. Leaves everything else in the file as it is.
+pub fn carry_trust(source: &Account, target: &Account, home: &Path, folder: &str) -> std::io::Result<()> {
+    let trusted = read_json(&global_json(source, home)).is_some_and(|s| trusted_folders(&s).iter().any(|f| f == folder));
+    if !trusted {
+        return Ok(());
+    }
+    let path = global_json(target, home);
+    let mut state = read_json(&path).unwrap_or_else(|| Value::Object(Map::new()));
+    if trusted_folders(&state).iter().any(|f| f == folder) {
+        return Ok(());
+    }
+    let Some(root) = state.as_object_mut() else { return Ok(()) };
+    let projects = root.entry("projects").or_insert_with(|| Value::Object(Map::new()));
+    if let Some(projects) = projects.as_object_mut() {
+        let entry = projects.entry(folder.to_string()).or_insert_with(|| Value::Object(Map::new()));
+        if let Some(entry) = entry.as_object_mut() {
+            entry.insert("hasTrustDialogAccepted".into(), Value::Bool(true));
+        }
+    }
+    write_json(&path, &state)
 }
 
 // ---- memory ---------------------------------------------------------------------------------
@@ -525,7 +569,7 @@ mod tests {
         put(&second.config_dir.join("plugins/installed_plugins.json"), &format!(r#"{{"plugins":{{"p@m":[{{"installPath":"{main_plugins}cache/m/p/1"}}]}}}}"#));
         put(&main.config_dir.join("plugins/cache/m/p/1/plugin.json"), "{}");
         put(&main.config_dir.join("plugins/cache/temp_git_123/x"), "leftover");
-        put(&h.join(".claude.json"), r#"{"oauthAccount":{"emailAddress":"me@x"},"mcpServers":{"xcode":{"command":"x"}}}"#);
+        put(&h.join(".claude.json"), r#"{"oauthAccount":{"emailAddress":"me@x"},"mcpServers":{"xcode":{"command":"x"}},"projects":{"/w/app":{"hasTrustDialogAccepted":true,"history":["secret"]},"/w/no":{"hasTrustDialogAccepted":false}}}"#);
         put(&second.config_dir.join(".claude.json"), r#"{"oauthAccount":{"emailAddress":"other@x"},"mcpServers":{}}"#);
         put(&main.config_dir.join("projects/-w-app/memory/MEMORY.md"), "- [A](a.md) — a\n");
         put(&main.config_dir.join("projects/-w-app/memory/a.md"), "note a");
@@ -558,7 +602,8 @@ mod tests {
         assert!(read("plugins/installed_plugins.json").contains(&format!("{}/plugins/cache/m/p/1", target.display())));
         assert!(target.join("plugins/cache/m/p/1/plugin.json").exists());
         assert!(!target.join("plugins/cache/temp_git_123").exists());
-        assert_eq!(read(".claude.json").trim(), "{\n  \"mcpServers\": {\n    \"xcode\": {\n      \"command\": \"x\"\n    }\n  }\n}");
+        let state: Value = serde_json::from_str(&read(".claude.json")).unwrap();
+        assert_eq!(state, json!({ "mcpServers": { "xcode": { "command": "x" } }, "projects": { "/w/app": { "hasTrustDialogAccepted": true } } }));
         assert_eq!(read("projects/-w-app/memory/MEMORY.md"), "- [A](a.md) — a\n- [C](c.md) — c\n- [B](b.md) — b\n");
         assert_eq!(read("projects/-w-app/memory/b.md"), "note b");
         assert_eq!(read("projects/-w-app/memory/c.md"), "c, updated");
@@ -575,5 +620,19 @@ mod tests {
         assert!(conflicts.contains(&("skills/fux", "second's differs, kept the first")));
         assert!(conflicts.contains(&("memory: -w-app", "c.md: second's is newer, main's left out")));
         assert!(create(&sources, h, &target).is_err(), "never over an existing folder");
+    }
+
+    #[test]
+    fn a_moved_session_takes_its_folders_trust_along() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let main = account(h, "main");
+        let third = account(h, "third");
+        put(&h.join(".claude.json"), r#"{"projects":{"/w/app":{"hasTrustDialogAccepted":true}}}"#);
+        put(&third.config_dir.join(".claude.json"), r#"{"oauthAccount":{"emailAddress":"t@x"}}"#);
+        carry_trust(&main, &third, h, "/w/other").unwrap();
+        carry_trust(&main, &third, h, "/w/app").unwrap();
+        let state: Value = serde_json::from_str(&std::fs::read_to_string(third.config_dir.join(".claude.json")).unwrap()).unwrap();
+        assert_eq!(state, json!({ "oauthAccount": { "emailAddress": "t@x" }, "projects": { "/w/app": { "hasTrustDialogAccepted": true } } }));
     }
 }

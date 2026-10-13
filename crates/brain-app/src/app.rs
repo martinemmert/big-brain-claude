@@ -3332,6 +3332,8 @@ impl Brain {
             return Task::none();
         }
         let Some(source) = self.model.account(&key.account).cloned() else { return Task::none() };
+        // A folder trusted there is trusted here: the moved session doesn't stop at the question.
+        let _ = brain_core::account_setup::carry_trust(&source, &target, &brain_core::account::home_dir(), &cwd);
         let Some(transcript) = brain_core::transcript::find_transcript(&source, &session_id) else {
             self.set_status(t("Transkript nicht gefunden.", "Transcript not found."));
             return Task::none();
