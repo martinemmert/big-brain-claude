@@ -304,6 +304,8 @@ pub enum Message {
     LinkForget,
     /// A phone's command, again once a background session's terminal attached.
     LinkRetry(crate::companion::Command),
+    /// A session the phone started: its short id, or why not.
+    LinkStarted(Result<String, String>),
     /// ⌘⇧A: live previews of every session that runs in Brain.
     ToggleOverview,
     /// A preview clicked in the overview: open that session's terminal.
@@ -586,6 +588,8 @@ pub struct Brain {
     focus_on_select: bool,
     /// The new-account dialog.
     pub account_setup: account::AccountSetup,
+    /// Per session that waits: its transcript's length when read, and the question it asks.
+    link_questions: HashMap<SessionKey, (u64, Option<brain_core::qa::OpenQuestion>)>,
     /// Brain Link, the companion app's server, while it runs.
     link: Option<crate::companion::Link>,
     /// The pairing code as an image.
@@ -689,6 +693,7 @@ impl Brain {
             detail_shape: (Layout::Status, Mode::Normal, DetailTab::Messages),
             focus_on_select: false,
             account_setup: account::AccountSetup::default(),
+            link_questions: HashMap::new(),
             link: None,
             link_qr: None,
         };
@@ -1234,6 +1239,14 @@ impl Brain {
                 Task::none()
             }
             Message::LinkRetry(command) => self.run_link_command(command, false),
+            Message::LinkStarted(result) => {
+                self.model.relist_transcripts();
+                match result {
+                    Ok(_) => self.set_status(t("Session vom Handy läuft im Hintergrund.", "The session from the phone runs in the background.")),
+                    Err(why) => self.set_status(tr!("Session vom Handy startet nicht: {why}", "The session from the phone didn't start: {why}")),
+                }
+                Task::none()
+            }
             Message::ActivatePane => {
                 self.activate_split_pane();
                 Task::none()
@@ -3528,7 +3541,7 @@ impl Brain {
 
     /// Folders to start a session in: the typed path first (if it is one), then the folders of
     /// known sessions, most recently active first, filtered by the typed words.
-    fn folder_suggestions(&self, query: &str) -> Vec<String> {
+    pub(crate) fn folder_suggestions(&self, query: &str) -> Vec<String> {
         let mut sessions: Vec<&Session> = self.model.board.keys().filter_map(|k| self.model.board.get(k)).collect();
         sessions.sort_by_key(|s| std::cmp::Reverse(s.last_activity_ms));
         let mut folders: Vec<String> = Vec::new();

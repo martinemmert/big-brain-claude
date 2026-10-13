@@ -241,6 +241,12 @@ impl Model {
         attention
     }
 
+    /// Where a session's transcript is, from the last listing of the account's transcripts.
+    pub fn transcript_path(&self, key: &SessionKey) -> Option<PathBuf> {
+        let session = self.board.get(key)?;
+        self.kept.get(&key.account)?.get(session.session_id.as_ref()?).cloned()
+    }
+
     /// Finds the accounts again (after Brain made one).
     pub fn reload_accounts(&mut self) {
         if !self.is_demo() {

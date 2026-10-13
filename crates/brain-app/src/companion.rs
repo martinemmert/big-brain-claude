@@ -56,6 +56,9 @@ pub struct View {
     /// When that dialog opened (epoch ms): the phone sends it with its answer, so the answer
     /// only ever reaches the dialog the user saw, never one that opened since.
     pub permission_since_ms: Option<i64>,
+    /// An AskUserQuestion Claude waits on: the phone offers its options. While one is open,
+    /// `permission_open` is false: Allow would just pick the first option.
+    pub question: Option<brain_core::qa::OpenQuestion>,
     /// Brain can deliver a reply (its terminal, an iTerm tab, or a background session).
     pub can_reply: bool,
 }
@@ -64,8 +67,38 @@ pub struct View {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Reply { key: SessionKey, text: String },
+    /// Answers to an open question, one option index per question; `call` names the question
+    /// the phone showed.
+    Answer { key: SessionKey, call: String, picks: Vec<usize> },
+    /// A new background session in one of the offered folders, with an optional first prompt.
+    Start { account: String, folder: String, prompt: Option<String> },
     /// `since_ms`: when the dialog the user answered opened ([`View::permission_since_ms`]).
     Permission { key: SessionKey, allow: bool, since_ms: i64 },
+}
+
+/// A plan limit as the phone shows it.
+#[derive(Debug, Clone, Serialize)]
+pub struct LimitView {
+    pub used_percentage: f64,
+    /// Unix seconds.
+    pub resets_at: Option<i64>,
+    /// When it runs out at the current pace, if before the reset (Unix seconds).
+    pub runs_out_at: Option<i64>,
+}
+
+/// An account's plan limits.
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageView {
+    pub account: String,
+    pub five_hour: Option<LimitView>,
+    pub seven_day: Option<LimitView>,
+}
+
+/// Where the phone may start a session: the accounts, and the folders sessions ran in lately.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Places {
+    pub accounts: Vec<String>,
+    pub folders: Vec<String>,
 }
 
 /// What the pairing QR code carries.
@@ -106,6 +139,8 @@ impl Link {
             token: RwLock::new(identity.token),
             accounts,
             sessions: RwLock::new(Vec::new()),
+            usage: RwLock::new(Vec::new()),
+            places: RwLock::new(Places::default()),
             commands: Mutex::new(sender),
         });
         let listener = std::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port))).map_err(|e| e.to_string())?;
@@ -121,6 +156,16 @@ impl Link {
     pub fn publish(&self, views: Vec<View>) {
         if let Ok(mut sessions) = self.state.sessions.write() {
             *sessions = views;
+        }
+    }
+
+    /// The plan limits and the places to start a session, for the phone.
+    pub fn publish_more(&self, usage: Vec<UsageView>, places: Places) {
+        if let Ok(mut current) = self.state.usage.write() {
+            *current = usage;
+        }
+        if let Ok(mut current) = self.state.places.write() {
+            *current = places;
         }
     }
 
@@ -343,6 +388,8 @@ struct State {
     token: RwLock<String>,
     accounts: Vec<Account>,
     sessions: RwLock<Vec<View>>,
+    usage: RwLock<Vec<UsageView>>,
+    places: RwLock<Places>,
     commands: Mutex<Sender<Command>>,
 }
 
@@ -384,11 +431,34 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
             let sessions = state.sessions.read().map(|s| s.clone()).unwrap_or_default();
             reply(StatusCode::OK, &sessions)
         }
+        (Method::GET, ["v1", "usage"]) => reply(StatusCode::OK, &state.usage.read().map(|u| u.clone()).unwrap_or_default()),
+        (Method::GET, ["v1", "places"]) => reply(StatusCode::OK, &state.places.read().map(|p| p.clone()).unwrap_or_default()),
+        (Method::POST, ["v1", "sessions"]) => {
+            let Some(body) = read_json(req).await else {
+                return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "bad body" })));
+            };
+            let field = |name: &str| body.get(name).and_then(|v| v.as_str()).map(str::to_string);
+            let (Some(account), Some(folder)) = (field("account"), field("folder")) else {
+                return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "account and folder" })));
+            };
+            // Only what Brain offered: a known account, a folder sessions ran in.
+            let places = state.places.read().map(|p| p.clone()).unwrap_or_default();
+            if !places.accounts.contains(&account) || !places.folders.contains(&folder) {
+                return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "unknown account or folder" })));
+            }
+            let prompt = field("prompt").filter(|p| !p.trim().is_empty());
+            let sent = state.commands.lock().map(|s| s.send(Command::Start { account, folder, prompt }).is_ok()).unwrap_or(false);
+            if sent {
+                reply(StatusCode::ACCEPTED, &serde_json::json!({ "ok": true }))
+            } else {
+                reply(StatusCode::SERVICE_UNAVAILABLE, &serde_json::json!({ "error": "Brain is not listening" }))
+            }
+        }
         (Method::GET, ["v1", "sessions", account, id, "messages"]) => match session_key(&state, account, id) {
             Some(key) => reply(StatusCode::OK, &messages(&state, &key)),
             None => not_found(),
         },
-        (Method::POST, ["v1", "sessions", account, id, action @ ("reply" | "permission")]) => {
+        (Method::POST, ["v1", "sessions", account, id, action @ ("reply" | "permission" | "answer")]) => {
             let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
             let action = action.to_string();
             let Some(body) = read_json(req).await else {
@@ -396,6 +466,14 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
             };
             let command = match action.as_str() {
                 "reply" => body.get("text").and_then(|t| t.as_str()).filter(|t| !t.trim().is_empty()).map(|text| Command::Reply { key, text: text.to_string() }),
+                "answer" => {
+                    let call = body.get("call").and_then(|c| c.as_str()).map(str::to_string);
+                    let picks: Option<Vec<usize>> = body.get("picks").and_then(|p| p.as_array()).and_then(|p| p.iter().map(|v| v.as_u64().map(|n| n as usize)).collect());
+                    match (call, picks) {
+                        (Some(call), Some(picks)) if !picks.is_empty() && picks.len() <= 8 => Some(Command::Answer { key, call, picks }),
+                        _ => None,
+                    }
+                }
                 _ => match (body.get("allow").and_then(|a| a.as_bool()), body.get("since_ms").and_then(|s| s.as_i64())) {
                     (Some(allow), Some(since_ms)) => Some(Command::Permission { key, allow, since_ms }),
                     _ => None,
@@ -525,6 +603,7 @@ mod tests {
             folder: Some("fin".into()),
             permission_open: false,
             permission_since_ms: None,
+            question: None,
             can_reply: true,
         }]);
         let token = std::fs::read_to_string(dir.join("token")).unwrap();
@@ -552,10 +631,20 @@ mod tests {
         // An answer that doesn't say which dialog it is for is refused.
         assert!(curl(&["-H", &bearer, "-d", "{\"allow\":true}", "BASE/v1/sessions/main/0331-ab/permission"]).ends_with("400"));
         assert!(curl(&["-H", &bearer, "-d", "{\"allow\":true,\"since_ms\":7}", "BASE/v1/sessions/main/0331-ab/permission"]).ends_with("202"));
+        assert!(curl(&["-H", &bearer, "-d", "{\"call\":\"toolu_1\"}", "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("400"));
+        assert!(curl(&["-H", &bearer, "-d", "{\"call\":\"toolu_1\",\"picks\":[1,0]}", "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("202"));
+        link.publish_more(Vec::new(), Places { accounts: vec!["main".into()], folders: vec!["/w/fin".into()] });
+        assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\",\"folder\":\"/etc\"}", "BASE/v1/sessions"]).ends_with("400"));
+        assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\",\"folder\":\"/w/fin\",\"prompt\":\"los\"}", "BASE/v1/sessions"]).ends_with("202"));
         let key = SessionKey { account: "main".into(), id: "0331-ab".into() };
         assert_eq!(
             link.take_commands(),
-            vec![Command::Reply { key: key.clone(), text: "weiter".into() }, Command::Permission { key, allow: true, since_ms: 7 }]
+            vec![
+                Command::Reply { key: key.clone(), text: "weiter".into() },
+                Command::Permission { key: key.clone(), allow: true, since_ms: 7 },
+                Command::Answer { key, call: "toolu_1".into(), picks: vec![1, 0] },
+                Command::Start { account: "main".into(), folder: "/w/fin".into(), prompt: Some("los".into()) },
+            ]
         );
         drop(link);
         let _ = std::fs::remove_dir_all(&dir);
@@ -590,16 +679,39 @@ mod tests {
             headline: Some(headline.into()),
             since_ms: now - minutes * 60_000,
             folder: Some(name.to_lowercase()),
-            permission_open: phase == "needs_you",
+            permission_open: phase == "needs_you" && id != "be75a6ae-0000-0000-0000-000000000003",
             permission_since_ms: (phase == "needs_you").then_some(now - minutes * 60_000),
+            question: None,
             can_reply: phase != "ended",
         };
         link.publish(vec![
             view("9a1527b8-0000-0000-0000-000000000001", "Phoenix", "needs_you", "attention", "Bash: composer test --filter BookingExport", 2),
             view("0331aa00-1111-2222-3333-444455556666", "Finanzen", "your_turn", "attention", "Der Export ist fertig. Soll ich ihn auch ins Menü hängen?", 6),
-            view("be75a6ae-0000-0000-0000-000000000003", "FUX", "working", "working", "Baut die Datepicker-Varianten …", 0),
+            View {
+                question: Some(brain_core::qa::OpenQuestion {
+                    call: "toolu_demo".into(),
+                    items: vec![
+                        brain_core::qa::QuestionItem { question: "Welche Variante soll der Datepicker zuerst bekommen?".into(), options: vec!["Bereich".into(), "Monat".into(), "Woche".into()] },
+                        brain_core::qa::QuestionItem { question: "Mit Tastaturbedienung?".into(), options: vec!["Ja".into(), "Später".into()] },
+                    ],
+                    multi_select: false,
+                }),
+                ..view("be75a6ae-0000-0000-0000-000000000003", "FUX", "needs_you", "attention", "Claude fragt: Welche Variante zuerst?", 1)
+            },
             view("4d4aa5f4-0000-0000-0000-000000000004", "Haushalt", "ended", "ended", "Bank-Import läuft wieder", 180),
         ]);
+        let limit = |used: f64, resets_in_h: i64, runs_out_in_h: Option<i64>| LimitView {
+            used_percentage: used,
+            resets_at: Some(now / 1000 + resets_in_h * 3600),
+            runs_out_at: runs_out_in_h.map(|h| now / 1000 + h * 3600),
+        };
+        link.publish_more(
+            vec![
+                UsageView { account: "main".into(), five_hour: Some(limit(42.0, 3, None)), seven_day: Some(limit(67.0, 96, Some(40))) },
+                UsageView { account: "second".into(), five_hour: Some(limit(8.0, 4, None)), seven_day: Some(limit(23.0, 120, None)) },
+            ],
+            Places { accounts: vec!["main".into(), "second".into()], folders: vec!["/Users/demo/Work/fin".into(), "/Users/demo/Work/phoenix".into(), "/Users/demo/Work/fux".into()] },
+        );
         let fingerprint: String = ring::digest::digest(&ring::digest::SHA256, &std::fs::read(dir.join("link/cert.der")).unwrap())
             .as_ref()
             .iter()

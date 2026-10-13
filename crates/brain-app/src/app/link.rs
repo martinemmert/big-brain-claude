@@ -10,7 +10,7 @@ use iced::widget::image;
 use iced::Task;
 
 use super::{off_thread, Brain, Message, Mode};
-use crate::companion::{self, Command, Link, Pairing, View};
+use crate::companion::{self, Command, LimitView, Link, Pairing, Places, UsageView, View};
 use crate::format::plain;
 use crate::i18n::t;
 use crate::tr;
@@ -90,11 +90,60 @@ impl Brain {
 
     /// On every refresh: the phone's view of the list, and what it asked for since.
     pub(super) fn serve_link(&mut self, now: i64) -> Task<Message> {
+        if self.link.is_none() {
+            return Task::none();
+        }
+        self.refresh_link_questions();
         let Some(link) = &self.link else { return Task::none() };
         link.publish(self.link_views(now));
+        link.publish_more(self.link_usage(now), self.link_places());
         let commands = link.take_commands();
         let tasks: Vec<Task<Message>> = commands.into_iter().map(|command| self.run_link_command(command, true)).collect();
         Task::batch(tasks)
+    }
+
+    /// The open question of each session that waits for the user, read again only when its
+    /// transcript grew.
+    fn refresh_link_questions(&mut self) {
+        let waiting: Vec<_> = self.model.board.keys().filter(|k| self.model.board.get(k).is_some_and(|s| s.phase() == Phase::NeedsYou)).cloned().collect();
+        self.link_questions.retain(|k, _| waiting.contains(k));
+        for key in waiting {
+            let Some(path) = self.model.transcript_path(&key) else { continue };
+            let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            if self.link_questions.get(&key).is_some_and(|(seen, _)| *seen == len) {
+                continue;
+            }
+            self.link_questions.insert(key, (len, brain_core::qa::open_question(&path)));
+        }
+    }
+
+    /// Each account's plan limits, with when they run out at Brain's forecast.
+    fn link_usage(&self, now: i64) -> Vec<UsageView> {
+        let now_secs = now / 1000;
+        self.model
+            .accounts
+            .iter()
+            .filter_map(|account| {
+                let snapshot = brain_core::usage::account_limits(&self.model.usage, &account.id)?;
+                let history = self.model.usage_history.get(&account.id).map(Vec::as_slice).unwrap_or_default();
+                let view = |limit: brain_core::usage::Limit, runs_out: Option<i64>| LimitView {
+                    used_percentage: limit.used_percentage,
+                    resets_at: limit.resets_at,
+                    runs_out_at: runs_out.filter(|_| limit.used_percentage < 100.0),
+                };
+                Some(UsageView {
+                    account: account.id.clone(),
+                    five_hour: snapshot.five_hour.map(|l| view(l, l.runs_out_at(brain_core::usage::FIVE_HOURS, now_secs))),
+                    seven_day: snapshot.seven_day.map(|l| view(l, l.runs_out_at_recent(brain_core::usage::SEVEN_DAYS, now_secs, history))),
+                })
+            })
+            .collect()
+    }
+
+    /// The accounts and the folders sessions ran in lately, most recent first.
+    fn link_places(&self) -> Places {
+        let folders = self.folder_suggestions("").into_iter().take(20).collect();
+        Places { accounts: self.model.accounts.iter().map(|a| a.id.clone()).collect(), folders }
     }
 
     /// The sessions as Brain lists them, section by section.
@@ -113,6 +162,7 @@ impl Brain {
 
     fn link_view(&self, s: &Session, group: &'static str) -> View {
         let phase = s.phase();
+        let question = if phase == Phase::NeedsYou { self.link_questions.get(&s.key).and_then(|(_, q)| q.clone()) } else { None };
         View {
             account: s.key.account.clone(),
             id: s.key.id.clone(),
@@ -128,8 +178,9 @@ impl Brain {
             headline: s.headline().map(|h| plain(&h)),
             since_ms: s.phase_since_ms(),
             folder: s.cwd.as_deref().and_then(|c| c.rsplit('/').find(|p| !p.is_empty())).map(str::to_string),
-            permission_open: s.awaiting_permission(),
-            permission_since_ms: s.awaiting_permission().then(|| s.phase_since_ms()),
+            permission_open: s.awaiting_permission() && question.is_none(),
+            permission_since_ms: (s.awaiting_permission() && question.is_none()).then(|| s.phase_since_ms()),
+            question,
             can_reply: phase != Phase::Ended && (self.can_send(&s.key) || s.agent.as_ref().is_some_and(|a| a.is_active())),
         }
     }
@@ -141,7 +192,8 @@ impl Brain {
             return Task::none();
         }
         let key = match &command {
-            Command::Reply { key, .. } | Command::Permission { key, .. } => key.clone(),
+            Command::Reply { key, .. } | Command::Permission { key, .. } | Command::Answer { key, .. } => key.clone(),
+            Command::Start { account, folder, prompt } => return self.link_start(account, folder, prompt.clone()),
         };
         let Some(session) = self.model.board.get(&key) else { return Task::none() };
         let name = session.display_name();
@@ -168,9 +220,37 @@ impl Brain {
                 self.set_status(tr!("Vom Handy: „{name}“ nimmt gerade keine Eingabe an.", "From the phone: “{name}” doesn't take input right now."));
                 Task::none()
             }
+            // Started before a session was looked up (it has none yet).
+            Command::Start { .. } => Task::none(),
+            Command::Answer { call, picks, .. } => {
+                // Only the question the phone showed, read from the transcript right now.
+                let open = self.model.transcript_path(&key).and_then(|p| brain_core::qa::open_question(&p));
+                let Some(keys) = open.filter(|q| q.call == call).and_then(|q| brain_core::qa::answer_keys(&q, &picks)) else {
+                    self.set_status(tr!(
+                        "Vom Handy: „{name}“ fragt inzwischen etwas anderes – Antwort nicht gesendet.",
+                        "From the phone: “{name}” asks something else by now – answer not sent."
+                    ));
+                    return Task::none();
+                };
+                if self.terminals.contains_key(&key) {
+                    self.set_status(tr!("Antwort vom Handy an „{name}“ gegeben.", "Answered “{name}” from the phone."));
+                    return Task::done(Message::TerminalKeys(key, keys.into_bytes()));
+                }
+                if in_background && first_try && self.spawn_terminal(&key) {
+                    return later(Command::Answer { key, call, picks });
+                }
+                // A session in another terminal app: its option keys can't be sent there.
+                self.set_status(tr!(
+                    "Vom Handy: „{name}“ läuft nicht in Brain – bitte dort antworten.",
+                    "From the phone: “{name}” doesn't run in Brain – answer it there."
+                ));
+                Task::none()
+            }
             Command::Permission { allow, since_ms, .. } => {
+                // A question isn't a permission: Allow would pick its first option.
+                let asking = self.link_questions.get(&key).is_some_and(|(_, q)| q.is_some());
                 // Only the dialog the phone showed: one that opened since was never seen there.
-                if permission_since != Some(since_ms) {
+                if asking || permission_since != Some(since_ms) {
                     if permission_open {
                         self.set_status(tr!(
                             "Vom Handy: „{name}“ fragt inzwischen etwas anderes – Freigabe nicht gesendet.",
@@ -197,6 +277,19 @@ impl Brain {
                 Task::none()
             }
         }
+    }
+}
+
+impl Brain {
+    /// A session started from the phone runs in the background; Brain lists it without taking
+    /// the selection on the Mac.
+    fn link_start(&mut self, account: &str, folder: &str, prompt: Option<String>) -> Task<Message> {
+        let Some(account) = self.model.account(account).cloned() else { return Task::none() };
+        let folder_name = folder.rsplit('/').find(|p| !p.is_empty()).unwrap_or(folder).to_string();
+        self.set_status(tr!("Vom Handy: neue Session in {folder_name} …", "From the phone: new session in {folder_name} …"));
+        let folder = folder.to_string();
+        let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), None, None, prompt.as_deref()));
+        Task::perform(started, Message::LinkStarted)
     }
 }
 
