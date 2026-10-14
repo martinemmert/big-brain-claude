@@ -25,7 +25,7 @@ use brain_core::account::{home_dir, Account};
 use brain_core::changes::{changes_of, diff_of};
 use brain_core::files::{session_files, Touch};
 use brain_core::state::SessionKey;
-use brain_core::transcript::{cwd_of, find_transcript, read_recent_messages, Role};
+use brain_core::transcript::{cwd_of, find_transcript, read_all_messages, read_recent_messages, Role};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::{Bytes, Incoming};
 use hyper::{Method, Request, Response, StatusCode};
@@ -36,6 +36,13 @@ use tokio_rustls::rustls;
 pub const PORT: u16 = 48620;
 /// Messages the phone gets per session, newest last.
 const MESSAGE_LIMIT: usize = 80;
+/// The most it gets when it asks for older ones.
+const MESSAGE_LIMIT_MAX: usize = 5000;
+/// Search hits per search, and how much of each.
+const SEARCH_HITS: usize = 100;
+const SEARCH_CHARS: usize = 400;
+/// A message asked for in full: practically all of it.
+const FULL_CHARS: usize = 200_000;
 /// The longest message text sent; the phone shows the start of longer ones.
 const MESSAGE_CHARS: usize = 6000;
 /// The largest request body: a reply.
@@ -103,7 +110,7 @@ pub struct Picked {
 }
 
 /// What this Brain Link offers beyond the first version, for the phone to show only what works.
-const FEATURES: [&str; 5] = ["files", "attachments", "wait", "control", "answers"];
+const FEATURES: [&str; 6] = ["files", "attachments", "wait", "control", "answers", "history"];
 /// How long a read with `wait` waits for something new before it answers anyway.
 const WAIT: Duration = Duration::from_secs(25);
 /// How often a waiting read looks again.
@@ -525,7 +532,38 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 }
             }
             let version = size();
-            off_thread(state.clone(), move |state| with_version(reply(StatusCode::OK, &messages(state, &key)), version)).await
+            // `limit`: older messages on request, up to a whole conversation.
+            let limit = query_param(req.uri().query(), "limit").and_then(|v| v.parse::<usize>().ok()).unwrap_or(MESSAGE_LIMIT).clamp(1, MESSAGE_LIMIT_MAX);
+            off_thread(state.clone(), move |state| {
+                let (list, more) = messages(state, &key, limit);
+                let mut response = with_version(reply(StatusCode::OK, &list), version);
+                response.headers_mut().insert("brain-more", hyper::header::HeaderValue::from_static(if more { "1" } else { "0" }));
+                response
+            })
+            .await
+        }
+        // The whole conversation searched; each hit says how far back it is (0: the newest).
+        (Method::GET, ["v1", "sessions", account, id, "search"]) => {
+            let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
+            let Some(text) = query_param(req.uri().query(), "q").filter(|q| q.trim().chars().count() >= 2) else {
+                return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "q" })));
+            };
+            off_thread(state.clone(), move |state| reply(StatusCode::OK, &search(state, &key, &text))).await
+        }
+        // One message in full, which the list clips: by its time, role and place among those
+        // with the same time.
+        (Method::GET, ["v1", "sessions", account, id, "message"]) => {
+            let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
+            let query = req.uri().query();
+            let (Some(ts), Some(role)) = (query_param(query, "ts").and_then(|t| t.parse::<i64>().ok()), query_param(query, "role")) else {
+                return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "ts and role" })));
+            };
+            let nth = query_param(query, "nth").and_then(|n| n.parse::<usize>().ok()).unwrap_or(0);
+            off_thread(state.clone(), move |state| match full_message(state, &key, ts, &role, nth) {
+                Some(message) => reply(StatusCode::OK, &message),
+                None => not_found(),
+            })
+            .await
         }
         (Method::POST, ["v1", "sessions", account, id, "control"]) => {
             let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
@@ -663,6 +701,34 @@ struct MessageView {
     tool: Option<String>,
     text: String,
     ts_ms: Option<i64>,
+    /// The text was cut at [`MESSAGE_CHARS`]: `…/message` has it whole.
+    clipped: bool,
+    /// For a search hit: how many messages came after it (0: the newest).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    back: Option<usize>,
+}
+
+impl MessageView {
+    fn of(message: brain_core::transcript::Message, max: usize) -> MessageView {
+        let clipped = message.text.chars().nth(max).is_some();
+        MessageView {
+            role: role_name(message.role),
+            tool: message.tool,
+            text: clip(&message.text, max),
+            ts_ms: message.ts.map(|t| t.timestamp_millis()),
+            clipped,
+            back: None,
+        }
+    }
+}
+
+fn role_name(role: Role) -> &'static str {
+    match role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
+        Role::System => "system",
+    }
 }
 
 fn transcript_of(state: &State, key: &SessionKey) -> Option<PathBuf> {
@@ -670,22 +736,48 @@ fn transcript_of(state: &State, key: &SessionKey) -> Option<PathBuf> {
     find_transcript(account, &key.id)
 }
 
-fn messages(state: &State, key: &SessionKey) -> Vec<MessageView> {
+/// The last `limit` messages, and whether older ones exist. Up to the usual window the end of
+/// the transcript is read; further back the whole of it.
+fn messages(state: &State, key: &SessionKey, limit: usize) -> (Vec<MessageView>, bool) {
+    let Some(path) = transcript_of(state, key) else { return (Vec::new(), false) };
+    let (list, more) = if limit <= MESSAGE_LIMIT {
+        // One more than asked tells whether there are older ones.
+        let mut list = read_recent_messages(&path, limit + 1);
+        let more = list.len() > limit;
+        list.drain(..list.len().saturating_sub(limit));
+        (list, more)
+    } else {
+        let mut list = read_all_messages(&path);
+        let more = list.len() > limit;
+        list.drain(..list.len().saturating_sub(limit));
+        (list, more)
+    };
+    (list.into_iter().map(|m| MessageView::of(m, MESSAGE_CHARS)).collect(), more)
+}
+
+/// Messages whose text contains `text` (any case), newest first, at most [`SEARCH_HITS`].
+fn search(state: &State, key: &SessionKey, text: &str) -> Vec<MessageView> {
     let Some(path) = transcript_of(state, key) else { return Vec::new() };
-    read_recent_messages(&path, MESSAGE_LIMIT)
-        .into_iter()
-        .map(|m| MessageView {
-            role: match m.role {
-                Role::User => "user",
-                Role::Assistant => "assistant",
-                Role::Tool => "tool",
-                Role::System => "system",
-            },
-            tool: m.tool,
-            text: clip(&m.text, MESSAGE_CHARS),
-            ts_ms: m.ts.map(|t| t.timestamp_millis()),
-        })
+    let needle = text.trim().to_lowercase();
+    let all = read_all_messages(&path);
+    let total = all.len();
+    all.into_iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, m)| m.text.to_lowercase().contains(&needle))
+        .take(SEARCH_HITS)
+        .map(|(at, m)| MessageView { back: Some(total - 1 - at), ..MessageView::of(m, SEARCH_CHARS) })
         .collect()
+}
+
+/// The `nth` message with this time and role, unclipped (up to [`FULL_CHARS`]).
+fn full_message(state: &State, key: &SessionKey, ts_ms: i64, role: &str, nth: usize) -> Option<MessageView> {
+    let path = transcript_of(state, key)?;
+    read_all_messages(&path)
+        .into_iter()
+        .filter(|m| role_name(m.role) == role && m.ts.map(|t| t.timestamp_millis()) == Some(ts_ms))
+        .nth(nth)
+        .map(|m| MessageView::of(m, FULL_CHARS))
 }
 
 fn clip(text: &str, max: usize) -> String {
@@ -1086,6 +1178,63 @@ mod tests {
         assert_eq!(clip_bytes("ab", 2), "ab");
     }
 
+    /// Older messages on request, a search through the whole conversation with how far back each
+    /// hit is, and a clipped message in full.
+    #[test]
+    fn pages_searches_and_unclips_a_conversation() {
+        let dir = std::env::temp_dir().join(format!("brain-link-history-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let project = dir.join("claude").join("projects").join("-w");
+        std::fs::create_dir_all(&project).unwrap();
+        let long = "x".repeat(MESSAGE_CHARS + 500);
+        let mut lines: Vec<String> = (0..100)
+            .map(|i| serde_json::json!({ "type": "user", "timestamp": format!("2026-10-14T09:{:02}:{:02}Z", i / 60, i % 60), "message": { "role": "user", "content": format!("Frage {i}") } }).to_string())
+            .collect();
+        lines.push(serde_json::json!({ "type": "assistant", "timestamp": "2026-10-14T10:00:00Z", "message": { "role": "assistant", "content": [{ "type": "text", "text": long }] } }).to_string());
+        std::fs::write(project.join("0331-ab.jsonl"), lines.join("\n")).unwrap();
+
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let link = Link::start_in(dir.join("link"), port, vec![Account { id: "main".into(), config_dir: dir.join("claude") }]).unwrap();
+        let bearer = format!("Authorization: Bearer {}", std::fs::read_to_string(dir.join("link").join("token")).unwrap());
+        let get = |path: &str| {
+            let out = std::process::Command::new("curl")
+                .args(["-sk", "-i", "-H", &bearer, &format!("https://127.0.0.1:{port}/v1/sessions/main/0331-ab/{path}")])
+                .output()
+                .unwrap();
+            let text = String::from_utf8(out.stdout).unwrap();
+            let (head, body) = text.split_once("\r\n\r\n").unwrap();
+            (head.to_lowercase(), serde_json::from_str::<serde_json::Value>(body).unwrap_or_default())
+        };
+
+        let (head, recent) = get("messages");
+        assert_eq!(recent.as_array().unwrap().len(), MESSAGE_LIMIT);
+        assert!(head.contains("brain-more: 1"), "{head}");
+        let last = &recent[MESSAGE_LIMIT - 1];
+        assert_eq!((last["clipped"].as_bool(), last["text"].as_str().unwrap().chars().count()), (Some(true), MESSAGE_CHARS + 1));
+
+        let (head, all) = get("messages?limit=200");
+        assert_eq!(all.as_array().unwrap().len(), 101);
+        assert!(head.contains("brain-more: 0"), "{head}");
+        assert_eq!(all[0]["text"], "Frage 0");
+
+        let (_, hits) = get("search?q=frage%201");
+        let hits = hits.as_array().unwrap();
+        // Frage 1, 10–19: newest first, each with how far back it is.
+        assert_eq!(hits.len(), 11);
+        assert_eq!((hits[0]["text"].as_str(), hits[0]["back"].as_u64()), (Some("Frage 19"), Some(81)));
+        // One letter matches nearly everything: refused.
+        assert_eq!(get("search?q=x").1["error"], "q");
+
+        let ts = last["ts_ms"].as_i64().unwrap();
+        let (_, full) = get(&format!("message?ts={ts}&role=assistant&nth=0"));
+        assert_eq!((full["text"].as_str().map(str::len), full["clipped"].as_bool()), (Some(long.len()), Some(false)));
+        assert_eq!(get(&format!("message?ts={ts}&role=user")).1["error"], "not found");
+        drop(link);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A session's files (its git changes and what its transcript touched), one file's diff and
     /// bytes, nothing outside them; an attachment saved for a reply to name.
     #[test]
@@ -1181,7 +1330,21 @@ mod tests {
             })
             .to_string()
         };
-        let lines = [lines[0].to_string(), lines[1].to_string(), tool("Edit", "src/bookings.rs"), tool("Write", "src/export.rs"), lines[2].to_string()];
+        // An earlier part of the conversation, for loading older messages and searching, and a
+        // report longer than the list shows.
+        let mut older: Vec<String> = (0..60)
+            .flat_map(|i| {
+                let at = format!("2026-10-09T{:02}:{:02}:00Z", 8 + i / 60, i % 60);
+                [
+                    serde_json::json!({ "type": "user", "timestamp": at, "message": { "role": "user", "content": format!("Schritt {i}: prüf die Buchungen von Konto {}", 1000 + i) } }).to_string(),
+                    serde_json::json!({ "type": "assistant", "timestamp": at, "message": { "role": "assistant", "content": [{ "type": "text", "text": format!("Konto {} geprüft, alles stimmt.", 1000 + i) }] } }).to_string(),
+                ]
+            })
+            .collect();
+        let report: String = (1..=120).map(|i| format!("{i}. Buchung {i}: Betrag {},00 €, Kategorie Haushalt\n", i * 7)).collect();
+        older.push(serde_json::json!({ "type": "assistant", "timestamp": "2026-10-09T09:30:00Z", "message": { "role": "assistant", "content": [{ "type": "text", "text": format!("## Bericht\n\n{report}") }] } }).to_string());
+        older.extend([lines[0].to_string(), lines[1].to_string(), tool("Edit", "src/bookings.rs"), tool("Write", "src/export.rs"), lines[2].to_string()]);
+        let lines = older;
         std::fs::write(project.join("0331aa00-1111-2222-3333-444455556666.jsonl"), lines.join("\n")).unwrap();
         // Next to Brain's own port, so it runs while Brain (with Brain Link on) does.
         let port = PORT + 1;
