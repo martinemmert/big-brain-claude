@@ -29,6 +29,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::Pairing => pairing(brain),
         Mode::AccountSetup => account_setup(brain),
         Mode::MoveTarget => move_target(brain),
+        Mode::RestartFlags => restart_flags(brain),
         Mode::NewSession => new_session(brain),
         _ if brain.prefs.layout == Layout::Today => today(brain),
         _ => detail(brain, now),
@@ -261,6 +262,7 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
         let key = if targets.len() == 1 { "A" } else { "" };
         keep.push((tr!("In {id} fortsetzen", "Continue in {id}"), key, Action::MoveTo(index), false));
     }
+    keep.push((t("Neu starten mit …", "Restart with …").to_string(), "", Action::RestartWith, false));
     groups.push(keep);
 
     let mut remove = Vec::new();
@@ -1865,6 +1867,38 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
     .spacing(14)
     .padding(Padding { top: 24.0, right: 28.0, bottom: 0.0, left: 28.0 })
     .into()
+}
+
+/// "Restart with …": the flags the selected session goes on with.
+fn restart_flags(brain: &Brain) -> Element<'_, Message> {
+    let name = brain.selected_session().map(|s| s.display_name()).unwrap_or_default();
+    let field = text_input("--chrome", &brain.restart.flags)
+        .id(crate::app::RESTART_FLAGS)
+        .on_input(Message::RestartFlagsChanged)
+        .on_submit(Message::RestartSubmit)
+        .padding([8, 12])
+        .size(14)
+        .font(style::MONO)
+        .style(field_style);
+    let mut body = column![
+        dialog_title(tr!("„{name}“ neu starten mit …", "Restart “{name}” with …")),
+        text(t(
+            "Claude nimmt Flags nur beim Start: Die Session endet und läuft mit ihrem ganzen Verlauf weiter – wo sie lief (Hintergrund, Brain oder iTerm). Zum Beispiel --chrome, --model opus, --permission-mode plan.",
+            "Claude takes flags only at start: the session ends and goes on with all of its history, where it ran (background, Brain or iTerm). For example --chrome, --model opus, --permission-mode plan.",
+        ))
+        .size(13)
+        .line_height(1.5)
+        .color(TEXT)
+        .font(UI),
+        field,
+    ]
+    .spacing(14)
+    .max_width(640);
+    if let Some(err) = &brain.restart.error {
+        body = body.push(text(err.clone()).size(12.5).color(CALLS).font(UI));
+    }
+    body = body.push(action(t("Neu starten", "Restart"), "⏎", true, Some(Message::RestartSubmit)));
+    body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
 }
 
 /// `A` with several accounts: where the selected session continues, each account with how much

@@ -13,6 +13,8 @@ use iced::{window, Subscription, Task};
 use crate::config;
 
 mod account;
+mod restart;
+pub use restart::RESTART_FLAGS;
 mod link;
 
 pub use account::ACCOUNT_NAME;
@@ -69,6 +71,8 @@ pub enum Mode {
     AccountSetup,
     /// Which account the selected session moves to (`A` with three accounts or more).
     MoveTarget,
+    /// The flags the selected session restarts with.
+    RestartFlags,
 }
 
 /// What a line of the command palette does.
@@ -187,6 +191,8 @@ pub enum Action {
     Export,
     /// Continue the selected session in this account (its index among the accounts).
     MoveTo(usize),
+    /// End the session and go on with extra flags (`--chrome`).
+    RestartWith,
     End,
     Hide,
     Trash,
@@ -320,6 +326,9 @@ pub enum Message {
     AccountSetupPlanned(u64, brain_core::account_setup::Plan),
     AccountSetupCreate,
     AccountSetupDone(Result<String, String>),
+    /// The restart dialog: the flags typed, and ⏎.
+    RestartFlagsChanged(String),
+    RestartSubmit,
     SidebarDrag,
     SidebarTo(f32),
     SidebarDone,
@@ -588,6 +597,11 @@ pub struct Brain {
     focus_on_select: bool,
     /// The new-account dialog.
     pub account_setup: account::AccountSetup,
+    /// The restart dialog, a session asked to end for a restart, and the flags a terminal about
+    /// to start resumes with.
+    pub restart: restart::RestartDialog,
+    pending_restart: Option<restart::PendingRestart>,
+    restart_flags: HashMap<SessionKey, Vec<String>>,
     /// Per session that waits: its transcript's length when read, and the question it asks.
     link_questions: HashMap<SessionKey, (u64, Option<brain_core::qa::OpenQuestion>)>,
     /// Brain Link, the companion app's server, while it runs.
@@ -694,6 +708,9 @@ impl Brain {
             focus_on_select: false,
             account_setup: account::AccountSetup::default(),
             link_questions: HashMap::new(),
+            restart: restart::RestartDialog::default(),
+            pending_restart: None,
+            restart_flags: HashMap::new(),
             link: None,
             link_qr: None,
         };
@@ -1226,6 +1243,12 @@ impl Brain {
                 Task::none()
             }
             Message::AccountSetupCreate => self.account_setup_create(),
+            Message::RestartFlagsChanged(flags) => {
+                self.restart.flags = flags;
+                self.restart.error = None;
+                Task::none()
+            }
+            Message::RestartSubmit => self.submit_restart(),
             Message::AccountSetupDone(result) => {
                 self.mode = Mode::Normal;
                 self.account_setup_done(result)
@@ -1368,6 +1391,7 @@ impl Brain {
             tasks.push(self.bring_forward());
         }
         tasks.push(self.continue_takeover());
+        tasks.push(self.continue_restart());
         if self.status.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(6)) {
             self.status = None;
         }
@@ -1780,6 +1804,7 @@ impl Brain {
                 let id = self.model.accounts[index].id.clone();
                 all.push((tr!("In {id} fortsetzen", "Continue in {id}"), "", PaletteCommand::Act(Action::MoveTo(index))));
             }
+            all.push((t("Neu starten mit … (z. B. --chrome)", "Restart with … (e.g. --chrome)").to_string(), "", PaletteCommand::Act(Action::RestartWith)));
             all.push((t("Beenden / Hintergrund-Session stoppen", "End / stop the background session").to_string(), "X", PaletteCommand::Act(Action::End)));
             all.push((t("Ausblenden", "Hide").to_string(), "⌫", PaletteCommand::Act(Action::Hide)));
             all.push((t("In den Papierkorb", "Move to Trash").to_string(), "⌘⌫", PaletteCommand::Act(Action::Trash)));
@@ -2066,7 +2091,10 @@ impl Brain {
             return Some((vec!["attach".into(), agent.id.clone()], cwd));
         }
         if session.phase() == Phase::Ended {
-            return Some((vec!["--resume".into(), session.session_id.clone()?], cwd));
+            // A restart's flags come after the resume.
+            let mut args = vec!["--resume".into(), session.session_id.clone()?];
+            args.extend(self.restart_flags.get(&session.key).cloned().unwrap_or_default());
+            return Some((args, cwd));
         }
         None
     }
@@ -2692,6 +2720,7 @@ impl Brain {
                 return Task::none();
             }
             Mode::Pairing | Mode::AccountSetup => return Task::none(),
+            Mode::RestartFlags => return Task::none(),
             Mode::MoveTarget => {
                 // 1, 2, … pick the account in the order the dialog lists them.
                 let digit = character.as_deref().and_then(|c| c.parse::<usize>().ok()).filter(|d| *d >= 1);
@@ -2852,7 +2881,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::MoveTarget => {
+            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::MoveTarget | Mode::RestartFlags => {
                 self.mode = Mode::Normal;
                 unfocus()
             }
@@ -3005,6 +3034,7 @@ impl Brain {
             Action::Export => return self.export_selected(),
             Action::Mute => self.toggle_mute(),
             Action::Snooze => self.cycle_snooze(),
+            Action::RestartWith => return self.open_restart_dialog(),
             Action::MoveTo(index) => {
                 if self.mode == Mode::MoveTarget {
                     self.mode = Mode::Normal;

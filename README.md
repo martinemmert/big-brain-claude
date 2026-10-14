@@ -116,6 +116,9 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   in `config.json`, 10 by default, 0 turns them off) and snoozing per session.
 - **New sessions** in a recent folder and any account (`⌘N`), or from a **template**: a
   Markdown file with folder, account, model and a first prompt with placeholders (below).
+- **Restart with flags** (right-click or ⌘K → *Restart with …*): `--chrome`, `--model opus` … The
+  session ends and its conversation goes on with the flags where it ran: in the background
+  (`claude --bg --resume <id> <flags>`), in Brain's terminal, or in a new iTerm tab.
 - **Move a session to another account** (`A`), e.g. when one hits its five-hour limit: with two
   accounts `A` twice, with more Brain asks which one (`1`, `2`, …, each with its current usage);
   the right-click menu and ⌘K list one entry per account. Brain copies the transcript, resumes it there with `claude --resume <id> --fork-session` and

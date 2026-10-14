@@ -120,6 +120,7 @@ Die Tabs (`←` `→`):
 | `⌫` `⌫` | ausblenden, bis sich in der Session wieder etwas tut |
 | `⌘⌫` `⌘⌫` | beendete Session in den Papierkorb |
 | `C` | aufräumen: alles, was seit N Tagen ruht, ausblenden oder in den Papierkorb |
+| Rechtsklick → *Neu starten mit …* | Session mit Flags neu starten (z. B. `--chrome`, `--model opus`): sie endet und läuft mit ihrem Verlauf weiter, wo sie lief |
 | `A` | in einem anderen Konto fortsetzen, z. B. wenn ein Limit voll ist: bei zwei Konten `A` `A`, bei mehr fragt Brain, in welchem (`1`, `2`, … – mit dem Verbrauch jedes Kontos) |
 
 Tasten, die zweimal gedrückt werden wollen, fragen im Rechtsklick-Menü nicht nach: Der Klick
