@@ -15,7 +15,7 @@
 use std::convert::Infallible;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -79,14 +79,35 @@ pub struct View {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Reply { key: SessionKey, text: String },
-    /// Answers to an open question, one option index per question; `call` names the question
-    /// the phone showed.
-    Answer { key: SessionKey, call: String, picks: Vec<usize> },
+    /// Answers to an open question, one per question; `call` names the question the phone
+    /// showed.
+    Answer { key: SessionKey, call: String, answers: Vec<Picked> },
     /// A new background session in one of the offered folders, with an optional first prompt.
     Start { account: String, folder: String, prompt: Option<String> },
     /// `since_ms`: when the dialog the user answered opened ([`View::permission_since_ms`]).
     Permission { key: SessionKey, allow: bool, since_ms: i64 },
+    /// Esc for a working session: Claude stops what it does.
+    Interrupt { key: SessionKey },
+    /// An ended session goes on in the background.
+    Resume { key: SessionKey },
+    /// The session goes on with these flags (`--model opus`, `--chrome`).
+    Restart { key: SessionKey, flags: Vec<String> },
 }
+
+/// The answer to one question: the options picked (one, or several where the question takes
+/// several) and what the user wrote instead or besides.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Picked {
+    pub picks: Vec<usize>,
+    pub other: Option<String>,
+}
+
+/// What this Brain Link offers beyond the first version, for the phone to show only what works.
+const FEATURES: [&str; 5] = ["files", "attachments", "wait", "control", "answers"];
+/// How long a read with `wait` waits for something new before it answers anyway.
+const WAIT: Duration = Duration::from_secs(25);
+/// How often a waiting read looks again.
+const WAIT_STEP: Duration = Duration::from_millis(250);
 
 /// A plan limit as the phone shows it.
 #[derive(Debug, Clone, Serialize)]
@@ -151,7 +172,8 @@ impl Link {
             token: RwLock::new(identity.token),
             inbox: dir.join("inbox"),
             accounts,
-            sessions: RwLock::new(Vec::new()),
+            sessions: RwLock::new(b"[]".to_vec()),
+            version: AtomicU64::new(1),
             usage: RwLock::new(Vec::new()),
             places: RwLock::new(Places::default()),
             commands: Mutex::new(sender),
@@ -166,9 +188,15 @@ impl Link {
         Ok(Link { state, commands: Mutex::new(receiver), stop, dir, pairing })
     }
 
+    /// The list as the phone sees it. Only a list that differs from the last one counts as new:
+    /// a phone waiting for news (`wait`) gets it within a moment.
     pub fn publish(&self, views: Vec<View>) {
+        let json = serde_json::to_vec(&views).unwrap_or_default();
         if let Ok(mut sessions) = self.state.sessions.write() {
-            *sessions = views;
+            if *sessions != json {
+                *sessions = json;
+                self.state.version.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 
@@ -402,7 +430,10 @@ struct State {
     /// Where the phone's attachments go, a folder per session.
     inbox: PathBuf,
     accounts: Vec<Account>,
-    sessions: RwLock<Vec<View>>,
+    /// The published list, as JSON.
+    sessions: RwLock<Vec<u8>>,
+    /// Counts up with each list that differs from the one before.
+    version: AtomicU64,
     usage: RwLock<Vec<UsageView>>,
     places: RwLock<Places>,
     commands: Mutex<Sender<Command>>,
@@ -440,11 +471,24 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
         // Where Brain is reachable now: the phone keeps the list current, so a new address of
         // the Mac needs no new pairing.
         (Method::GET, ["v1", "hello"]) => {
-            reply(StatusCode::OK, &serde_json::json!({ "name": computer_name(), "version": env!("CARGO_PKG_VERSION"), "hosts": hosts() }))
+            reply(
+                StatusCode::OK,
+                &serde_json::json!({ "name": computer_name(), "version": env!("CARGO_PKG_VERSION"), "hosts": hosts(), "features": FEATURES }),
+            )
         }
+        // `wait=<version>`: answers once the list is newer than that version (or after a while
+        // anyway), so the phone sees a change within a moment instead of at its next look.
         (Method::GET, ["v1", "sessions"]) => {
+            if let Some(seen) = query_param(req.uri().query(), "wait").and_then(|v| v.parse::<u64>().ok()) {
+                let until = tokio::time::Instant::now() + WAIT;
+                while state.version.load(Ordering::Relaxed) == seen && tokio::time::Instant::now() < until {
+                    tokio::time::sleep(WAIT_STEP).await;
+                }
+            }
+            // The version is read before the list: a list published in between comes again next time.
+            let version = state.version.load(Ordering::Relaxed);
             let sessions = state.sessions.read().map(|s| s.clone()).unwrap_or_default();
-            reply(StatusCode::OK, &sessions)
+            with_version(raw(StatusCode::OK, "application/json", sessions), version)
         }
         (Method::GET, ["v1", "usage"]) => reply(StatusCode::OK, &state.usage.read().map(|u| u.clone()).unwrap_or_default()),
         (Method::GET, ["v1", "places"]) => reply(StatusCode::OK, &state.places.read().map(|p| p.clone()).unwrap_or_default()),
@@ -469,10 +513,38 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 reply(StatusCode::SERVICE_UNAVAILABLE, &serde_json::json!({ "error": "Brain is not listening" }))
             }
         }
-        (Method::GET, ["v1", "sessions", account, id, "messages"]) => match session_key(&state, account, id) {
-            Some(key) => reply(StatusCode::OK, &messages(&state, &key)),
-            None => not_found(),
-        },
+        // `wait=<version>`: answers once the transcript changed (its size is the version).
+        (Method::GET, ["v1", "sessions", account, id, "messages"]) => {
+            let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
+            let transcript = transcript_of(&state, &key);
+            let size = || transcript.as_ref().and_then(|t| std::fs::metadata(t).ok()).map_or(0, |m| m.len());
+            if let Some(seen) = query_param(req.uri().query(), "wait").and_then(|v| v.parse::<u64>().ok()) {
+                let until = tokio::time::Instant::now() + WAIT;
+                while size() == seen && tokio::time::Instant::now() < until {
+                    tokio::time::sleep(WAIT_STEP).await;
+                }
+            }
+            let version = size();
+            off_thread(state.clone(), move |state| with_version(reply(StatusCode::OK, &messages(state, &key)), version)).await
+        }
+        (Method::POST, ["v1", "sessions", account, id, "control"]) => {
+            let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
+            let Some(body) = read_json(req).await else {
+                return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "bad body" })));
+            };
+            let command = match body.get("action").and_then(|a| a.as_str()) {
+                Some("interrupt") => Command::Interrupt { key },
+                // What Brain types for it: the session's own command.
+                Some("compact") => Command::Reply { key, text: "/compact".into() },
+                Some("resume") => Command::Resume { key },
+                Some("restart") => match crate::app::restart::parse_flags(body.get("flags").and_then(|f| f.as_str()).unwrap_or_default()) {
+                    Ok(flags) => Command::Restart { key, flags },
+                    Err(error) => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": error }))),
+                },
+                _ => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "action" }))),
+            };
+            send_command(&state, command)
+        }
         // Git and the files themselves are read off the server's only thread.
         (Method::GET, ["v1", "sessions", account, id, "files"]) => match session_key(&state, account, id) {
             Some(key) => off_thread(state.clone(), move |state| reply(StatusCode::OK, &files_view(state, &key))).await,
@@ -517,9 +589,8 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 "reply" => body.get("text").and_then(|t| t.as_str()).filter(|t| !t.trim().is_empty()).map(|text| Command::Reply { key, text: text.to_string() }),
                 "answer" => {
                     let call = body.get("call").and_then(|c| c.as_str()).map(str::to_string);
-                    let picks: Option<Vec<usize>> = body.get("picks").and_then(|p| p.as_array()).and_then(|p| p.iter().map(|v| v.as_u64().map(|n| n as usize)).collect());
-                    match (call, picks) {
-                        (Some(call), Some(picks)) if !picks.is_empty() && picks.len() <= 8 => Some(Command::Answer { key, call, picks }),
+                    match (call, answers_of(&body)) {
+                        (Some(call), Some(answers)) => Some(Command::Answer { key, call, answers }),
                         _ => None,
                     }
                 }
@@ -529,19 +600,48 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 },
             };
             match command {
-                Some(command) => {
-                    let sent = state.commands.lock().map(|s| s.send(command).is_ok()).unwrap_or(false);
-                    if sent {
-                        reply(StatusCode::ACCEPTED, &serde_json::json!({ "ok": true }))
-                    } else {
-                        reply(StatusCode::SERVICE_UNAVAILABLE, &serde_json::json!({ "error": "Brain is not listening" }))
-                    }
-                }
+                Some(command) => send_command(&state, command),
                 None => reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "bad body" })),
             }
         }
         _ => not_found(),
     })
+}
+
+/// Hands a command to Brain's UI thread.
+fn send_command(state: &State, command: Command) -> Response<Full<Bytes>> {
+    if state.commands.lock().map(|s| s.send(command).is_ok()).unwrap_or(false) {
+        reply(StatusCode::ACCEPTED, &serde_json::json!({ "ok": true }))
+    } else {
+        reply(StatusCode::SERVICE_UNAVAILABLE, &serde_json::json!({ "error": "Brain is not listening" }))
+    }
+}
+
+/// An answer's body: `answers: [{picks: [..], other: ".."}]`, one per question, or as the first
+/// phone app sends it, `picks: [..]` with one option per question.
+fn answers_of(body: &serde_json::Value) -> Option<Vec<Picked>> {
+    let indices = |value: Option<&serde_json::Value>| -> Option<Vec<usize>> {
+        value?.as_array()?.iter().map(|v| v.as_u64().map(|n| n as usize)).collect()
+    };
+    let answers: Vec<Picked> = match body.get("answers").and_then(|a| a.as_array()) {
+        Some(list) => list
+            .iter()
+            .map(|a| {
+                let other = a.get("other").and_then(|o| o.as_str()).map(str::trim).filter(|o| !o.is_empty()).map(|o| clip(o, 2000));
+                Some(Picked { picks: indices(a.get("picks")).unwrap_or_default(), other })
+            })
+            .collect::<Option<_>>()?,
+        None => indices(body.get("picks"))?.into_iter().map(|pick| Picked { picks: vec![pick], other: None }).collect(),
+    };
+    let fits = !answers.is_empty() && answers.len() <= 8 && answers.iter().all(|a| (!a.picks.is_empty() || a.other.is_some()) && a.picks.len() <= 16);
+    fits.then_some(answers)
+}
+
+fn with_version(mut response: Response<Full<Bytes>>, version: u64) -> Response<Full<Bytes>> {
+    if let Ok(value) = hyper::header::HeaderValue::from_str(&version.to_string()) {
+        response.headers_mut().insert("brain-version", value);
+    }
+    response
 }
 
 fn authorized(req: &Request<Incoming>, token: &str) -> bool {
@@ -899,19 +999,66 @@ mod tests {
         assert!(curl(&["-H", &bearer, "-d", "{\"allow\":true,\"since_ms\":7}", "BASE/v1/sessions/main/0331-ab/permission"]).ends_with("202"));
         assert!(curl(&["-H", &bearer, "-d", "{\"call\":\"toolu_1\"}", "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("400"));
         assert!(curl(&["-H", &bearer, "-d", "{\"call\":\"toolu_1\",\"picks\":[1,0]}", "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("202"));
+        // Several picks and own words; a question answered with nothing is refused.
+        let answers = "{\"call\":\"toolu_2\",\"answers\":[{\"picks\":[0,2]},{\"picks\":[],\"other\":\" lieber so \"}]}";
+        assert!(curl(&["-H", &bearer, "-d", answers, "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("202"));
+        assert!(curl(&["-H", &bearer, "-d", "{\"call\":\"t\",\"answers\":[{\"picks\":[]}]}", "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("400"));
         link.publish_more(Vec::new(), Places { accounts: vec!["main".into()], folders: vec!["/w/fin".into()] });
         assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\",\"folder\":\"/etc\"}", "BASE/v1/sessions"]).ends_with("400"));
         assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\",\"folder\":\"/w/fin\",\"prompt\":\"los\"}", "BASE/v1/sessions"]).ends_with("202"));
+        // Steering: interrupt, compact (typed as the session's command), resume, restart with flags.
+        let control = |body: &str| curl(&["-H", &bearer, "-d", body, "BASE/v1/sessions/main/0331-ab/control"]);
+        for body in ["{\"action\":\"interrupt\"}", "{\"action\":\"compact\"}", "{\"action\":\"resume\"}", "{\"action\":\"restart\",\"flags\":\"--model opus\"}"] {
+            assert!(control(body).ends_with("202"), "{body}");
+        }
+        // Brain's own flags and unknown actions are refused.
+        assert!(control("{\"action\":\"restart\",\"flags\":\"--resume x\"}").ends_with("400"));
+        assert!(control("{\"action\":\"reboot\"}").ends_with("400"));
         let key = SessionKey { account: "main".into(), id: "0331-ab".into() };
         assert_eq!(
             link.take_commands(),
             vec![
                 Command::Reply { key: key.clone(), text: "weiter".into() },
                 Command::Permission { key: key.clone(), allow: true, since_ms: 7 },
-                Command::Answer { key, call: "toolu_1".into(), picks: vec![1, 0] },
+                Command::Answer {
+                    key: key.clone(),
+                    call: "toolu_1".into(),
+                    answers: vec![Picked { picks: vec![1], other: None }, Picked { picks: vec![0], other: None }],
+                },
+                Command::Answer {
+                    key: key.clone(),
+                    call: "toolu_2".into(),
+                    answers: vec![Picked { picks: vec![0, 2], other: None }, Picked { picks: vec![], other: Some("lieber so".into()) }],
+                },
                 Command::Start { account: "main".into(), folder: "/w/fin".into(), prompt: Some("los".into()) },
+                Command::Interrupt { key: key.clone() },
+                Command::Reply { key: key.clone(), text: "/compact".into() },
+                Command::Resume { key: key.clone() },
+                Command::Restart { key, flags: vec!["--model".into(), "opus".into()] },
             ]
         );
+
+        // A read with `wait` answers once the list changed, with its new version.
+        let version = |out: &str| out.lines().find_map(|l| l.strip_prefix("brain-version: ")).map(|v| v.trim().to_string());
+        let first = curl(&["-i", "-H", &bearer, "BASE/v1/sessions"]);
+        let seen = version(&first).expect("a version");
+        let waiting = {
+            let (bearer, seen) = (bearer.clone(), seen.clone());
+            std::thread::spawn(move || {
+                let started = std::time::Instant::now();
+                let out = std::process::Command::new("curl")
+                    .args(["-sk", "-i", "-H", &bearer, &format!("https://127.0.0.1:{port}/v1/sessions?wait={seen}")])
+                    .output()
+                    .unwrap();
+                (started.elapsed(), String::from_utf8(out.stdout).unwrap())
+            })
+        };
+        std::thread::sleep(Duration::from_millis(600));
+        link.publish(Vec::new());
+        let (took, answer) = waiting.join().unwrap();
+        assert!(took >= Duration::from_millis(500) && took < Duration::from_secs(5), "{took:?}");
+        assert_ne!(version(&answer), Some(seen), "{answer}");
+        assert!(answer.trim_end().ends_with("[]"), "{answer}");
         drop(link);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1061,13 +1208,14 @@ mod tests {
                 question: Some(brain_core::qa::OpenQuestion {
                     call: "toolu_demo".into(),
                     items: vec![
-                        brain_core::qa::QuestionItem { question: "Welche Variante soll der Datepicker zuerst bekommen?".into(), options: vec!["Bereich".into(), "Monat".into(), "Woche".into()] },
-                        brain_core::qa::QuestionItem { question: "Mit Tastaturbedienung?".into(), options: vec!["Ja".into(), "Später".into()] },
+                        brain_core::qa::QuestionItem { question: "Welche Variante soll der Datepicker zuerst bekommen?".into(), options: vec!["Bereich".into(), "Monat".into(), "Woche".into()], multi_select: false },
+                        brain_core::qa::QuestionItem { question: "Welche Ansichten brauchst du?".into(), options: vec!["Tag".into(), "Woche".into(), "Monat".into()], multi_select: true },
                     ],
-                    multi_select: false,
+                    multi_select: true,
                 }),
                 ..view("be75a6ae-0000-0000-0000-000000000003", "FUX", "needs_you", "attention", "Claude fragt: Welche Variante zuerst?", 1)
             },
+            view("5e5e0000-0000-0000-0000-000000000005", "Docs", "working", "working", "Schreibt die Anleitung für den Export", 3),
             view("4d4aa5f4-0000-0000-0000-000000000004", "Haushalt", "ended", "ended", "Bank-Import läuft wieder", 180),
         ]);
         let limit = |used: f64, resets_in_h: i64, runs_out_in_h: Option<i64>| LimitView {
@@ -1095,6 +1243,19 @@ mod tests {
         for _ in 0..1800 {
             for command in link.take_commands() {
                 println!("COMMAND {command:?}");
+                // A reply to "Finanzen" shows up in its conversation, and Claude answers: what a
+                // phone waiting for news sees within a moment.
+                if let Command::Reply { key, text } = &command {
+                    if key.id == "0331aa00-1111-2222-3333-444455556666" {
+                        let now = chrono::Utc::now().to_rfc3339();
+                        let user = serde_json::json!({ "type": "user", "timestamp": now, "message": { "role": "user", "content": text } });
+                        let claude = serde_json::json!({ "type": "assistant", "timestamp": now, "message": { "role": "assistant", "content": [{ "type": "text", "text": "Alles klar, mach ich." }] } });
+                        let path = project.join("0331aa00-1111-2222-3333-444455556666.jsonl");
+                        let mut transcript = std::fs::read_to_string(&path).unwrap_or_default();
+                        transcript.push_str(&format!("\n{user}\n{claude}"));
+                        std::fs::write(&path, transcript).unwrap();
+                    }
+                }
             }
             std::thread::sleep(Duration::from_millis(500));
         }

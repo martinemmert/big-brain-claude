@@ -13,7 +13,7 @@ use iced::{window, Subscription, Task};
 use crate::config;
 
 mod account;
-mod restart;
+pub(crate) mod restart;
 pub use restart::RESTART_FLAGS;
 mod link;
 
@@ -310,6 +310,8 @@ pub enum Message {
     LinkForget,
     /// A phone's command, again once a background session's terminal attached.
     LinkRetry(crate::companion::Command),
+    /// The phone's answers typed into a session, once Esc closed its question dialog.
+    LinkType(SessionKey, String),
     /// A session the phone started: its short id, or why not.
     LinkStarted(Result<String, String>),
     /// ⌘⇧A: live previews of every session that runs in Brain.
@@ -1262,6 +1264,7 @@ impl Brain {
                 Task::none()
             }
             Message::LinkRetry(command) => self.run_link_command(command, false),
+            Message::LinkType(key, text) => self.type_after_dialog(&key, &text),
             Message::LinkStarted(result) => {
                 self.model.relist_transcripts();
                 match result {
@@ -3171,6 +3174,12 @@ impl Brain {
     /// terminal in Brain when it runs there, else through the terminal app it runs in.
     fn type_into_selected(&mut self, text: &str, done: String) -> Task<Message> {
         let Some(key) = self.selected.clone() else { return Task::none() };
+        self.type_into(&key, text, done)
+    }
+
+    /// [`type_into_selected`] for any session.
+    fn type_into(&mut self, key: &SessionKey, text: &str, done: String) -> Task<Message> {
+        let key = key.clone();
         if !self.model.board.get(&key).is_some_and(|s| s.accepts_input()) {
             self.set_status(t("Die Session arbeitet inzwischen wieder – nichts geschickt.", "The session is working again – nothing sent."));
             return Task::none();

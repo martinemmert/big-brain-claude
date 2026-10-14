@@ -137,6 +137,8 @@ pub struct OpenQuestion {
 pub struct QuestionItem {
     pub question: String,
     pub options: Vec<String>,
+    /// This question takes several picks.
+    pub multi_select: bool,
 }
 
 /// The AskUserQuestion call the session waits on, if any: the last one in the transcript that
@@ -166,8 +168,10 @@ pub fn open_question(transcript: &Path) -> Option<OpenQuestion> {
                         .into_iter()
                         .flatten()
                         .map(|q| {
-                            multi_select |= q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false);
+                            let multi = q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false);
+                            multi_select |= multi;
                             QuestionItem {
+                                multi_select: multi,
                                 question: q.get("question").and_then(Value::as_str).unwrap_or_default().to_string(),
                                 options: q
                                     .get("options")
