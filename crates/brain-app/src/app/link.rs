@@ -374,7 +374,16 @@ impl Brain {
 
 /// The answers as one line Claude reads: each question with what was picked and written.
 /// `None` when they don't fit the question (a pick that doesn't exist, several where one goes).
+///
+/// The line is typed into a terminal, and questions and options come from the transcript, so
+/// from what Claude wrote: every control character (Esc, Return, a paste's end marker) becomes
+/// a space, so no part of it can act as a key.
 pub(crate) fn answer_text(question: &OpenQuestion, answers: &[Picked]) -> Option<String> {
+    let text = answer_line(question, answers)?;
+    Some(text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect())
+}
+
+fn answer_line(question: &OpenQuestion, answers: &[Picked]) -> Option<String> {
     if answers.len() != question.items.len() {
         return None;
     }
@@ -384,7 +393,7 @@ pub(crate) fn answer_text(question: &OpenQuestion, answers: &[Picked]) -> Option
             return None;
         }
         let mut chosen: Vec<String> = answer.picks.iter().map(|&p| item.options.get(p).cloned()).collect::<Option<_>>()?;
-        chosen.extend(answer.other.iter().map(|o| o.replace('\n', " ")));
+        chosen.extend(answer.other.iter().cloned());
         if chosen.is_empty() {
             return None;
         }
@@ -425,6 +434,18 @@ mod tests {
         let text = answer_text(&question(), &answers).unwrap();
         assert!(text.ends_with("„Variante?“: Monat, mit Vorschau bitte; „Ansichten?“: Tag, Monat"), "{text}");
         assert!(!text.contains('\n'));
+    }
+
+    /// A question from the transcript that carries keys (Esc, a bracketed paste's end, Return)
+    /// is typed as plain text, never as keys.
+    #[test]
+    fn answers_carry_no_keys() {
+        let mut sneaky = question();
+        sneaky.items[0].options[0] = "Bereich\x1b[201~\r/exit\r".into();
+        let answers = [Picked { picks: vec![0], other: Some("ok\x03\u{7f}".into()) }, Picked { picks: vec![0], other: None }];
+        let text = answer_text(&sneaky, &answers).unwrap();
+        assert!(!text.chars().any(char::is_control), "{text:?}");
+        assert!(text.contains("Bereich [201~ /exit"), "{text:?}");
     }
 
     #[test]
