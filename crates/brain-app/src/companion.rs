@@ -61,6 +61,8 @@ pub struct View {
     pub question: Option<brain_core::qa::OpenQuestion>,
     /// Brain can deliver a reply (its terminal, an iTerm tab, or a background session).
     pub can_reply: bool,
+    /// The session can move to another account now (as `A` in Brain).
+    pub can_move: bool,
 }
 
 /// What the phone asked Brain to do.
@@ -74,6 +76,8 @@ pub enum Command {
     Start { account: String, folder: String, prompt: Option<String> },
     /// `since_ms`: when the dialog the user answered opened ([`View::permission_since_ms`]).
     Permission { key: SessionKey, allow: bool, since_ms: i64 },
+    /// Continue the session in another account, as `A` in Brain.
+    Move { key: SessionKey, account: String },
 }
 
 /// A plan limit as the phone shows it.
@@ -458,7 +462,7 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
             Some(key) => reply(StatusCode::OK, &messages(&state, &key)),
             None => not_found(),
         },
-        (Method::POST, ["v1", "sessions", account, id, action @ ("reply" | "permission" | "answer")]) => {
+        (Method::POST, ["v1", "sessions", account, id, action @ ("reply" | "permission" | "answer" | "move")]) => {
             let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
             let action = action.to_string();
             let Some(body) = read_json(req).await else {
@@ -474,6 +478,12 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                         _ => None,
                     }
                 }
+                // Another known account than the session's own.
+                "move" => body
+                    .get("account")
+                    .and_then(|a| a.as_str())
+                    .filter(|target| *target != key.account && state.accounts.iter().any(|a| a.id == *target))
+                    .map(|target| Command::Move { account: target.to_string(), key }),
                 _ => match (body.get("allow").and_then(|a| a.as_bool()), body.get("since_ms").and_then(|s| s.as_i64())) {
                     (Some(allow), Some(since_ms)) => Some(Command::Permission { key, allow, since_ms }),
                     _ => None,
@@ -591,7 +601,8 @@ mod tests {
         let port = probe.local_addr().unwrap().port();
         drop(probe);
         let account = Account { id: "main".into(), config_dir: dir.join("claude") };
-        let link = Link::start_in(dir.clone(), port, vec![account]).unwrap();
+        let second = Account { id: "second".into(), config_dir: dir.join("claude-second") };
+        let link = Link::start_in(dir.clone(), port, vec![account, second]).unwrap();
         link.publish(vec![View {
             account: "main".into(),
             id: "0331-ab".into(),
@@ -605,6 +616,7 @@ mod tests {
             permission_since_ms: None,
             question: None,
             can_reply: true,
+            can_move: true,
         }]);
         let token = std::fs::read_to_string(dir.join("token")).unwrap();
         let curl = |args: &[&str]| {
@@ -633,6 +645,10 @@ mod tests {
         assert!(curl(&["-H", &bearer, "-d", "{\"allow\":true,\"since_ms\":7}", "BASE/v1/sessions/main/0331-ab/permission"]).ends_with("202"));
         assert!(curl(&["-H", &bearer, "-d", "{\"call\":\"toolu_1\"}", "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("400"));
         assert!(curl(&["-H", &bearer, "-d", "{\"call\":\"toolu_1\",\"picks\":[1,0]}", "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("202"));
+        // A move goes to another known account only.
+        assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\"}", "BASE/v1/sessions/main/0331-ab/move"]).ends_with("400"));
+        assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"third\"}", "BASE/v1/sessions/main/0331-ab/move"]).ends_with("400"));
+        assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"second\"}", "BASE/v1/sessions/main/0331-ab/move"]).ends_with("202"));
         link.publish_more(Vec::new(), Places { accounts: vec!["main".into()], folders: vec!["/w/fin".into()] });
         assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\",\"folder\":\"/etc\"}", "BASE/v1/sessions"]).ends_with("400"));
         assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\",\"folder\":\"/w/fin\",\"prompt\":\"los\"}", "BASE/v1/sessions"]).ends_with("202"));
@@ -642,7 +658,8 @@ mod tests {
             vec![
                 Command::Reply { key: key.clone(), text: "weiter".into() },
                 Command::Permission { key: key.clone(), allow: true, since_ms: 7 },
-                Command::Answer { key, call: "toolu_1".into(), picks: vec![1, 0] },
+                Command::Answer { key: key.clone(), call: "toolu_1".into(), picks: vec![1, 0] },
+                Command::Move { key, account: "second".into() },
                 Command::Start { account: "main".into(), folder: "/w/fin".into(), prompt: Some("los".into()) },
             ]
         );
@@ -668,7 +685,8 @@ mod tests {
         std::fs::write(project.join("0331aa00-1111-2222-3333-444455556666.jsonl"), lines.join("\n")).unwrap();
         // Next to Brain's own port, so it runs while Brain (with Brain Link on) does.
         let port = PORT + 1;
-        let link = Link::start_in(dir.join("link"), port, vec![account]).unwrap();
+        let second = Account { id: "second".into(), config_dir: dir.join("claude-second") };
+        let link = Link::start_in(dir.join("link"), port, vec![account, second]).unwrap();
         let now = chrono::Utc::now().timestamp_millis();
         let view = |id: &str, name: &str, phase: &'static str, group: &'static str, headline: &str, minutes: i64| View {
             account: "main".into(),
@@ -683,6 +701,7 @@ mod tests {
             permission_since_ms: (phase == "needs_you").then_some(now - minutes * 60_000),
             question: None,
             can_reply: phase != "ended",
+            can_move: phase != "working",
         };
         link.publish(vec![
             view("9a1527b8-0000-0000-0000-000000000001", "Phoenix", "needs_you", "attention", "Bash: composer test --filter BookingExport", 2),

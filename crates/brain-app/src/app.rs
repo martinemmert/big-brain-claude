@@ -3039,7 +3039,7 @@ impl Brain {
                 if self.mode == Mode::MoveTarget {
                     self.mode = Mode::Normal;
                 }
-                return self.move_session(index, confirmed);
+                return self.move_selected(index, confirmed);
             }
             Action::End => return self.end_selected(confirmed),
             Action::Hide => self.hide_selected(confirmed),
@@ -3330,7 +3330,7 @@ impl Brain {
                 self.set_status(t("Es gibt kein zweites Konto.", "There is no other account."));
                 Task::none()
             }
-            [only] => self.move_session(*only, confirmed),
+            [only] => self.move_selected(*only, confirmed),
             _ => {
                 self.armed = None;
                 self.mode = Mode::MoveTarget;
@@ -3339,19 +3339,20 @@ impl Brain {
         }
     }
 
-    /// Continues the selected session in the account at `target_index`.
-    fn move_session(&mut self, target_index: usize, confirmed: bool) -> Task<Message> {
-        let Some(session) = self.selected_session() else { return Task::none() };
-        let key = session.key.clone();
+    fn move_selected(&mut self, target_index: usize, confirmed: bool) -> Task<Message> {
+        let Some(key) = self.selected.clone() else { return Task::none() };
+        self.move_session(key, target_index, confirmed)
+    }
+
+    /// Continues the session in the account at `target_index`.
+    pub(super) fn move_session(&mut self, key: SessionKey, target_index: usize, confirmed: bool) -> Task<Message> {
+        let Some(session) = self.model.board.get(&key) else { return Task::none() };
         let Some(target) = self.model.accounts.get(target_index).cloned().filter(|t| t.id != key.account) else {
             self.set_status(t("Es gibt kein zweites Konto.", "There is no other account."));
             return Task::none();
         };
         let ended = session.phase() == Phase::Ended;
-        // One that runs in Brain is stopped, so it only must not be mid-turn; one in iTerm gets
-        // `/exit` typed, so its prompt box must be ready.
-        let movable = ended || if session.agent.is_some() { session.phase() != Phase::Working } else { session.accepts_input() };
-        if !movable {
+        if !movable(session) {
             self.set_status(t("Umziehen geht, sobald die Session fertig ist und auf dich wartet.", "Moving works once the session has finished and waits for you."));
             return Task::none();
         }
@@ -3825,6 +3826,17 @@ fn restore_saved(model: &mut Model, prefs: &Prefs) {
         let mut insight = brain_core::transcript::insight(&path);
         insight.title = brain_core::transcript::title_of(&path).or(insight.title);
         model.board.add_ended(key, cwd, insight, modified);
+    }
+}
+
+/// Whether the session can move to another account now. One that runs in Brain is stopped, so
+/// it only must not be mid-turn; one in iTerm gets `/exit` typed, so its prompt box must be
+/// ready; an ended one just resumes there.
+fn movable(session: &Session) -> bool {
+    match session.phase() {
+        Phase::Ended => true,
+        phase if session.agent.is_some() => phase != Phase::Working,
+        _ => session.accepts_input(),
     }
 }
 

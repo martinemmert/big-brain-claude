@@ -165,8 +165,8 @@ are installed into it right away.
 ## Brain Link (the iPhone companion)
 
 **Brain Companion** (repo `brain-companion`, .NET MAUI) shows the sessions on the iPhone, reads
-along, replies and answers permission dialogs; Brain carries those out on the Mac as it does for a
-reply typed in Brain. ⌘K → *Pair a phone (Brain Link)* turns the server on and shows a QR code;
+along, replies, answers permission dialogs and moves a session to another account; Brain carries
+those out on the Mac as it does for a reply typed in Brain (a move as with `A`). ⌘K → *Pair a phone (Brain Link)* turns the server on and shows a QR code;
 the iPhone camera opens it in the app.
 
 - Off until paired, then it starts with Brain. HTTPS on port 48620 on every interface, so the

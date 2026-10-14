@@ -4,12 +4,12 @@
 
 use std::time::Duration;
 
-use brain_core::state::{Phase, Session};
+use brain_core::state::{Phase, Session, SessionKey};
 use brain_terminal::{self as terminal, Key};
 use iced::widget::image;
 use iced::Task;
 
-use super::{off_thread, Brain, Message, Mode};
+use super::{movable, off_thread, Brain, Message, Mode};
 use crate::companion::{self, Command, LimitView, Link, Pairing, Places, UsageView, View};
 use crate::format::plain;
 use crate::i18n::t;
@@ -182,6 +182,7 @@ impl Brain {
             permission_since_ms: (s.awaiting_permission() && question.is_none()).then(|| s.phase_since_ms()),
             question,
             can_reply: phase != Phase::Ended && (self.can_send(&s.key) || s.agent.as_ref().is_some_and(|a| a.is_active())),
+            can_move: self.model.accounts.len() > 1 && movable(s) && s.session_id.is_some() && s.cwd.is_some(),
         }
     }
 
@@ -194,6 +195,7 @@ impl Brain {
         let key = match &command {
             Command::Reply { key, .. } | Command::Permission { key, .. } | Command::Answer { key, .. } => key.clone(),
             Command::Start { account, folder, prompt } => return self.link_start(account, folder, prompt.clone()),
+            Command::Move { key, account } => return self.link_move(key.clone(), account),
         };
         let Some(session) = self.model.board.get(&key) else { return Task::none() };
         let name = session.display_name();
@@ -220,8 +222,8 @@ impl Brain {
                 self.set_status(tr!("Vom Handy: „{name}“ nimmt gerade keine Eingabe an.", "From the phone: “{name}” doesn't take input right now."));
                 Task::none()
             }
-            // Started before a session was looked up (it has none yet).
-            Command::Start { .. } => Task::none(),
+            // Handled before a session was looked up.
+            Command::Start { .. } | Command::Move { .. } => Task::none(),
             Command::Answer { call, picks, .. } => {
                 // Only the question the phone showed, read from the transcript right now.
                 let open = self.model.transcript_path(&key).and_then(|p| brain_core::qa::open_question(&p));
@@ -290,6 +292,13 @@ impl Brain {
         let folder = folder.to_string();
         let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), None, None, prompt.as_deref()));
         Task::perform(started, Message::LinkStarted)
+    }
+
+    /// A move from the phone: as `A` in Brain, the phone's choice of account being the
+    /// confirmation.
+    fn link_move(&mut self, key: SessionKey, account: &str) -> Task<Message> {
+        let Some(index) = self.model.accounts.iter().position(|a| a.id == account) else { return Task::none() };
+        self.move_session(key, index, true)
     }
 }
 
