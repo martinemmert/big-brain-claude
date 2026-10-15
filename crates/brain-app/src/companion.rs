@@ -89,8 +89,9 @@ pub enum Command {
     /// Answers to an open question, one per question; `call` names the question the phone
     /// showed.
     Answer { key: SessionKey, call: String, answers: Vec<Picked> },
-    /// A new background session in one of the offered folders, with an optional first prompt.
-    Start { account: String, folder: String, prompt: Option<String> },
+    /// A new background session in one of the offered folders, with an optional first prompt and
+    /// output style.
+    Start { account: String, folder: String, prompt: Option<String>, style: Option<String> },
     /// `since_ms`: when the dialog the user answered opened ([`View::permission_since_ms`]).
     Permission { key: SessionKey, allow: bool, since_ms: i64 },
     /// Esc for a working session: Claude stops what it does.
@@ -112,7 +113,7 @@ pub struct Picked {
 }
 
 /// What this Brain Link offers beyond the first version, for the phone to show only what works.
-const FEATURES: [&str; 9] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end"];
+const FEATURES: [&str; 11] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands"];
 /// How long a read with `wait` waits for something new before it answers anyway.
 const WAIT: Duration = Duration::from_secs(25);
 /// How often a waiting read looks again.
@@ -151,6 +152,8 @@ struct FolderList {
 pub struct Places {
     pub accounts: Vec<String>,
     pub folders: Vec<String>,
+    /// The output styles a session can start with: built-in and the accounts' own.
+    pub styles: Vec<brain_core::styles::Style>,
 }
 
 /// What the pairing QR code carries.
@@ -539,7 +542,9 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "unknown account or folder" })));
             };
             let prompt = field("prompt").filter(|p| !p.trim().is_empty());
-            let sent = state.commands.lock().map(|s| s.send(Command::Start { account, folder, prompt }).is_ok()).unwrap_or(false);
+            // Brain checks the style against the account's when it starts the session.
+            let style = field("output_style").filter(|s| !s.trim().is_empty());
+            let sent = state.commands.lock().map(|s| s.send(Command::Start { account, folder, prompt, style }).is_ok()).unwrap_or(false);
             if sent {
                 reply(StatusCode::ACCEPTED, &serde_json::json!({ "ok": true }))
             } else {
@@ -606,6 +611,10 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                     None => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "name" }))),
                 },
                 Some("end") => Command::End { key },
+                Some("style") => match body.get("name").and_then(|n| n.as_str()).and_then(session_name) {
+                    Some(name) => Command::Reply { key, text: format!("/output-style {name}") },
+                    None => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "name" }))),
+                },
                 Some("restart") => match crate::app::restart::parse_flags(body.get("flags").and_then(|f| f.as_str()).unwrap_or_default()) {
                     Ok(flags) => Command::Restart { key, flags },
                     Err(error) => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": error }))),
@@ -613,6 +622,21 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 _ => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "action" }))),
             };
             send_command(&state, command)
+        }
+        // What `/…` completes to (as the session's mod reported it) and the styles it can switch to.
+        (Method::GET, ["v1", "sessions", account, id, "commands"]) => {
+            let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
+            off_thread(state.clone(), move |state| {
+                let config_dir = state.accounts.iter().find(|a| a.id == key.account).map(|a| a.config_dir.clone()).unwrap_or_default();
+                reply(
+                    StatusCode::OK,
+                    &serde_json::json!({
+                        "commands": brain_core::commands::load(&home_dir(), &key.id),
+                        "styles": brain_core::styles::available(&config_dir, None),
+                    }),
+                )
+            })
+            .await
         }
         // Git and the files themselves are read off the server's only thread.
         (Method::GET, ["v1", "sessions", account, id, "files"]) => match session_key(&state, account, id) {
@@ -1146,18 +1170,21 @@ mod tests {
         let answers = "{\"call\":\"toolu_2\",\"answers\":[{\"picks\":[0,2]},{\"picks\":[],\"other\":\" lieber so \"}]}";
         assert!(curl(&["-H", &bearer, "-d", answers, "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("202"));
         assert!(curl(&["-H", &bearer, "-d", "{\"call\":\"t\",\"answers\":[{\"picks\":[]}]}", "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("400"));
-        link.publish_more(Vec::new(), Places { accounts: vec!["main".into()], folders: vec!["/w/fin".into()] });
+        link.publish_more(Vec::new(), Places { accounts: vec!["main".into()], folders: vec!["/w/fin".into()], styles: Vec::new() });
         assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\",\"folder\":\"/etc\"}", "BASE/v1/sessions"]).ends_with("400"));
         assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\",\"folder\":\"/w/fin\",\"prompt\":\"los\"}", "BASE/v1/sessions"]).ends_with("202"));
         // Steering: interrupt, compact and rename (typed as the session's commands), resume, restart with flags, end.
         let control = |body: &str| curl(&["-H", &bearer, "-d", body, "BASE/v1/sessions/main/0331-ab/control"]);
-        for body in ["{\"action\":\"interrupt\"}", "{\"action\":\"compact\"}", "{\"action\":\"resume\"}", "{\"action\":\"restart\",\"flags\":\"--model opus\"}", "{\"action\":\"rename\",\"name\":\"Neue\\nAusgabe\"}", "{\"action\":\"end\"}"] {
+        for body in ["{\"action\":\"interrupt\"}", "{\"action\":\"compact\"}", "{\"action\":\"resume\"}", "{\"action\":\"restart\",\"flags\":\"--model opus\"}", "{\"action\":\"rename\",\"name\":\"Neue\\nAusgabe\"}", "{\"action\":\"end\"}", "{\"action\":\"style\",\"name\":\"Concise\"}"] {
             assert!(control(body).ends_with("202"), "{body}");
         }
         // Brain's own flags and unknown actions are refused.
         assert!(control("{\"action\":\"restart\",\"flags\":\"--resume x\"}").ends_with("400"));
         assert!(control("{\"action\":\"reboot\"}").ends_with("400"));
         assert!(control("{\"action\":\"rename\",\"name\":\" \"}").ends_with("400"), "a name is needed");
+        // The session's commands (none reported here) and the styles it can switch to.
+        let listed = curl(&["-H", &bearer, "BASE/v1/sessions/main/0331-ab/commands"]);
+        assert!(listed.contains("\"commands\":[]") && listed.contains("Explanatory") && listed.ends_with("200"), "{listed}");
         let key = SessionKey { account: "main".into(), id: "0331-ab".into() };
         assert_eq!(
             link.take_commands(),
@@ -1174,13 +1201,14 @@ mod tests {
                     call: "toolu_2".into(),
                     answers: vec![Picked { picks: vec![0, 2], other: None }, Picked { picks: vec![], other: Some("lieber so".into()) }],
                 },
-                Command::Start { account: "main".into(), folder: "/w/fin".into(), prompt: Some("los".into()) },
+                Command::Start { account: "main".into(), folder: "/w/fin".into(), prompt: Some("los".into()), style: None },
                 Command::Interrupt { key: key.clone() },
                 Command::Reply { key: key.clone(), text: "/compact".into() },
                 Command::Resume { key: key.clone() },
                 Command::Restart { key: key.clone(), flags: vec!["--model".into(), "opus".into()] },
                 Command::Reply { key: key.clone(), text: "/rename Neue Ausgabe".into() },
-                Command::End { key },
+                Command::End { key: key.clone() },
+                Command::Reply { key, text: "/output-style Concise".into() },
             ]
         );
 
@@ -1455,7 +1483,7 @@ mod tests {
                 UsageView { account: "main".into(), five_hour: Some(limit(42.0, 3, None)), seven_day: Some(limit(67.0, 96, Some(40))) },
                 UsageView { account: "second".into(), five_hour: Some(limit(8.0, 4, None)), seven_day: Some(limit(23.0, 120, None)) },
             ],
-            Places { accounts: vec!["main".into(), "second".into()], folders: vec!["/Users/demo/Work/fin".into(), "/Users/demo/Work/phoenix".into(), "/Users/demo/Work/fux".into()] },
+            Places { accounts: vec!["main".into(), "second".into()], folders: vec!["/Users/demo/Work/fin".into(), "/Users/demo/Work/phoenix".into(), "/Users/demo/Work/fux".into()], styles: Vec::new() },
         );
         let fingerprint: String = ring::digest::digest(&ring::digest::SHA256, &std::fs::read(dir.join("link/cert.der")).unwrap())
             .as_ref()

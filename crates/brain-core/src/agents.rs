@@ -104,15 +104,19 @@ pub fn started_id(output: &str) -> Option<String> {
     (!id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric())).then(|| id.to_string())
 }
 
-/// Starts a background session in `cwd` (`claude --bg`), with an optional model, name and first
-/// prompt; returns its short id, or what `claude` said (e.g. an untrusted folder).
-pub fn start(account: &Account, cwd: &Path, model: Option<&str>, name: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
+/// Starts a background session in `cwd` (`claude --bg`), with an optional model, name, output
+/// style and first prompt; returns its short id, or what `claude` said (e.g. an untrusted folder).
+pub fn start(account: &Account, cwd: &Path, model: Option<&str>, name: Option<&str>, style: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
     let mut args = vec!["--bg"];
     if let Some(model) = model {
         args.extend(["--model", model]);
     }
     if let Some(name) = name {
         args.extend(["-n", name]);
+    }
+    let settings = style.map(crate::styles::settings);
+    if let Some(settings) = &settings {
+        args.extend(["--settings", settings]);
     }
     // After `--` the prompt is never an option, even one that starts with `-` (a task for later,
     // a prompt from the phone).

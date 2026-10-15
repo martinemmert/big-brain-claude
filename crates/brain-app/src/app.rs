@@ -328,6 +328,8 @@ pub enum Message {
     CloseReader,
     ReaderToEditor,
     NewPlace(bool),
+    /// The new session's output style; none keeps the account's.
+    NewStyle(Option<String>),
     /// The new-account dialog: the name typed, its preview, create, and the outcome.
     AccountSetupName(String),
     AccountSetupPlanned(u64, brain_core::account_setup::Plan),
@@ -370,6 +372,8 @@ pub struct NewSession {
     pub chosen: Option<Chosen>,
     /// ⌥⏎ starts it in an iTerm tab instead of in Brain.
     pub in_iterm: bool,
+    /// ⇧⇥: the output style it starts with; none keeps what the account's settings say.
+    pub style: Option<String>,
 }
 
 pub struct Chosen {
@@ -1331,6 +1335,10 @@ impl Brain {
             Message::SidebarDone => {
                 self.dragging_sidebar = false;
                 self.prefs.save();
+                Task::none()
+            }
+            Message::NewStyle(style) => {
+                self.new_session.style = style;
                 Task::none()
             }
             Message::NewPlace(in_iterm) => {
@@ -3540,7 +3548,7 @@ impl Brain {
         self.mode = Mode::Normal;
         self.set_status(t("Starte die Aufgabe als neue Session …", "Starting the task as a new session …"));
         let id = account.id.clone();
-        let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), None, None, Some(&task.text)));
+        let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), None, None, None, Some(&task.text)));
         Task::perform(started, move |result| Message::Started(id.clone(), result))
     }
 
@@ -3691,11 +3699,27 @@ impl Brain {
         match named {
             Some(Named::ArrowDown) => self.new_session.pick = (self.new_session.pick + 1).min(count.saturating_sub(1)),
             Some(Named::ArrowUp) => self.new_session.pick = self.new_session.pick.saturating_sub(1),
+            Some(Named::Tab) if shift => self.new_session.style = self.next_style(self.new_session.style.as_deref()),
             Some(Named::Tab) => self.new_session.account = (self.new_session.account + 1) % self.model.accounts.len().max(1),
             // Every other key goes to the field (it lost its focus to a click).
             _ => return operation::focus(NEW_SESSION),
         }
         Task::none()
+    }
+
+    /// The output styles of the dialog's account (built-in and its own).
+    pub fn new_session_styles(&self) -> Vec<brain_core::styles::Style> {
+        let config_dir = self.model.accounts.get(self.new_session.account).map(|a| a.config_dir.clone()).unwrap_or_default();
+        brain_core::styles::available(&config_dir, None)
+    }
+
+    /// ⇧⇥: as the account's settings say → each style in turn → as the settings say.
+    fn next_style(&self, current: Option<&str>) -> Option<String> {
+        let names: Vec<String> = self.new_session_styles().into_iter().map(|s| s.name).collect();
+        match current.and_then(|c| names.iter().position(|n| n == c)) {
+            None => names.first().cloned(),
+            Some(i) => names.get(i + 1).cloned(),
+        }
     }
 
     /// → in the dialog while it holds a typed path: goes into the picked folder and lists its
@@ -3767,6 +3791,7 @@ impl Brain {
         let prompt = chosen.map(|c| c.template.fill(&c.values)).filter(|p| !p.is_empty());
         let name = chosen.map(|c| c.template.name.clone());
         let in_iterm = self.new_session.in_iterm;
+        let style = self.new_session.style.clone();
         self.mode = Mode::Normal;
         let Some(account) = self.model.accounts.get(self.new_session.account).cloned() else { return unfocus() };
         if self.blocked_in_demo() {
@@ -3776,6 +3801,9 @@ impl Brain {
             let mut command = String::from("claude");
             if let Some(model) = &model {
                 command.push_str(&format!(" --model {}", shell_quote(model)));
+            }
+            if let Some(style) = &style {
+                command.push_str(&format!(" --settings {}", shell_quote(&brain_core::styles::settings(style))));
             }
             if let Some(prompt) = &prompt {
                 command.push_str(&format!(" -- {}", shell_quote(prompt)));
@@ -3788,7 +3816,7 @@ impl Brain {
         self.set_status(t("Starte die Session in Brain …", "Starting the session in Brain …"));
         let id = account.id.clone();
         let started = off_thread(move || {
-            brain_core::agents::start(&account, std::path::Path::new(&folder), model.as_deref(), name.as_deref(), prompt.as_deref())
+            brain_core::agents::start(&account, std::path::Path::new(&folder), model.as_deref(), name.as_deref(), style.as_deref(), prompt.as_deref())
         });
         Task::batch([unfocus(), Task::perform(started, move |result| Message::Started(id.clone(), result))])
     }

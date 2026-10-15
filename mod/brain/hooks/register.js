@@ -64,6 +64,15 @@ function statusline(sessionId, usage) {
   }
 }
 
+// The slash commands the person can run in this session (built-in, skills, plugins, MCP), for
+// completing `/…` in Brain and on the phone.
+async function reportCommands($) {
+  try {
+    const commands = (await $.command.list()).map((c) => ({ name: c.name, description: c.description ?? '', source: c.source }))
+    await handOver($, 'commands', { session_id: await $.session.id(), commands })
+  } catch {}
+}
+
 // A hook that fails passes the event on unchanged, so reporting never holds up the session.
 // After a failed hook had called next, next(e) returns that result without running it again.
 const passOn = async ($, e, next) => next(e)
@@ -79,6 +88,7 @@ export function register(on) {
         immediate: true,
       })
     } catch {}
+    await reportCommands($)
     return next(e)
   })
 
