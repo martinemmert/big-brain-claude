@@ -19,7 +19,7 @@ mod link;
 
 pub use account::ACCOUNT_NAME;
 use crate::conversation::Conversation;
-use crate::format::{ago, clock, now_ms, plain, shell_quote};
+use crate::format::{clock, now_ms, plain, shell_quote};
 use crate::i18n::t;
 use crate::menubar::MenuBar;
 use crate::model::Model;
@@ -516,8 +516,6 @@ pub struct Brain {
     pub search: String,
     pub rename: String,
     pub reply: String,
-    /// Reminders sent while a session keeps waiting: since when it waits, and how many.
-    reminders: HashMap<SessionKey, (i64, u32)>,
     /// The terminal hosting the selected session and what Brain can do with it.
     host: Option<(SessionKey, Capabilities)>,
     /// Project name and worktree per session.
@@ -538,8 +536,6 @@ pub struct Brain {
     pub overview: bool,
     /// Sessions whose terminal rang the bell while another session was selected.
     pub bells: HashSet<SessionKey>,
-    /// Pairs already notified about shared files.
-    conflicts_notified: HashSet<(SessionKey, SessionKey)>,
     pub changes: Option<ChangesCache>,
     changes_loading: bool,
     pub new_session: NewSession,
@@ -602,8 +598,8 @@ pub struct Brain {
     pub restart: restart::RestartDialog,
     pending_restart: Option<restart::PendingRestart>,
     restart_flags: HashMap<SessionKey, Vec<String>>,
-    /// Per session that waits: its transcript's length when read, and the question it asks.
-    link_questions: HashMap<SessionKey, (u64, Option<brain_core::qa::OpenQuestion>)>,
+    /// Per session that waits: what it was read at, and the question it asks.
+    link_questions: HashMap<SessionKey, (link::QuestionReadAt, Option<brain_core::qa::OpenQuestion>)>,
     /// Brain Link, the companion app's server, while it runs.
     link: Option<crate::companion::Link>,
     /// The pairing code as an image.
@@ -638,7 +634,6 @@ impl Brain {
             search: String::new(),
             rename: String::new(),
             reply: String::new(),
-            reminders: HashMap::new(),
             host: None,
             projects: HashMap::new(),
             checkouts: HashMap::new(),
@@ -676,7 +671,6 @@ impl Brain {
             files_loading: false,
             file_filter: FileFilter::All,
             bells: HashSet::new(),
-            conflicts_notified: HashSet::new(),
             changes: None,
             changes_loading: false,
             new_session: NewSession::default(),
@@ -1374,8 +1368,6 @@ impl Brain {
             }
         }
         tasks.push(self.serve_link(now));
-        self.remind(now);
-        self.notify_conflicts();
         tasks.push(self.load_changes());
         let linked: Vec<SessionKey> = crate::links::take_sessions()
             .into_iter()
@@ -1478,41 +1470,6 @@ impl Brain {
         Task::none()
     }
 
-    /// Reminds again about sessions that keep waiting: every `remind_after_minutes`, at most
-    /// three times per waiting period, never for muted or snoozed ones.
-    fn remind(&mut self, now: i64) {
-        const MAX_REMINDERS: u32 = 3;
-        let Some(interval) = config::remind_after_ms() else { return };
-        let waiting: Vec<(SessionKey, i64, Phase, String, Option<String>)> = self
-            .model
-            .board
-            .sorted()
-            .into_iter()
-            .filter(|s| matches!(s.phase(), Phase::NeedsYou | Phase::YourTurn))
-            .map(|s| (s.key.clone(), s.phase_since_ms(), s.phase(), s.display_name(), s.headline()))
-            .collect();
-        self.reminders.retain(|key, _| waiting.iter().any(|(k, ..)| k == key));
-        for (key, since, phase, name, headline) in waiting {
-            if self.prefs.is_muted(&key) || self.prefs.snoozed_until(&key, now).is_some() || self.filtered_background(&key) {
-                continue;
-            }
-            let entry = self.reminders.entry(key.clone()).or_insert((since, 0));
-            if entry.0 != since {
-                *entry = (since, 0);
-            }
-            let due = since + interval * (entry.1 as i64 + 1);
-            if entry.1 >= MAX_REMINDERS || now < due {
-                continue;
-            }
-            entry.1 += 1;
-            let waited = ago(since, now);
-            let account = key.account.clone();
-            let subtitle = tr!("{account} · wartet seit {waited}", "{account} · waiting for {waited}");
-            let body = plain(headline.as_deref().unwrap_or(""));
-            self.notifier.post(&key, &name, &subtitle, &body, phase == Phase::NeedsYou);
-        }
-    }
-
     /// Live sessions with a folder, for the background PR lookup.
     fn pr_lookups(&self) -> Vec<(SessionKey, String)> {
         self.model
@@ -1536,27 +1493,6 @@ impl Brain {
             .map(|s| brain_core::conflicts::Work { key: s.key.clone(), checkout: self.checkouts.get(&s.key).cloned(), edited: &s.insight.edited })
             .collect();
         brain_core::conflicts::conflicts(&work)
-    }
-
-    /// One notification per pair of sessions that start editing the same files.
-    fn notify_conflicts(&mut self) {
-        let found = self.compute_conflicts();
-        let mut posts = Vec::new();
-        for (key, conflict) in &found {
-            for (other, files) in &conflict.shared_files {
-                let pair = if key < other { (key.clone(), other.clone()) } else { (other.clone(), key.clone()) };
-                if self.conflicts_notified.insert(pair) {
-                    posts.push((key.clone(), other.clone(), files.clone()));
-                }
-            }
-        }
-        for (key, other, files) in posts {
-            let name = self.model.board.get(&key).map(|s| s.display_name()).unwrap_or_default();
-            let other_name = self.model.board.get(&other).map(|s| s.display_name()).unwrap_or_default();
-            let list = files.iter().map(|f| f.rsplit('/').next().unwrap_or(f)).collect::<Vec<_>>().join(", ");
-            let subtitle = tr!("bearbeitet dieselben Dateien wie {other_name}", "edits the same files as {other_name}");
-            self.notifier.post(&key, &name, &subtitle, &list, false);
-        }
     }
 
     /// While the Changes tab is open: reloads the selected session's git changes every 5 s.

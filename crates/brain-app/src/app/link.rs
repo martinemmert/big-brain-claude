@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use brain_core::state::{Phase, Session};
+use brain_core::state::{Phase, Session, SessionKey};
 use brain_terminal::{self as terminal, Key};
 use iced::widget::image;
 use iced::Task;
@@ -20,6 +20,10 @@ const ATTACH_WAIT: Duration = Duration::from_millis(2500);
 /// Pixels per QR module, and the quiet zone around the code (in modules).
 const QR_SCALE: usize = 8;
 const QR_QUIET: usize = 4;
+
+/// When a session's open question was read: its transcript's length and the call of the
+/// question its mod reported.
+pub(super) type QuestionReadAt = (u64, Option<String>);
 
 impl Brain {
     /// Starts Brain Link if the user turned it on before.
@@ -103,18 +107,30 @@ impl Brain {
     }
 
     /// The open question of each session that waits for the user, read again only when its
-    /// transcript grew.
+    /// transcript grew or its mod reported another one.
     fn refresh_link_questions(&mut self) {
         let waiting: Vec<_> = self.model.board.keys().filter(|k| self.model.board.get(k).is_some_and(|s| s.phase() == Phase::NeedsYou)).cloned().collect();
         self.link_questions.retain(|k, _| waiting.contains(k));
         for key in waiting {
             let Some(path) = self.model.transcript_path(&key) else { continue };
             let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            if self.link_questions.get(&key).is_some_and(|(seen, _)| *seen == len) {
+            let asked = self.model.board.get(&key).and_then(|s| s.asked()).map(|q| q.call.clone());
+            let seen = (len, asked);
+            if self.link_questions.get(&key).is_some_and(|(at, _)| *at == seen) {
                 continue;
             }
-            self.link_questions.insert(key, (len, brain_core::qa::open_question(&path)));
+            let question = self.open_question(&key);
+            self.link_questions.insert(key, (seen, question));
         }
+    }
+
+    /// The AskUserQuestion a session waits on: the one its mod reported while the transcript
+    /// has no answer to it (Claude Code writes the call there only with its answer), else an
+    /// unanswered one in the transcript.
+    fn open_question(&self, key: &SessionKey) -> Option<brain_core::qa::OpenQuestion> {
+        let path = self.model.transcript_path(key)?;
+        let reported = self.model.board.get(key).and_then(|s| s.asked()).filter(|q| !brain_core::qa::answered(&path, &q.call));
+        reported.cloned().or_else(|| brain_core::qa::open_question(&path))
     }
 
     /// Each account's plan limits, with when they run out at Brain's forecast.
@@ -223,8 +239,8 @@ impl Brain {
             // Started before a session was looked up (it has none yet).
             Command::Start { .. } => Task::none(),
             Command::Answer { call, picks, .. } => {
-                // Only the question the phone showed, read from the transcript right now.
-                let open = self.model.transcript_path(&key).and_then(|p| brain_core::qa::open_question(&p));
+                // Only the question the phone showed, if it is still open right now.
+                let open = self.open_question(&key);
                 let Some(keys) = open.filter(|q| q.call == call).and_then(|q| brain_core::qa::answer_keys(&q, &picks)) else {
                     self.set_status(tr!(
                         "Vom Handy: „{name}“ fragt inzwischen etwas anderes – Antwort nicht gesendet.",

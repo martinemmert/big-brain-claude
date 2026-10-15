@@ -212,6 +212,7 @@ fn run_hook(store: &Store, accounts: &[Account], input: &str, source: Source) ->
             text: payload.text(),
             tasks: (kind == Kind::Stop).then(|| payload.background_tasks.clone().unwrap_or_default()),
             name,
+            ask: payload.ask.clone().filter(|_| kind == Kind::Permission),
         })
         .ok()
 }
@@ -274,6 +275,7 @@ fn run_report(store: &Store, accounts: &[Account], kind: Kind, text: &str) -> Ex
         text: Some(text),
         tasks: None,
         name: session.as_ref().and_then(|s| s.name.clone()),
+        ask: None,
     };
     match store.append(&event) {
         Ok(()) => {

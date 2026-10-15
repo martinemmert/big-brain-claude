@@ -20,6 +20,8 @@ pub struct HookPayload {
     pub last_assistant_message: Option<String>,
     /// `Stop`: background shells, subagents, monitors … still running.
     pub background_tasks: Option<Vec<BackgroundTask>>,
+    /// `Notification` from Brain's mod when Claude asks with AskUserQuestion.
+    pub ask: Option<crate::qa::OpenQuestion>,
 }
 
 impl HookPayload {
@@ -118,10 +120,21 @@ mod tests {
             message: None,
             last_assistant_message: None,
             background_tasks: None,
+            ask: None,
         };
 
         assert_eq!(payload.kind(), Some(Kind::Stop));
         assert_eq!(payload.text().as_deref(), Some("Fertig: SVG-Export steht."));
+    }
+
+    #[test]
+    fn the_mods_question_comes_with_its_options() {
+        // What `mod/brain/hooks/register.js` sends when Claude calls AskUserQuestion.
+        let json = r#"{"hook_event_name":"Notification","session_id":"s1","cwd":"/w","message":"Claude asks: Color?",
+            "ask":{"call":"toolu_1","items":[{"question":"Color?","options":["Red","Blue"]}],"multi_select":false}}"#;
+        let payload: HookPayload = serde_json::from_str(json).unwrap();
+        let ask = payload.ask.unwrap();
+        assert_eq!((ask.call.as_str(), ask.items[0].options.len(), ask.multi_select), ("toolu_1", 2, false));
     }
 
     #[test]

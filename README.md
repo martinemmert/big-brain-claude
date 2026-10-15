@@ -86,7 +86,7 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
 - **Changes.** Branch, ahead/behind and the changed files of the session's working directory.
 - **Pull requests.** The PR of each session's branch with its checks (`#12 ✓`, `#12 ✗`, `#12 …`),
   via the GitHub CLI (`gh`, logged in); click it to open the PR.
-- **Conflicts.** A warning (and one notification) when two sessions edit the same files, read
+- **Conflicts.** A warning when two sessions edit the same files, read
   from their transcripts, and a softer hint when they change files in the same checkout.
 - **Today.** What every session reported as done today, per project; copy it as Markdown.
 - **Timeline.** Every hook event and report of a session.
@@ -111,9 +111,9 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
 - **Search** by name, path, account or last message; **group by project** (git worktrees
   count as their main repository); **pin** and **mute** sessions.
 - **Rename** a waiting session; Brain types `/rename <name>` into its terminal.
-- **Menu bar count** and native **notifications** with *Open* and *Snooze 15 min*, sound only
-  when a session calls you; reminders while a session keeps waiting (`remind_after_minutes`
-  in `config.json`, 10 by default, 0 turns them off) and snoozing per session.
+- **Menu bar count** and native **notifications** with *Open* and *Snooze 15 min*, only when a
+  session is done or asks you something (a question or a permission), sound only for the
+  latter; snoozing per session.
 - **New sessions** in a recent folder and any account (`⌘N`), or from a **template**: a
   Markdown file with folder, account, model and a first prompt with placeholders (below).
 - **Restart with flags** (right-click or ⌘K → *Restart with …*): `--chrome`, `--model opus` … The

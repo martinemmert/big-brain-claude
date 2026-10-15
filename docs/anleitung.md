@@ -99,7 +99,8 @@ Die Tabs (`←` `→`):
   eingefügten Screenshots. `⌘⏎` sendet.
 - **Befehlspalette:** `⌘K`. Alle Aktionen; Slash-Befehle wie `/compact`, `/context`, `/model`
   für die Session. Freier Text geht an die Session oder an alle, die auf dich warten.
-- **Benachrichtigungen:** Wartet eine Session, meldet macOS das. Direkt in der Mitteilung kannst du
+- **Benachrichtigungen:** Nur wenn eine Session fertig ist oder dich etwas fragt (eine Frage oder
+  eine Freigabe), einmal, ohne spätere Erinnerung. Direkt in der Mitteilung kannst du
   antworten (nur am entsperrten Mac), öffnen oder 15 Minuten pausieren.
 - **Quick Terminal:** Eine Taste deiner Wahl holt Brain aus jeder App mit dem Terminal der
   wartenden Session nach vorn; nochmal drücken blendet Brain aus. Ist aus, bis du sie in der
@@ -173,7 +174,6 @@ Alles optional, in `~/.claude-brain/config.json`:
 |---|---|
 | `language` | `"de"` oder `"en"` |
 | `chat_font`, `chat_font_size` | Schrift des Gesprächs, sonst die von iTerm |
-| `remind_after_minutes` | nach wie vielen Minuten Warten Brain erneut erinnert (`0` = nie) |
 | `quick_replies` | eigene Schnellantworten für `T` `1`–`9` |
 | `quick_terminal` | Tastenkürzel des Quick Terminals, z. B. `"cmd+shift+b"`; ohne Eintrag aus |
 | `screenshot_folder` | Ordner, den der Screenshot-Wächter beobachtet; `"off"` schaltet ihn ab |

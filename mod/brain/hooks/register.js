@@ -80,10 +80,17 @@ export function register(on) {
     return next(e)
   }).catch(passOn)
 
-  // Claude asks the user something: the session needs them.
+  // Claude asks the user something: the session needs them. The question goes along with its
+  // options, for the phone: Claude Code writes the call to the transcript only with its answer.
   on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
-    const question = e.questions?.[0]?.question
-    await hook($, 'Notification', { message: question ? 'Claude asks: ' + question : 'Claude has a question for you' })
+    const questions = e.questions ?? []
+    const question = questions[0]?.question
+    const ask = {
+      call: e.tool_use_id,
+      items: questions.map((q) => ({ question: q.question ?? '', options: (q.options ?? []).map((o) => o.label ?? '') })),
+      multi_select: questions.some((q) => q.multiSelect === true),
+    }
+    await hook($, 'Notification', { message: question ? 'Claude asks: ' + question : 'Claude has a question for you', ask })
     return next(e)
   }).catch(passOn)
 

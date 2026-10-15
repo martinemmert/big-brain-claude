@@ -147,6 +147,7 @@ pub fn build() -> Demo {
                 text: (!text.is_empty()).then(|| text.to_string()),
                 tasks,
                 name: None,
+                ask: None,
             });
         }
         board.apply_session_file(

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::agents::BackgroundAgent;
 use crate::event::{BackgroundTask, Event, Kind, Source};
+use crate::qa::OpenQuestion;
 use crate::sessions::SessionFile;
 use crate::transcript::{Insight, Turn};
 
@@ -87,6 +88,9 @@ pub struct Session {
     permission: Option<String>,
     done: Option<String>,
     reply: Option<String>,
+    /// The AskUserQuestion Brain's mod reported in this turn, open until its answer is in the
+    /// transcript.
+    asked: Option<OpenQuestion>,
 
     /// Model, context, cost, permission mode and title from the transcript.
     pub insight: Insight,
@@ -125,6 +129,7 @@ impl Session {
             permission: None,
             done: None,
             reply: None,
+            asked: None,
             insight: Insight::default(),
             background: Vec::new(),
             agent: None,
@@ -167,6 +172,12 @@ impl Session {
         self.alive
             && matches!(self.current_signal(), Some((Signal::Waiting, _)))
             && matches!(self.file_signal, Some((Signal::Waiting, _)))
+    }
+
+    /// The AskUserQuestion Brain's mod reported last in this turn, answered or not: whether it
+    /// still waits only the transcript tells ([`crate::qa::answered`]).
+    pub fn asked(&self) -> Option<&OpenQuestion> {
+        self.asked.as_ref()
     }
 
     pub fn phase(&self) -> Phase {
@@ -304,11 +315,16 @@ impl Session {
                 self.permission = None;
                 self.done = None;
                 self.reply = None;
+                self.asked = None;
             }
-            Kind::Permission => self.permission = text,
+            Kind::Permission => {
+                self.permission = text;
+                self.asked = event.ask.clone();
+            }
             Kind::Stop => {
                 self.reply = text;
                 self.permission = None;
+                self.asked = None;
                 self.background = event.tasks.clone().unwrap_or_default();
             }
             Kind::Doing => self.doing = text,
@@ -531,6 +547,7 @@ mod tests {
             text: text.map(str::to_string),
             tasks: None,
             name: None,
+            ask: None,
         }
     }
 
@@ -664,6 +681,24 @@ mod tests {
         let s = board.get(&key()).unwrap();
         assert_eq!(s.phase(), Phase::YourTurn);
         assert!(!s.awaiting_permission());
+    }
+
+    #[test]
+    fn the_question_the_mod_reported_lasts_until_the_turn_goes_on() {
+        let ask = crate::qa::OpenQuestion {
+            call: "toolu_1".into(),
+            items: vec![crate::qa::QuestionItem { question: "Color?".into(), options: vec!["Red".into(), "Blue".into()] }],
+            multi_select: false,
+        };
+        let mut board = Board::default();
+        board.apply_event(&ev(0, Source::Mod, Kind::Prompt, Some("pick a color")));
+        board.apply_event(&Event { ask: Some(ask.clone()), ..ev(5, Source::Mod, Kind::Permission, Some("Claude asks: Color?")) });
+        assert_eq!(board.get(&key()).unwrap().asked(), Some(&ask));
+        // Its event line survives the store's round trip.
+        let line = serde_json::to_string(&Event { ask: Some(ask.clone()), ..ev(5, Source::Mod, Kind::Permission, None) }).unwrap();
+        assert_eq!(serde_json::from_str::<Event>(&line).unwrap().ask, Some(ask));
+        board.apply_event(&ev(9, Source::Mod, Kind::Stop, Some("Red it is.")));
+        assert_eq!(board.get(&key()).unwrap().asked(), None);
     }
 
     fn stop_with(secs: i64, tasks: &[(&str, &str)]) -> Event {

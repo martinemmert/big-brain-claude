@@ -66,4 +66,8 @@ pub struct Event {
     /// sessions keep it after their status file is gone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// On permission events from Brain's mod: the AskUserQuestion Claude waits on. The
+    /// transcript only gets it together with the answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<crate::qa::OpenQuestion>,
 }
