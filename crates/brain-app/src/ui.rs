@@ -348,22 +348,11 @@ fn divider<'a>() -> Element<'a, Message> {
 // ---- title bar --------------------------------------------------------------------
 
 fn titlebar(brain: &Brain) -> Element<'_, Message> {
-    let groups = brain.groups(now_ms());
-    let total = groups.live_count();
-    let (waiting, calling) = brain.waiting_counts();
-    let sessions = if total == 1 { t("1 Session", "1 session").to_string() } else { tr!("{total} Sessions", "{total} sessions") };
-    let summary = match waiting {
-        _ if total == 0 => t("Keine laufenden Sessions", "No running sessions").to_string(),
-        0 => tr!("{sessions}, niemand wartet", "{sessions}, nobody waiting"),
-        1 => tr!("{sessions}, 1 wartet auf dich", "{sessions}, 1 waiting for you"),
-        w => tr!("{sessions}, {w} warten auf dich", "{sessions}, {w} waiting for you"),
-    };
-
+    let (_, calling) = brain.waiting_counts();
     let mut bar = row![
         Space::new().width(TRAFFIC_LIGHTS),
         brand_mark(calling > 0),
         text("Brain").size(14).color(TEXT_STRONG).font(style::bold()),
-        text(summary).size(12.5).color(TEXT_MUTED).font(UI),
         Space::new().width(Fill),
     ]
     .spacing(12)
@@ -376,22 +365,6 @@ fn titlebar(brain: &Brain) -> Element<'_, Message> {
                 .on_press(Message::OpenUrl(update.url.clone()))
                 .style(|_, _| button::Style { background: Some(Background::Color(alpha(DONE, 0x22))), border: iced::border::rounded(6), ..button::Style::default() }),
         );
-    }
-    let layout = brain.prefs.layout;
-    bar = bar.push(segmented(vec![
-        (t("Status", "Status").into(), layout == Layout::Status, Message::Layout(Layout::Status)),
-        (t("Projekte", "Projects").into(), layout == Layout::Projects, Message::Layout(Layout::Projects)),
-        (t("Heute", "Today").into(), layout == Layout::Today, Message::Layout(Layout::Today)),
-    ]));
-    if brain.prefs.show_background || groups.background > 0 {
-        let count = groups.background;
-        let label = if brain.prefs.show_background { t("◌ Hintergrund an", "◌ Background on").to_string() } else { tr!("◌ {count} im Hintergrund", "◌ {count} in background") };
-        bar = bar.push(style::text_button(label, brain.prefs.show_background, Message::ToggleBackground));
-    }
-    if brain.prefs.show_automated || groups.automated > 0 {
-        let count = groups.automated;
-        let label = if brain.prefs.show_automated { t("⚙ Automatisch an", "⚙ Automated on").to_string() } else { tr!("⚙ {count} automatisch", "⚙ {count} automated") };
-        bar = bar.push(style::text_button(label, brain.prefs.show_automated, Message::ToggleAutomated));
     }
     // A session start synced the accounts but left conflicts for the user.
     if brain.sync.open > 0 {
@@ -438,10 +411,22 @@ fn search(brain: &Brain) -> Element<'_, Message> {
         .padding([7, 2])
         .style(|theme, status| text_input::Style { border: Border::default(), background: Background::Color(Color::TRANSPARENT), ..field_style(theme, status) });
     let edge = if editing { alpha(WORKING, 0x99) } else { LINE };
+    let by_project = brain.prefs.layout == Layout::Projects;
+    let grouping = style::text_button(
+        t("Projekte", "Projects"),
+        by_project,
+        Message::Layout(if by_project { Layout::Status } else { Layout::Projects }),
+    );
     container(
-        container(row![text("⌕").size(13).color(TEXT_FAINT), field, kbd(if editing { "esc" } else { "/" })].spacing(6).align_y(iced::Center))
-            .padding([0, 10])
-            .style(move |_| boxed(INK, edge, 8.0)),
+        row![
+            container(row![text("⌕").size(13).color(TEXT_FAINT), field, kbd(if editing { "esc" } else { "/" })].spacing(6).align_y(iced::Center))
+                .padding([0, 10])
+                .width(Fill)
+                .style(move |_| boxed(INK, edge, 8.0)),
+            grouping,
+        ]
+        .spacing(8)
+        .align_y(iced::Center),
     )
     .padding(Padding { top: 12.0, right: 12.0, bottom: 6.0, left: 12.0 })
     .into()

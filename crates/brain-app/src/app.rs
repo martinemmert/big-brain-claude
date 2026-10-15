@@ -243,6 +243,7 @@ pub enum Message {
     ToggleBackground,
     ToggleAutomated,
     ToggleResting,
+    ToggleSnoozed,
     ToggleEnded,
     Tab(DetailTab),
     Do(Action),
@@ -416,22 +417,40 @@ pub struct Groups<'a> {
     pub resting: Vec<&'a Session>,
     pub snoozed: Vec<&'a Session>,
     pub ended: Vec<&'a Session>,
-    /// Whether the resting group is open (or a search shows everything).
-    pub resting_open: bool,
+    /// Hidden with ⌫ until something happens: listed with the snoozed ones.
+    pub hidden: Vec<&'a Session>,
+    /// Background sessions without activity for a day.
+    pub background: Vec<&'a Session>,
+    /// Sessions programs started (SDK reviews, `claude -p`).
+    pub automated: Vec<&'a Session>,
     /// Ended over a day ago, shown only while searching.
     pub older_ended: usize,
-    /// Hidden with ⌫, shown only while searching.
-    pub hidden: usize,
-    /// Background sessions left out while the filter is off.
-    pub background: usize,
-    /// Sessions programs started (SDK reviews, `claude -p`), left out while the filter is off.
-    pub automated: usize,
+    /// Which of the folded sections at the end are open (a search opens all).
+    pub resting_open: bool,
+    pub snoozed_open: bool,
+    pub background_open: bool,
+    pub automated_open: bool,
 }
 
 impl<'a> Groups<'a> {
+    /// The sessions ↑↓ and the digits reach: what the list shows, folded sections left out.
     pub fn navigable(&self, include_ended: bool) -> Vec<&'a Session> {
         let mut all: Vec<&Session> = self.saved.clone();
-        all.extend(self.live().into_iter().filter(|s| self.resting_open || !self.resting.iter().any(|r| r.key == s.key)));
+        all.extend(&self.pinned);
+        all.extend(&self.attention);
+        all.extend(&self.working);
+        let folded: [(bool, &Vec<&'a Session>); 5] = [
+            (self.resting_open, &self.resting),
+            (self.snoozed_open, &self.snoozed),
+            (self.snoozed_open, &self.hidden),
+            (self.background_open, &self.background),
+            (self.automated_open, &self.automated),
+        ];
+        for (open, sessions) in folded {
+            if open {
+                all.extend(sessions);
+            }
+        }
         if include_ended {
             all.extend(&self.ended);
         }
@@ -446,10 +465,6 @@ impl<'a> Groups<'a> {
         all.extend(&self.resting);
         all.extend(&self.snoozed);
         all
-    }
-
-    pub fn live_count(&self) -> usize {
-        self.pinned.len() + self.attention.len() + self.working.len() + self.resting.len() + self.snoozed.len()
     }
 }
 
@@ -492,6 +507,8 @@ pub struct Brain {
     pub show_ended: bool,
     /// The "resting for over 2 h" group is open.
     pub show_resting: bool,
+    /// Whether the snoozed-and-hidden section is open.
+    pub show_snoozed: bool,
     /// The clean-up dialog's age choice (index into CLEANUP_DAYS).
     pub cleanup_age: usize,
     pub status: Option<(String, Instant)>,
@@ -654,6 +671,7 @@ impl Brain {
             hovered: None,
             show_ended: false,
             show_resting: false,
+            show_snoozed: false,
             cleanup_age: 1,
             status: None,
             tab: DetailTab::Messages,
@@ -908,6 +926,10 @@ impl Brain {
             }
             Message::ToggleResting => {
                 self.show_resting = !self.show_resting;
+                Task::none()
+            }
+            Message::ToggleSnoozed => {
+                self.show_snoozed = !self.show_snoozed;
                 Task::none()
             }
             Message::ToggleEnded => {
@@ -1384,7 +1406,7 @@ impl Brain {
         self.watch_screenshots();
         let now = now_ms();
         for item in self.model.refresh() {
-            if self.prefs.snoozed_until(&item.key, now).is_some() || self.prefs.is_muted(&item.key) || self.filtered_background(&item.key) {
+            if self.prefs.snoozed_until(&item.key, now).is_some() || self.prefs.is_muted(&item.key) || self.is_quiet(&item.key) {
                 continue;
             }
             let account = item.key.account.clone();
@@ -1532,7 +1554,7 @@ impl Brain {
             .collect();
         self.reminders.retain(|key, _| waiting.iter().any(|(k, ..)| k == key));
         for (key, since, phase, name, headline) in waiting {
-            if self.prefs.is_muted(&key) || self.prefs.snoozed_until(&key, now).is_some() || self.filtered_background(&key) {
+            if self.prefs.is_muted(&key) || self.prefs.snoozed_until(&key, now).is_some() || self.is_quiet(&key) {
                 continue;
             }
             let entry = self.reminders.entry(key.clone()).or_insert((since, 0));
@@ -1860,11 +1882,11 @@ impl Brain {
         all.push((t("Neues Claude-Konto einrichten", "Set up a new Claude account").to_string(), "", PaletteCommand::SetUpAccount));
         all.push((t("Konten abgleichen (Einstellungen, Skills, Gedächtnis)", "Sync accounts (settings, skills, memory)").to_string(), "", PaletteCommand::SyncAccounts));
         all.push((t("Alle Tasten", "All keys").to_string(), "?", PaletteCommand::Keys));
-        all.push((t("Beendete Sessions zeigen / verbergen", "Show / hide ended sessions").to_string(), "E", PaletteCommand::ToggleEnded));
+        all.push((t("Beendete Sessions auf- / zuklappen", "Open / fold ended sessions").to_string(), "", PaletteCommand::ToggleEnded));
         all.push((t("Nach Projekten gruppieren", "Group by project").to_string(), "G", PaletteCommand::ToggleProjects));
         all.push((t("Heute", "Today").to_string(), "D", PaletteCommand::ToggleToday));
-        all.push((t("Hintergrund-Sessions zeigen / verbergen", "Show / hide background sessions").to_string(), "B", PaletteCommand::ToggleBackground));
-        all.push((t("Automatische Sessions (Reviews, Skripte) zeigen / verbergen", "Show / hide automated sessions (reviews, scripts)").to_string(), "U", PaletteCommand::ToggleAutomated));
+        all.push((t("Ruhige Hintergrund-Sessions auf- / zuklappen", "Open / fold quiet background sessions").to_string(), "", PaletteCommand::ToggleBackground));
+        all.push((t("Automatisch gestartete Sessions (Reviews, Skripte) auf- / zuklappen", "Open / fold sessions started by programs (reviews, scripts)").to_string(), "", PaletteCommand::ToggleAutomated));
 
         let query = self.palette.trim().to_lowercase();
         let words: Vec<&str> = query.split_whitespace().collect();
@@ -2387,11 +2409,14 @@ impl Brain {
             resting: vec![],
             snoozed: vec![],
             ended: vec![],
-            resting_open: self.show_resting || searching,
+            hidden: vec![],
+            background: vec![],
+            automated: vec![],
             older_ended: 0,
-            hidden: 0,
-            background: 0,
-            automated: 0,
+            resting_open: self.show_resting || searching,
+            snoozed_open: self.show_snoozed || searching,
+            background_open: self.prefs.show_background || searching,
+            automated_open: self.prefs.show_automated || searching,
         };
         let visible = self
             .model
@@ -2406,19 +2431,19 @@ impl Brain {
                 continue;
             }
             // Background sessions with something happening show; stale ones (a day without
-            // activity) only with the filter on.
-            if session.agent.is_some() && !self.prefs.show_background && now - session.last_activity_ms > ENDED_RECENT_MS {
-                groups.background += 1;
+            // activity) go to their own folded section.
+            if session.agent.is_some() && now - session.last_activity_ms > ENDED_RECENT_MS {
+                groups.background.push(session);
                 continue;
             }
             // Sessions a program started (a security review after each commit, scripts with
-            // `claude -p`) only with their filter on, or when pinned.
-            if session.insight.is_automated() && !self.prefs.show_automated && !self.prefs.is_pinned(&session.key) {
-                groups.automated += 1;
+            // `claude -p`) too, unless pinned.
+            if session.insight.is_automated() && !self.prefs.is_pinned(&session.key) {
+                groups.automated.push(session);
                 continue;
             }
             if self.prefs.is_hidden(&session.key, session.last_activity_ms) && !searching {
-                groups.hidden += 1;
+                groups.hidden.push(session);
                 continue;
             }
             if self.prefs.is_pinned(&session.key) {
@@ -2521,25 +2546,29 @@ impl Brain {
                     }
                 }
             }
-            if !groups.snoozed.is_empty() {
-                items.push(Item::Section { title: t("Pausiert", "Snoozed").into(), count: groups.snoozed.len(), alert: false, toggle: None });
-                for s in &groups.snoozed {
+        }
+        // Everything that isn't asking for attention: folded sections at the end, each with its
+        // count, one click (or ⌘K) opens it. Nothing leaves the list without a trace.
+        let mut quiet: Vec<&'a Session> = groups.snoozed.clone();
+        quiet.extend(&groups.hidden);
+        // In the project layout the snoozed ones are in their projects already.
+        let paused = if self.prefs.layout == Layout::Status { quiet } else { groups.hidden.clone() };
+        let folded: [(&str, &Vec<&'a Session>, bool, Message); 3] = [
+            (t("Pausiert und ausgeblendet", "Snoozed and hidden"), &paused, groups.snoozed_open, Message::ToggleSnoozed),
+            (t("Ruhig im Hintergrund", "Quiet in the background"), &groups.background, groups.background_open, Message::ToggleBackground),
+            (t("Automatisch gestartet", "Started by programs"), &groups.automated, groups.automated_open, Message::ToggleAutomated),
+        ];
+        for (title, sessions, open, toggle) in folded {
+            if sessions.is_empty() {
+                continue;
+            }
+            let title = format!("{title} {}", if open { "▾" } else { "▸" });
+            items.push(Item::Section { title, count: sessions.len(), alert: false, toggle: Some(toggle) });
+            if open {
+                for s in sessions {
                     push(&mut items, s);
                 }
             }
-        }
-        let mut notes: Vec<String> = Vec::new();
-        if groups.older_ended > 0 {
-            let n = groups.older_ended;
-            notes.push(tr!("{n} älter als ein Tag", "{n} older than a day"));
-        }
-        if groups.hidden > 0 {
-            let n = groups.hidden;
-            notes.push(tr!("{n} ausgeblendet", "{n} hidden"));
-        }
-        if !notes.is_empty() {
-            let notes = notes.join(" · ");
-            items.push(Item::Hint(tr!("{notes} – / sucht darin, C räumt auf.", "{notes} – / searches them, C cleans up.")));
         }
         if !groups.ended.is_empty() {
             let open = self.include_ended();
@@ -2550,6 +2579,10 @@ impl Brain {
                     push(&mut items, s);
                 }
             }
+        }
+        if groups.older_ended > 0 {
+            let n = groups.older_ended;
+            items.push(Item::Hint(tr!("{n} älter als ein Tag – / sucht darin, C räumt auf.", "{n} older than a day – / searches them, C cleans up.")));
         }
         items
     }
@@ -2584,32 +2617,24 @@ impl Brain {
         Task::none()
     }
 
-    /// A background or automated session while its filter is off: not listed, not announced.
-    fn filtered_background(&self, key: &SessionKey) -> bool {
+    /// A background session without activity for a day, or one a program started: listed in
+    /// its folded section, never announced.
+    fn is_quiet(&self, key: &SessionKey) -> bool {
         let Some(s) = self.model.board.get(key) else { return false };
-        let background = !self.prefs.show_background && s.agent.is_some() && now_ms() - s.last_activity_ms > ENDED_RECENT_MS;
-        let automated = !self.prefs.show_automated && s.insight.is_automated() && !self.prefs.is_pinned(key);
+        let background = s.agent.is_some() && now_ms() - s.last_activity_ms > ENDED_RECENT_MS;
+        let automated = s.insight.is_automated() && !self.prefs.is_pinned(key);
         background || automated
     }
 
+    /// The folded sections remember whether they are open.
     fn toggle_automated(&mut self) {
         self.prefs.show_automated = !self.prefs.show_automated;
         self.prefs.save();
-        self.set_status(if self.prefs.show_automated {
-            t("Automatische Sessions (Reviews, Skripte) werden angezeigt.", "Showing automated sessions (reviews, scripts).")
-        } else {
-            t("Automatische Sessions ausgeblendet.", "Automated sessions hidden.")
-        });
     }
 
     fn toggle_background(&mut self) {
         self.prefs.show_background = !self.prefs.show_background;
         self.prefs.save();
-        self.set_status(if self.prefs.show_background {
-            t("Hintergrund-Sessions werden angezeigt.", "Showing background sessions.")
-        } else {
-            t("Hintergrund-Sessions ausgeblendet.", "Background sessions hidden.")
-        });
     }
 
     fn toggle_ended(&mut self) {
@@ -2884,7 +2909,6 @@ impl Brain {
         match character.as_str() {
             "j" => return self.select_index(&list, next),
             "k" => return self.select_index(&list, previous),
-            "e" => self.toggle_ended(),
             "r" => return self.start_rename(),
             "t" => return self.start_reply(),
             "y" => self.answer_permission(true),
@@ -2900,9 +2924,6 @@ impl Brain {
                 self.mode = Mode::Cleanup;
             }
             "i" => return self.act(Action::TakeOver),
-            "h" => self.show_resting = !self.show_resting,
-            "b" => self.toggle_background(),
-            "u" => self.toggle_automated(),
             "g" => {
                 self.prefs.layout = if self.prefs.layout == Layout::Projects { Layout::Status } else { Layout::Projects };
                 self.prefs.save();
@@ -2942,6 +2963,12 @@ impl Brain {
         }
         if self.mode == Mode::Normal && self.reader.is_some() {
             self.reader = None;
+            return Task::none();
+        }
+        // Today replaces the detail pane; esc goes back to it.
+        if self.mode == Mode::Normal && self.prefs.layout == Layout::Today {
+            self.prefs.layout = Layout::Status;
+            self.prefs.save();
             return Task::none();
         }
         match self.mode {
@@ -3634,7 +3661,6 @@ impl Brain {
             .into_iter()
             .filter(|s| self.filter.as_ref().is_none_or(|f| *f == s.key.account))
             .filter(|s| !self.prefs.is_pinned(&s.key))
-            .filter(|s| s.agent.is_none() || self.prefs.show_background)
             .filter(|s| s.phase() == Phase::Ended || s.agent.is_some())
             .filter(|s| s.last_activity_ms < cutoff)
             .filter(|s| s.phase() != Phase::Ended || (self.model.resumable(s) && !s.is_empty()))
