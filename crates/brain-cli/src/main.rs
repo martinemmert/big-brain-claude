@@ -57,6 +57,14 @@ enum Command {
         #[command(subcommand)]
         action: AccountAction,
     },
+    /// Keep the accounts' setup in step: settings, CLAUDE.md, skills, agents, commands, MCP
+    /// servers and memory notes. Shows what it would do; `--yes` does it. Conflicts stay open:
+    /// decide them in Brain (⌘K → Sync accounts). After the first sync, every session start
+    /// syncs too.
+    Sync {
+        #[arg(long)]
+        yes: bool,
+    },
     /// Install hooks and the protocol section into every Claude account.
     Install,
     /// Remove Brain's hooks and protocol section from every Claude account.
@@ -149,6 +157,11 @@ fn main() -> ExitCode {
             };
             if let Some(input) = input {
                 let _ = run_hook(&store, &accounts, &input, source);
+                // A new session: what changed in another account since comes along.
+                let starts = serde_json::from_str::<HookPayload>(&input).ok().and_then(|p| p.kind()) == Some(Kind::SessionStart);
+                if starts {
+                    let _ = brain_core::sync::on_session_start(&brain_core::sync::default_dir(&home), &accounts, &home);
+                }
             }
             ExitCode::SUCCESS
         }
@@ -171,6 +184,7 @@ fn main() -> ExitCode {
             KonsilStep::End { decision } => run_report(&store, &accounts, Kind::Done, &format!("Konsil: {}", decision.join(" "))),
         },
         Command::Account { action: AccountAction::New { name, yes } } => run_account_new(&accounts, &name, yes),
+        Command::Sync { yes } => run_sync(&accounts, yes),
         Command::Install => run_install(&accounts),
         Command::Uninstall => run_uninstall(&accounts),
         Command::Status => run_status(&store, &accounts),
@@ -423,6 +437,48 @@ fn run_account_new(accounts: &[Account], name: &str, yes: bool) -> ExitCode {
     println!("\nLog in with another Claude account in its first session:");
     println!("  CLAUDE_CONFIG_DIR={} claude   then /login", target.display());
     code
+}
+
+fn run_sync(accounts: &[Account], yes: bool) -> ExitCode {
+    use brain_core::sync;
+    let home = home_dir();
+    let dir = sync::default_dir(&home);
+    let plan = sync::plan(&dir, accounts, &home);
+    if plan.first {
+        println!("First sync: nothing is known to be deleted yet, so the accounts are joined.");
+    }
+    for item in &plan.items {
+        let versions: Vec<String> = item.versions.iter().map(|v| format!("{} {}", v.account, v.describe(item.kind))).collect();
+        if item.conflict {
+            println!("  ≠ {}  [{}]  newest: {}", item.label, versions.join(" · "), item.take);
+        } else {
+            println!("  {}  {} → {}", item.label, item.take, item.receivers().join(", "));
+        }
+    }
+    for (account, label) in &plan.kept {
+        println!("  = {label}  ({account} keeps its own)");
+    }
+    if plan.items.is_empty() {
+        println!("The accounts are in step.");
+        return ExitCode::SUCCESS;
+    }
+    if !yes {
+        println!("\nNothing written yet. `brain sync --yes` syncs; conflicts (≠) are decided in Brain.");
+        return ExitCode::SUCCESS;
+    }
+    match sync::apply(&dir, accounts, &home, &plan, &[]) {
+        Ok(outcome) => {
+            println!("\nSynced {} items; {} conflicts open.", outcome.synced, outcome.open);
+            if let Some(backup) = outcome.backup {
+                println!("What was replaced or deleted is in {}", backup.display());
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("brain sync: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn run_uninstall(accounts: &[Account]) -> ExitCode {

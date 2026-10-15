@@ -22,6 +22,7 @@ pub mod qa;
 pub mod sessions;
 pub mod state;
 pub mod store;
+pub mod sync;
 pub mod templates;
 pub mod transcript;
 pub mod usage;

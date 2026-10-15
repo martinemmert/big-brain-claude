@@ -28,6 +28,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::Cleanup => cleanup(brain),
         Mode::Pairing => pairing(brain),
         Mode::AccountSetup => account_setup(brain),
+        Mode::Sync => sync_accounts(brain),
         Mode::MoveTarget => move_target(brain),
         Mode::RestartFlags => restart_flags(brain),
         Mode::NewSession => new_session(brain),
@@ -388,6 +389,11 @@ fn titlebar(brain: &Brain) -> Element<'_, Message> {
         let count = groups.automated;
         let label = if brain.prefs.show_automated { t("⚙ Automatisch an", "⚙ Automated on").to_string() } else { tr!("⚙ {count} automatisch", "⚙ {count} automated") };
         bar = bar.push(style::text_button(label, brain.prefs.show_automated, Message::ToggleAutomated));
+    }
+    // A session start synced the accounts but left conflicts for the user.
+    if brain.sync.open > 0 {
+        let count = brain.sync.open;
+        bar = bar.push(style::text_button(tr!("⇄ {count} Konto-Konflikte", "⇄ {count} account conflicts"), false, Message::OpenSync));
     }
     let mut accounts = vec![(t("Alle", "All").to_string(), brain.filter.is_none(), Message::Filter(None))];
     accounts.extend(brain.model.accounts.iter().map(|a| (a.id.clone(), brain.filter.as_deref() == Some(&a.id), Message::Filter(Some(a.id.clone())))));
@@ -1987,6 +1993,93 @@ fn account_setup(brain: &Brain) -> Element<'_, Message> {
         }
         None => {}
     }
+    body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
+}
+
+/// ⌘K "Sync accounts": the conflicts with each account's version (the chosen one marked), what
+/// is taken over from where, the memory notes as a count, and what accounts keep different.
+fn sync_accounts(brain: &Brain) -> Element<'_, Message> {
+    let dialog = &brain.sync;
+    let mut body = column![
+        dialog_title(t("Konten abgleichen", "Sync accounts")),
+        text(t(
+            "Was ein Konto seit dem letzten Abgleich geändert hat, bekommen die anderen: Einstellungen, CLAUDE.md, Skills, Agents, Commands, MCP-Server und das Gedächtnis pro Projekt. Wo Konten Verschiedenes geändert haben, entscheidest du; vorgeschlagen ist die neueste Änderung. Nach dem ersten Abgleich gleicht jeder Session-Start mit ab, Konflikte bleiben dann für hier.",
+            "What an account changed since the last sync goes to the others: settings, CLAUDE.md, skills, agents, commands, MCP servers and per-project memory. Where accounts changed things differently, you decide; the newest change is suggested. After the first sync every session start syncs too, conflicts are left for here.",
+        ))
+        .size(13)
+        .line_height(1.5)
+        .color(TEXT)
+        .font(UI),
+    ]
+    .spacing(14);
+    let Some(plan) = &dialog.plan else {
+        return body.push(text(t("Lese die Konten …", "Reading the accounts …")).size(12.5).color(TEXT_MUTED).font(UI)).padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into();
+    };
+    if plan.first {
+        body = body.push(
+            text(t(
+                "Erster Abgleich: Noch ist nichts als gelöscht bekannt, die Konten werden zusammengeführt.",
+                "First sync: nothing is known to be deleted yet, so the accounts are joined.",
+            ))
+            .size(12.5)
+            .color(TURN)
+            .font(UI),
+        );
+    }
+    let rows = dialog.rows();
+    let (notes, projects) = dialog.memory();
+    let conflicts = plan.conflicts();
+    let taken = rows.len() - conflicts;
+    body = body.push(
+        text(tr!(
+            "{conflicts} Konflikte · {taken} Übernahmen · {notes} Gedächtnis-Einträge in {projects} Projekten. Ziffern wählen die Version, K: Konten mit anderer Version behalten ihre, ⏎ gleicht ab, esc bricht ab.",
+            "{conflicts} conflicts · {taken} taken over · {notes} memory items in {projects} projects. Digits pick the version, K: accounts with another version keep theirs, ⏎ syncs, esc cancels."
+        ))
+        .size(12.5)
+        .color(TEXT_MUTED)
+        .font(UI),
+    );
+    if rows.is_empty() && notes == 0 {
+        body = body.push(text(t("Die Konten sind abgeglichen.", "The accounts are in step.")).size(13).color(DONE).font(UI));
+    }
+    let lines = rows.iter().zip(&dialog.choices).enumerate().map(|(index, (item, choice))| {
+        let taken = item.versions.iter().find(|v| v.account == choice.take).map(|v| v.value.clone());
+        let versions = item.versions.iter().enumerate().map(|(nth, version)| {
+            let chosen = version.account == choice.take;
+            let keeps = choice.keep && Some(version.value.clone()) != taken;
+            let mut label = format!("{} {}", version.account, version.describe(item.kind));
+            if keeps {
+                label.push_str(&format!(" · {}", t("behält", "keeps")));
+            }
+            let border = if chosen { WORKING } else { LINE };
+            let line = row![kbd(format!("{}", nth + 1)), text(label).size(12).color(if chosen { TEXT_STRONG } else { TEXT_MUTED }).font(UI)].spacing(6).align_y(iced::Center);
+            mouse_area(container(line).padding([3, 8]).style(move |_| boxed(SURFACE, border, 6.0)))
+                .on_press(Message::SyncPick(index, version.account.clone()))
+                .interaction(iced::mouse::Interaction::Pointer)
+                .into()
+        });
+        let title = if item.conflict { format!("≠ {}", item.label) } else { item.label.clone() };
+        let selected = index == dialog.selected;
+        let keep = style::text_button(t("K andere behalten ihre", "K others keep theirs"), choice.keep, Message::SyncKeep(index));
+        let content = column![
+            text(title).size(12.5).color(if item.conflict { TURN } else { TEXT_STRONG }).font(UI),
+            row(versions).push(keep).spacing(6).wrap(),
+        ]
+        .spacing(6);
+        let background = if selected { RAISED } else { SURFACE };
+        container(content).padding([8, 12]).width(Fill).style(move |_| boxed(background, if selected { LINE_STRONG } else { LINE }, 8.0)).into()
+    });
+    body = body.push(scrollable(column(lines).spacing(6)).height(Fill).style(scrollbar));
+    for (account, label) in &plan.kept {
+        body = body.push(text(tr!("= {label} – {account} behält seine Version", "= {label} – {account} keeps its own")).size(11.5).color(TEXT_FAINT).font(UI));
+    }
+    if let Some(err) = &dialog.error {
+        body = body.push(text(err.clone()).size(12.5).color(CALLS).font(UI));
+    }
+    let label = if dialog.busy { t("Gleiche ab …", "Syncing …") } else { t("Abgleichen", "Sync") };
+    // The first sync also records the base, even when nothing differs.
+    let ready = !dialog.busy && (plan.first || !rows.is_empty() || notes > 0);
+    body = body.push(action(label, "⏎", true, ready.then_some(Message::SyncApply)));
     body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
 }
 

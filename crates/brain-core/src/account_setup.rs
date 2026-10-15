@@ -18,9 +18,9 @@ use serde_json::{Map, Value};
 use crate::account::Account;
 
 /// Folders whose entries are copied by name: a skill, an agent, a command, an output style.
-const ENTRY_DIRS: [&str; 4] = ["skills", "agents", "commands", "output-styles"];
+pub(crate) const ENTRY_DIRS: [&str; 4] = ["skills", "agents", "commands", "output-styles"];
 /// Single files where the first account's copy wins.
-const PLAIN_FILES: [&str; 3] = ["CLAUDE.md", "statusline-command.sh", "keybindings.json"];
+pub(crate) const PLAIN_FILES: [&str; 3] = ["CLAUDE.md", "statusline-command.sh", "keybindings.json"];
 /// Plugin folders copied as trees (the first account's files win).
 const PLUGIN_TREES: [&str; 3] = ["marketplaces", "cache", "data"];
 
@@ -97,13 +97,13 @@ fn run(sources: &[Account], home: &Path, target: &Path, write: bool, items: &mut
 
 // ---- settings -------------------------------------------------------------------------------
 
-fn read_json(path: &Path) -> Option<Value> {
+pub(crate) fn read_json(path: &Path) -> Option<Value> {
     std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
 
 /// Writes JSON readable by the user only, like Claude Code's own `.claude.json`: settings
 /// (`env`) and MCP servers can carry API keys.
-fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
+pub(crate) fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     if let Some(parent) = path.parent() {
@@ -169,7 +169,7 @@ pub fn merge(into: &mut Value, other: &Value, path: &str, other_name: &str, conf
     }
 }
 
-fn short(value: &Value) -> String {
+pub fn short(value: &Value) -> String {
     let text = value.to_string();
     match text.char_indices().nth(60) {
         Some((cut, _)) => format!("{}…", &text[..cut]),
@@ -217,7 +217,7 @@ fn entries(sources: &[Account], target: &Path, dir: &str, write: bool, items: &m
 
 /// Copies a file or folder; on APFS the files are clones that take no extra space. Files
 /// already there stay (so the first account's win when trees are layered).
-fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+pub(crate) fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
     let meta = std::fs::symlink_metadata(src)?;
     if meta.file_type().is_symlink() {
         if dst.symlink_metadata().is_err() {
@@ -351,7 +351,7 @@ fn rewrite_paths(value: &mut Value, from: &str, to: &str) {
 
 /// Where Claude Code keeps an account's global state: `~/.claude.json` for the default folder,
 /// `.claude.json` inside the folder for any other.
-fn global_json(account: &Account, home: &Path) -> PathBuf {
+pub(crate) fn global_json(account: &Account, home: &Path) -> PathBuf {
     if account.config_dir == home.join(".claude") {
         home.join(".claude.json")
     } else {
@@ -494,7 +494,7 @@ fn memory(sources: &[Account], target: &Path, write: bool, items: &mut Vec<Item>
 }
 
 /// The note a `MEMORY.md` line links to: `- [Title](note.md) — hook` → `note.md`.
-fn linked_note(line: &str) -> Option<&str> {
+pub(crate) fn linked_note(line: &str) -> Option<&str> {
     let start = line.find("](")? + 2;
     let end = start + line[start..].find(')')?;
     Some(&line[start..end])
@@ -505,7 +505,7 @@ fn modified(path: &Path) -> Option<std::time::SystemTime> {
 }
 
 /// `-Users-me-Work-app` → `Work-app` (Claude Code's folder name for a project path).
-fn readable_project(folder: &str) -> String {
+pub(crate) fn readable_project(folder: &str) -> String {
     let home = crate::account::home_dir().display().to_string().replace('/', "-");
     folder.strip_prefix(&home).map(|rest| rest.trim_start_matches('-').to_string()).filter(|r| !r.is_empty()).unwrap_or_else(|| folder.to_string())
 }

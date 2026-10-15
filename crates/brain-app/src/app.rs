@@ -15,6 +15,7 @@ use crate::config;
 mod account;
 mod restart;
 pub use restart::RESTART_FLAGS;
+mod sync;
 mod link;
 
 pub use account::ACCOUNT_NAME;
@@ -73,6 +74,8 @@ pub enum Mode {
     MoveTarget,
     /// The flags the selected session restarts with.
     RestartFlags,
+    /// What syncing the accounts would do, and the user's choice where they conflict.
+    Sync,
 }
 
 /// What a line of the command palette does.
@@ -101,6 +104,8 @@ pub enum PaletteCommand {
     PairPhone,
     /// Set up a new Claude account from the existing ones.
     SetUpAccount,
+    /// Bring the accounts' setup and memory in step.
+    SyncAccounts,
 }
 
 /// Slash commands the palette offers for the selected session.
@@ -326,6 +331,13 @@ pub enum Message {
     AccountSetupPlanned(u64, brain_core::account_setup::Plan),
     AccountSetupCreate,
     AccountSetupDone(Result<String, String>),
+    /// The sync dialog: open it, its plan, a version picked or kept for a row, apply, and the outcome.
+    OpenSync,
+    SyncPlanned(brain_core::sync::Plan),
+    SyncPick(usize, String),
+    SyncKeep(usize),
+    SyncApply,
+    SyncDone(Result<brain_core::sync::Outcome, String>),
     /// The restart dialog: the flags typed, and ⏎.
     RestartFlagsChanged(String),
     RestartSubmit,
@@ -597,6 +609,8 @@ pub struct Brain {
     focus_on_select: bool,
     /// The new-account dialog.
     pub account_setup: account::AccountSetup,
+    /// The sync dialog, and the conflicts the last sync left open.
+    pub sync: sync::SyncDialog,
     /// The restart dialog, a session asked to end for a restart, and the flags a terminal about
     /// to start resumes with.
     pub restart: restart::RestartDialog,
@@ -707,6 +721,7 @@ impl Brain {
             detail_shape: (Layout::Status, Mode::Normal, DetailTab::Messages),
             focus_on_select: false,
             account_setup: account::AccountSetup::default(),
+            sync: sync::SyncDialog::default(),
             link_questions: HashMap::new(),
             restart: restart::RestartDialog::default(),
             pending_restart: None,
@@ -1249,6 +1264,24 @@ impl Brain {
                 Task::none()
             }
             Message::RestartSubmit => self.submit_restart(),
+            Message::OpenSync => self.open_sync(),
+            Message::SyncPlanned(plan) => {
+                self.sync_planned(plan);
+                Task::none()
+            }
+            Message::SyncPick(row, account) => {
+                self.sync_pick(row, account);
+                Task::none()
+            }
+            Message::SyncKeep(row) => {
+                self.sync_keep(row);
+                Task::none()
+            }
+            Message::SyncApply => self.sync_apply(),
+            Message::SyncDone(result) => {
+                self.sync_done(result);
+                Task::none()
+            }
             Message::AccountSetupDone(result) => {
                 self.mode = Mode::Normal;
                 self.account_setup_done(result)
@@ -1374,6 +1407,7 @@ impl Brain {
             }
         }
         tasks.push(self.serve_link(now));
+        self.refresh_sync_conflicts();
         self.remind(now);
         self.notify_conflicts();
         tasks.push(self.load_changes());
@@ -1815,6 +1849,7 @@ impl Brain {
         all.push((t("Aufräumen", "Clean up").to_string(), "C", PaletteCommand::Cleanup));
         all.push((t("iPhone koppeln (Brain Link)", "Pair a phone (Brain Link)").to_string(), "", PaletteCommand::PairPhone));
         all.push((t("Neues Claude-Konto einrichten", "Set up a new Claude account").to_string(), "", PaletteCommand::SetUpAccount));
+        all.push((t("Konten abgleichen (Einstellungen, Skills, Gedächtnis)", "Sync accounts (settings, skills, memory)").to_string(), "", PaletteCommand::SyncAccounts));
         all.push((t("Beendete Sessions zeigen / verbergen", "Show / hide ended sessions").to_string(), "E", PaletteCommand::ToggleEnded));
         all.push((t("Nach Projekten gruppieren", "Group by project").to_string(), "G", PaletteCommand::ToggleProjects));
         all.push((t("Heute", "Today").to_string(), "D", PaletteCommand::ToggleToday));
@@ -1867,6 +1902,7 @@ impl Brain {
                 Task::none()
             }
             PaletteCommand::SetUpAccount => self.open_account_setup(),
+            PaletteCommand::SyncAccounts => self.open_sync(),
             PaletteCommand::PairPhone => {
                 self.pair_phone();
                 Task::none()
@@ -2720,6 +2756,7 @@ impl Brain {
                 return Task::none();
             }
             Mode::Pairing | Mode::AccountSetup => return Task::none(),
+            Mode::Sync => return self.on_sync_key(named, character.as_deref()),
             Mode::RestartFlags => return Task::none(),
             Mode::MoveTarget => {
                 // 1, 2, … pick the account in the order the dialog lists them.
@@ -2881,7 +2918,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::MoveTarget | Mode::RestartFlags => {
+            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::MoveTarget | Mode::RestartFlags | Mode::Sync => {
                 self.mode = Mode::Normal;
                 unfocus()
             }
