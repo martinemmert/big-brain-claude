@@ -767,7 +767,7 @@ fn other_pane<'a>(brain: &'a Brain, s: &'a Session) -> Element<'a, Message> {
     header = header
         .push(Space::new().width(Fill))
         .push(button(text("✕").size(13).color(TEXT_MUTED)).padding([4, 8]).on_press(Message::ToggleSplit).style(|_, _| button::Style::default()));
-    let head = mouse_area(column![header, iced::widget::row(meta_chips(brain, s)).spacing(6).wrap()].spacing(10))
+    let head = mouse_area(column![header, subtitle(brain, s)].spacing(10))
         .on_press(Message::ActivatePane)
         .interaction(iced::mouse::Interaction::Pointer);
     column![head, terminal_or_hint(brain, s)]
@@ -812,22 +812,16 @@ fn session_pane(brain: &Brain, now: i64) -> Element<'_, Message> {
     }
     header = header.push(Space::new().width(Fill)).push(primary);
 
-    let mut chips = meta_chips(brain, s);
-    if let Some(pr) = brain.prs.get(&s.key) {
-        chips.push(pr_chip(pr));
-    }
     let content: Element<'_, Message> = match brain.tab {
-        DetailTab::Messages => messages(brain),
-        DetailTab::Timeline => scrollable(column(markdown::timeline(s)).padding(Padding { top: 12.0, right: 8.0, bottom: 20.0, left: 0.0 })).height(Fill).style(scrollbar).into(),
-        DetailTab::Changes => changes(brain, s),
+        DetailTab::Messages | DetailTab::Timeline | DetailTab::Questions => messages(brain, s),
+        DetailTab::Changes => column![files_bar(brain, s), changes(brain, s)].spacing(10).height(Fill).into(),
         DetailTab::Files => with_reader(brain, files(brain, s)),
-        DetailTab::Questions => questions(brain, s),
         DetailTab::Konsil => scrollable(crate::konsil::view(brain, &s.key)).height(Fill).style(scrollbar).into(),
         DetailTab::Terminal => terminal(brain, s),
     };
     column![
         header,
-        iced::widget::row(chips).spacing(6).wrap(),
+        subtitle(brain, s),
         callout(brain, s, now, caps),
         tabs(brain, s),
         content,
@@ -879,43 +873,64 @@ fn context_gauge<'a>(brain: &'a Brain, s: &Session, percent: f64) -> Element<'a,
     if percent >= 80.0 && brain.can_send(&s.key) {
         line = line.push(style::text_button("/compact", false, Message::SendTo(s.key.clone(), "/compact".to_string())));
     }
-    container(line).padding([2, 8]).style(|_| boxed(SURFACE, LINE, 6.0)).into()
+    line.into()
 }
 
-/// Path, model, context, cost, permission mode, pid, start.
-fn meta_chips<'a>(brain: &'a Brain, s: &Session) -> Vec<Element<'a, Message>> {
+/// One quiet line under the name: where it runs, the model, how full the context is, what to
+/// know (a permission mode, days left to resume, the pull request). Cost, pid and start time
+/// on hover: they are for looking up, not for deciding.
+fn subtitle<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     if brain.mode == Mode::Rename {
-        return vec![text(t("⏎ schickt /rename an die Session, esc bricht ab", "⏎ sends /rename to the session, esc cancels")).size(12).color(TEXT_MUTED).font(UI).into()];
+        return text(t("⏎ schickt /rename an die Session, esc bricht ab", "⏎ sends /rename to the session, esc cancels")).size(12).color(TEXT_MUTED).font(UI).into();
     }
-    let mut meta = vec![chip(s.cwd.as_deref().map(tilde).unwrap_or_default(), true)];
     let info = &s.insight;
     let status = brain.model.snapshot(&s.key);
+    let quiet = |label: String| -> Element<'a, Message> { text(label).size(12).color(TEXT_MUTED).font(UI).into() };
+    let mut parts: Vec<Element<'a, Message>> = vec![text(s.cwd.as_deref().map(tilde).unwrap_or_default()).size(11.5).color(TEXT_MUTED).font(MONO).into()];
     if let Some(model) = &info.model {
-        meta.push(chip(short_model(model), false));
+        parts.push(quiet(short_model(model)));
     }
     // The status line knows the real fill level; the transcript only the token count.
     if let Some(percent) = status.and_then(|s| s.context_percent) {
-        meta.push(context_gauge(brain, s, percent));
+        parts.push(context_gauge(brain, s, percent));
     } else if let Some(tokens) = info.context_tokens {
         let tokens = format_tokens(tokens);
-        meta.push(chip(tr!("{tokens} Kontext", "{tokens} context"), false));
-    }
-    if let Some(cost) = status.and_then(|s| s.cost_usd).or(info.cost_usd) {
-        meta.push(chip(format!("${cost:.2}"), false));
+        parts.push(quiet(tr!("{tokens} Kontext", "{tokens} context")));
     }
     if let Some(mode) = info.permission_mode.as_deref().filter(|m| *m != "default") {
-        meta.push(chip(mode.to_string(), false));
+        parts.push(text(mode.to_string()).size(12).color(TURN).font(UI).into());
+    }
+    if !s.alive {
+        if let Some(days) = brain.model.days_left(s, now_ms()) {
+            parts.push(quiet(tr!("noch {days} Tage fortsetzbar", "resumable for {days} more days")));
+        }
+    }
+    let mut line = row![].spacing(8).align_y(iced::Center);
+    for (i, part) in parts.into_iter().enumerate() {
+        if i > 0 {
+            line = line.push(text("·").size(12).color(TEXT_FAINT));
+        }
+        line = line.push(part);
+    }
+    if let Some(pr) = brain.prs.get(&s.key) {
+        line = line.push(pr_chip(pr));
+    }
+    let mut details = Vec::new();
+    if let Some(cost) = status.and_then(|s| s.cost_usd).or(info.cost_usd) {
+        details.push(format!("${cost:.2}"));
     }
     if s.alive {
-        meta.push(chip(format!("pid {}", s.pid), false));
-    } else if let Some(days) = brain.model.days_left(s, now_ms()) {
-        meta.push(chip(tr!("noch {days} Tage fortsetzbar", "resumable for {days} more days"), false));
+        details.push(format!("pid {}", s.pid));
     }
     if let Some(started) = s.started_ms {
         let at = clock(started);
-        meta.push(chip(tr!("seit {at}", "since {at}"), false));
+        details.push(tr!("seit {at}", "since {at}"));
     }
-    meta
+    if details.is_empty() {
+        return line.into();
+    }
+    let card = container(text(details.join("  ·  ")).size(12).color(TEXT).font(UI)).padding([5, 9]).style(|_| boxed(RAISED, LINE_STRONG, 6.0));
+    iced::widget::tooltip(line, card, iced::widget::tooltip::Position::Bottom).gap(6).into()
 }
 
 /// The state box: what the session waits for, plus the actions that fit.
@@ -1010,24 +1025,22 @@ fn conflict_lines<'a>(brain: &'a Brain, s: &Session) -> Vec<Element<'a, Message>
 
 fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     let message_count = brain.conversation.as_ref().map_or(0, |c| c.messages.len());
-    let change_count = brain.changes.as_ref().filter(|c| c.key == s.key).and_then(|c| c.changes.as_ref()).map_or(0, |c| c.files.len());
     let file_count = brain.files.as_ref().filter(|f| f.key == s.key).map(|f| f.files.len());
-    let question_count = brain.qa.as_ref().filter(|q| q.key == s.key).map(|q| q.exchanges.len());
     let konsil_count = brain.konsil.as_ref().filter(|k| k.key == s.key).map_or(0, |k| k.councils.len());
-    let mut tabs = vec![
-        (DetailTab::Messages, t("Nachrichten", "Messages"), Some(message_count)),
-        (DetailTab::Timeline, t("Verlauf", "Timeline"), Some(s.timeline.len())),
-        (DetailTab::Changes, t("Änderungen", "Changes"), Some(change_count)),
-        (DetailTab::Files, t("Dateien", "Files"), file_count),
-        (DetailTab::Questions, t("Fragen", "Questions"), question_count),
-    ];
+    let mut tabs = vec![(DetailTab::Messages, t("Nachrichten", "Messages"), Some(message_count)), (DetailTab::Files, t("Dateien", "Files"), file_count)];
     // Only sessions that held a council have the tab.
     if konsil_count > 0 || brain.tab == DetailTab::Konsil {
         tabs.push((DetailTab::Konsil, "Konsil", Some(konsil_count)));
     }
     tabs.push((DetailTab::Terminal, "Terminal", None));
+    // The lenses count as Messages, the git changes as Files.
+    let shown = match brain.tab {
+        DetailTab::Timeline | DetailTab::Questions => DetailTab::Messages,
+        DetailTab::Changes => DetailTab::Files,
+        tab => tab,
+    };
     let buttons = tabs.into_iter().map(|(tab, label, count)| {
-        let active = brain.tab == tab;
+        let active = shown == tab;
         let content = column![
             row![
                 text(label).size(13).font(if active { style::semibold() } else { style::medium() }).color(if active { TEXT_STRONG } else { TEXT_MUTED }),
@@ -1136,14 +1149,7 @@ fn files<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
         return hint(why);
     };
     let filter = brain.file_filter;
-    let count = |f: app::FileFilter| cache.files.iter().filter(|file| shows(f, file)).count();
-    let options = [
-        (app::FileFilter::All, t("Alle", "All")),
-        (app::FileFilter::Changed, t("Geschrieben", "Written")),
-        (app::FileFilter::Read, t("Gelesen", "Read")),
-        (app::FileFilter::Given, t("Mitgegeben", "Given")),
-    ];
-    let bar = segmented(options.into_iter().map(|(f, label)| (format!("{label} {}", count(f)), filter == f, Message::FileFilter(f))).collect());
+    let bar = files_bar(brain, s);
     let now = now_ms();
     let cwd = s.cwd.clone().unwrap_or_default();
     let rows: Vec<Element<'a, Message>> = cache
@@ -1247,6 +1253,26 @@ fn questions<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
         container(card).padding([10, 12]).width(Fill).style(|_| boxed(SURFACE, LINE, 8.0)).into()
     });
     scrollable(column(cards).spacing(8).padding(Padding { top: 4.0, right: 12.0, bottom: 24.0, left: 0.0 })).height(Fill).style(scrollbar).into()
+}
+
+/// The Files tab's choice: the files the session touched, by how, or the folder's git changes.
+fn files_bar<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
+    let on_changes = brain.tab == DetailTab::Changes;
+    let cache = brain.files.as_ref().filter(|f| f.key == s.key);
+    let count = |f: app::FileFilter| cache.map_or(0, |c| c.files.iter().filter(|file| shows(f, file)).count());
+    let options = [
+        (app::FileFilter::All, t("Alle", "All")),
+        (app::FileFilter::Changed, t("Geschrieben", "Written")),
+        (app::FileFilter::Read, t("Gelesen", "Read")),
+        (app::FileFilter::Given, t("Mitgegeben", "Given")),
+    ];
+    let filters = segmented(options.into_iter().map(|(f, label)| (format!("{label} {}", count(f)), !on_changes && brain.file_filter == f, Message::FileFilter(f))).collect());
+    let changed = brain.changes.as_ref().filter(|c| c.key == s.key).and_then(|c| c.changes.as_ref()).map(|c| c.files.len());
+    let git = match changed {
+        Some(n) => tr!("Git-Änderungen {n}", "Git changes {n}"),
+        None => t("Git-Änderungen", "Git changes").to_string(),
+    };
+    row![filters, segmented(vec![(git, on_changes, Message::Tab(DetailTab::Changes))])].spacing(8).align_y(iced::Center).into()
 }
 
 fn shows(filter: app::FileFilter, file: &brain_core::files::SessionFile) -> bool {
@@ -1413,8 +1439,12 @@ fn reader_pane(reader: &crate::app::Reader) -> Element<'_, Message> {
 
 /// The latest messages; with text in the find field, the matches in the whole session; with
 /// "Your prompts", everything you asked.
-fn messages(brain: &Brain) -> Element<'_, Message> {
-    let body: Element<'_, Message> = if brain.find.trim().is_empty() && !brain.prompts_only {
+fn messages<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
+    let body: Element<'a, Message> = if brain.tab == DetailTab::Questions {
+        questions(brain, s)
+    } else if brain.tab == DetailTab::Timeline {
+        scrollable(column(markdown::timeline(s)).padding(Padding { top: 12.0, right: 8.0, bottom: 20.0, left: 0.0 })).height(Fill).style(scrollbar).into()
+    } else if brain.find.trim().is_empty() && !brain.prompts_only {
         let list = brain.conversation.as_ref().map(|c| c.messages.as_slice()).unwrap_or_default();
         let children = if list.is_empty() { vec![hint(t("Diese Session hat noch keine Nachrichten.", "This session has no messages yet."))] } else { markdown::conversation(list) };
         scrollable(column(children).spacing(14).padding(Padding { top: 4.0, right: 12.0, bottom: 24.0, left: 0.0 }))
@@ -1426,9 +1456,15 @@ fn messages(brain: &Brain) -> Element<'_, Message> {
     } else {
         whole_session(brain)
     };
+    let lens_open = brain.tab != DetailTab::Messages || brain.prompts_only || !brain.find.is_empty();
+    if !brain.find_open && !lens_open {
+        return body;
+    }
     column![messages_bar(brain), body].spacing(8).height(Fill).into()
 }
 
+/// ⌘F: find in the whole session, and the lenses on it: the conversation, only your prompts,
+/// Claude's questions with your answers, the session's events.
 fn messages_bar(brain: &Brain) -> Element<'_, Message> {
     let field = text_input(t("In der ganzen Session suchen", "Find in the whole session"), &brain.find)
         .id(app::FIND)
@@ -1442,16 +1478,25 @@ fn messages_bar(brain: &Brain) -> Element<'_, Message> {
         .padding([0, 10])
         .width(Fill)
         .style(move |_| boxed(INK, if active { alpha(WORKING, 0x99) } else { LINE }, 8.0));
-    let view = segmented(vec![
-        (t("Verlauf", "Conversation").to_string(), !brain.prompts_only, Message::PromptsOnly(false)),
-        (t("Deine Prompts", "Your prompts").to_string(), brain.prompts_only, Message::PromptsOnly(true)),
-    ]);
-    row![
-        find,
-        view,
-        action(t("Antwort kopieren", "Copy answer"), "⌘⇧C", false, Some(Message::Do(Action::CopyAnswer))),
-        action(t("Als Markdown", "As Markdown"), "", false, Some(Message::Do(Action::Export))),
-    ]
+    use app::Lens;
+    let lens = match brain.tab {
+        DetailTab::Questions => Lens::Questions,
+        DetailTab::Timeline => Lens::Events,
+        _ if brain.prompts_only => Lens::Prompts,
+        _ => Lens::Conversation,
+    };
+    let view = segmented(
+        [
+            (Lens::Conversation, t("Gespräch", "Conversation")),
+            (Lens::Prompts, t("Deine Prompts", "Your prompts")),
+            (Lens::Questions, t("Fragen", "Questions")),
+            (Lens::Events, t("Ereignisse", "Events")),
+        ]
+        .into_iter()
+        .map(|(l, label)| (label.to_string(), lens == l, Message::Lens(l)))
+        .collect(),
+    );
+    row![find, view]
     .spacing(8)
     .align_y(iced::Center)
     .into()

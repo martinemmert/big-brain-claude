@@ -124,6 +124,16 @@ const SLASH_COMMANDS: [(&str, &str, &str); 6] = [
     ("/clear", "Gespräch leeren", "clear the conversation"),
 ];
 
+/// What the Messages tab shows: the conversation, only your prompts, Claude's questions with
+/// the answers, or the session's events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lens {
+    Conversation,
+    Prompts,
+    Questions,
+    Events,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetailTab {
     Messages,
@@ -281,12 +291,13 @@ pub enum Message {
     TerminalKeys(SessionKey, Vec<u8>),
     /// The find field in the Messages tab.
     Find(String),
-    PromptsOnly(bool),
     HistoryLoaded(SessionKey, u64, Vec<brain_core::transcript::Message>),
     /// A search hit or a prompt clicked open (its index in the history), or closed again.
     Expand(Option<usize>),
     CopyText(String),
     Exported(Result<std::path::PathBuf, String>),
+    /// A lens of the Messages tab, from the find bar.
+    Lens(Lens),
     FileFilter(FileFilter),
     /// A file from the Files tab: Markdown opens in YAMV, the rest in the reader.
     OpenFile(String),
@@ -545,6 +556,8 @@ pub struct Brain {
     pub find: String,
     /// The Messages tab lists only the user's prompts, all of them.
     pub prompts_only: bool,
+    /// The find bar over the conversation is open (⌘F, or a lens other than the conversation).
+    pub find_open: bool,
     /// The whole conversation, loaded for finding and the prompt list.
     pub history: Option<HistoryCache>,
     history_loading: bool,
@@ -712,6 +725,7 @@ impl Brain {
             composer_templates: Vec::new(),
             palette_index: 0,
             prompts_only: false,
+            find_open: false,
             history: None,
             history_loading: false,
             expanded: None,
@@ -1009,9 +1023,15 @@ impl Brain {
                 self.expanded = None;
                 self.load_history()
             }
-            Message::PromptsOnly(on) => {
-                self.prompts_only = on;
+            Message::Lens(lens) => {
+                self.find_open = true;
+                self.prompts_only = lens == Lens::Prompts;
                 self.expanded = None;
+                self.tab = match lens {
+                    Lens::Questions => DetailTab::Questions,
+                    Lens::Events => DetailTab::Timeline,
+                    Lens::Conversation | Lens::Prompts => DetailTab::Messages,
+                };
                 self.load_history()
             }
             Message::HistoryLoaded(key, len, messages) => {
@@ -1071,6 +1091,7 @@ impl Brain {
             }
             Message::FileFilter(filter) => {
                 self.file_filter = filter;
+                self.tab = DetailTab::Files;
                 Task::none()
             }
             Message::OpenFile(path) => {
@@ -1854,6 +1875,8 @@ impl Brain {
             all.push((t("In der Session suchen", "Find in the session").to_string(), "⌘F", PaletteCommand::Find));
             all.push((t("Dateien der Session", "The session's files").to_string(), "", PaletteCommand::Tab(DetailTab::Files)));
             all.push((t("Änderungen (git)", "Changes (git)").to_string(), "", PaletteCommand::Tab(DetailTab::Changes)));
+            all.push((t("Claudes Fragen und deine Antworten", "Claude's questions and your answers").to_string(), "", PaletteCommand::Tab(DetailTab::Questions)));
+            all.push((t("Ereignisse der Session (Verlauf)", "The session's events (timeline)").to_string(), "", PaletteCommand::Tab(DetailTab::Timeline)));
             if self.has_konsil() {
                 all.push((t("Konsil: die Beratungen der Session", "Konsil: the session's councils").to_string(), "", PaletteCommand::Tab(DetailTab::Konsil)));
             }
@@ -2016,7 +2039,10 @@ impl Brain {
 
     /// ⌘F: find in the selected session's conversation.
     fn start_find(&mut self) -> Task<Message> {
-        self.tab = DetailTab::Messages;
+        self.find_open = true;
+        if !matches!(self.tab, DetailTab::Messages | DetailTab::Timeline | DetailTab::Questions) {
+            self.tab = DetailTab::Messages;
+        }
         Task::batch([operation::focus(FIND), self.load_history()])
     }
 
@@ -2873,26 +2899,20 @@ impl Brain {
             }
             Some(Named::ArrowRight) => {
                 self.tab = match self.tab {
-                    DetailTab::Messages => DetailTab::Timeline,
-                    DetailTab::Timeline => DetailTab::Changes,
-                    DetailTab::Changes => DetailTab::Files,
-                    DetailTab::Files => DetailTab::Questions,
-                    DetailTab::Questions if self.has_konsil() => DetailTab::Konsil,
-                    DetailTab::Questions | DetailTab::Konsil => DetailTab::Terminal,
+                    DetailTab::Messages | DetailTab::Timeline | DetailTab::Questions => DetailTab::Files,
+                    DetailTab::Files | DetailTab::Changes if self.has_konsil() => DetailTab::Konsil,
+                    DetailTab::Files | DetailTab::Changes | DetailTab::Konsil => DetailTab::Terminal,
                     DetailTab::Terminal => DetailTab::Messages,
                 };
                 return Task::batch([self.load_changes(), self.load_files()]);
             }
             Some(Named::ArrowLeft) => {
                 self.tab = match self.tab {
-                    DetailTab::Messages => DetailTab::Terminal,
-                    DetailTab::Timeline => DetailTab::Messages,
-                    DetailTab::Changes => DetailTab::Timeline,
-                    DetailTab::Files => DetailTab::Changes,
-                    DetailTab::Questions => DetailTab::Files,
-                    DetailTab::Konsil => DetailTab::Questions,
+                    DetailTab::Messages | DetailTab::Timeline | DetailTab::Questions => DetailTab::Terminal,
+                    DetailTab::Files | DetailTab::Changes => DetailTab::Messages,
+                    DetailTab::Konsil => DetailTab::Files,
                     DetailTab::Terminal if self.has_konsil() => DetailTab::Konsil,
-                    DetailTab::Terminal => DetailTab::Questions,
+                    DetailTab::Terminal => DetailTab::Files,
                 };
                 return Task::batch([self.load_changes(), self.load_files()]);
             }
@@ -2955,10 +2975,16 @@ impl Brain {
             self.overview = false;
             return Task::none();
         }
-        if self.mode == Mode::Normal && (!self.find.is_empty() || self.prompts_only) {
+        // The find bar and its lenses close back to the conversation.
+        let lens = matches!(self.tab, DetailTab::Timeline | DetailTab::Questions);
+        if self.mode == Mode::Normal && (!self.find.is_empty() || self.prompts_only || self.find_open || lens) {
             self.find.clear();
             self.prompts_only = false;
+            self.find_open = false;
             self.expanded = None;
+            if lens {
+                self.tab = DetailTab::Messages;
+            }
             return unfocus();
         }
         if self.mode == Mode::Normal && self.reader.is_some() {
