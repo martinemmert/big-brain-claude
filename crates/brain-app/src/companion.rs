@@ -110,7 +110,7 @@ pub struct Picked {
 }
 
 /// What this Brain Link offers beyond the first version, for the phone to show only what works.
-const FEATURES: [&str; 6] = ["files", "attachments", "wait", "control", "answers", "history"];
+const FEATURES: [&str; 7] = ["files", "attachments", "wait", "control", "answers", "history", "folders"];
 /// How long a read with `wait` waits for something new before it answers anyway.
 const WAIT: Duration = Duration::from_secs(25);
 /// How often a waiting read looks again.
@@ -132,6 +132,16 @@ pub struct UsageView {
     pub account: String,
     pub five_hour: Option<LimitView>,
     pub seven_day: Option<LimitView>,
+}
+
+/// The folders in one folder inside the home folder, for choosing where a session starts.
+#[derive(Debug, Clone, Serialize)]
+struct FolderList {
+    path: String,
+    /// The folder above, while that is still inside the home folder.
+    parent: Option<String>,
+    /// Full paths, by name.
+    folders: Vec<String>,
 }
 
 /// Where the phone may start a session: the accounts, and the folders sessions ran in lately.
@@ -499,6 +509,15 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
         }
         (Method::GET, ["v1", "usage"]) => reply(StatusCode::OK, &state.usage.read().map(|u| u.clone()).unwrap_or_default()),
         (Method::GET, ["v1", "places"]) => reply(StatusCode::OK, &state.places.read().map(|p| p.clone()).unwrap_or_default()),
+        // `path=<folder>`, the home folder without one; nothing outside it.
+        (Method::GET, ["v1", "folders"]) => {
+            let asked = query_param(req.uri().query(), "path");
+            off_thread(state.clone(), move |_| match folder_list(&home_dir(), asked.as_deref()) {
+                Some(list) => reply(StatusCode::OK, &list),
+                None => not_found(),
+            })
+            .await
+        }
         (Method::POST, ["v1", "sessions"]) => {
             let Some(body) = read_json(req).await else {
                 return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "bad body" })));
@@ -507,11 +526,16 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
             let (Some(account), Some(folder)) = (field("account"), field("folder")) else {
                 return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "account and folder" })));
             };
-            // Only what Brain offered: a known account, a folder sessions ran in.
+            // Only what Brain offered: a known account, a folder sessions ran in or one inside the
+            // home folder.
             let places = state.places.read().map(|p| p.clone()).unwrap_or_default();
-            if !places.accounts.contains(&account) || !places.folders.contains(&folder) {
+            let folder = match places.folders.contains(&folder) {
+                true => Some(folder),
+                false => brain_core::folders::inside(&home_dir(), Path::new(&folder)).map(|p| p.display().to_string()),
+            };
+            let Some(folder) = folder.filter(|_| places.accounts.contains(&account)) else {
                 return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "unknown account or folder" })));
-            }
+            };
             let prompt = field("prompt").filter(|p| !p.trim().is_empty());
             let sent = state.commands.lock().map(|s| s.send(Command::Start { account, folder, prompt }).is_ok()).unwrap_or(false);
             if sent {
@@ -958,6 +982,18 @@ fn clip_bytes(text: &str, max: usize) -> String {
 }
 
 /// A query parameter, percent-decoded (`+` stays a plus).
+/// The folders in `path` (the home folder without one), or `None` when it is no folder inside
+/// the home folder.
+fn folder_list(home: &Path, path: Option<&str>) -> Option<FolderList> {
+    let dir = brain_core::folders::inside(home, path.map_or(home, Path::new))?;
+    let parent = dir.parent().and_then(|p| brain_core::folders::inside(home, p)).filter(|_| Some(dir.as_path()) != home.canonicalize().ok().as_deref());
+    Some(FolderList {
+        path: dir.display().to_string(),
+        parent: parent.map(|p| p.display().to_string()),
+        folders: brain_core::folders::subfolders(&dir).iter().map(|p| p.display().to_string()).collect(),
+    })
+}
+
 fn query_param(query: Option<&str>, name: &str) -> Option<String> {
     query?
         .split('&')
@@ -1166,6 +1202,16 @@ mod tests {
 
     #[test]
     fn reads_percent_encoded_query_parameters() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("home/Work/app")).unwrap();
+        let home = root.path().join("home").canonicalize().unwrap();
+        let top = folder_list(&home, None).unwrap();
+        assert_eq!((top.parent, top.folders.len()), (None, 1));
+        let work = folder_list(&home, Some(&top.folders[0])).unwrap();
+        assert_eq!(work.parent.as_deref(), Some(top.path.as_str()));
+        assert!(work.folders[0].ends_with("/Work/app"));
+        assert!(folder_list(&home, Some(root.path().to_str().unwrap())).is_none(), "nothing outside the home folder");
+
         assert_eq!(query_param(Some("path=%2Fw%2Fa%20b%2B.txt&x=1"), "path").as_deref(), Some("/w/a b+.txt"));
         assert_eq!(query_param(Some("path=%zz"), "path"), None);
         assert_eq!(query_param(Some("path="), "path"), None);

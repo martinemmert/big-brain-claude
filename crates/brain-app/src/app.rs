@@ -2636,6 +2636,12 @@ impl Brain {
             }
             return Task::none();
         }
+        // The dialog's field takes → for its cursor; in a typed path it goes into a folder.
+        if self.mode == Mode::NewSession && named == Some(Named::ArrowRight) {
+            if let Some(task) = self.enter_picked_folder() {
+                return task;
+            }
+        }
         if cmd && matches!(character.as_deref(), Some("1") | Some("[")) {
             self.focused_terminal = None;
             self.focused_shell = None;
@@ -3521,8 +3527,22 @@ impl Brain {
         sessions.sort_by_key(|s| std::cmp::Reverse(s.last_activity_ms));
         let mut folders: Vec<String> = Vec::new();
         if query.starts_with('/') || query.starts_with('~') {
-            let home = brain_core::account::home_dir().display().to_string();
-            folders.push(query.replacen('~', &home, 1));
+            let home = brain_core::account::home_dir();
+            let typed = query.replacen('~', &home.display().to_string(), 1);
+            let first = if typed.len() > 1 { typed.trim_end_matches('/').to_string() } else { typed.clone() };
+            folders.push(first.clone());
+            // A path lists the folders it leads to (inside the home folder): `~/Work/` all of
+            // Work's, `~/Work/ap` those that start with "ap". → goes into the picked one.
+            let (dir, start) = match typed.rsplit_once('/') {
+                Some((dir, start)) => (if dir.is_empty() { "/" } else { dir }, start.to_lowercase()),
+                None => (typed.as_str(), String::new()),
+            };
+            if let Some(dir) = brain_core::folders::inside(&home, std::path::Path::new(dir)) {
+                let found = brain_core::folders::subfolders(&dir).into_iter().map(|p| p.display().to_string());
+                let matching = found.filter(|p| p.rsplit('/').next().is_some_and(|name| name.to_lowercase().starts_with(&start)));
+                folders.extend(matching.filter(|p| *p != first).take(30));
+            }
+            return folders;
         }
         let terms: Vec<String> = query.to_lowercase().split_whitespace().map(str::to_string).collect();
         for cwd in sessions.iter().filter_map(|s| s.cwd.clone()) {
@@ -3599,6 +3619,18 @@ impl Brain {
             _ => return operation::focus(NEW_SESSION),
         }
         Task::none()
+    }
+
+    /// → in the dialog while it holds a typed path: goes into the picked folder and lists its
+    /// folders. `None` when there is no path or no folder to go into.
+    fn enter_picked_folder(&mut self) -> Option<Task<Message>> {
+        if !self.new_session.folder.starts_with(['/', '~']) || self.pending_placeholder().is_some() {
+            return None;
+        }
+        let Some(Choice::Folder(folder)) = self.new_session_choices().get(self.new_session.pick).cloned() else { return None };
+        self.new_session.folder = format!("{}/", crate::format::tilde(&folder).trim_end_matches('/'));
+        self.new_session.pick = 0;
+        Some(Task::batch([operation::focus(NEW_SESSION), operation::move_cursor_to_end(NEW_SESSION)]))
     }
 
     /// ⏎ in the dialog: pick a template or folder, take a placeholder value, or start.

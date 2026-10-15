@@ -60,7 +60,8 @@ Die Tabs (`←` `→`):
 ## Sessions in Brain laufen lassen
 
 - **Neue Session:** `⌘N`. Ordner, Konto, Modell und erster Prompt, auf Wunsch aus einer
-  Vorlage. Sie läuft als Claude-Code-Hintergrund-Session in Brains Terminal weiter, auch wenn
+  Vorlage. Zuletzt benutzte Ordner stehen oben; tippst du einen Pfad (`~/`), listet Brain die
+  Ordner darin, `→` geht in den gewählten hinein. Sie läuft als Claude-Code-Hintergrund-Session in Brains Terminal weiter, auch wenn
   Brain beendet wird.
 - **Öffnen:** `⏎` oder Doppelklick. Läuft die Session in Brain, öffnet sie sich hier; eine beendete
   wird hier fortgesetzt. `⌥⏎` öffnet sie stattdessen in iTerm.

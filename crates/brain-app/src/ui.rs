@@ -1811,7 +1811,7 @@ fn new_session(brain: &Brain) -> Element<'_, Message> {
     content = content.push(scrollable(column(choices).spacing(2)).height(Fill).style(scrollbar));
     content = content.push(
         container(
-            text(t("⏎ wählen/starten · ↑↓ · ⇥ Konto · ⌘I Brain/iTerm · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc", "⏎ pick/start · ↑↓ · ⇥ account · ⌘I Brain/iTerm · ⌘E edit template · ⌘⇧N new template · esc"))
+            text(t("⏎ wählen/starten · ↑↓ · ~/ → Ordner · ⇥ Konto · ⌘I Brain/iTerm · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc", "⏎ pick/start · ↑↓ · ~/ → folders · ⇥ account · ⌘I Brain/iTerm · ⌘E edit template · ⌘⇧N new template · esc"))
                 .size(11.5)
                 .color(TEXT_FAINT)
                 .font(UI),

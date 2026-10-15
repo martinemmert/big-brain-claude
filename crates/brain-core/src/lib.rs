@@ -10,6 +10,7 @@ pub mod conflicts;
 pub mod digest;
 pub mod event;
 pub mod files;
+pub mod folders;
 pub mod github;
 pub mod history;
 pub mod konsil;
