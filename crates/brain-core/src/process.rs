@@ -86,6 +86,14 @@ pub fn pid_alive(pid: u32) -> bool {
     result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// Whether `pid` runs Claude Code (its command is `claude …`): a pid Brain remembers may belong
+/// to another program by now.
+pub fn is_claude(pid: u32) -> bool {
+    let Ok(out) = Command::new("ps").args(["-o", "command=", "-p", &pid.to_string()]).output() else { return false };
+    let command = String::from_utf8_lossy(&out.stdout);
+    command.split_whitespace().next().is_some_and(|program| program == "claude" || program.ends_with("/claude"))
+}
+
 /// When a process started (epoch ms), from the kernel's process info.
 pub fn process_started_ms(pid: u32) -> Option<i64> {
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };

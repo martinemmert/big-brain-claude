@@ -134,6 +134,22 @@ Die Tabs (`←` `→`):
 Tasten, die zweimal gedrückt werden wollen, fragen im Rechtsklick-Menü nicht nach: Der Klick
 zählt als Bestätigung.
 
+**Der Gärtner** (⌘K → „Gärtner“, oder „✂ N kaputt“ in der Titelleiste, oder `brain garden`)
+findet Sessions, die Brain listet, aber nicht mehr steuern kann, und beendet sie endgültig:
+
+- **läuft doppelt:** ein umgezogenes Gespräch, dessen Original weiterlief;
+- **nicht erreichbar:** ihr Terminal ging gleich nach dem Anhängen wieder zu;
+- **hängt vermutlich:** „arbeitet“ seit 3 Stunden ohne Lebenszeichen (nur ein Verdacht, darum
+  nicht vorausgewählt).
+
+Beenden heißt: `claude stop`, sonst SIGTERM, zuletzt SIGKILL, und nur bei einem Prozess, der noch
+Claude Code ist. Das Gespräch bleibt fortsetzbar. Für eine einzelne Session, die sich nicht
+beenden lässt: Rechtsklick → **Hart beenden**.
+
+**Das Log** hält fest, was Brain in seiner Statuszeile gesagt hat, was fehlschlug, was das
+Terminal einer Session zuletzt zeigte, als es zuging, und was Gärtner und Konten-Abgleich getan
+haben: `~/.claude-brain/logs/<Datum>.log`, zwei Wochen lang (⌘K → „Log öffnen“).
+
 ## Brain auf dem iPhone (Brain Link)
 
 Mit der App **Brain Companion** (Projekt `brain-companion` neben diesem) siehst du unterwegs,

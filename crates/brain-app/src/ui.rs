@@ -30,6 +30,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::AccountSetup => account_setup(brain),
         Mode::Sync => sync_accounts(brain),
         Mode::Keys => keys_sheet(brain),
+        Mode::Garden => garden(brain),
         Mode::Relaunch => relaunch(brain),
         Mode::NewSession => new_session(brain),
         _ if brain.prefs.layout == Layout::Today => today(brain),
@@ -271,6 +272,10 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
     } else if !ended && s.accepts_input() {
         remove.push((t("Beenden", "End").to_string(), "X", Action::End, false));
     }
+    // When ending doesn't work (it hangs, or Brain can't reach it): stop the process.
+    if !ended && s.alive {
+        remove.push((t("Hart beenden (Prozess stoppen)", "End by force (stop the process)").to_string(), "", Action::ForceEnd, true));
+    }
     // A running session is put away with S; an ended one is hidden until something happens.
     if ended && !hidden {
         remove.push((t("Ausblenden", "Hide").to_string(), "⌫", Action::Hide, false));
@@ -363,6 +368,11 @@ fn titlebar(brain: &Brain) -> Element<'_, Message> {
                 .on_press(Message::OpenUrl(update.url.clone()))
                 .style(|_, _| button::Style { background: Some(Background::Color(alpha(DONE, 0x22))), border: iced::border::rounded(6), ..button::Style::default() }),
         );
+    }
+    // Sessions Brain can't steer any more: the gardener ends them.
+    if brain.garden_count > 0 {
+        let count = brain.garden_count;
+        bar = bar.push(style::text_button(tr!("✂ {count} kaputt", "✂ {count} broken"), false, Message::OpenGarden));
     }
     // A session start synced the accounts but left conflicts for the user.
     if brain.sync.open > 0 {
@@ -2132,6 +2142,72 @@ fn sync_accounts(brain: &Brain) -> Element<'_, Message> {
     // The first sync also records the base, even when nothing differs.
     let ready = !dialog.busy && (plan.first || !rows.is_empty() || notes > 0);
     body = body.push(action(label, "⏎", true, ready.then_some(Message::SyncApply)));
+    body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
+}
+
+/// The gardener: the sessions Brain lists but can't steer any more, why, and which get ended.
+fn garden(brain: &Brain) -> Element<'_, Message> {
+    use brain_core::garden::Reason;
+    let dialog = &brain.garden;
+    let mut body = column![
+        dialog_title(t("Gärtner", "Gardener")),
+        text(t(
+            "Sessions, die Brain listet, aber nicht mehr steuern kann. Beenden heißt: claude stop, sonst SIGTERM, zuletzt SIGKILL. Das Gespräch bleibt und lässt sich fortsetzen. Was dabei passiert, steht im Log (⌘K → Log öffnen).",
+            "Sessions Brain lists but can't steer any more. Ending means: claude stop, else SIGTERM, last SIGKILL. The conversation stays and can be resumed. What happens is in the log (⌘K → Open the log).",
+        ))
+        .size(13)
+        .line_height(1.5)
+        .color(TEXT)
+        .font(UI),
+    ]
+    .spacing(14)
+    .max_width(720);
+    if dialog.findings.is_empty() {
+        body = body.push(text(t("Alles in Ordnung: keine kaputten Sessions.", "All good: no broken sessions.")).size(13).color(DONE).font(UI));
+        return body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into();
+    }
+    let rows = dialog.findings.iter().zip(&dialog.chosen).enumerate().map(|(index, (finding, chosen))| {
+        let session = brain.model.board.get(&finding.key);
+        let name = session.map(|s| s.display_name()).unwrap_or_else(|| finding.key.id.clone());
+        let why = match &finding.reason {
+            Reason::LeftOver { newer } => {
+                let account = &newer.account;
+                tr!("Läuft doppelt: Dasselbe Gespräch läuft jetzt auch in {account}; das hier ist das alte Exemplar.", "Runs twice: the same conversation now runs in {account} too; this is the old copy.")
+            }
+            Reason::Unreachable { .. } => t("Nicht erreichbar: Ihr Terminal ging gleich nach dem Anhängen wieder zu.", "Unreachable: its terminal closed right after attaching.").to_string(),
+            Reason::Stuck { quiet_ms } => {
+                let hours = quiet_ms / 3_600_000;
+                tr!("Hängt vermutlich: „arbeitet“, aber seit {hours} h tut sich nichts.", "Probably stuck: “working”, but nothing happened for {hours} h.")
+            }
+        };
+        let mark = if *chosen { "☑" } else { "☐" };
+        let mut lines = column![
+            row![
+                text(mark).size(15).color(if *chosen { WORKING } else { TEXT_MUTED }),
+                text(name).size(13).color(TEXT_STRONG).font(style::semibold()),
+                account_badge(&finding.key.account, brain.account_index(&finding.key.account)),
+            ]
+            .spacing(10)
+            .align_y(iced::Center),
+            text(why).size(12.5).color(if finding.sure { TURN } else { TEXT_MUTED }).font(UI),
+        ]
+        .spacing(4);
+        if let Reason::Unreachable { said } = &finding.reason {
+            for line in said.iter().rev().take(4).rev() {
+                lines = lines.push(text(clip(line, 110)).size(11.5).color(TEXT_FAINT).font(MONO));
+            }
+        }
+        let selected = index == dialog.selected;
+        mouse_area(container(lines).padding([8, 12]).width(Fill).style(move |_| boxed(if selected { RAISED } else { SURFACE }, if selected { LINE_STRONG } else { LINE }, 8.0)))
+            .on_press(Message::GardenToggle(index))
+            .interaction(iced::mouse::Interaction::Pointer)
+            .into()
+    });
+    body = body.push(scrollable(column(rows).spacing(6)).height(Fill).style(scrollbar));
+    body = body.push(text(t("↑↓ wählen · Leertaste oder Klick: an/aus · ⏎ beenden · esc", "↑↓ select · space or click: on/off · ⏎ end · esc")).size(11.5).color(TEXT_FAINT).font(UI));
+    let count = dialog.chosen.iter().filter(|c| **c).count();
+    let label = if dialog.busy { t("Beende …", "Ending …").to_string() } else { tr!("{count} beenden", "End {count}") };
+    body = body.push(action(label, "⏎", true, (!dialog.busy && count > 0).then_some(Message::GardenEnd)));
     body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
 }
 

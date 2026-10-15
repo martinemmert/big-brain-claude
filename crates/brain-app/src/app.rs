@@ -16,6 +16,7 @@ mod account;
 mod relaunch;
 pub use relaunch::{Relaunch, RELAUNCH_FLAGS};
 mod sync;
+mod garden;
 mod link;
 
 pub use account::ACCOUNT_NAME;
@@ -76,6 +77,8 @@ pub enum Mode {
     Sync,
     /// `?`: every key.
     Keys,
+    /// The gardener: broken sessions to end for good.
+    Garden,
 }
 
 /// What a line of the command palette does.
@@ -106,6 +109,10 @@ pub enum PaletteCommand {
     SetUpAccount,
     /// Bring the accounts' setup and memory in step.
     SyncAccounts,
+    /// The gardener: sessions Brain can't steer any more.
+    Garden,
+    /// Today's log in the editor.
+    OpenLog,
     /// Show every key.
     Keys,
 }
@@ -217,6 +224,8 @@ pub enum Action {
     End,
     Hide,
     Trash,
+    /// End a session that won't end, by force (the gardener's way).
+    ForceEnd,
 }
 
 #[derive(Debug, Clone)]
@@ -351,6 +360,11 @@ pub enum Message {
     AccountSetupDone(Result<String, String>),
     /// The sync dialog: open it, its plan, a version picked or kept for a row, apply, and the outcome.
     OpenSync,
+    /// The gardener: open it, a finding (un)chosen, end the chosen, and how each went.
+    OpenGarden,
+    GardenToggle(usize),
+    GardenEnd,
+    GardenDone(Vec<(SessionKey, Result<String, String>)>),
     SyncPlanned(brain_core::sync::Plan),
     SyncPick(usize, String),
     SyncKeep(usize),
@@ -650,6 +664,13 @@ pub struct Brain {
     pub account_setup: account::AccountSetup,
     /// The sync dialog, and the conflicts the last sync left open.
     pub sync: sync::SyncDialog,
+    /// The gardener's dialog, and how many sessions it is sure are broken (for the title bar).
+    pub garden: garden::GardenDialog,
+    pub garden_count: usize,
+    /// Sessions whose terminal closed right after attaching, with its last lines.
+    unreachable: HashMap<SessionKey, Vec<String>>,
+    /// When each session terminal started.
+    terminal_started: HashMap<SessionKey, Instant>,
     /// The restart dialog, a session asked to end for a restart, and the flags a terminal about
     /// to start resumes with.
     pub relaunch: relaunch::RelaunchDialog,
@@ -763,6 +784,10 @@ impl Brain {
             focus_on_select: false,
             account_setup: account::AccountSetup::default(),
             sync: sync::SyncDialog::default(),
+            garden: garden::GardenDialog::default(),
+            garden_count: 0,
+            unreachable: HashMap::new(),
+            terminal_started: HashMap::new(),
             link_questions: HashMap::new(),
             relaunch: relaunch::RelaunchDialog::default(),
             pending_restart: None,
@@ -1164,8 +1189,9 @@ impl Brain {
                     let command = iced_term::Command::ProxyToBackend(command);
                     match self.terminals.get_mut(&key).map(|term| if shown { term.handle(command) } else { term.handle_quiet(command) }) {
                         Some(iced_term::actions::Action::Shutdown) => {
-                            self.terminals.remove(&key);
+                            let lines = self.terminals.remove(&key).map(|term| term.text()).unwrap_or_default();
                             self.terminal_titles.remove(&key);
+                            self.session_terminal_closed(&key, lines);
                         }
                         Some(iced_term::actions::Action::OpenLink(link)) => task = self.open_link(&key, &link),
                         Some(iced_term::actions::Action::ChangeTitle(title)) => {
@@ -1322,6 +1348,16 @@ impl Brain {
             }
             Message::RelaunchSubmit => self.submit_relaunch(),
             Message::OpenSync => self.open_sync(),
+            Message::OpenGarden => self.open_garden(),
+            Message::GardenToggle(index) => {
+                self.garden_toggle(index);
+                Task::none()
+            }
+            Message::GardenEnd => self.garden_end(),
+            Message::GardenDone(results) => {
+                self.garden_done(results);
+                Task::none()
+            }
             Message::SyncPlanned(plan) => {
                 self.sync_planned(plan);
                 Task::none()
@@ -1465,6 +1501,7 @@ impl Brain {
         }
         tasks.push(self.serve_link(now));
         self.refresh_sync_conflicts();
+        self.garden_count = self.garden_findings().iter().filter(|f| f.sure).count();
         self.remind(now);
         self.notify_conflicts();
         tasks.push(self.load_changes());
@@ -1915,6 +1952,8 @@ impl Brain {
         all.push((t("Neues Claude-Konto einrichten", "Set up a new Claude account").to_string(), "", PaletteCommand::SetUpAccount));
         all.push((t("Konten abgleichen (Einstellungen, Skills, Gedächtnis)", "Sync accounts (settings, skills, memory)").to_string(), "", PaletteCommand::SyncAccounts));
         all.push((t("Alle Tasten", "All keys").to_string(), "?", PaletteCommand::Keys));
+        all.push((t("Gärtner: kaputte Sessions finden und beenden", "Gardener: find and end broken sessions").to_string(), "", PaletteCommand::Garden));
+        all.push((t("Log öffnen (Meldungen und Fehler)", "Open the log (messages and errors)").to_string(), "", PaletteCommand::OpenLog));
         all.push((t("Beendete Sessions auf- / zuklappen", "Open / fold ended sessions").to_string(), "", PaletteCommand::ToggleEnded));
         all.push((t("Nach Projekten gruppieren", "Group by project").to_string(), "G", PaletteCommand::ToggleProjects));
         all.push((t("Heute", "Today").to_string(), "D", PaletteCommand::ToggleToday));
@@ -1968,6 +2007,11 @@ impl Brain {
             }
             PaletteCommand::SetUpAccount => self.open_account_setup(),
             PaletteCommand::SyncAccounts => self.open_sync(),
+            PaletteCommand::Garden => self.open_garden(),
+            PaletteCommand::OpenLog => {
+                self.open_log();
+                Task::none()
+            }
             PaletteCommand::Keys => {
                 self.mode = Mode::Keys;
                 Task::none()
@@ -2366,6 +2410,7 @@ impl Brain {
                 Ok(term) => {
                     self.next_terminal += 1;
                     self.terminals.insert(key.clone(), term);
+                    self.note_terminal_started(key);
                     true
                 }
                 Err(err) => {
@@ -2832,6 +2877,7 @@ impl Brain {
             }
             Mode::Pairing | Mode::AccountSetup => return Task::none(),
             Mode::Sync => return self.on_sync_key(named, character.as_deref()),
+            Mode::Garden => return self.on_garden_key(named),
             Mode::Keys => {
                 if text.as_deref() == Some("?") {
                     self.mode = Mode::Normal;
@@ -3010,7 +3056,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys => {
+            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden => {
                 self.mode = Mode::Normal;
                 unfocus()
             }
@@ -3053,7 +3099,11 @@ impl Brain {
     }
 
     pub fn set_status(&mut self, message: impl Into<String>) {
-        self.status = Some((message.into(), Instant::now()));
+        let message = message.into();
+        if !self.model.is_demo() {
+            brain_core::log::write(&brain_core::account::home_dir(), "status", &message);
+        }
+        self.status = Some((message, Instant::now()));
     }
 
     /// Demo pids are made up and may belong to unrelated processes: nothing is ever sent.
@@ -3171,6 +3221,7 @@ impl Brain {
             Action::End => return self.end_selected(confirmed),
             Action::Hide => self.hide_selected(confirmed),
             Action::Trash => self.trash_selected(confirmed),
+            Action::ForceEnd => return self.force_end_selected(),
             Action::Resume => self.resume_selected(),
             Action::Allow => self.answer_permission(true),
             Action::Deny => self.answer_permission(false),
@@ -3432,7 +3483,7 @@ impl Brain {
                     self.model.relist_transcripts();
                     self.set_status(t("Hintergrund-Session gestoppt.", "Stopped the background session."));
                 }
-                Err(err) => self.set_status(tr!("Stoppen fehlgeschlagen: {err}", "Stopping failed: {err}")),
+                Err(err) => self.set_status(tr!("Stoppen fehlgeschlagen: {err} – Rechtsklick → Hart beenden hilft.", "Stopping failed: {err} – right-click → End by force helps.")),
             }
             return Task::none();
         }
@@ -3441,7 +3492,7 @@ impl Brain {
             return Task::none();
         }
         if !session.accepts_input() {
-            self.set_status(t("Beenden geht, sobald die Session fertig ist und auf dich wartet.", "Ending works once the session has finished and waits for you."));
+            self.set_status(t("Beenden geht, sobald die Session fertig ist und auf dich wartet. Hängt sie: Rechtsklick → Hart beenden.", "Ending works once the session has finished and waits for you. If it hangs: right-click → End by force."));
             return Task::none();
         }
         if !confirmed && !self.arm('x', &key) {

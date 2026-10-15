@@ -136,6 +136,11 @@ impl Session {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test(key: SessionKey, pid: u32) -> Self {
+        Self::new(key, pid)
+    }
+
     pub fn display_name(&self) -> String {
         if let Some(name) = self.name.as_deref().filter(|n| !n.is_empty()) {
             return name.to_string();

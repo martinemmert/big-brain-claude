@@ -65,6 +65,13 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Sessions Brain lists but can't steer any more (running twice after a move, or "working"
+    /// for hours without a sign of life). Shows them; `--yes` ends the sure ones for good
+    /// (`claude stop`, else SIGTERM, last SIGKILL); their conversations stay resumable.
+    Garden {
+        #[arg(long)]
+        yes: bool,
+    },
     /// Install hooks and the protocol section into every Claude account.
     Install,
     /// Remove Brain's hooks and protocol section from every Claude account.
@@ -160,7 +167,13 @@ fn main() -> ExitCode {
                 // A new session: what changed in another account since comes along.
                 let starts = serde_json::from_str::<HookPayload>(&input).ok().and_then(|p| p.kind()) == Some(Kind::SessionStart);
                 if starts {
-                    let _ = brain_core::sync::on_session_start(&brain_core::sync::default_dir(&home), &accounts, &home);
+                    match brain_core::sync::on_session_start(&brain_core::sync::default_dir(&home), &accounts, &home) {
+                        Ok(Some(outcome)) if outcome.synced > 0 || outcome.open > 0 => {
+                            brain_core::log::write(&home, "sync", &format!("session start: {} items synced, {} left for the dialog", outcome.synced, outcome.open));
+                        }
+                        Err(err) => brain_core::log::write(&home, "sync", &format!("session start: {err}")),
+                        _ => {}
+                    }
                 }
             }
             ExitCode::SUCCESS
@@ -185,6 +198,7 @@ fn main() -> ExitCode {
         },
         Command::Account { action: AccountAction::New { name, yes } } => run_account_new(&accounts, &name, yes),
         Command::Sync { yes } => run_sync(&accounts, yes),
+        Command::Garden { yes } => run_garden(&store, &accounts, yes),
         Command::Install => run_install(&accounts),
         Command::Uninstall => run_uninstall(&accounts),
         Command::Status => run_status(&store, &accounts),
@@ -478,6 +492,62 @@ fn run_sync(accounts: &[Account], yes: bool) -> ExitCode {
             eprintln!("brain sync: {err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn run_garden(store: &Store, accounts: &[Account], yes: bool) -> ExitCode {
+    use brain_core::garden::{self, Reason};
+    let mut board = load_board(store, accounts);
+    // Background sessions' state comes from `claude agents`, as in Brain.
+    for account in accounts {
+        if let Some(agents) = brain_core::agents::list(account) {
+            board.set_agents(&account.id, &agents);
+        }
+    }
+    let sessions = board.sorted();
+    let copied_to = |id: &str| -> Vec<String> {
+        accounts.iter().filter(|a| brain_core::transcript::find_transcript(a, id).is_some()).map(|a| a.id.clone()).collect()
+    };
+    let found = garden::findings(&sessions, Utc::now().timestamp_millis(), &Default::default(), &copied_to);
+    if found.is_empty() {
+        println!("No broken sessions.");
+        return ExitCode::SUCCESS;
+    }
+    for finding in &found {
+        let Some(s) = board.get(&finding.key) else { continue };
+        let why = match &finding.reason {
+            Reason::LeftOver { newer } => format!("runs twice; the newer copy is in {}", newer.account),
+            Reason::Unreachable { .. } => "unreachable".to_string(),
+            Reason::Stuck { quiet_ms } => format!("\"working\" but quiet for {} h (a guess: --yes leaves it)", quiet_ms / 3_600_000),
+        };
+        println!("  {} {:<28} {:<7} pid {:<6} {why}", if finding.sure { "✂" } else { "?" }, s.display_name(), s.key.account, s.pid);
+    }
+    if !yes {
+        println!("\nNothing ended yet. `brain garden --yes` ends the sure ones (✂).");
+        return ExitCode::SUCCESS;
+    }
+    let home = home_dir();
+    let mut failed = false;
+    for finding in found.iter().filter(|f| f.sure) {
+        let (Some(s), Some(account)) = (board.get(&finding.key), accounts.iter().find(|a| a.id == finding.key.account)) else { continue };
+        let name = s.display_name();
+        let line = match garden::end(account, s.pid, s.agent.as_ref().map(|a| a.id.as_str())) {
+            Ok(how) => {
+                println!("ended {name}: {how}");
+                format!("{name} ({}): ended – {how}", finding.key.account)
+            }
+            Err(why) => {
+                failed = true;
+                eprintln!("not ended {name}: {why}");
+                format!("{name} ({}): NOT ended – {why}", finding.key.account)
+            }
+        };
+        brain_core::log::write(&home, "garden", &line);
+    }
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
 

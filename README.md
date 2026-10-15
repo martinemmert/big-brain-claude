@@ -140,6 +140,16 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   `~/.claude-brain/config.json`.
 - **Keys at hand.** The footer shows the keys for the selected session's state; `?` lists them
   all.
+- **The gardener** (⌘K, or the title bar's `✂ N broken`, or `brain garden`) finds sessions Brain
+  lists but can't steer any more and ends them for good: one that runs twice (a moved
+  conversation whose original kept running), one whose terminal closed right after attaching,
+  and, only as a guess and not preselected, one "working" for 3 hours without a sign of life.
+  Ending tries `claude stop`, then SIGTERM, then SIGKILL, and only on a process that still runs
+  Claude Code; the conversation stays resumable. Right-click → *End by force* does it for one
+  session that won't end. `brain garden --yes` ends the sure ones from the terminal.
+- **A log** of everything Brain said in its status line, what failed, what a session's terminal
+  showed when it closed, the gardener's work and the account sync at session starts:
+  `~/.claude-brain/logs/<date>.log`, kept two weeks (⌘K → *Open the log*).
 - **English or German**, following your macOS language (override with `BRAIN_LANG=de|en` or
   `{"language": "de"}` in `~/.claude-brain/config.json`).
 
