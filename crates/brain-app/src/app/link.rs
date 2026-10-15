@@ -216,7 +216,8 @@ impl Brain {
             | Command::Answer { key, .. }
             | Command::Interrupt { key }
             | Command::Resume { key }
-            | Command::Restart { key, .. } => key.clone(),
+            | Command::Restart { key, .. }
+            | Command::End { key } => key.clone(),
             Command::Start { account, folder, prompt } => return self.link_start(account, folder, prompt.clone()),
         };
         let Some(session) = self.model.board.get(&key) else { return Task::none() };
@@ -317,6 +318,25 @@ impl Brain {
                     return Task::none();
                 }
                 self.resume_in_background(&key, Vec::new())
+            }
+            Command::End { .. } => {
+                // A background session stops as with X in Brain: its conversation stays.
+                if let Some(agent) = self.model.board.get(&key).and_then(|s| s.agent.clone()).filter(|a| a.is_active()) {
+                    let Some(account) = self.model.account(&key.account).cloned() else { return Task::none() };
+                    match brain_core::agents::stop(&account, &agent.id) {
+                        Ok(()) => {
+                            self.model.relist_transcripts();
+                            self.set_status(tr!("„{name}“ vom Handy gestoppt.", "Stopped “{name}” from the phone."));
+                        }
+                        Err(err) => self.set_status(tr!("Vom Handy: Stoppen fehlgeschlagen – {err}", "From the phone: stopping failed – {err}")),
+                    }
+                    return Task::none();
+                }
+                if phase == Phase::Ended {
+                    return Task::none();
+                }
+                // Any other session ends itself, once it waits for a prompt.
+                self.run_link_command(Command::Reply { key, text: "/exit".into() }, first_try)
             }
             Command::Restart { flags, .. } => match self.restart_session(key, flags, true) {
                 Ok(task) => task,

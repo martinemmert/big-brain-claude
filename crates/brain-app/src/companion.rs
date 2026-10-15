@@ -99,6 +99,8 @@ pub enum Command {
     Resume { key: SessionKey },
     /// The session goes on with these flags (`--model opus`, `--chrome`).
     Restart { key: SessionKey, flags: Vec<String> },
+    /// A background session stops (its conversation stays), any other gets `/exit`.
+    End { key: SessionKey },
 }
 
 /// The answer to one question: the options picked (one, or several where the question takes
@@ -110,7 +112,7 @@ pub struct Picked {
 }
 
 /// What this Brain Link offers beyond the first version, for the phone to show only what works.
-const FEATURES: [&str; 7] = ["files", "attachments", "wait", "control", "answers", "history", "folders"];
+const FEATURES: [&str; 9] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end"];
 /// How long a read with `wait` waits for something new before it answers anyway.
 const WAIT: Duration = Duration::from_secs(25);
 /// How often a waiting read looks again.
@@ -599,6 +601,11 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 // What Brain types for it: the session's own command.
                 Some("compact") => Command::Reply { key, text: "/compact".into() },
                 Some("resume") => Command::Resume { key },
+                Some("rename") => match body.get("name").and_then(|n| n.as_str()).and_then(session_name) {
+                    Some(name) => Command::Reply { key, text: format!("/rename {name}") },
+                    None => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "name" }))),
+                },
+                Some("end") => Command::End { key },
                 Some("restart") => match crate::app::restart::parse_flags(body.get("flags").and_then(|f| f.as_str()).unwrap_or_default()) {
                     Ok(flags) => Command::Restart { key, flags },
                     Err(error) => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": error }))),
@@ -982,6 +989,14 @@ fn clip_bytes(text: &str, max: usize) -> String {
 }
 
 /// A query parameter, percent-decoded (`+` stays a plus).
+/// A session name from the phone as `/rename` takes it: one line without control characters,
+/// at most 80 characters. `None` when nothing is left.
+fn session_name(name: &str) -> Option<String> {
+    let line: String = name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let name: String = line.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect();
+    (!name.is_empty()).then_some(name)
+}
+
 /// The folders in `path` (the home folder without one), or `None` when it is no folder inside
 /// the home folder.
 fn folder_list(home: &Path, path: Option<&str>) -> Option<FolderList> {
@@ -1134,14 +1149,15 @@ mod tests {
         link.publish_more(Vec::new(), Places { accounts: vec!["main".into()], folders: vec!["/w/fin".into()] });
         assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\",\"folder\":\"/etc\"}", "BASE/v1/sessions"]).ends_with("400"));
         assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\",\"folder\":\"/w/fin\",\"prompt\":\"los\"}", "BASE/v1/sessions"]).ends_with("202"));
-        // Steering: interrupt, compact (typed as the session's command), resume, restart with flags.
+        // Steering: interrupt, compact and rename (typed as the session's commands), resume, restart with flags, end.
         let control = |body: &str| curl(&["-H", &bearer, "-d", body, "BASE/v1/sessions/main/0331-ab/control"]);
-        for body in ["{\"action\":\"interrupt\"}", "{\"action\":\"compact\"}", "{\"action\":\"resume\"}", "{\"action\":\"restart\",\"flags\":\"--model opus\"}"] {
+        for body in ["{\"action\":\"interrupt\"}", "{\"action\":\"compact\"}", "{\"action\":\"resume\"}", "{\"action\":\"restart\",\"flags\":\"--model opus\"}", "{\"action\":\"rename\",\"name\":\"Neue\\nAusgabe\"}", "{\"action\":\"end\"}"] {
             assert!(control(body).ends_with("202"), "{body}");
         }
         // Brain's own flags and unknown actions are refused.
         assert!(control("{\"action\":\"restart\",\"flags\":\"--resume x\"}").ends_with("400"));
         assert!(control("{\"action\":\"reboot\"}").ends_with("400"));
+        assert!(control("{\"action\":\"rename\",\"name\":\" \"}").ends_with("400"), "a name is needed");
         let key = SessionKey { account: "main".into(), id: "0331-ab".into() };
         assert_eq!(
             link.take_commands(),
@@ -1162,7 +1178,9 @@ mod tests {
                 Command::Interrupt { key: key.clone() },
                 Command::Reply { key: key.clone(), text: "/compact".into() },
                 Command::Resume { key: key.clone() },
-                Command::Restart { key, flags: vec!["--model".into(), "opus".into()] },
+                Command::Restart { key: key.clone(), flags: vec!["--model".into(), "opus".into()] },
+                Command::Reply { key: key.clone(), text: "/rename Neue Ausgabe".into() },
+                Command::End { key },
             ]
         );
 
