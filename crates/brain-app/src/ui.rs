@@ -26,6 +26,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
     let detail = match brain.mode {
         _ if brain.overview => overview(brain),
         Mode::Cleanup => cleanup(brain),
+        Mode::Later => later(brain),
         Mode::Pairing => pairing(brain),
         Mode::AccountSetup => account_setup(brain),
         Mode::MoveTarget => move_target(brain),
@@ -1858,6 +1859,53 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
         scrollable(column(rows).spacing(2)).height(Fill).style(scrollbar),
         container(
             text(t("H alle ausblenden · ⌘⌫ ⌘⌫ alle in den Papierkorb · ⇥ Alter · esc", "H hide all · ⌘⌫ ⌘⌫ move all to the Trash · ⇥ age · esc"))
+                .size(11.5)
+                .color(TEXT_FAINT)
+                .font(UI),
+        )
+        .padding(Padding { bottom: 16.0, ..Padding::ZERO }),
+    ]
+    .spacing(14)
+    .padding(Padding { top: 24.0, right: 28.0, bottom: 0.0, left: 28.0 })
+    .into()
+}
+
+/// `L`: tasks noted for later (`/later …` in a session), started from here as a new session.
+fn later(brain: &Brain) -> Element<'_, Message> {
+    let now = now_ms();
+    let summary = if brain.later.is_empty() {
+        t("Nichts für später. In einer Claude-Session: /later <Aufgabe>.", "Nothing for later. In a Claude session: /later <task>.").to_string()
+    } else {
+        let count = brain.later.len();
+        tr!("{count} Aufgaben für später.", "{count} tasks for later.")
+    };
+    let rows = brain.later.iter().enumerate().map(|(i, task)| {
+        let active = i == brain.later_pick;
+        let mut place: Vec<String> = Vec::new();
+        if let Some(cwd) = &task.cwd {
+            place.push(tilde(cwd));
+        }
+        if let Some(name) = &task.session_name {
+            place.push(name.clone());
+        }
+        place.push(ago_phrase(task.ts.timestamp_millis(), now));
+        let mut line = row![
+            text(task.text.clone()).size(12.5).color(if active { TEXT_STRONG } else { TEXT }).font(style::semibold()).width(Fill),
+            text(place.join(" · ")).size(11.5).color(TEXT_FAINT).font(UI),
+        ]
+        .spacing(10)
+        .align_y(iced::Center);
+        if let Some(account) = &task.account {
+            line = line.push(account_badge(account, brain.account_index(account)));
+        }
+        button(line).width(Fill).padding([6, 10]).on_press(Message::LaterPick(i)).style(style::entry_style(active, Color::TRANSPARENT, RAISED, Color::TRANSPARENT, 6.0)).into()
+    });
+    column![
+        dialog_title(t("Für später", "For later")),
+        text(summary).size(12.5).color(TEXT_MUTED).font(UI),
+        scrollable(column(rows).spacing(2)).height(Fill).style(scrollbar),
+        container(
+            text(t("⏎ als neue Session starten · ⌫ abhaken · ↑↓ · esc", "⏎ start as a new session · ⌫ check off · ↑↓ · esc"))
                 .size(11.5)
                 .color(TEXT_FAINT)
                 .font(UI),

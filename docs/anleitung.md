@@ -122,6 +122,7 @@ Die Tabs (`←` `→`):
 | `⌫` `⌫` | ausblenden, bis sich in der Session wieder etwas tut |
 | `⌘⌫` `⌘⌫` | beendete Session in den Papierkorb |
 | `C` | aufräumen: alles, was seit N Tagen ruht, ausblenden oder in den Papierkorb |
+| `L` | für später: Aufgaben aus `/later`, `⏎` startet eine als neue Session, `⌫` hakt ab |
 | Rechtsklick → *Neu starten mit …* | Session mit Flags neu starten (z. B. `--chrome`, `--model opus`): sie endet und läuft mit ihrem Verlauf weiter, wo sie lief |
 | `A` | in einem anderen Konto fortsetzen, z. B. wenn ein Limit voll ist: bei zwei Konten `A` `A`, bei mehr fragt Brain, in welchem (`1`, `2`, … – mit dem Verbrauch jedes Kontos) |
 
@@ -210,6 +211,7 @@ Alles optional, in `~/.claude-brain/config.json`:
 | `X` `X`, `⌫` `⌫`, `⌘⌫` `⌘⌫` | beenden, ausblenden, in den Papierkorb |
 | `A` `A` | ins andere Konto |
 | `C` | aufräumen |
+| `L` | für später |
 | `G` / `D` | nach Projekten / Heute |
 | `B` / `U` / `E` / `H` | Hintergrund / automatische / beendete / ruhende Sessions |
 | `⇥` | Kontofilter |

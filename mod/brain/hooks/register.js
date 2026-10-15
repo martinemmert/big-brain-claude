@@ -71,7 +71,23 @@ const passOn = async ($, e, next) => next(e)
 export function register(on) {
   on('session.start', async ($, e, next) => {
     await hook($, 'SessionStart', { source: 'startup' })
+    try {
+      await $.command.register({
+        name: 'later',
+        description: 'Note a task for later in Brain (with this folder)',
+        argumentHint: '[task]',
+        immediate: true,
+      })
+    } catch {}
     return next(e)
+  })
+
+  // `/later <task>`: Brain keeps it with this session's folder, at once and without the model.
+  on('command.run', { command: 'later' }, async ($, e) => {
+    const text = (e.args ?? '').trim()
+    if (!text) return { text: 'Usage: /later <task> – Brain lists it, starts it as a new session or checks it off.' }
+    await handOver($, 'later', { session_id: await $.session.id(), cwd: await $.session.cwd(), text })
+    return { text: 'Noted for later in Brain: ' + text }
   })
 
   on('prompt.submit', async ($, e, next) => {

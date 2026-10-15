@@ -61,6 +61,8 @@ pub enum Mode {
     Reply,
     NewSession,
     Cleanup,
+    /// Tasks noted for later (`/later`, `brain later`).
+    Later,
     /// The command palette (⌘K).
     Palette,
     /// The composer (⌘E): a longer prompt for the selected session.
@@ -87,6 +89,7 @@ pub enum PaletteCommand {
     NewSession,
     Find,
     Cleanup,
+    Later,
     ToggleEnded,
     ToggleProjects,
     ToggleToday,
@@ -223,6 +226,8 @@ pub enum Message {
     NewSubmit,
     NewAccount(usize),
     NewPick(usize),
+    /// A click on a task for later picks it.
+    LaterPick(usize),
     Layout(Layout),
     Filter(Option<String>),
     ToggleBackground,
@@ -474,6 +479,9 @@ pub struct Brain {
     pub show_resting: bool,
     /// The clean-up dialog's age choice (index into CLEANUP_DAYS).
     pub cleanup_age: usize,
+    /// The tasks for later while their dialog is open, and the picked one.
+    pub later: Vec<brain_core::later::Item>,
+    pub later_pick: usize,
     pub status: Option<(String, Instant)>,
     pub tab: DetailTab,
     pub conversation: Option<Conversation>,
@@ -629,6 +637,8 @@ impl Brain {
             show_ended: false,
             show_resting: false,
             cleanup_age: 1,
+            later: Vec::new(),
+            later_pick: 0,
             status: None,
             tab: DetailTab::Messages,
             conversation: None,
@@ -864,6 +874,10 @@ impl Brain {
             Message::NewPick(index) => {
                 self.new_session.pick = index;
                 self.confirm_new_session()
+            }
+            Message::LaterPick(index) => {
+                self.later_pick = index;
+                Task::none()
             }
             Message::Layout(layout) => {
                 self.prefs.layout = layout;
@@ -1413,7 +1427,7 @@ impl Brain {
         let mut scroll = self.sync_conversation();
         let attach = self.sync_terminal();
         self.sync_shown_terminal();
-        let shape = (self.prefs.layout, if matches!(self.mode, Mode::NewSession | Mode::Cleanup) { self.mode } else { Mode::Normal }, self.tab);
+        let shape = (self.prefs.layout, if matches!(self.mode, Mode::NewSession | Mode::Cleanup | Mode::Later) { self.mode } else { Mode::Normal }, self.tab);
         if shape != self.detail_shape {
             self.detail_shape = shape;
             self.messages_at_bottom = true;
@@ -1752,6 +1766,7 @@ impl Brain {
         all.push((t("Alle Terminals im Überblick", "All terminals at a glance").to_string(), "⌘⇧A", PaletteCommand::Overview));
         all.push((t("Neue Session", "New session").to_string(), "⌘N", PaletteCommand::NewSession));
         all.push((t("Aufräumen", "Clean up").to_string(), "C", PaletteCommand::Cleanup));
+        all.push((t("Für später", "For later").to_string(), "L", PaletteCommand::Later));
         all.push((t("iPhone koppeln (Brain Link)", "Pair a phone (Brain Link)").to_string(), "", PaletteCommand::PairPhone));
         all.push((t("Neues Claude-Konto einrichten", "Set up a new Claude account").to_string(), "", PaletteCommand::SetUpAccount));
         all.push((t("Beendete Sessions zeigen / verbergen", "Show / hide ended sessions").to_string(), "E", PaletteCommand::ToggleEnded));
@@ -1803,6 +1818,10 @@ impl Brain {
             PaletteCommand::Cleanup => {
                 self.armed = None;
                 self.mode = Mode::Cleanup;
+                Task::none()
+            }
+            PaletteCommand::Later => {
+                self.open_later();
                 Task::none()
             }
             PaletteCommand::SetUpAccount => self.open_account_setup(),
@@ -2664,6 +2683,7 @@ impl Brain {
                 self.on_cleanup_key(named, character.as_deref(), cmd);
                 return Task::none();
             }
+            Mode::Later => return self.on_later_key(named, cmd),
             Mode::Pairing | Mode::AccountSetup => return Task::none(),
             Mode::RestartFlags => return Task::none(),
             Mode::MoveTarget => {
@@ -2775,6 +2795,7 @@ impl Brain {
                 self.armed = None;
                 self.mode = Mode::Cleanup;
             }
+            "l" => self.open_later(),
             "i" => return self.act(Action::TakeOver),
             "h" => self.show_resting = !self.show_resting,
             "b" => self.toggle_background(),
@@ -2826,7 +2847,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::MoveTarget | Mode::RestartFlags => {
+            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::MoveTarget | Mode::RestartFlags => {
                 self.mode = Mode::Normal;
                 unfocus()
             }
@@ -3465,6 +3486,62 @@ impl Brain {
             .filter(|s| s.last_activity_ms < cutoff)
             .filter(|s| s.phase() != Phase::Ended || (self.model.resumable(s) && !s.is_empty()))
             .collect()
+    }
+
+    /// `L`: the tasks noted for later, read again each time the dialog opens.
+    fn open_later(&mut self) {
+        self.armed = None;
+        self.later = brain_core::later::open(&brain_core::later::file(&brain_core::account::home_dir()));
+        self.later_pick = self.later_pick.min(self.later.len().saturating_sub(1));
+        self.mode = Mode::Later;
+    }
+
+    /// In the dialog for later: ↑↓ pick, ⏎ starts the task as a new session where it was noted,
+    /// ⌫ checks it off.
+    fn on_later_key(&mut self, named: Option<Named>, cmd: bool) -> Task<Message> {
+        let count = self.later.len();
+        match named {
+            Some(Named::ArrowDown) => self.later_pick = (self.later_pick + 1).min(count.saturating_sub(1)),
+            Some(Named::ArrowUp) => self.later_pick = self.later_pick.saturating_sub(1),
+            Some(Named::Enter) => return self.start_later(),
+            Some(Named::Backspace | Named::Delete) if !cmd => {
+                let Some(task) = self.later.get(self.later_pick).cloned() else { return Task::none() };
+                if self.blocked_in_demo() {
+                    return Task::none();
+                }
+                match brain_core::later::done(&brain_core::later::file(&brain_core::account::home_dir()), &task.id) {
+                    Ok(()) => {
+                        let text = brain_core::hook::one_line(&task.text, 60);
+                        self.set_status(tr!("Abgehakt: {text}", "Checked off: {text}"));
+                    }
+                    Err(err) => self.set_status(err.to_string()),
+                }
+                self.open_later();
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+
+    /// The picked task as a new background session in its folder and account, the task as its
+    /// first prompt; it is checked off once started.
+    fn start_later(&mut self) -> Task<Message> {
+        let Some(task) = self.later.get(self.later_pick).cloned() else { return Task::none() };
+        let Some(folder) = task.cwd.clone().filter(|f| std::path::Path::new(f).is_dir()) else {
+            self.set_status(t("Der Ordner dieser Aufgabe fehlt – ⌘N startet sie woanders.", "This task's folder is missing – ⌘N starts it elsewhere."));
+            return Task::none();
+        };
+        let account = task.account.as_deref().and_then(|id| self.model.account(id)).or_else(|| self.model.accounts.first()).cloned();
+        let Some(account) = account else { return Task::none() };
+        if self.blocked_in_demo() {
+            return Task::none();
+        }
+        let _ = brain_core::later::done(&brain_core::later::file(&brain_core::account::home_dir()), &task.id);
+        self.mode = Mode::Normal;
+        self.set_status(t("Starte die Aufgabe als neue Session …", "Starting the task as a new session …"));
+        let id = account.id.clone();
+        let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), None, None, Some(&task.text)));
+        Task::perform(started, move |result| Message::Started(id.clone(), result))
     }
 
     fn on_cleanup_key(&mut self, named: Option<Named>, character: Option<&str>, cmd: bool) {

@@ -7,7 +7,8 @@ pub const HOOK_EVENTS: [&str; 5] = ["SessionStart", "UserPromptSubmit", "Notific
 
 /// Recognises hook entries written by an earlier install.
 const HOOK_MARKER: &str = "brain hook";
-pub const PERMISSION_RULE: &str = "Bash(brain report:*)";
+/// What Claude may run without asking: reports and tasks for later.
+pub const PERMISSION_RULES: [&str; 2] = ["Bash(brain report:*)", "Bash(brain later:*)"];
 
 /// Claude Code loads the plugin directories listed in this variable (`env` in settings.json).
 const PLUGIN_DIRS: &str = "CLAUDE_CODE_PLUGIN_DIRS";
@@ -28,6 +29,7 @@ The user tracks all Claude Code sessions in the Brain dashboard. Report there wi
 - After finishing a substantial task: `brain report --done \"<one-line result>\"`
 - When starting a long multi-step task: `brain report --doing \"<what you are doing>\"`
 - If you end a turn while subagents or background tasks still run and you need nothing from the user, don't report `--waiting`: Brain shows the session as working in the background. If you do ask the user something, report `--waiting` even while work is running.
+- When the user wants to put a task off for later, or agrees to leave something for later: `brain later \"<the task, self-contained>\"`. Brain keeps it with this folder and can start it as a new session; `brain later` lists the open ones.
 
 Session state (working, permission prompts, turn end) is tracked automatically by hooks; only report content. If `brain` fails, ignore it and continue.
 {SECTION_END}
@@ -73,8 +75,10 @@ pub fn patch_settings(settings: &mut Value, hook_command: &str, mod_dir: Option<
     if let Some(permissions) = permissions.as_object_mut() {
         let allow = permissions.entry("allow").or_insert_with(|| json!([]));
         if let Some(allow) = allow.as_array_mut() {
-            if !allow.iter().any(|rule| rule == PERMISSION_RULE) {
-                allow.push(json!(PERMISSION_RULE));
+            for rule in PERMISSION_RULES {
+                if !allow.iter().any(|r| r == rule) {
+                    allow.push(json!(rule));
+                }
             }
         }
     }
@@ -256,7 +260,7 @@ pub fn unpatch_settings(settings: &mut Value) {
     if let Some(permissions) = root.get_mut("permissions").and_then(Value::as_object_mut) {
         if let Some(allow) = permissions.get_mut("allow").and_then(Value::as_array_mut) {
             let before = allow.len();
-            allow.retain(|rule| rule != PERMISSION_RULE);
+            allow.retain(|rule| !PERMISSION_RULES.iter().any(|r| rule == r));
             if allow.is_empty() && before > 0 {
                 permissions.remove("allow");
                 if permissions.is_empty() {
@@ -424,7 +428,7 @@ mod tests {
         for event in HOOK_EVENTS {
             assert_eq!(settings["hooks"][event].as_array().unwrap().iter().filter(|g| group_is_brain(g)).count(), 1);
         }
-        assert_eq!(settings["permissions"]["allow"], json!(["Bash(ls:*)", PERMISSION_RULE]));
+        assert_eq!(settings["permissions"]["allow"], json!(["Bash(ls:*)", PERMISSION_RULES[0], PERMISSION_RULES[1]]));
     }
 
     #[test]

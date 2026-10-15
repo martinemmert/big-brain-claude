@@ -89,6 +89,8 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
 - **Conflicts.** A warning when two sessions edit the same files, read
   from their transcripts, and a softer hint when they change files in the same checkout.
 - **Today.** What every session reported as done today, per project; copy it as Markdown.
+- **For later.** `/later <task>` in any session (or `brain later "<task>"`, which Claude uses too) notes a
+  task with its folder; `L` lists them, `⏎` starts one as a new session there, `⌫` checks it off.
 - **Timeline.** Every hook event and report of a session.
 - **The conversation reads like the terminal:** your prompts as `> …`, Claude's replies and tool
   calls with `●`, in your terminal's font (iTerm2's default profile, e.g. JetBrains Mono 13).
@@ -236,7 +238,7 @@ This
 - builds `dist/Brain.app` and `dist/brain` with `scripts/bundle.sh`,
 - installs the `brain` CLI to `~/.cargo/bin`,
 - installs `~/Applications/Brain.app` (open it via Spotlight),
-- runs `brain install`, which adds Brain's hooks, a `Bash(brain report:*)` permission and a
+- runs `brain install`, which adds Brain's hooks, `Bash(brain report:*)` and `Bash(brain later:*)` permissions and a
   short protocol section to the `settings.json` and `CLAUDE.md` of every `~/.claude*`
   account. Existing files are backed up as `*.brain-backup-<timestamp>`; running it again
   is safe.
@@ -261,7 +263,7 @@ Sessions are listed in Brain's order: needs you, your turn, working.
 brain uninstall
 ```
 
-This removes Brain's hooks, the `Bash(brain report:*)` rule and the protocol section from
+This removes Brain's hooks, the `Bash(brain report:*)` and `Bash(brain later:*)` rules and the protocol section from
 the `settings.json` and `CLAUDE.md` of every `~/.claude*` account, with backups as above.
 Then delete `Brain.app`, the `brain` binary (`~/.cargo/bin/brain` or wherever you put it)
 and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` removes all three.
