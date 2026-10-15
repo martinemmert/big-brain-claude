@@ -61,8 +61,11 @@ Die Tabs (`←` `→`):
 
 - **Neue Session:** `⌘N`. Ordner, Konto, Modell und erster Prompt, auf Wunsch aus einer
   Vorlage. Zuletzt benutzte Ordner stehen oben; tippst du einen Pfad (`~/`), listet Brain die
-  Ordner darin, `→` geht in den gewählten hinein. Sie läuft als Claude-Code-Hintergrund-Session in Brains Terminal weiter, auch wenn
-  Brain beendet wird.
+  Ordner darin, `→` geht in den gewählten hinein. `⇧⇥` wählt das Antwort-Profil (Output-Style),
+  sonst gilt, was in den Einstellungen des Kontos steht. Sie läuft als Claude-Code-Hintergrund-Session
+  in Brains Terminal weiter, auch wenn Brain beendet wird.
+- **Antwort-Profil wechseln:** `⌘K` → „Antwort-Profil von …“ tippt `/output-style <Name>` in die
+  Session; es gilt ab der nächsten Nachricht.
 - **Öffnen:** `⏎` oder Doppelklick. Läuft die Session in Brain, öffnet sie sich hier; eine beendete
   wird hier fortgesetzt. `⌥⏎` öffnet sie stattdessen in iTerm.
 - **Aus iTerm holen:** `I` `I` holt eine Session aus ihrem iTerm-Tab nach Brain, ohne dass das
@@ -206,7 +209,7 @@ Alles optional, in `~/.claude-brain/config.json`:
 | `⌘V` | Screenshot ins Terminal einfügen |
 | `I` `I` | Session aus iTerm nach Brain holen |
 | `Y` / `N` | Freigabe erlauben / ablehnen |
-| `T` | antworten |
+| `T` | antworten; `/` zeigt die Befehle und Skills der Session, `⇥` ergänzt |
 | `P` `M` `S` `R` | anheften, stumm, pausieren, umbenennen |
 | `X` `X`, `⌫` `⌫`, `⌘⌫` `⌘⌫` | beenden, ausblenden, in den Papierkorb |
 | `A` `A` | ins andere Konto |

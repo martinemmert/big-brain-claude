@@ -219,6 +219,8 @@ pub enum Message {
     Search(String),
     SearchSubmit,
     Reply(String),
+    /// A completion picked under the reply field: `/name `.
+    ReplyComplete(String),
     ReplySubmit,
     Rename(String),
     RenameSubmit,
@@ -516,6 +518,8 @@ pub struct Brain {
     pub composer_images: Vec<std::path::PathBuf>,
     pub composer_templates: Vec<brain_core::templates::Template>,
     pub palette_index: usize,
+    /// The selected session's output styles, read when the palette opens.
+    palette_styles: Vec<String>,
     /// Text to find in the selected session's whole conversation (⌘F).
     pub find: String,
     /// The Messages tab lists only the user's prompts, all of them.
@@ -530,6 +534,8 @@ pub struct Brain {
     pub search: String,
     pub rename: String,
     pub reply: String,
+    /// The selected session's slash commands while its reply field is open, for completing `/…`.
+    reply_commands: Vec<brain_core::commands::SlashCommand>,
     /// The terminal hosting the selected session and what Brain can do with it.
     host: Option<(SessionKey, Capabilities)>,
     /// Project name and worktree per session.
@@ -650,6 +656,7 @@ impl Brain {
             search: String::new(),
             rename: String::new(),
             reply: String::new(),
+            reply_commands: Vec::new(),
             host: None,
             projects: HashMap::new(),
             checkouts: HashMap::new(),
@@ -680,6 +687,7 @@ impl Brain {
             composer_images: Vec::new(),
             composer_templates: Vec::new(),
             palette_index: 0,
+            palette_styles: Vec::new(),
             prompts_only: false,
             history: None,
             history_loading: false,
@@ -860,6 +868,7 @@ impl Brain {
                 Task::none()
             }
             Message::ReplySubmit => self.submit_reply(),
+            Message::ReplyComplete(name) => self.complete_reply(&name),
             Message::Rename(text) => {
                 self.rename = text;
                 Task::none()
@@ -1724,6 +1733,7 @@ impl Brain {
     fn open_palette(&mut self) -> Task<Message> {
         self.mode = Mode::Palette;
         self.palette.clear();
+        self.palette_styles = self.selected_styles().into_iter().map(|s| s.name).collect();
         self.palette_index = 0;
         self.focused_terminal = None;
         operation::focus(PALETTE)
@@ -1745,6 +1755,10 @@ impl Brain {
                 for (command, de, en) in SLASH_COMMANDS {
                     let what = t(de, en);
                     all.push((tr!("{command} an „{name}“ – {what}", "{command} to “{name}” – {what}"), "", PaletteCommand::Send(command.to_string())));
+                }
+                // `/output-style`: how the session answers, from its next message on.
+                for style in &self.palette_styles {
+                    all.push((tr!("Antwort-Profil von „{name}“: {style}", "Answer style of “{name}”: {style}"), "", PaletteCommand::Send(format!("/output-style {style}"))));
                 }
             }
             all.push((tr!("Längeren Prompt an „{name}“ schreiben", "Write a longer prompt for “{name}”"), "⌘E", PaletteCommand::Composer));
@@ -2663,6 +2677,12 @@ impl Brain {
             }
             return Task::none();
         }
+        // ⇥ in the reply field takes the first completion of `/…`.
+        if self.mode == Mode::Reply && named == Some(Named::Tab) {
+            if let Some(name) = self.reply_completions().first().map(|c| c.name.clone()) {
+                return self.complete_reply(&name);
+            }
+        }
         // The dialog's field takes → for its cursor; in a typed path it goes into a folder.
         if self.mode == Mode::NewSession && named == Some(Named::ArrowRight) {
             if let Some(task) = self.enter_picked_folder() {
@@ -3125,9 +3145,32 @@ impl Brain {
             self.set_status(t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal."));
             return Task::none();
         }
+        // What the session's mod reported, else the built-in commands Brain knows.
+        let mut commands = brain_core::commands::load(&brain_core::account::home_dir(), &session.key.id);
+        if commands.is_empty() {
+            commands = SLASH_COMMANDS
+                .iter()
+                .map(|(command, de, en)| brain_core::commands::SlashCommand { name: command.trim_start_matches('/').to_string(), description: t(de, en).to_string(), source: "builtin".into() })
+                .collect();
+        }
+        self.reply_commands = commands;
         self.reply.clear();
         self.mode = Mode::Reply;
         operation::focus(REPLY)
+    }
+
+    /// What `/…` in the reply field completes to (at most six), while no space was typed.
+    pub fn reply_completions(&self) -> Vec<&brain_core::commands::SlashCommand> {
+        if !self.reply.starts_with('/') || self.reply.contains(char::is_whitespace) {
+            return Vec::new();
+        }
+        brain_core::commands::completions(&self.reply_commands, &self.reply).into_iter().take(6).collect()
+    }
+
+    /// Puts a completion into the reply field, the cursor after it.
+    fn complete_reply(&mut self, name: &str) -> Task<Message> {
+        self.reply = format!("/{name} ");
+        Task::batch([operation::focus(REPLY), operation::move_cursor_to_end(REPLY)])
     }
 
     fn submit_reply(&mut self) -> Task<Message> {
@@ -3711,6 +3754,13 @@ impl Brain {
     pub fn new_session_styles(&self) -> Vec<brain_core::styles::Style> {
         let config_dir = self.model.accounts.get(self.new_session.account).map(|a| a.config_dir.clone()).unwrap_or_default();
         brain_core::styles::available(&config_dir, None)
+    }
+
+    /// The output styles the selected session can switch to (its account's and project's).
+    fn selected_styles(&self) -> Vec<brain_core::styles::Style> {
+        let Some(session) = self.selected_session() else { return Vec::new() };
+        let Some(account) = self.model.account(&session.key.account) else { return Vec::new() };
+        brain_core::styles::available(&account.config_dir, session.cwd.as_deref().map(std::path::Path::new))
     }
 
     /// ⇧⇥: as the account's settings say → each style in turn → as the settings say.

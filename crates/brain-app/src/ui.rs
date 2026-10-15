@@ -968,6 +968,21 @@ fn callout<'a>(brain: &'a Brain, s: &'a Session, now: i64, caps: brain_terminal:
             .padding([7, 10])
             .style(field_style);
         body = body.push(row![field, text(t("⏎ senden · esc", "⏎ send · esc")).size(11).color(TEXT_MUTED).font(UI)].spacing(8).align_y(iced::Center));
+        // `/…`: the session's commands and skills that fit, ⇥ takes the first.
+        let completions = brain.reply_completions();
+        if !completions.is_empty() {
+            let rows = completions.into_iter().enumerate().map(|(i, command)| {
+                let mut line = row![text(format!("/{}", command.name)).size(12).color(TEXT_STRONG).font(MONO)].spacing(10).align_y(iced::Center);
+                if !command.description.is_empty() {
+                    line = line.push(text(clip(&command.description, 90)).size(11.5).color(TEXT_FAINT).font(UI));
+                }
+                if i == 0 {
+                    line = line.push(Space::new().width(Fill)).push(kbd("⇥".to_string()));
+                }
+                button(line).width(Fill).padding([3, 8]).on_press(Message::ReplyComplete(command.name.clone())).style(style::entry_style(i == 0, Color::TRANSPARENT, RAISED, Color::TRANSPARENT, 6.0)).into()
+            });
+            body = body.push(column(rows).spacing(2));
+        }
         if brain.reply.is_empty() {
             let quick = config::quick_replies().into_iter().enumerate().map(|(i, reply)| {
                 container(row![kbd(format!("{}", i + 1)), text(reply).size(12).color(TEXT).font(UI)].spacing(6).align_y(iced::Center))
