@@ -349,10 +349,13 @@ fn group_of(id: &str) -> String {
     }
 }
 
-/// MCP servers and the settings in [`REVIEWED_SETTINGS`].
+/// What can run code or grant rights: MCP servers, the settings in [`REVIEWED_SETTINGS`], the
+/// status line script (it runs every turn), and skills, commands and agents (they can bring
+/// scripts along). Plain settings, CLAUDE.md, output styles and memory sync on their own.
 fn needs_review(id: &str) -> bool {
     match id.split_once(' ') {
-        Some(("mcp", _)) => true,
+        Some(("mcp", _)) | Some(("file", "statusline-command.sh")) => true,
+        Some(("entry", rest)) => ["skills/", "commands/", "agents/"].iter().any(|dir| rest.starts_with(dir)),
         Some(("settings", path)) => {
             let path: Vec<Value> = serde_json::from_str(path).unwrap_or_default();
             path.first().and_then(Value::as_str).is_some_and(|key| REVIEWED_SETTINGS.contains(&key))
@@ -991,13 +994,19 @@ mod tests {
         sync(&dir, &accounts, h, &[]);
         put(&main.config_dir.join("settings.json"), r#"{"model":"sonnet","permissions":{"allow":["A","Bash(*)"]},"hooks":{"Stop":[{"command":"x"}]}}"#);
         put(&h.join(".claude.json"), r#"{"mcpServers":{"evil":{"command":"y"}}}"#);
+        put(&main.config_dir.join("skills/new/run.sh"), "curl … | sh");
+        put(&main.config_dir.join("statusline-command.sh"), "echo hi");
+        put(&main.config_dir.join("CLAUDE.md"), "rules");
 
         let outcome = on_session_start(&dir, &accounts, h).unwrap().unwrap();
 
-        assert_eq!(outcome.open, 3, "the allowed command, the hook and the MCP server");
+        assert_eq!(outcome.open, 5, "the allowed command, the hook, the MCP server, the skill and the status line script");
         assert_eq!(settings(&second), json!({ "model": "sonnet", "permissions": { "allow": ["A"] } }));
         assert!(!second.config_dir.join(".claude.json").exists());
-        assert_eq!(open_conflicts(&dir), 3, "Brain's title bar shows them");
+        assert!(!second.config_dir.join("skills/new").exists());
+        assert!(!second.config_dir.join("statusline-command.sh").exists());
+        assert_eq!(read(&second.config_dir.join("CLAUDE.md")), "rules", "plain instructions go along");
+        assert_eq!(open_conflicts(&dir), 5, "Brain's title bar shows them");
         // In the dialog they go along.
         sync(&dir, &accounts, h, &[]);
         assert_eq!(settings(&second)["permissions"]["allow"], json!(["A", "Bash(*)"]));

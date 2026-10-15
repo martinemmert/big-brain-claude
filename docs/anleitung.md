@@ -168,9 +168,10 @@ im Dialog: vorgeschlagen ist die neueste Änderung, `1`–`9` wählt eine andere
 anderer Version ihre behalten. Gedächtnis-Notizen warten nie: die neuere gewinnt.
 
 Der erste Abgleich führt die Konten zusammen. Danach gleicht **jeder Session-Start** mit ab, lässt
-aber Konflikte und alles, was Rechte gibt oder Befehle ausführt (Freigaben, Hooks, `env`,
-Plugins, MCP-Server; im Dialog mit ⚑), für den Dialog liegen – die Titelleiste zählt sie
-(„⇄ 2 Konto-Konflikte“). Was ersetzt oder gelöscht wird, liegt 30 Tage in
+aber Konflikte und alles, was Rechte gibt oder Code ausführen kann (Freigaben, Hooks, `env`,
+Plugins, MCP-Server, das Statusline-Skript, Skills, Commands, Agents; im Dialog mit ⚑), für den
+Dialog liegen – die Titelleiste zählt sie („⇄ 2 Konto-Konflikte“). Einfache Einstellungen,
+CLAUDE.md und das Gedächtnis gleicht er selbst ab. Was ersetzt oder gelöscht wird, liegt 30 Tage in
 `~/.claude-brain/sync/backup/`.
 
 ## Nutzung und Limits

@@ -182,9 +182,10 @@ conversations, the plugins' files, or `skills/synced` (claude.ai's own, per Clau
   wait: the newer one wins, `MEMORY.md` is joined line by line.
 - The first sync joins the accounts (nothing is known to be deleted yet). After it, **every
   session start syncs** too (`brain hook` at `SessionStart`), but leaves conflicts and anything
-  that grants rights or runs commands (permissions, hooks, `env`, the status line, helpers,
-  plugins, MCP servers; marked ⚑) for the dialog; the title bar counts them (`⇄ 2 account
-  conflicts`).
+  that grants rights or can run code (permissions, hooks, `env`, the status line and its script,
+  helpers, plugins, MCP servers, skills, commands, agents; marked ⚑) for the dialog; the title
+  bar counts them (`⇄ 2 account conflicts`). Plain settings, `CLAUDE.md`, output styles and
+  memory sync on their own.
 - An account the last sync didn't know, or one without the file or folder at all, only receives:
   what it lacks is missing, not deleted. A broken `settings.json` is left alone.
 - What a sync replaces or deletes is kept in `~/.claude-brain/sync/backup/<time>/` for 30 days.
