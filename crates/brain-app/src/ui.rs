@@ -29,7 +29,8 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::Pairing => pairing(brain),
         Mode::AccountSetup => account_setup(brain),
         Mode::Sync => sync_accounts(brain),
-        Mode::MoveTarget => move_target(brain),
+        Mode::MoveTarget => account_target(brain, false),
+        Mode::ForkTarget => account_target(brain, true),
         Mode::RestartFlags => restart_flags(brain),
         Mode::NewSession => new_session(brain),
         _ if brain.prefs.layout == Layout::Today => today(brain),
@@ -263,6 +264,7 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
         let key = if targets.len() == 1 { "A" } else { "" };
         keep.push((tr!("In {id} fortsetzen", "Continue in {id}"), key, Action::MoveTo(index), false));
     }
+    keep.push((t("Forken in …", "Fork into …").to_string(), "F", Action::Fork, false));
     keep.push((t("Neu starten mit …", "Restart with …").to_string(), "", Action::RestartWith, false));
     groups.push(keep);
 
@@ -1907,11 +1909,12 @@ fn restart_flags(brain: &Brain) -> Element<'_, Message> {
     body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
 }
 
-/// `A` with several accounts: where the selected session continues, each account with how much
-/// of its limits is used, so the one with room is easy to spot.
-fn move_target(brain: &Brain) -> Element<'_, Message> {
+/// `A` with several accounts, or `F`: where the selected session continues or is forked into,
+/// each account with how much of its limits is used, so the one with room is easy to spot.
+fn account_target(brain: &Brain, fork: bool) -> Element<'_, Message> {
     let name = brain.selected_session().map(|s| s.display_name()).unwrap_or_default();
-    let rows = brain.move_targets().into_iter().enumerate().map(|(nth, index)| {
+    let targets = if fork { brain.fork_targets() } else { brain.move_targets() };
+    let rows = targets.into_iter().enumerate().map(|(nth, index)| {
         let account = &brain.model.accounts[index];
         let usage = brain_core::usage::account_limits(&brain.model.usage, &account.id).map(|s| {
             let part = |label: &str, limit: Option<brain_core::usage::Limit>| limit.map(|l| format!("{label} {:.0}%", l.used_percentage));
@@ -1929,16 +1932,30 @@ fn move_target(brain: &Brain) -> Element<'_, Message> {
         .align_y(iced::Center)
         .padding([8, 12]);
         mouse_area(container(line).style(|_| boxed(SURFACE, LINE, 8.0)))
-            .on_press(Message::MenuPick(Action::MoveTo(index)))
+            .on_press(Message::MenuPick(if fork { Action::ForkTo(index) } else { Action::MoveTo(index) }))
             .interaction(iced::mouse::Interaction::Pointer)
             .into()
     });
+    let (title, intro) = if fork {
+        (
+            tr!("„{name}“ forken in …", "Fork “{name}” into …"),
+            t(
+                "Eine neue Session macht mit dem Verlauf bis jetzt weiter, im Hintergrund und hier in Brain; die Session selbst läuft weiter. 1, 2, … oder klicken; esc bricht ab.",
+                "A new session goes on with the history so far, in the background and here in Brain; the session itself keeps running. 1, 2, … or click; esc cancels.",
+            ),
+        )
+    } else {
+        (
+            tr!("„{name}“ fortsetzen in …", "Continue “{name}” in …"),
+            t(
+                "Die Session läuft im gewählten Konto weiter, mit ihrem ganzen Verlauf. 1, 2, … oder klicken; esc bricht ab.",
+                "The session goes on in the chosen account, with all of its history. 1, 2, … or click; esc cancels.",
+            ),
+        )
+    };
     column![
-        dialog_title(tr!("„{name}“ fortsetzen in …", "Continue “{name}” in …")),
-        text(t(
-            "Die Session läuft im gewählten Konto weiter, mit ihrem ganzen Verlauf. 1, 2, … oder klicken; esc bricht ab.",
-            "The session goes on in the chosen account, with all of its history. 1, 2, … or click; esc cancels.",
-        ))
+        dialog_title(title),
+        text(intro)
         .size(12.5)
         .color(TEXT_MUTED)
         .font(UI),
@@ -2058,7 +2075,12 @@ fn sync_accounts(brain: &Brain) -> Element<'_, Message> {
                 .interaction(iced::mouse::Interaction::Pointer)
                 .into()
         });
-        let title = if item.conflict { format!("≠ {}", item.label) } else { item.label.clone() };
+        // ⚑: grants rights or runs commands; a session start never takes it over unseen.
+        let title = match (item.conflict, item.review) {
+            (true, _) => format!("≠ {}", item.label),
+            (false, true) => format!("⚑ {}", item.label),
+            _ => item.label.clone(),
+        };
         let selected = index == dialog.selected;
         let keep = style::text_button(t("K andere behalten ihre", "K others keep theirs"), choice.keep, Message::SyncKeep(index));
         let content = column![

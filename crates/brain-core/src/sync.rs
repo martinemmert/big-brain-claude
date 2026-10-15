@@ -33,6 +33,21 @@ const OWN_ENTRIES: [&str; 1] = ["skills/synced"];
 const CONFIG: &str = "<config>";
 /// Backups older than this go.
 const BACKUP_DAYS: u64 = 30;
+/// Settings that grant rights or run commands: they never spread on their own at a session start,
+/// only after the user saw them in Brain's dialog. Otherwise whatever got into one account (a
+/// hook, an allowed command, an API key helper) would reach every other one unseen.
+const REVIEWED_SETTINGS: [&str; 10] = [
+    "permissions",
+    "hooks",
+    "env",
+    "statusLine",
+    "apiKeyHelper",
+    "awsAuthRefresh",
+    "awsCredentialExport",
+    "otelHeadersHelper",
+    "enabledPlugins",
+    "extraKnownMarketplaces",
+];
 
 /// Where Brain keeps the base, the exceptions and the backups.
 pub fn default_dir(home: &Path) -> PathBuf {
@@ -80,6 +95,9 @@ pub struct Item {
     pub take: String,
     /// Several accounts changed it differently: the user decides.
     pub conflict: bool,
+    /// Grants rights or runs commands (hooks, permissions, MCP servers …): a session start
+    /// leaves it for the user, like a conflict.
+    pub review: bool,
 }
 
 impl Item {
@@ -331,6 +349,18 @@ fn group_of(id: &str) -> String {
     }
 }
 
+/// MCP servers and the settings in [`REVIEWED_SETTINGS`].
+fn needs_review(id: &str) -> bool {
+    match id.split_once(' ') {
+        Some(("mcp", _)) => true,
+        Some(("settings", path)) => {
+            let path: Vec<Value> = serde_json::from_str(path).unwrap_or_default();
+            path.first().and_then(Value::as_str).is_some_and(|key| REVIEWED_SETTINGS.contains(&key))
+        }
+        _ => false,
+    }
+}
+
 fn kind_of(id: &str) -> Kind {
     match id.split(' ').next().unwrap_or_default() {
         "settings" => Kind::Setting,
@@ -521,7 +551,7 @@ fn make_plan(base: Option<Base>, keep: &Keep, snaps: &[Snapshot]) -> Plan {
             }
             continue;
         }
-        items.push(Item { id: id.clone(), kind, label: label_of(id), versions, take, conflict: disputed && kind != Kind::Memory });
+        items.push(Item { id: id.clone(), kind, label: label_of(id), versions, take, conflict: disputed && kind != Kind::Memory, review: needs_review(id) });
     }
     items.sort_by_key(|i| !i.conflict);
     let kept = keep.keep.iter().flat_map(|(account, ids)| ids.iter().map(move |id| (account.clone(), label_of(id)))).collect();
@@ -534,7 +564,7 @@ fn make_plan(base: Option<Base>, keep: &Keep, snaps: &[Snapshot]) -> Plan {
 /// user decided. Takes the lock, so two syncs never write at once.
 pub fn apply(dir: &Path, accounts: &[Account], home: &Path, plan: &Plan, decisions: &[Decision]) -> Result<Outcome, String> {
     let _lock = Lock::take(dir)?;
-    run(dir, accounts, home, plan, decisions)
+    run(dir, accounts, home, plan, decisions, false)
 }
 
 /// At the start of a session: what changed without a conflict goes everywhere. Only after the
@@ -545,7 +575,7 @@ pub fn on_session_start(dir: &Path, accounts: &[Account], home: &Path) -> Result
     }
     let _lock = Lock::take(dir)?;
     let plan = plan(dir, accounts, home);
-    run(dir, accounts, home, &plan, &[]).map(Some)
+    run(dir, accounts, home, &plan, &[], true).map(Some)
 }
 
 struct Op {
@@ -556,7 +586,8 @@ struct Op {
     value: Option<Value>,
 }
 
-fn run(dir: &Path, accounts: &[Account], home: &Path, plan: &Plan, decisions: &[Decision]) -> Result<Outcome, String> {
+/// `unattended`: a session start, where nobody looks; what needs a review stays open.
+fn run(dir: &Path, accounts: &[Account], home: &Path, plan: &Plan, decisions: &[Decision], unattended: bool) -> Result<Outcome, String> {
     let mut base: Base = load(&dir.join("base.json")).unwrap_or_default();
     let mut keep: Keep = load(&dir.join("keep.json")).unwrap_or_default();
     let account = |id: &str| accounts.iter().find(|a| a.id == id).cloned();
@@ -566,7 +597,7 @@ fn run(dir: &Path, accounts: &[Account], home: &Path, plan: &Plan, decisions: &[
         let decision = decisions.iter().find(|d| d.id == item.id);
         let (take, keeping) = match decision {
             Some(d) => (d.take.as_str(), d.keep.as_slice()),
-            None if !item.conflict => (item.take.as_str(), &[][..]),
+            None if !item.conflict && !(unattended && item.review) => (item.take.as_str(), &[][..]),
             None => {
                 outcome.open += 1;
                 continue;
@@ -946,6 +977,31 @@ mod tests {
         on_session_start(&dir, &accounts, h).unwrap();
         assert_eq!(settings(&third)["plugins"]["sp"], json!("again"));
         assert_eq!(settings(&second)["plugins"]["sp"], json!(false));
+    }
+
+    #[test]
+    fn rights_and_commands_wait_for_the_user_at_a_session_start() {
+        let home = tempfile::tempdir().unwrap();
+        let (h, dir) = (home.path(), home.path().join("sync"));
+        let (main, second) = (account(h, "main"), account(h, "second"));
+        let accounts = [main.clone(), second.clone()];
+        for a in &accounts {
+            put(&a.config_dir.join("settings.json"), r#"{"model":"opus","permissions":{"allow":["A"]}}"#);
+        }
+        sync(&dir, &accounts, h, &[]);
+        put(&main.config_dir.join("settings.json"), r#"{"model":"sonnet","permissions":{"allow":["A","Bash(*)"]},"hooks":{"Stop":[{"command":"x"}]}}"#);
+        put(&h.join(".claude.json"), r#"{"mcpServers":{"evil":{"command":"y"}}}"#);
+
+        let outcome = on_session_start(&dir, &accounts, h).unwrap().unwrap();
+
+        assert_eq!(outcome.open, 3, "the allowed command, the hook and the MCP server");
+        assert_eq!(settings(&second), json!({ "model": "sonnet", "permissions": { "allow": ["A"] } }));
+        assert!(!second.config_dir.join(".claude.json").exists());
+        assert_eq!(open_conflicts(&dir), 3, "Brain's title bar shows them");
+        // In the dialog they go along.
+        sync(&dir, &accounts, h, &[]);
+        assert_eq!(settings(&second)["permissions"]["allow"], json!(["A", "Bash(*)"]));
+        assert_eq!(open_conflicts(&dir), 0);
     }
 
     #[test]

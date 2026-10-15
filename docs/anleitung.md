@@ -122,6 +122,7 @@ Die Tabs (`←` `→`):
 | `C` | aufräumen: alles, was seit N Tagen ruht, ausblenden oder in den Papierkorb |
 | Rechtsklick → *Neu starten mit …* | Session mit Flags neu starten (z. B. `--chrome`, `--model opus`): sie endet und läuft mit ihrem Verlauf weiter, wo sie lief |
 | `A` | in einem anderen Konto fortsetzen, z. B. wenn ein Limit voll ist: bei zwei Konten `A` `A`, bei mehr fragt Brain, in welchem (`1`, `2`, … – mit dem Verbrauch jedes Kontos) |
+| `F` | in ein Konto forken (`1`, `2`, …, auch das eigene): eine neue Session macht mit dem Verlauf bis jetzt im Hintergrund weiter, das Original läuft weiter |
 
 Tasten, die zweimal gedrückt werden wollen, fragen im Rechtsklick-Menü nicht nach: Der Klick
 zählt als Bestätigung.
@@ -156,6 +157,21 @@ die Konten unterscheiden: Dann gewinnt main, bei Gedächtnis-Notizen die neuere.
 die Gespräche kommen nicht mit – melde dich in der ersten Session des neuen Kontos mit `/login` an;
 Brain öffnet dafür gleich „Neue Session“ mit dem neuen Konto. Plugins werden auf APFS geklont und
 belegen kaum Platz.
+
+## Konten abgleichen
+
+⌘K → **„Konten abgleichen“** (oder `brain sync`, mit `--yes` schreibt es) hält Einstellungen,
+CLAUDE.md, Skills, Agents, Commands, MCP-Server und das Gedächtnis pro Projekt in allen Konten
+gleich. Brain merkt sich nach jedem Abgleich den gemeinsamen Stand; was ein Konto seitdem ändert
+oder löscht, bekommen die anderen. Haben zwei Konten dasselbe verschieden geändert, entscheidest du
+im Dialog: vorgeschlagen ist die neueste Änderung, `1`–`9` wählt eine andere, `K` lässt Konten mit
+anderer Version ihre behalten. Gedächtnis-Notizen warten nie: die neuere gewinnt.
+
+Der erste Abgleich führt die Konten zusammen. Danach gleicht **jeder Session-Start** mit ab, lässt
+aber Konflikte und alles, was Rechte gibt oder Befehle ausführt (Freigaben, Hooks, `env`,
+Plugins, MCP-Server; im Dialog mit ⚑), für den Dialog liegen – die Titelleiste zählt sie
+(„⇄ 2 Konto-Konflikte“). Was ersetzt oder gelöscht wird, liegt 30 Tage in
+`~/.claude-brain/sync/backup/`.
 
 ## Nutzung und Limits
 

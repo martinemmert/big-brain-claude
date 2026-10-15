@@ -123,6 +123,10 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   accounts `A` twice, with more Brain asks which one (`1`, `2`, …, each with its current usage);
   the right-click menu and ⌘K list one entry per account. Brain copies the transcript, resumes it there with `claude --resume <id> --fork-session` and
   closes the original.
+- **Fork a session into any account** (`F`, the right-click menu or ⌘K): the conversation so far
+  goes on as a new background session in the chosen account (its own too, each listed with its
+  usage), attached in Brain; the original keeps running. Into another account the transcript is
+  copied first, as for a move.
 - **Quick replies.** `T`, then `1`–`9` sends a canned reply; set your own with
   `"quick_replies": ["…", "…"]` in `~/.claude-brain/config.json`.
 - **English or German**, following your macOS language (override with `BRAIN_LANG=de|en` or
@@ -161,6 +165,29 @@ rewritten, files cloned on APFS), user MCP servers, and every project's memory n
 note wins, `MEMORY.md` joined). Without `--yes` it only shows the plan and the differences. No
 login and no conversations come along: log in with `/login` in the first session. Brain's hooks
 are installed into it right away.
+
+## Keeping the accounts in step
+
+⌘K → *Sync accounts* (or `brain sync`, `--yes` to write) brings the accounts' setup together:
+`settings.json`, `CLAUDE.md`, the status line script, `keybindings.json`, skills, agents,
+commands, output styles, user MCP servers and every project's memory notes. Not the login,
+conversations, the plugins' files, or `skills/synced` (claude.ai's own, per Claude account).
+
+- After each sync Brain keeps the state the accounts agreed on (`~/.claude-brain/sync/base.json`).
+  Next time each item (a setting, an entry of a list such as an allowed command, a skill, a note)
+  is compared with it: what one account changed or deleted since goes to the others.
+- Where accounts changed an item differently, that's a conflict: the dialog shows each account's
+  version and suggests the newest change; `1`–`9` picks another, `K` lets the accounts with
+  another version keep theirs from now on (`~/.claude-brain/sync/keep.json`). Memory notes never
+  wait: the newer one wins, `MEMORY.md` is joined line by line.
+- The first sync joins the accounts (nothing is known to be deleted yet). After it, **every
+  session start syncs** too (`brain hook` at `SessionStart`), but leaves conflicts and anything
+  that grants rights or runs commands (permissions, hooks, `env`, the status line, helpers,
+  plugins, MCP servers; marked ⚑) for the dialog; the title bar counts them (`⇄ 2 account
+  conflicts`).
+- An account the last sync didn't know, or one without the file or folder at all, only receives:
+  what it lacks is missing, not deleted. A broken `settings.json` is left alone.
+- What a sync replaces or deletes is kept in `~/.claude-brain/sync/backup/<time>/` for 30 days.
 
 ## Brain Link (the iPhone companion)
 
@@ -297,6 +324,7 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `B` | show / hide Claude Code's background sessions |
 | `U` | show / hide sessions programs started (security reviews, SDK scripts, `claude -p`) |
 | `A` `A` | move the session to the next account (an ended one resumes there) |
+| `F` | fork the session into an account (`1`, `2`, …); the original keeps running |
 | `⌘N` | start a new session (in Brain; `⌘I` in the dialog: in iTerm) |
 | `←` `→` | switch between messages, timeline, changes, files, questions and terminal |
 | `⇥` | cycle the account filter |

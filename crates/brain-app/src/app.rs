@@ -72,6 +72,8 @@ pub enum Mode {
     AccountSetup,
     /// Which account the selected session moves to (`A` with three accounts or more).
     MoveTarget,
+    /// Which account the selected session is forked into (`F`).
+    ForkTarget,
     /// The flags the selected session restarts with.
     RestartFlags,
     /// What syncing the accounts would do, and the user's choice where they conflict.
@@ -196,6 +198,10 @@ pub enum Action {
     Export,
     /// Continue the selected session in this account (its index among the accounts).
     MoveTo(usize),
+    /// Ask which account the selected session is forked into.
+    Fork,
+    /// Fork the selected session into this account; the original goes on.
+    ForkTo(usize),
     /// End the session and go on with extra flags (`--chrome`).
     RestartWith,
     End,
@@ -1838,6 +1844,10 @@ impl Brain {
                 let id = self.model.accounts[index].id.clone();
                 all.push((tr!("In {id} fortsetzen", "Continue in {id}"), "", PaletteCommand::Act(Action::MoveTo(index))));
             }
+            for index in self.fork_targets() {
+                let id = self.model.accounts[index].id.clone();
+                all.push((tr!("In {id} forken", "Fork into {id}"), "", PaletteCommand::Act(Action::ForkTo(index))));
+            }
             all.push((t("Neu starten mit … (z. B. --chrome)", "Restart with … (e.g. --chrome)").to_string(), "", PaletteCommand::Act(Action::RestartWith)));
             all.push((t("Beenden / Hintergrund-Session stoppen", "End / stop the background session").to_string(), "X", PaletteCommand::Act(Action::End)));
             all.push((t("Ausblenden", "Hide").to_string(), "⌫", PaletteCommand::Act(Action::Hide)));
@@ -2767,6 +2777,13 @@ impl Brain {
                     None => Task::none(),
                 };
             }
+            Mode::ForkTarget => {
+                let digit = character.as_deref().and_then(|c| c.parse::<usize>().ok()).filter(|d| *d >= 1);
+                return match digit.and_then(|d| self.fork_targets().get(d - 1).copied()) {
+                    Some(index) => self.perform(Action::ForkTo(index), true),
+                    None => Task::none(),
+                };
+            }
             Mode::NewSession => return self.on_new_session_key(named, character.as_deref(), cmd, modifiers.shift()),
             Mode::Reply | Mode::Rename => {
                 // The field lost its focus (a click elsewhere): give it back instead of acting.
@@ -2862,6 +2879,7 @@ impl Brain {
             "m" => self.toggle_mute(),
             "s" => self.cycle_snooze(),
             "a" => return self.move_to_other_account(false),
+            "f" => return self.act(Action::Fork),
             "x" => return self.end_selected(false),
             "c" => {
                 self.armed = None;
@@ -2918,7 +2936,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::MoveTarget | Mode::RestartFlags | Mode::Sync => {
+            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::MoveTarget | Mode::ForkTarget | Mode::RestartFlags | Mode::Sync => {
                 self.mode = Mode::Normal;
                 unfocus()
             }
@@ -3077,6 +3095,18 @@ impl Brain {
                     self.mode = Mode::Normal;
                 }
                 return self.move_selected(index, confirmed);
+            }
+            Action::Fork => {
+                if self.selected_session().is_some() {
+                    self.armed = None;
+                    self.mode = Mode::ForkTarget;
+                }
+            }
+            Action::ForkTo(index) => {
+                if self.mode == Mode::ForkTarget {
+                    self.mode = Mode::Normal;
+                }
+                return self.fork_selected(index);
             }
             Action::End => return self.end_selected(confirmed),
             Action::Hide => self.hide_selected(confirmed),
@@ -3358,6 +3388,49 @@ impl Brain {
     pub fn move_targets(&self) -> Vec<usize> {
         let Some(session) = self.selected_session() else { return Vec::new() };
         (0..self.model.accounts.len()).filter(|&i| self.model.accounts[i].id != session.key.account).collect()
+    }
+
+    /// The accounts the selected session can be forked into: all of them, its own too.
+    pub fn fork_targets(&self) -> Vec<usize> {
+        if self.selected_session().is_none() {
+            return Vec::new();
+        }
+        (0..self.model.accounts.len()).collect()
+    }
+
+    /// `F`: the conversation so far goes on as a new background session in the account at
+    /// `target_index`, attached in Brain; the original keeps running. Into another account the
+    /// transcript is copied first, as for a move.
+    fn fork_selected(&mut self, target_index: usize) -> Task<Message> {
+        let Some(session) = self.selected_session() else { return Task::none() };
+        let (Some(session_id), Some(cwd)) = (session.session_id.clone(), session.cwd.clone()) else {
+            self.set_status(t("Zu dieser Session fehlt die ID oder der Ordner.", "This session has no id or folder."));
+            return Task::none();
+        };
+        let name = session.name.as_ref().map(|n| format!("{n} (fork)"));
+        let (Some(source), Some(target)) = (self.model.account(&session.key.account).cloned(), self.model.accounts.get(target_index).cloned()) else { return Task::none() };
+        if self.blocked_in_demo() {
+            return Task::none();
+        }
+        let transcript = if source.id == target.id {
+            None
+        } else {
+            let _ = brain_core::account_setup::carry_trust(&source, &target, &brain_core::account::home_dir(), &cwd);
+            let Some(found) = brain_core::transcript::find_transcript(&source, &session_id) else {
+                self.set_status(t("Transkript nicht gefunden.", "Transcript not found."));
+                return Task::none();
+            };
+            Some(found)
+        };
+        let target_id = target.id.clone();
+        self.set_status(tr!("Forke die Session in {target_id} …", "Forking the session into {target_id} …"));
+        let forked = off_thread(move || {
+            if let Some(transcript) = transcript {
+                brain_core::transcript::copy_to_account(&transcript, &target).map_err(|e| e.to_string())?;
+            }
+            brain_core::agents::fork(&target, std::path::Path::new(&cwd), &session_id, name.as_deref())
+        });
+        Task::perform(forked, move |result| Message::Started(target_id.clone(), result))
     }
 
     /// `A`: with one other account, `A A` moves there; with more, `A` asks which.
