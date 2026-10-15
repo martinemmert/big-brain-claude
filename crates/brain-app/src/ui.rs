@@ -240,7 +240,10 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
     } else if s.accepts_input() && caps.type_text {
         talk.push((t("Antworten", "Reply").to_string(), "T", Action::StartReply, false));
     }
-    talk.push((t("Umbenennen", "Rename").to_string(), "R", Action::StartRename, false));
+    // Brain renames by typing `/rename`: only while the session waits.
+    if s.accepts_input() {
+        talk.push((t("Umbenennen", "Rename").to_string(), "R", Action::StartRename, false));
+    }
     groups.push(talk);
 
     let pinned = brain.prefs.is_pinned(&s.key);
