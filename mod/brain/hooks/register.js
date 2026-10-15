@@ -87,7 +87,11 @@ export function register(on) {
     const question = questions[0]?.question
     const ask = {
       call: e.tool_use_id,
-      items: questions.map((q) => ({ question: q.question ?? '', options: (q.options ?? []).map((o) => o.label ?? '') })),
+      items: questions.map((q) => ({
+        question: q.question ?? '',
+        options: (q.options ?? []).map((o) => o.label ?? ''),
+        multi_select: q.multiSelect === true,
+      })),
       multi_select: questions.some((q) => q.multiSelect === true),
     }
     await hook($, 'Notification', { message: question ? 'Claude asks: ' + question : 'Claude has a question for you', ask })

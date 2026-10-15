@@ -10,13 +10,16 @@ use iced::widget::image;
 use iced::Task;
 
 use super::{off_thread, Brain, Message, Mode};
-use crate::companion::{self, Command, LimitView, Link, Pairing, Places, UsageView, View};
+use crate::companion::{self, Command, LimitView, Link, Pairing, Picked, Places, UsageView, View};
+use brain_core::qa::OpenQuestion;
 use crate::format::plain;
 use crate::i18n::t;
 use crate::tr;
 
 /// How long a background session's terminal gets to attach before the phone's reply is typed.
 const ATTACH_WAIT: Duration = Duration::from_millis(2500);
+/// How long Esc takes to close a question dialog before the answers are typed.
+const DIALOG_CLOSE: Duration = Duration::from_millis(700);
 /// Pixels per QR module, and the quiet zone around the code (in modules).
 const QR_SCALE: usize = 8;
 const QR_QUIET: usize = 4;
@@ -208,11 +211,17 @@ impl Brain {
             return Task::none();
         }
         let key = match &command {
-            Command::Reply { key, .. } | Command::Permission { key, .. } | Command::Answer { key, .. } => key.clone(),
+            Command::Reply { key, .. }
+            | Command::Permission { key, .. }
+            | Command::Answer { key, .. }
+            | Command::Interrupt { key }
+            | Command::Resume { key }
+            | Command::Restart { key, .. } => key.clone(),
             Command::Start { account, folder, prompt } => return self.link_start(account, folder, prompt.clone()),
         };
         let Some(session) = self.model.board.get(&key) else { return Task::none() };
         let name = session.display_name();
+        let phase = session.phase();
         let permission_open = session.awaiting_permission();
         let permission_since = permission_open.then(|| session.phase_since_ms());
         let pid = session.pid;
@@ -238,30 +247,84 @@ impl Brain {
             }
             // Started before a session was looked up (it has none yet).
             Command::Start { .. } => Task::none(),
-            Command::Answer { call, picks, .. } => {
+            Command::Answer { call, answers, .. } => {
                 // Only the question the phone showed, if it is still open right now.
-                let open = self.open_question(&key);
-                let Some(keys) = open.filter(|q| q.call == call).and_then(|q| brain_core::qa::answer_keys(&q, &picks)) else {
+                let open = self.open_question(&key).filter(|q| q.call == call);
+                let Some(question) = open else {
                     self.set_status(tr!(
                         "Vom Handy: „{name}“ fragt inzwischen etwas anderes – Antwort nicht gesendet.",
                         "From the phone: “{name}” asks something else by now – answer not sent."
                     ));
                     return Task::none();
                 };
+                // One option per question and nothing written: the dialog's own keys. Several
+                // picks or own words: Esc closes the dialog, and the answers go as a reply.
+                let single: Option<Vec<usize>> = answers.iter().map(|a| (a.picks.len() == 1 && a.other.is_none()).then(|| a.picks[0])).collect();
+                let keys = single.and_then(|picks| brain_core::qa::answer_keys(&question, &picks));
+                let typed = if keys.is_none() { answer_text(&question, &answers) } else { None };
+                if keys.is_none() && typed.is_none() {
+                    self.set_status(tr!("Vom Handy: die Antwort passt nicht zu „{name}“s Frage.", "From the phone: the answer doesn't fit “{name}”'s question."));
+                    return Task::none();
+                }
+                let answered = tr!("Antwort vom Handy an „{name}“ gegeben.", "Answered “{name}” from the phone.");
                 if self.terminals.contains_key(&key) {
-                    self.set_status(tr!("Antwort vom Handy an „{name}“ gegeben.", "Answered “{name}” from the phone."));
-                    return Task::done(Message::TerminalKeys(key, keys.into_bytes()));
+                    self.set_status(answered);
+                    return match (keys, typed) {
+                        (Some(keys), _) => Task::done(Message::TerminalKeys(key, keys.into_bytes())),
+                        (None, Some(text)) => Task::batch([Task::done(Message::TerminalKeys(key.clone(), b"\x1b".to_vec())), type_later(key, text)]),
+                        (None, None) => Task::none(),
+                    };
                 }
                 if in_background && first_try && self.spawn_terminal(&key) {
-                    return later(Command::Answer { key, call, picks });
+                    return later(Command::Answer { key, call, answers });
                 }
-                // A session in another terminal app: its option keys can't be sent there.
+                // In another terminal app Esc and typed text work, the dialog's option keys don't.
+                if let (Some(text), false) = (typed, in_background) {
+                    let outcome = terminal::send_key(pid, Key::Escape);
+                    let sent = matches!(outcome, terminal::Outcome::Done);
+                    self.report(outcome, None);
+                    return if sent { type_later(key, text) } else { Task::none() };
+                }
                 self.set_status(tr!(
                     "Vom Handy: „{name}“ läuft nicht in Brain – bitte dort antworten.",
                     "From the phone: “{name}” doesn't run in Brain – answer it there."
                 ));
                 Task::none()
             }
+            Command::Interrupt { .. } => {
+                // Esc on a dialog would deny it: only a session that works is interrupted.
+                if phase != Phase::Working {
+                    self.set_status(tr!("Vom Handy: „{name}“ arbeitet gerade nicht – nichts unterbrochen.", "From the phone: “{name}” isn't working – nothing interrupted."));
+                    return Task::none();
+                }
+                let done = tr!("„{name}“ vom Handy unterbrochen.", "Interrupted “{name}” from the phone.");
+                if self.terminals.contains_key(&key) {
+                    self.set_status(done);
+                    return Task::done(Message::TerminalKeys(key, b"\x1b".to_vec()));
+                }
+                if in_background {
+                    if first_try && self.spawn_terminal(&key) {
+                        return later(Command::Interrupt { key });
+                    }
+                    return Task::none();
+                }
+                let outcome = terminal::send_key(pid, Key::Escape);
+                self.report(outcome, Some(done));
+                Task::none()
+            }
+            Command::Resume { .. } => {
+                if phase != Phase::Ended {
+                    return Task::none();
+                }
+                self.resume_in_background(&key, Vec::new())
+            }
+            Command::Restart { flags, .. } => match self.restart_session(key, flags, true) {
+                Ok(task) => task,
+                Err(err) => {
+                    self.set_status(tr!("Vom Handy: Neustart geht nicht – {err}", "From the phone: can't restart – {err}"));
+                    Task::none()
+                }
+            },
             Command::Permission { allow, since_ms, .. } => {
                 // A question isn't a permission: Allow would pick its first option.
                 let asking = self.link_questions.get(&key).is_some_and(|(_, q)| q.is_some());
@@ -309,9 +372,105 @@ impl Brain {
     }
 }
 
+impl Brain {
+    /// The phone's answers, typed once Esc closed the question dialog: into Brain's terminal, or
+    /// through the terminal app the session runs in. Not checked for "accepts input" first: the
+    /// dialog just closed, Brain's state may not know yet.
+    pub(super) fn type_after_dialog(&mut self, key: &SessionKey, text: &str) -> Task<Message> {
+        if self.terminals.contains_key(key) {
+            return self.send_text(key, text);
+        }
+        let Some(pid) = self.model.board.get(key).map(|s| s.pid) else { return Task::none() };
+        let outcome = terminal::type_text(pid, text);
+        self.report(outcome, Some(t("Antwort vom Handy gegeben.", "Answered from the phone.").into()));
+        Task::none()
+    }
+}
+
+/// The answers as one line Claude reads: each question with what was picked and written.
+/// `None` when they don't fit the question (a pick that doesn't exist, several where one goes).
+///
+/// The line is typed into a terminal, and questions and options come from the transcript, so
+/// from what Claude wrote: every control character (Esc, Return, a paste's end marker) becomes
+/// a space, so no part of it can act as a key.
+pub(crate) fn answer_text(question: &OpenQuestion, answers: &[Picked]) -> Option<String> {
+    let text = answer_line(question, answers)?;
+    Some(text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect())
+}
+
+fn answer_line(question: &OpenQuestion, answers: &[Picked]) -> Option<String> {
+    if answers.len() != question.items.len() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for (item, answer) in question.items.iter().zip(answers) {
+        if answer.picks.len() > 1 && !item.multi_select {
+            return None;
+        }
+        let mut chosen: Vec<String> = answer.picks.iter().map(|&p| item.options.get(p).cloned()).collect::<Option<_>>()?;
+        chosen.extend(answer.other.iter().cloned());
+        if chosen.is_empty() {
+            return None;
+        }
+        parts.push(format!("„{}“: {}", item.question, chosen.join(", ")));
+    }
+    Some(format!("{} {}", t("Meine Antworten auf deine Fragen –", "My answers to your questions –"), parts.join("; ")))
+}
+
 /// The command again, once a freshly started terminal had time to attach.
 fn later(command: Command) -> Task<Message> {
     Task::perform(off_thread(|| std::thread::sleep(ATTACH_WAIT)), move |_| Message::LinkRetry(command.clone()))
+}
+
+/// The text, once Esc had time to close the dialog.
+fn type_later(key: SessionKey, text: String) -> Task<Message> {
+    Task::perform(off_thread(|| std::thread::sleep(DIALOG_CLOSE)), move |_| Message::LinkType(key.clone(), text.clone()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use brain_core::qa::QuestionItem;
+
+    fn question() -> OpenQuestion {
+        OpenQuestion {
+            call: "toolu_1".into(),
+            items: vec![
+                QuestionItem { question: "Variante?".into(), options: vec!["Bereich".into(), "Monat".into()], multi_select: false },
+                QuestionItem { question: "Ansichten?".into(), options: vec!["Tag".into(), "Woche".into(), "Monat".into()], multi_select: true },
+            ],
+            multi_select: true,
+        }
+    }
+
+    #[test]
+    fn answers_become_one_line_claude_reads() {
+        let answers = [Picked { picks: vec![1], other: Some("mit Vorschau\nbitte".into()) }, Picked { picks: vec![0, 2], other: None }];
+        let text = answer_text(&question(), &answers).unwrap();
+        assert!(text.ends_with("„Variante?“: Monat, mit Vorschau bitte; „Ansichten?“: Tag, Monat"), "{text}");
+        assert!(!text.contains('\n'));
+    }
+
+    /// A question from the transcript that carries keys (Esc, a bracketed paste's end, Return)
+    /// is typed as plain text, never as keys.
+    #[test]
+    fn answers_carry_no_keys() {
+        let mut sneaky = question();
+        sneaky.items[0].options[0] = "Bereich\x1b[201~\r/exit\r".into();
+        let answers = [Picked { picks: vec![0], other: Some("ok\x03\u{7f}".into()) }, Picked { picks: vec![0], other: None }];
+        let text = answer_text(&sneaky, &answers).unwrap();
+        assert!(!text.chars().any(char::is_control), "{text:?}");
+        assert!(text.contains("Bereich [201~ /exit"), "{text:?}");
+    }
+
+    #[test]
+    fn answers_that_dont_fit_are_refused() {
+        // Several picks where one goes, a pick that doesn't exist, a question left out.
+        assert_eq!(answer_text(&question(), &[Picked { picks: vec![0, 1], other: None }, Picked { picks: vec![0], other: None }]), None);
+        assert_eq!(answer_text(&question(), &[Picked { picks: vec![5], other: None }, Picked { picks: vec![0], other: None }]), None);
+        assert_eq!(answer_text(&question(), &[Picked { picks: vec![0], other: None }]), None);
+        assert_eq!(answer_text(&question(), &[Picked { picks: vec![], other: None }, Picked { picks: vec![0], other: None }]), None);
+    }
 }
 
 /// The pairing URL as a black-on-white image with its quiet zone, ready to scan.

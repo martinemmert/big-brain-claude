@@ -131,10 +131,15 @@ mod tests {
     fn the_mods_question_comes_with_its_options() {
         // What `mod/brain/hooks/register.js` sends when Claude calls AskUserQuestion.
         let json = r#"{"hook_event_name":"Notification","session_id":"s1","cwd":"/w","message":"Claude asks: Color?",
-            "ask":{"call":"toolu_1","items":[{"question":"Color?","options":["Red","Blue"]}],"multi_select":false}}"#;
+            "ask":{"call":"toolu_1","items":[{"question":"Color?","options":["Red","Blue"],"multi_select":false},
+                {"question":"Toppings?","options":["Cheese","Olives","Basil"],"multi_select":true}],"multi_select":true}}"#;
         let payload: HookPayload = serde_json::from_str(json).unwrap();
         let ask = payload.ask.unwrap();
-        assert_eq!((ask.call.as_str(), ask.items[0].options.len(), ask.multi_select), ("toolu_1", 2, false));
+        assert_eq!((ask.call.as_str(), ask.items[0].options.len(), ask.multi_select), ("toolu_1", 2, true));
+        assert_eq!((ask.items[0].multi_select, ask.items[1].multi_select), (false, true));
+        // From the mod's first version: no per-question flag.
+        let old = r#"{"hook_event_name":"Notification","ask":{"call":"t","items":[{"question":"Q?","options":["A"]}],"multi_select":false}}"#;
+        assert!(!serde_json::from_str::<HookPayload>(old).unwrap().ask.unwrap().items[0].multi_select);
     }
 
     #[test]

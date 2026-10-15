@@ -6,22 +6,26 @@
 //! Brain's self-signed certificate, which the phone pins instead of trusting any CA. So nobody
 //! on the same Wi-Fi can read along or pose as Brain, and without the token nobody gets in.
 //!
-//! The server only reads: a snapshot of the session list that Brain publishes on every refresh,
-//! and transcripts. Replies and permission answers are handed to Brain's UI thread as
+//! The server reads a snapshot of the session list that Brain publishes on every refresh,
+//! transcripts, and the files a session touched or changed in its folder. The one thing it
+//! writes is what the phone attaches (a photo, a PDF), into `inbox/` next to the token, for a
+//! reply to name. Replies and permission answers are handed to Brain's UI thread as
 //! [`Command`]s, which does with them what it does for a reply typed in Brain.
 
 use std::convert::Infallible;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use base64::Engine;
 use brain_core::account::{home_dir, Account};
+use brain_core::changes::{changes_of, diff_of};
+use brain_core::files::{session_files, Touch};
 use brain_core::state::SessionKey;
-use brain_core::transcript::{find_transcript, read_recent_messages, Role};
+use brain_core::transcript::{cwd_of, find_transcript, read_all_messages, read_recent_messages, Role};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::{Bytes, Incoming};
 use hyper::{Method, Request, Response, StatusCode};
@@ -32,10 +36,25 @@ use tokio_rustls::rustls;
 pub const PORT: u16 = 48620;
 /// Messages the phone gets per session, newest last.
 const MESSAGE_LIMIT: usize = 80;
+/// The most it gets when it asks for older ones.
+const MESSAGE_LIMIT_MAX: usize = 5000;
+/// Search hits per search, and how much of each.
+const SEARCH_HITS: usize = 100;
+const SEARCH_CHARS: usize = 400;
+/// A message asked for in full: practically all of it.
+const FULL_CHARS: usize = 200_000;
 /// The longest message text sent; the phone shows the start of longer ones.
 const MESSAGE_CHARS: usize = 6000;
 /// The largest request body: a reply.
 const BODY_LIMIT: usize = 64 * 1024;
+/// The largest attachment the phone sends: a photo, a PDF.
+const ATTACHMENT_LIMIT: usize = 15 * 1024 * 1024;
+/// The largest file the phone fetches from a session.
+const FILE_LIMIT: u64 = 10 * 1024 * 1024;
+/// The longest diff sent; the phone shows the start of longer ones.
+const DIFF_LIMIT: usize = 512 * 1024;
+/// The files a session touched, most recent first, at most this many.
+const TOUCHED_LIMIT: usize = 200;
 
 /// One session as the phone lists it.
 #[derive(Debug, Clone, Serialize)]
@@ -67,14 +86,35 @@ pub struct View {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Reply { key: SessionKey, text: String },
-    /// Answers to an open question, one option index per question; `call` names the question
-    /// the phone showed.
-    Answer { key: SessionKey, call: String, picks: Vec<usize> },
+    /// Answers to an open question, one per question; `call` names the question the phone
+    /// showed.
+    Answer { key: SessionKey, call: String, answers: Vec<Picked> },
     /// A new background session in one of the offered folders, with an optional first prompt.
     Start { account: String, folder: String, prompt: Option<String> },
     /// `since_ms`: when the dialog the user answered opened ([`View::permission_since_ms`]).
     Permission { key: SessionKey, allow: bool, since_ms: i64 },
+    /// Esc for a working session: Claude stops what it does.
+    Interrupt { key: SessionKey },
+    /// An ended session goes on in the background.
+    Resume { key: SessionKey },
+    /// The session goes on with these flags (`--model opus`, `--chrome`).
+    Restart { key: SessionKey, flags: Vec<String> },
 }
+
+/// The answer to one question: the options picked (one, or several where the question takes
+/// several) and what the user wrote instead or besides.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Picked {
+    pub picks: Vec<usize>,
+    pub other: Option<String>,
+}
+
+/// What this Brain Link offers beyond the first version, for the phone to show only what works.
+const FEATURES: [&str; 6] = ["files", "attachments", "wait", "control", "answers", "history"];
+/// How long a read with `wait` waits for something new before it answers anyway.
+const WAIT: Duration = Duration::from_secs(25);
+/// How often a waiting read looks again.
+const WAIT_STEP: Duration = Duration::from_millis(250);
 
 /// A plan limit as the phone shows it.
 #[derive(Debug, Clone, Serialize)]
@@ -137,8 +177,10 @@ impl Link {
         let (sender, receiver) = channel();
         let state = Arc::new(State {
             token: RwLock::new(identity.token),
+            inbox: dir.join("inbox"),
             accounts,
-            sessions: RwLock::new(Vec::new()),
+            sessions: RwLock::new(b"[]".to_vec()),
+            version: AtomicU64::new(1),
             usage: RwLock::new(Vec::new()),
             places: RwLock::new(Places::default()),
             commands: Mutex::new(sender),
@@ -153,9 +195,15 @@ impl Link {
         Ok(Link { state, commands: Mutex::new(receiver), stop, dir, pairing })
     }
 
+    /// The list as the phone sees it. Only a list that differs from the last one counts as new:
+    /// a phone waiting for news (`wait`) gets it within a moment.
     pub fn publish(&self, views: Vec<View>) {
+        let json = serde_json::to_vec(&views).unwrap_or_default();
         if let Ok(mut sessions) = self.state.sessions.write() {
-            *sessions = views;
+            if *sessions != json {
+                *sessions = json;
+                self.state.version.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 
@@ -386,8 +434,13 @@ fn ipv4_addresses() -> Vec<Ipv4Addr> {
 
 struct State {
     token: RwLock<String>,
+    /// Where the phone's attachments go, a folder per session.
+    inbox: PathBuf,
     accounts: Vec<Account>,
-    sessions: RwLock<Vec<View>>,
+    /// The published list, as JSON.
+    sessions: RwLock<Vec<u8>>,
+    /// Counts up with each list that differs from the one before.
+    version: AtomicU64,
     usage: RwLock<Vec<UsageView>>,
     places: RwLock<Places>,
     commands: Mutex<Sender<Command>>,
@@ -425,11 +478,24 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
         // Where Brain is reachable now: the phone keeps the list current, so a new address of
         // the Mac needs no new pairing.
         (Method::GET, ["v1", "hello"]) => {
-            reply(StatusCode::OK, &serde_json::json!({ "name": computer_name(), "version": env!("CARGO_PKG_VERSION"), "hosts": hosts() }))
+            reply(
+                StatusCode::OK,
+                &serde_json::json!({ "name": computer_name(), "version": env!("CARGO_PKG_VERSION"), "hosts": hosts(), "features": FEATURES }),
+            )
         }
+        // `wait=<version>`: answers once the list is newer than that version (or after a while
+        // anyway), so the phone sees a change within a moment instead of at its next look.
         (Method::GET, ["v1", "sessions"]) => {
+            if let Some(seen) = query_param(req.uri().query(), "wait").and_then(|v| v.parse::<u64>().ok()) {
+                let until = tokio::time::Instant::now() + WAIT;
+                while state.version.load(Ordering::Relaxed) == seen && tokio::time::Instant::now() < until {
+                    tokio::time::sleep(WAIT_STEP).await;
+                }
+            }
+            // The version is read before the list: a list published in between comes again next time.
+            let version = state.version.load(Ordering::Relaxed);
             let sessions = state.sessions.read().map(|s| s.clone()).unwrap_or_default();
-            reply(StatusCode::OK, &sessions)
+            with_version(raw(StatusCode::OK, "application/json", sessions), version)
         }
         (Method::GET, ["v1", "usage"]) => reply(StatusCode::OK, &state.usage.read().map(|u| u.clone()).unwrap_or_default()),
         (Method::GET, ["v1", "places"]) => reply(StatusCode::OK, &state.places.read().map(|p| p.clone()).unwrap_or_default()),
@@ -454,10 +520,103 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 reply(StatusCode::SERVICE_UNAVAILABLE, &serde_json::json!({ "error": "Brain is not listening" }))
             }
         }
-        (Method::GET, ["v1", "sessions", account, id, "messages"]) => match session_key(&state, account, id) {
-            Some(key) => reply(StatusCode::OK, &messages(&state, &key)),
+        // `wait=<version>`: answers once the transcript changed (its size is the version).
+        (Method::GET, ["v1", "sessions", account, id, "messages"]) => {
+            let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
+            let transcript = transcript_of(&state, &key);
+            let size = || transcript.as_ref().and_then(|t| std::fs::metadata(t).ok()).map_or(0, |m| m.len());
+            if let Some(seen) = query_param(req.uri().query(), "wait").and_then(|v| v.parse::<u64>().ok()) {
+                let until = tokio::time::Instant::now() + WAIT;
+                while size() == seen && tokio::time::Instant::now() < until {
+                    tokio::time::sleep(WAIT_STEP).await;
+                }
+            }
+            let version = size();
+            // `limit`: older messages on request, up to a whole conversation.
+            let limit = query_param(req.uri().query(), "limit").and_then(|v| v.parse::<usize>().ok()).unwrap_or(MESSAGE_LIMIT).clamp(1, MESSAGE_LIMIT_MAX);
+            off_thread(state.clone(), move |state| {
+                let (list, more) = messages(state, &key, limit);
+                let mut response = with_version(reply(StatusCode::OK, &list), version);
+                response.headers_mut().insert("brain-more", hyper::header::HeaderValue::from_static(if more { "1" } else { "0" }));
+                response
+            })
+            .await
+        }
+        // The whole conversation searched; each hit says how far back it is (0: the newest).
+        (Method::GET, ["v1", "sessions", account, id, "search"]) => {
+            let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
+            let Some(text) = query_param(req.uri().query(), "q").filter(|q| q.trim().chars().count() >= 2) else {
+                return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "q" })));
+            };
+            off_thread(state.clone(), move |state| reply(StatusCode::OK, &search(state, &key, &text))).await
+        }
+        // One message in full, which the list clips: by its time, role and place among those
+        // with the same time.
+        (Method::GET, ["v1", "sessions", account, id, "message"]) => {
+            let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
+            let query = req.uri().query();
+            let (Some(ts), Some(role)) = (query_param(query, "ts").and_then(|t| t.parse::<i64>().ok()), query_param(query, "role")) else {
+                return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "ts and role" })));
+            };
+            let nth = query_param(query, "nth").and_then(|n| n.parse::<usize>().ok()).unwrap_or(0);
+            off_thread(state.clone(), move |state| match full_message(state, &key, ts, &role, nth) {
+                Some(message) => reply(StatusCode::OK, &message),
+                None => not_found(),
+            })
+            .await
+        }
+        (Method::POST, ["v1", "sessions", account, id, "control"]) => {
+            let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
+            let Some(body) = read_json(req).await else {
+                return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "bad body" })));
+            };
+            let command = match body.get("action").and_then(|a| a.as_str()) {
+                Some("interrupt") => Command::Interrupt { key },
+                // What Brain types for it: the session's own command.
+                Some("compact") => Command::Reply { key, text: "/compact".into() },
+                Some("resume") => Command::Resume { key },
+                Some("restart") => match crate::app::restart::parse_flags(body.get("flags").and_then(|f| f.as_str()).unwrap_or_default()) {
+                    Ok(flags) => Command::Restart { key, flags },
+                    Err(error) => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": error }))),
+                },
+                _ => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "action" }))),
+            };
+            send_command(&state, command)
+        }
+        // Git and the files themselves are read off the server's only thread.
+        (Method::GET, ["v1", "sessions", account, id, "files"]) => match session_key(&state, account, id) {
+            Some(key) => off_thread(state.clone(), move |state| reply(StatusCode::OK, &files_view(state, &key))).await,
             None => not_found(),
         },
+        (Method::GET, ["v1", "sessions", account, id, what @ ("diff" | "file")]) => {
+            let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
+            let Some(path) = query_param(req.uri().query(), "path") else {
+                return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "path" })));
+            };
+            if *what == "diff" {
+                off_thread(state.clone(), move |state| diff_reply(state, &key, &path)).await
+            } else {
+                off_thread(state.clone(), move |state| file_reply(state, &key, &path)).await
+            }
+        }
+        (Method::POST, ["v1", "sessions", account, id, "attachments"]) => {
+            let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
+            let content_type = req.headers().get(hyper::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
+            let Some(extension) = attachment_extension(content_type) else {
+                return Ok(reply(StatusCode::UNSUPPORTED_MEDIA_TYPE, &serde_json::json!({ "error": "type" })));
+            };
+            let name = query_param(req.uri().query(), "name").map(|n| file_stem(&n)).unwrap_or_default();
+            let Ok(body) = Limited::new(req.into_body(), ATTACHMENT_LIMIT).collect().await.map(|b| b.to_bytes()) else {
+                return Ok(reply(StatusCode::PAYLOAD_TOO_LARGE, &serde_json::json!({ "error": "too large" })));
+            };
+            if body.is_empty() {
+                return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "empty" })));
+            }
+            match save_attachment(&state.inbox, &key, &name, extension, &body) {
+                Ok(path) => reply(StatusCode::CREATED, &serde_json::json!({ "path": path })),
+                Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, &serde_json::json!({ "error": "not saved" })),
+            }
+        }
         (Method::POST, ["v1", "sessions", account, id, action @ ("reply" | "permission" | "answer")]) => {
             let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
             let action = action.to_string();
@@ -468,9 +627,8 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 "reply" => body.get("text").and_then(|t| t.as_str()).filter(|t| !t.trim().is_empty()).map(|text| Command::Reply { key, text: text.to_string() }),
                 "answer" => {
                     let call = body.get("call").and_then(|c| c.as_str()).map(str::to_string);
-                    let picks: Option<Vec<usize>> = body.get("picks").and_then(|p| p.as_array()).and_then(|p| p.iter().map(|v| v.as_u64().map(|n| n as usize)).collect());
-                    match (call, picks) {
-                        (Some(call), Some(picks)) if !picks.is_empty() && picks.len() <= 8 => Some(Command::Answer { key, call, picks }),
+                    match (call, answers_of(&body)) {
+                        (Some(call), Some(answers)) => Some(Command::Answer { key, call, answers }),
                         _ => None,
                     }
                 }
@@ -480,19 +638,48 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 },
             };
             match command {
-                Some(command) => {
-                    let sent = state.commands.lock().map(|s| s.send(command).is_ok()).unwrap_or(false);
-                    if sent {
-                        reply(StatusCode::ACCEPTED, &serde_json::json!({ "ok": true }))
-                    } else {
-                        reply(StatusCode::SERVICE_UNAVAILABLE, &serde_json::json!({ "error": "Brain is not listening" }))
-                    }
-                }
+                Some(command) => send_command(&state, command),
                 None => reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "bad body" })),
             }
         }
         _ => not_found(),
     })
+}
+
+/// Hands a command to Brain's UI thread.
+fn send_command(state: &State, command: Command) -> Response<Full<Bytes>> {
+    if state.commands.lock().map(|s| s.send(command).is_ok()).unwrap_or(false) {
+        reply(StatusCode::ACCEPTED, &serde_json::json!({ "ok": true }))
+    } else {
+        reply(StatusCode::SERVICE_UNAVAILABLE, &serde_json::json!({ "error": "Brain is not listening" }))
+    }
+}
+
+/// An answer's body: `answers: [{picks: [..], other: ".."}]`, one per question, or as the first
+/// phone app sends it, `picks: [..]` with one option per question.
+fn answers_of(body: &serde_json::Value) -> Option<Vec<Picked>> {
+    let indices = |value: Option<&serde_json::Value>| -> Option<Vec<usize>> {
+        value?.as_array()?.iter().map(|v| v.as_u64().map(|n| n as usize)).collect()
+    };
+    let answers: Vec<Picked> = match body.get("answers").and_then(|a| a.as_array()) {
+        Some(list) => list
+            .iter()
+            .map(|a| {
+                let other = a.get("other").and_then(|o| o.as_str()).map(str::trim).filter(|o| !o.is_empty()).map(|o| clip(o, 2000));
+                Some(Picked { picks: indices(a.get("picks")).unwrap_or_default(), other })
+            })
+            .collect::<Option<_>>()?,
+        None => indices(body.get("picks"))?.into_iter().map(|pick| Picked { picks: vec![pick], other: None }).collect(),
+    };
+    let fits = !answers.is_empty() && answers.len() <= 8 && answers.iter().all(|a| (!a.picks.is_empty() || a.other.is_some()) && a.picks.len() <= 16);
+    fits.then_some(answers)
+}
+
+fn with_version(mut response: Response<Full<Bytes>>, version: u64) -> Response<Full<Bytes>> {
+    if let Ok(value) = hyper::header::HeaderValue::from_str(&version.to_string()) {
+        response.headers_mut().insert("brain-version", value);
+    }
+    response
 }
 
 fn authorized(req: &Request<Incoming>, token: &str) -> bool {
@@ -514,25 +701,83 @@ struct MessageView {
     tool: Option<String>,
     text: String,
     ts_ms: Option<i64>,
+    /// The text was cut at [`MESSAGE_CHARS`]: `…/message` has it whole.
+    clipped: bool,
+    /// For a search hit: how many messages came after it (0: the newest).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    back: Option<usize>,
 }
 
-fn messages(state: &State, key: &SessionKey) -> Vec<MessageView> {
-    let Some(account) = state.accounts.iter().find(|a| a.id == key.account) else { return Vec::new() };
-    let Some(path) = find_transcript(account, &key.id) else { return Vec::new() };
-    read_recent_messages(&path, MESSAGE_LIMIT)
-        .into_iter()
-        .map(|m| MessageView {
-            role: match m.role {
-                Role::User => "user",
-                Role::Assistant => "assistant",
-                Role::Tool => "tool",
-                Role::System => "system",
-            },
-            tool: m.tool,
-            text: clip(&m.text, MESSAGE_CHARS),
-            ts_ms: m.ts.map(|t| t.timestamp_millis()),
-        })
+impl MessageView {
+    fn of(message: brain_core::transcript::Message, max: usize) -> MessageView {
+        let clipped = message.text.chars().nth(max).is_some();
+        MessageView {
+            role: role_name(message.role),
+            tool: message.tool,
+            text: clip(&message.text, max),
+            ts_ms: message.ts.map(|t| t.timestamp_millis()),
+            clipped,
+            back: None,
+        }
+    }
+}
+
+fn role_name(role: Role) -> &'static str {
+    match role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
+        Role::System => "system",
+    }
+}
+
+fn transcript_of(state: &State, key: &SessionKey) -> Option<PathBuf> {
+    let account = state.accounts.iter().find(|a| a.id == key.account)?;
+    find_transcript(account, &key.id)
+}
+
+/// The last `limit` messages, and whether older ones exist. Up to the usual window the end of
+/// the transcript is read; further back the whole of it.
+fn messages(state: &State, key: &SessionKey, limit: usize) -> (Vec<MessageView>, bool) {
+    let Some(path) = transcript_of(state, key) else { return (Vec::new(), false) };
+    let (list, more) = if limit <= MESSAGE_LIMIT {
+        // One more than asked tells whether there are older ones.
+        let mut list = read_recent_messages(&path, limit + 1);
+        let more = list.len() > limit;
+        list.drain(..list.len().saturating_sub(limit));
+        (list, more)
+    } else {
+        let mut list = read_all_messages(&path);
+        let more = list.len() > limit;
+        list.drain(..list.len().saturating_sub(limit));
+        (list, more)
+    };
+    (list.into_iter().map(|m| MessageView::of(m, MESSAGE_CHARS)).collect(), more)
+}
+
+/// Messages whose text contains `text` (any case), newest first, at most [`SEARCH_HITS`].
+fn search(state: &State, key: &SessionKey, text: &str) -> Vec<MessageView> {
+    let Some(path) = transcript_of(state, key) else { return Vec::new() };
+    let needle = text.trim().to_lowercase();
+    let all = read_all_messages(&path);
+    let total = all.len();
+    all.into_iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, m)| m.text.to_lowercase().contains(&needle))
+        .take(SEARCH_HITS)
+        .map(|(at, m)| MessageView { back: Some(total - 1 - at), ..MessageView::of(m, SEARCH_CHARS) })
         .collect()
+}
+
+/// The `nth` message with this time and role, unclipped (up to [`FULL_CHARS`]).
+fn full_message(state: &State, key: &SessionKey, ts_ms: i64, role: &str, nth: usize) -> Option<MessageView> {
+    let path = transcript_of(state, key)?;
+    read_all_messages(&path)
+        .into_iter()
+        .filter(|m| role_name(m.role) == role && m.ts.map(|t| t.timestamp_millis()) == Some(ts_ms))
+        .nth(nth)
+        .map(|m| MessageView::of(m, FULL_CHARS))
 }
 
 fn clip(text: &str, max: usize) -> String {
@@ -540,6 +785,210 @@ fn clip(text: &str, max: usize) -> String {
         Some((cut, _)) => format!("{}…", &text[..cut]),
         None => text.to_string(),
     }
+}
+
+/// What a session changed in its folder (git) and the files it touched (its transcript).
+#[derive(Serialize)]
+struct FilesView {
+    cwd: Option<String>,
+    branch: Option<String>,
+    changes: Vec<ChangeView>,
+    touched: Vec<TouchedView>,
+}
+
+#[derive(Serialize)]
+struct ChangeView {
+    /// Relative to the session's folder.
+    path: String,
+    /// `git status --porcelain` code, e.g. ` M`, `A `, `??`.
+    status: String,
+    added: Option<u64>,
+    removed: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct TouchedView {
+    path: String,
+    /// `written`, `edited`, `read`, `attached` or `shared`.
+    touches: Vec<&'static str>,
+    last_ms: i64,
+}
+
+fn files_view(state: &State, key: &SessionKey) -> FilesView {
+    let transcript = transcript_of(state, key);
+    let cwd = transcript.as_deref().and_then(cwd_of);
+    let changes = cwd.as_deref().and_then(|c| changes_of(Path::new(c)));
+    let touched = transcript.map(|t| session_files(&t)).unwrap_or_default();
+    FilesView {
+        branch: changes.as_ref().and_then(|c| c.branch.clone()),
+        changes: changes
+            .map(|c| c.files.into_iter().map(|f| ChangeView { path: f.path, status: f.status, added: f.added, removed: f.removed }).collect())
+            .unwrap_or_default(),
+        touched: touched
+            .into_iter()
+            .take(TOUCHED_LIMIT)
+            .map(|f| TouchedView { touches: f.touches.iter().map(touch_name).collect(), path: f.path, last_ms: f.last_ms })
+            .collect(),
+        cwd,
+    }
+}
+
+fn touch_name(touch: &Touch) -> &'static str {
+    match touch {
+        Touch::Written => "written",
+        Touch::Edited => "edited",
+        Touch::Read => "read",
+        Touch::Attached => "attached",
+        Touch::Shared => "shared",
+    }
+}
+
+/// The diff of one file the session's folder lists as changed; nothing else.
+fn diff_reply(state: &State, key: &SessionKey, path: &str) -> Response<Full<Bytes>> {
+    let Some(cwd) = transcript_of(state, key).and_then(|t| cwd_of(&t)).map(PathBuf::from) else { return not_found() };
+    let Some(change) = changes_of(&cwd).and_then(|c| c.files.into_iter().find(|f| f.path == path)) else { return not_found() };
+    match diff_of(&cwd, &change) {
+        Some(diff) => raw(StatusCode::OK, "text/plain; charset=utf-8", clip_bytes(&diff, DIFF_LIMIT).into_bytes()),
+        None => not_found(),
+    }
+}
+
+/// A file the session touched (by its transcript) or changed in its folder, nothing else: the
+/// token opens the sessions, not the whole disk.
+fn file_reply(state: &State, key: &SessionKey, path: &str) -> Response<Full<Bytes>> {
+    if !Path::new(path).is_absolute() {
+        return reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "absolute path" }));
+    }
+    let Some(transcript) = transcript_of(state, key) else { return not_found() };
+    let touched = session_files(&transcript).iter().any(|f| f.path == path);
+    let changed = || {
+        cwd_of(&transcript).is_some_and(|cwd| {
+            let cwd = Path::new(&cwd);
+            changes_of(cwd).is_some_and(|c| c.files.iter().any(|f| cwd.join(&f.path) == Path::new(path)))
+        })
+    };
+    if !touched && !changed() {
+        return not_found();
+    }
+    let Ok(meta) = std::fs::metadata(path) else { return not_found() };
+    if !meta.is_file() {
+        return not_found();
+    }
+    if meta.len() > FILE_LIMIT {
+        return reply(StatusCode::PAYLOAD_TOO_LARGE, &serde_json::json!({ "error": "too large" }));
+    }
+    match std::fs::read(path) {
+        Ok(bytes) => raw(StatusCode::OK, content_type_of(path, &bytes), bytes),
+        Err(_) => not_found(),
+    }
+}
+
+fn content_type_of(path: &str, bytes: &[u8]) -> &'static str {
+    let extension = Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" => "image/heic",
+        "pdf" => "application/pdf",
+        _ if std::str::from_utf8(bytes).is_ok() => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
+/// What the phone may attach, by its content type: what Claude reads.
+fn attachment_extension(content_type: &str) -> Option<&'static str> {
+    let essence = content_type.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+    Some(match essence.as_str() {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "application/pdf" => "pdf",
+        "text/plain" => "txt",
+        "text/markdown" => "md",
+        _ => return None,
+    })
+}
+
+/// The phone's file name as a plain stem (letters, digits, `-`, `_`; 40 at most): it ends up
+/// in a path Claude reads, so no separators, dots or spaces.
+fn file_stem(name: &str) -> String {
+    let stem = Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+    let mut out = String::new();
+    for c in stem.chars() {
+        let c = if c.is_ascii_alphanumeric() || c == '_' { c } else { '-' };
+        if c == '-' && (out.is_empty() || out.ends_with('-')) {
+            continue;
+        }
+        out.push(c);
+        if out.len() >= 40 {
+            break;
+        }
+    }
+    out.trim_end_matches('-').to_string()
+}
+
+/// `inbox/<session id>/<when>-<random>[-<name>].<ext>`, only the user can read it. The path
+/// goes back to the phone, which names it in the reply.
+fn save_attachment(inbox: &Path, key: &SessionKey, name: &str, extension: &str, bytes: &[u8]) -> Result<String, String> {
+    create_dir(inbox).map_err(|e| e.to_string())?;
+    let folder = inbox.join(&key.id);
+    create_dir(&folder).map_err(|e| e.to_string())?;
+    let mut random = [0u8; 4];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut random).map_err(|_| "no randomness".to_string())?;
+    let tag: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let file = if name.is_empty() { format!("{stamp}-{tag}.{extension}") } else { format!("{stamp}-{tag}-{name}.{extension}") };
+    write_private(&folder, &file, bytes)?;
+    Ok(folder.join(file).to_string_lossy().into_owned())
+}
+
+/// At most `max` bytes, cut at a character boundary.
+fn clip_bytes(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut cut = max;
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}\n…", &text[..cut])
+}
+
+/// A query parameter, percent-decoded (`+` stays a plus).
+fn query_param(query: Option<&str>, name: &str) -> Option<String> {
+    query?
+        .split('&')
+        .find_map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            (key == name).then(|| decode(value)).flatten()
+        })
+        .filter(|v| !v.is_empty())
+}
+
+fn decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = text.get(i + 1..i + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+async fn off_thread(state: Arc<State>, work: impl FnOnce(&State) -> Response<Full<Bytes>> + Send + 'static) -> Response<Full<Bytes>> {
+    tokio::task::spawn_blocking(move || work(&state))
+        .await
+        .unwrap_or_else(|_| reply(StatusCode::INTERNAL_SERVER_ERROR, &serde_json::json!({ "error": "failed" })))
 }
 
 async fn read_json(req: Request<Incoming>) -> Option<serde_json::Value> {
@@ -552,6 +1001,15 @@ fn reply<T: Serialize>(status: StatusCode, value: &T) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
         .header(hyper::header::CONTENT_TYPE, "application/json")
+        .header(hyper::header::CACHE_CONTROL, "no-store")
+        .body(Full::new(Bytes::from(body)))
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+}
+
+fn raw(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(status)
+        .header(hyper::header::CONTENT_TYPE, content_type)
         .header(hyper::header::CACHE_CONTROL, "no-store")
         .body(Full::new(Bytes::from(body)))
         .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
@@ -633,19 +1091,208 @@ mod tests {
         assert!(curl(&["-H", &bearer, "-d", "{\"allow\":true,\"since_ms\":7}", "BASE/v1/sessions/main/0331-ab/permission"]).ends_with("202"));
         assert!(curl(&["-H", &bearer, "-d", "{\"call\":\"toolu_1\"}", "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("400"));
         assert!(curl(&["-H", &bearer, "-d", "{\"call\":\"toolu_1\",\"picks\":[1,0]}", "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("202"));
+        // Several picks and own words; a question answered with nothing is refused.
+        let answers = "{\"call\":\"toolu_2\",\"answers\":[{\"picks\":[0,2]},{\"picks\":[],\"other\":\" lieber so \"}]}";
+        assert!(curl(&["-H", &bearer, "-d", answers, "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("202"));
+        assert!(curl(&["-H", &bearer, "-d", "{\"call\":\"t\",\"answers\":[{\"picks\":[]}]}", "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("400"));
         link.publish_more(Vec::new(), Places { accounts: vec!["main".into()], folders: vec!["/w/fin".into()] });
         assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\",\"folder\":\"/etc\"}", "BASE/v1/sessions"]).ends_with("400"));
         assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\",\"folder\":\"/w/fin\",\"prompt\":\"los\"}", "BASE/v1/sessions"]).ends_with("202"));
+        // Steering: interrupt, compact (typed as the session's command), resume, restart with flags.
+        let control = |body: &str| curl(&["-H", &bearer, "-d", body, "BASE/v1/sessions/main/0331-ab/control"]);
+        for body in ["{\"action\":\"interrupt\"}", "{\"action\":\"compact\"}", "{\"action\":\"resume\"}", "{\"action\":\"restart\",\"flags\":\"--model opus\"}"] {
+            assert!(control(body).ends_with("202"), "{body}");
+        }
+        // Brain's own flags and unknown actions are refused.
+        assert!(control("{\"action\":\"restart\",\"flags\":\"--resume x\"}").ends_with("400"));
+        assert!(control("{\"action\":\"reboot\"}").ends_with("400"));
         let key = SessionKey { account: "main".into(), id: "0331-ab".into() };
         assert_eq!(
             link.take_commands(),
             vec![
                 Command::Reply { key: key.clone(), text: "weiter".into() },
                 Command::Permission { key: key.clone(), allow: true, since_ms: 7 },
-                Command::Answer { key, call: "toolu_1".into(), picks: vec![1, 0] },
+                Command::Answer {
+                    key: key.clone(),
+                    call: "toolu_1".into(),
+                    answers: vec![Picked { picks: vec![1], other: None }, Picked { picks: vec![0], other: None }],
+                },
+                Command::Answer {
+                    key: key.clone(),
+                    call: "toolu_2".into(),
+                    answers: vec![Picked { picks: vec![0, 2], other: None }, Picked { picks: vec![], other: Some("lieber so".into()) }],
+                },
                 Command::Start { account: "main".into(), folder: "/w/fin".into(), prompt: Some("los".into()) },
+                Command::Interrupt { key: key.clone() },
+                Command::Reply { key: key.clone(), text: "/compact".into() },
+                Command::Resume { key: key.clone() },
+                Command::Restart { key, flags: vec!["--model".into(), "opus".into()] },
             ]
         );
+
+        // A read with `wait` answers once the list changed, with its new version.
+        let version = |out: &str| out.lines().find_map(|l| l.strip_prefix("brain-version: ")).map(|v| v.trim().to_string());
+        let first = curl(&["-i", "-H", &bearer, "BASE/v1/sessions"]);
+        let seen = version(&first).expect("a version");
+        let waiting = {
+            let (bearer, seen) = (bearer.clone(), seen.clone());
+            std::thread::spawn(move || {
+                let started = std::time::Instant::now();
+                let out = std::process::Command::new("curl")
+                    .args(["-sk", "-i", "-H", &bearer, &format!("https://127.0.0.1:{port}/v1/sessions?wait={seen}")])
+                    .output()
+                    .unwrap();
+                (started.elapsed(), String::from_utf8(out.stdout).unwrap())
+            })
+        };
+        std::thread::sleep(Duration::from_millis(600));
+        link.publish(Vec::new());
+        let (took, answer) = waiting.join().unwrap();
+        assert!(took >= Duration::from_millis(500) && took < Duration::from_secs(5), "{took:?}");
+        assert_ne!(version(&answer), Some(seen), "{answer}");
+        assert!(answer.trim_end().ends_with("[]"), "{answer}");
+        drop(link);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn attachment_names_become_plain_stems() {
+        assert_eq!(file_stem("Screenshot 2026-10-14 at 15.01.png"), "Screenshot-2026-10-14-at-15-01");
+        assert_eq!(file_stem("../../etc/passwd"), "passwd");
+        assert_eq!(file_stem("ü.jpg"), "");
+        assert_eq!(attachment_extension("image/PNG; charset=binary"), Some("png"));
+        assert_eq!(attachment_extension("application/x-sh"), None);
+    }
+
+    #[test]
+    fn reads_percent_encoded_query_parameters() {
+        assert_eq!(query_param(Some("path=%2Fw%2Fa%20b%2B.txt&x=1"), "path").as_deref(), Some("/w/a b+.txt"));
+        assert_eq!(query_param(Some("path=%zz"), "path"), None);
+        assert_eq!(query_param(Some("path="), "path"), None);
+        assert_eq!(query_param(None, "path"), None);
+    }
+
+    #[test]
+    fn clips_a_diff_at_a_character_boundary() {
+        assert_eq!(clip_bytes("aä", 2), "a\n…");
+        assert_eq!(clip_bytes("ab", 2), "ab");
+    }
+
+    /// Older messages on request, a search through the whole conversation with how far back each
+    /// hit is, and a clipped message in full.
+    #[test]
+    fn pages_searches_and_unclips_a_conversation() {
+        let dir = std::env::temp_dir().join(format!("brain-link-history-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let project = dir.join("claude").join("projects").join("-w");
+        std::fs::create_dir_all(&project).unwrap();
+        let long = "x".repeat(MESSAGE_CHARS + 500);
+        let mut lines: Vec<String> = (0..100)
+            .map(|i| serde_json::json!({ "type": "user", "timestamp": format!("2026-10-14T09:{:02}:{:02}Z", i / 60, i % 60), "message": { "role": "user", "content": format!("Frage {i}") } }).to_string())
+            .collect();
+        lines.push(serde_json::json!({ "type": "assistant", "timestamp": "2026-10-14T10:00:00Z", "message": { "role": "assistant", "content": [{ "type": "text", "text": long }] } }).to_string());
+        std::fs::write(project.join("0331-ab.jsonl"), lines.join("\n")).unwrap();
+
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let link = Link::start_in(dir.join("link"), port, vec![Account { id: "main".into(), config_dir: dir.join("claude") }]).unwrap();
+        let bearer = format!("Authorization: Bearer {}", std::fs::read_to_string(dir.join("link").join("token")).unwrap());
+        let get = |path: &str| {
+            let out = std::process::Command::new("curl")
+                .args(["-sk", "-i", "-H", &bearer, &format!("https://127.0.0.1:{port}/v1/sessions/main/0331-ab/{path}")])
+                .output()
+                .unwrap();
+            let text = String::from_utf8(out.stdout).unwrap();
+            let (head, body) = text.split_once("\r\n\r\n").unwrap();
+            (head.to_lowercase(), serde_json::from_str::<serde_json::Value>(body).unwrap_or_default())
+        };
+
+        let (head, recent) = get("messages");
+        assert_eq!(recent.as_array().unwrap().len(), MESSAGE_LIMIT);
+        assert!(head.contains("brain-more: 1"), "{head}");
+        let last = &recent[MESSAGE_LIMIT - 1];
+        assert_eq!((last["clipped"].as_bool(), last["text"].as_str().unwrap().chars().count()), (Some(true), MESSAGE_CHARS + 1));
+
+        let (head, all) = get("messages?limit=200");
+        assert_eq!(all.as_array().unwrap().len(), 101);
+        assert!(head.contains("brain-more: 0"), "{head}");
+        assert_eq!(all[0]["text"], "Frage 0");
+
+        let (_, hits) = get("search?q=frage%201");
+        let hits = hits.as_array().unwrap();
+        // Frage 1, 10–19: newest first, each with how far back it is.
+        assert_eq!(hits.len(), 11);
+        assert_eq!((hits[0]["text"].as_str(), hits[0]["back"].as_u64()), (Some("Frage 19"), Some(81)));
+        // One letter matches nearly everything: refused.
+        assert_eq!(get("search?q=x").1["error"], "q");
+
+        let ts = last["ts_ms"].as_i64().unwrap();
+        let (_, full) = get(&format!("message?ts={ts}&role=assistant&nth=0"));
+        assert_eq!((full["text"].as_str().map(str::len), full["clipped"].as_bool()), (Some(long.len()), Some(false)));
+        assert_eq!(get(&format!("message?ts={ts}&role=user")).1["error"], "not found");
+        drop(link);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session's files (its git changes and what its transcript touched), one file's diff and
+    /// bytes, nothing outside them; an attachment saved for a reply to name.
+    #[test]
+    fn serves_a_sessions_files_and_takes_attachments() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("brain-link-files-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap().status.success());
+        git(&["init", "-q"]);
+        git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"]);
+        std::fs::write(repo.join("new.txt"), "hallo\n").unwrap();
+        let written = repo.join("new.txt").to_string_lossy().into_owned();
+        let project = dir.join("claude").join("projects").join("-repo");
+        std::fs::create_dir_all(&project).unwrap();
+        let line = serde_json::json!({
+            "type": "assistant", "cwd": repo, "timestamp": "2026-10-14T09:00:00Z",
+            "message": { "role": "assistant", "content": [{ "type": "tool_use", "id": "t1", "name": "Write", "input": { "file_path": written } }] }
+        });
+        std::fs::write(project.join("0331-ab.jsonl"), line.to_string()).unwrap();
+
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let account = Account { id: "main".into(), config_dir: dir.join("claude") };
+        let link = Link::start_in(dir.join("link"), port, vec![account]).unwrap();
+        let token = std::fs::read_to_string(dir.join("link").join("token")).unwrap();
+        let bearer = format!("Authorization: Bearer {token}");
+        let curl = |args: &[&str]| {
+            let mut command = std::process::Command::new("curl");
+            command.args(["-sk", "-o", "-", "-w", "\n%{http_code}", "-H", &bearer]);
+            for arg in args {
+                command.arg(arg.replace("BASE", &format!("https://127.0.0.1:{port}/v1/sessions/main/0331-ab")));
+            }
+            String::from_utf8(command.output().unwrap().stdout).unwrap()
+        };
+
+        let files = curl(&["BASE/files"]);
+        assert!(files.ends_with("200"), "{files}");
+        assert!(files.contains("\"path\":\"new.txt\",\"status\":\"??\"") && files.contains("\"touches\":[\"written\"]"), "{files}");
+        let diff = curl(&["BASE/diff?path=new.txt"]);
+        assert!(diff.ends_with("200") && diff.contains("+hallo"), "{diff}");
+        assert!(curl(&["BASE/diff?path=other.txt"]).ends_with("404"));
+        let encoded: String = written.bytes().map(|b| format!("%{b:02X}")).collect();
+        let file = curl(&[&format!("BASE/file?path={encoded}")]);
+        assert_eq!(file, "hallo\n\n200");
+        assert!(curl(&["BASE/file?path=%2Fetc%2Fhosts"]).ends_with("404"));
+        assert!(curl(&["BASE/file?path=new.txt"]).ends_with("400"));
+
+        assert!(curl(&["-H", "Content-Type: application/x-sh", "--data-binary", "echo", "BASE/attachments"]).ends_with("415"));
+        let saved = curl(&["-H", "Content-Type: image/png", "--data-binary", "PNG!", "BASE/attachments?name=Bild%201.png"]);
+        assert!(saved.ends_with("201"), "{saved}");
+        let body = saved.rsplit_once('\n').unwrap().0;
+        let path = serde_json::from_str::<serde_json::Value>(body).unwrap()["path"].as_str().unwrap().to_string();
+        assert!(path.starts_with(&dir.join("link/inbox/0331-ab").to_string_lossy().into_owned()) && path.ends_with("-Bild-1.png"), "{path}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"PNG!");
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         drop(link);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -665,6 +1312,39 @@ mod tests {
             r#"{"type":"assistant","timestamp":"2026-10-10T09:00:20Z","message":{"role":"assistant","content":[{"type":"text","text":"Mach ich. Ich schaue mir zuerst an, wie die Buchungen gespeichert sind."},{"type":"tool_use","id":"t1","name":"Grep","input":{"pattern":"Booking"}}]}}"#,
             r#"{"type":"assistant","timestamp":"2026-10-10T09:04:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Der Export ist fertig: Datum, Betrag, Konto und Kategorie, UTF-8 mit BOM, damit Excel die Umlaute richtig zeigt. Soll ich ihn auch ins Menü hängen?"}]}}"#,
         ];
+        // Its folder: a git repository with a changed and a new file, for the phone's files view.
+        let repo = dir.join("fin");
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap();
+        git(&["init", "-q"]);
+        std::fs::write(repo.join("src/bookings.rs"), "pub struct Booking {\n    pub amount: i64,\n}\n").unwrap();
+        git(&["add", "."]);
+        git(&["-c", "user.name=demo", "-c", "user.email=demo@demo", "commit", "-q", "-m", "start"]);
+        std::fs::write(repo.join("src/bookings.rs"), "pub struct Booking {\n    pub amount: i64,\n    pub category: String,\n}\n").unwrap();
+        std::fs::write(repo.join("src/export.rs"), "/// CSV, UTF-8 with BOM.\npub fn export() -> String {\n    String::from(\"\\u{feff}date;amount\\n\")\n}\n").unwrap();
+        let tool = |name: &str, file: &str| {
+            serde_json::json!({
+                "type": "assistant", "cwd": repo, "timestamp": "2026-10-10T09:03:00Z",
+                "message": { "role": "assistant", "content": [{ "type": "tool_use", "id": file, "name": name, "input": { "file_path": repo.join(file) } }] }
+            })
+            .to_string()
+        };
+        // An earlier part of the conversation, for loading older messages and searching, and a
+        // report longer than the list shows.
+        let mut older: Vec<String> = (0..60)
+            .flat_map(|i| {
+                let at = format!("2026-10-09T{:02}:{:02}:00Z", 8 + i / 60, i % 60);
+                [
+                    serde_json::json!({ "type": "user", "timestamp": at, "message": { "role": "user", "content": format!("Schritt {i}: prüf die Buchungen von Konto {}", 1000 + i) } }).to_string(),
+                    serde_json::json!({ "type": "assistant", "timestamp": at, "message": { "role": "assistant", "content": [{ "type": "text", "text": format!("Konto {} geprüft, alles stimmt.", 1000 + i) }] } }).to_string(),
+                ]
+            })
+            .collect();
+        let report: String = (1..=120).map(|i| format!("{i}. Buchung {i}: Betrag {},00 €, Kategorie Haushalt\n", i * 7)).collect();
+        older.push(serde_json::json!({ "type": "assistant", "timestamp": "2026-10-09T09:30:00Z", "message": { "role": "assistant", "content": [{ "type": "text", "text": format!("## Bericht\n\n{report}") }] } }).to_string());
+        older.extend([lines[0].to_string(), lines[1].to_string(), tool("Edit", "src/bookings.rs"), tool("Write", "src/export.rs"), lines[2].to_string()]);
+        let lines = older;
         std::fs::write(project.join("0331aa00-1111-2222-3333-444455556666.jsonl"), lines.join("\n")).unwrap();
         // Next to Brain's own port, so it runs while Brain (with Brain Link on) does.
         let port = PORT + 1;
@@ -691,13 +1371,14 @@ mod tests {
                 question: Some(brain_core::qa::OpenQuestion {
                     call: "toolu_demo".into(),
                     items: vec![
-                        brain_core::qa::QuestionItem { question: "Welche Variante soll der Datepicker zuerst bekommen?".into(), options: vec!["Bereich".into(), "Monat".into(), "Woche".into()] },
-                        brain_core::qa::QuestionItem { question: "Mit Tastaturbedienung?".into(), options: vec!["Ja".into(), "Später".into()] },
+                        brain_core::qa::QuestionItem { question: "Welche Variante soll der Datepicker zuerst bekommen?".into(), options: vec!["Bereich".into(), "Monat".into(), "Woche".into()], multi_select: false },
+                        brain_core::qa::QuestionItem { question: "Welche Ansichten brauchst du?".into(), options: vec!["Tag".into(), "Woche".into(), "Monat".into()], multi_select: true },
                     ],
-                    multi_select: false,
+                    multi_select: true,
                 }),
                 ..view("be75a6ae-0000-0000-0000-000000000003", "FUX", "needs_you", "attention", "Claude fragt: Welche Variante zuerst?", 1)
             },
+            view("5e5e0000-0000-0000-0000-000000000005", "Docs", "working", "working", "Schreibt die Anleitung für den Export", 3),
             view("4d4aa5f4-0000-0000-0000-000000000004", "Haushalt", "ended", "ended", "Bank-Import läuft wieder", 180),
         ]);
         let limit = |used: f64, resets_in_h: i64, runs_out_in_h: Option<i64>| LimitView {
@@ -725,6 +1406,19 @@ mod tests {
         for _ in 0..1800 {
             for command in link.take_commands() {
                 println!("COMMAND {command:?}");
+                // A reply to "Finanzen" shows up in its conversation, and Claude answers: what a
+                // phone waiting for news sees within a moment.
+                if let Command::Reply { key, text } = &command {
+                    if key.id == "0331aa00-1111-2222-3333-444455556666" {
+                        let now = chrono::Utc::now().to_rfc3339();
+                        let user = serde_json::json!({ "type": "user", "timestamp": now, "message": { "role": "user", "content": text } });
+                        let claude = serde_json::json!({ "type": "assistant", "timestamp": now, "message": { "role": "assistant", "content": [{ "type": "text", "text": "Alles klar, mach ich." }] } });
+                        let path = project.join("0331aa00-1111-2222-3333-444455556666.jsonl");
+                        let mut transcript = std::fs::read_to_string(&path).unwrap_or_default();
+                        transcript.push_str(&format!("\n{user}\n{claude}"));
+                        std::fs::write(&path, transcript).unwrap();
+                    }
+                }
             }
             std::thread::sleep(Duration::from_millis(500));
         }
