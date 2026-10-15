@@ -13,8 +13,8 @@ use iced::{window, Subscription, Task};
 use crate::config;
 
 mod account;
-mod restart;
-pub use restart::RESTART_FLAGS;
+mod relaunch;
+pub use relaunch::{Relaunch, RELAUNCH_FLAGS};
 mod sync;
 mod link;
 
@@ -70,12 +70,8 @@ pub enum Mode {
     Pairing,
     /// A new Claude account made from the existing ones.
     AccountSetup,
-    /// Which account the selected session moves to (`A` with three accounts or more).
-    MoveTarget,
-    /// Which account the selected session is forked into (`F`).
-    ForkTarget,
-    /// The flags the selected session restarts with.
-    RestartFlags,
+    /// Where and how the selected session goes on: account, fork, flags (`A`, `F`, `I`).
+    Relaunch,
     /// What syncing the accounts would do, and the user's choice where they conflict.
     Sync,
     /// `?`: every key.
@@ -212,11 +208,11 @@ pub enum Action {
     Export,
     /// Continue the selected session in this account (its index among the accounts).
     MoveTo(usize),
-    /// Ask which account the selected session is forked into.
-    Fork,
     /// Fork the selected session into this account; the original goes on.
     ForkTo(usize),
-    /// End the session and go on with extra flags (`--chrome`).
+    /// The "Go on …" dialog, opened for a move (`A`), a fork (`F`) or a restart with flags.
+    Relaunch,
+    Fork,
     RestartWith,
     End,
     Hide,
@@ -360,9 +356,12 @@ pub enum Message {
     SyncKeep(usize),
     SyncApply,
     SyncDone(Result<brain_core::sync::Outcome, String>),
-    /// The restart dialog: the flags typed, and ⏎.
-    RestartFlagsChanged(String),
-    RestartSubmit,
+    /// The "Go on …" dialog: the account picked, whether the original keeps running, the flags
+    /// typed, and ⏎.
+    RelaunchTarget(usize),
+    RelaunchKeep(bool),
+    RelaunchFlags(String),
+    RelaunchSubmit,
     SidebarDrag,
     SidebarTo(f32),
     SidebarDone,
@@ -653,8 +652,8 @@ pub struct Brain {
     pub sync: sync::SyncDialog,
     /// The restart dialog, a session asked to end for a restart, and the flags a terminal about
     /// to start resumes with.
-    pub restart: restart::RestartDialog,
-    pending_restart: Option<restart::PendingRestart>,
+    pub relaunch: relaunch::RelaunchDialog,
+    pending_restart: Option<relaunch::PendingRestart>,
     restart_flags: HashMap<SessionKey, Vec<String>>,
     /// Per session that waits: its transcript's length when read, and the question it asks.
     link_questions: HashMap<SessionKey, (u64, Option<brain_core::qa::OpenQuestion>)>,
@@ -765,7 +764,7 @@ impl Brain {
             account_setup: account::AccountSetup::default(),
             sync: sync::SyncDialog::default(),
             link_questions: HashMap::new(),
-            restart: restart::RestartDialog::default(),
+            relaunch: relaunch::RelaunchDialog::default(),
             pending_restart: None,
             restart_flags: HashMap::new(),
             link: None,
@@ -1306,12 +1305,22 @@ impl Brain {
                 Task::none()
             }
             Message::AccountSetupCreate => self.account_setup_create(),
-            Message::RestartFlagsChanged(flags) => {
-                self.restart.flags = flags;
-                self.restart.error = None;
+            Message::RelaunchTarget(index) => {
+                self.relaunch.target = index;
+                self.relaunch.error = None;
                 Task::none()
             }
-            Message::RestartSubmit => self.submit_restart(),
+            Message::RelaunchKeep(keep) => {
+                self.relaunch.keep = keep;
+                self.relaunch.error = None;
+                Task::none()
+            }
+            Message::RelaunchFlags(flags) => {
+                self.relaunch.flags = flags;
+                self.relaunch.error = None;
+                Task::none()
+            }
+            Message::RelaunchSubmit => self.submit_relaunch(),
             Message::OpenSync => self.open_sync(),
             Message::SyncPlanned(plan) => {
                 self.sync_planned(plan);
@@ -1882,7 +1891,7 @@ impl Brain {
             }
             all.push((t("Umbenennen", "Rename").to_string(), "R", PaletteCommand::Act(Action::StartRename)));
             all.push((t("Anheften / lösen", "Pin / unpin").to_string(), "P", PaletteCommand::Act(Action::Pin)));
-            all.push((t("Stumm / laut", "Mute / unmute").to_string(), "M", PaletteCommand::Act(Action::Mute)));
+            all.push((t("Stumm / laut", "Mute / unmute").to_string(), "", PaletteCommand::Act(Action::Mute)));
             all.push((t("Pausieren", "Snooze").to_string(), "S", PaletteCommand::Act(Action::Snooze)));
             for index in self.move_targets() {
                 let id = self.model.accounts[index].id.clone();
@@ -1892,6 +1901,7 @@ impl Brain {
                 let id = self.model.accounts[index].id.clone();
                 all.push((tr!("In {id} forken", "Fork into {id}"), "", PaletteCommand::Act(Action::ForkTo(index))));
             }
+            all.push((t("Weiterführen … (Konto, Fork, Flags)", "Go on … (account, fork, flags)").to_string(), "A", PaletteCommand::Act(Action::Relaunch)));
             all.push((t("Neu starten mit … (z. B. --chrome)", "Restart with … (e.g. --chrome)").to_string(), "", PaletteCommand::Act(Action::RestartWith)));
             all.push((t("Beenden / Hintergrund-Session stoppen", "End / stop the background session").to_string(), "X", PaletteCommand::Act(Action::End)));
             all.push((t("Ausblenden", "Hide").to_string(), "⌫", PaletteCommand::Act(Action::Hide)));
@@ -2828,22 +2838,20 @@ impl Brain {
                 }
                 return Task::none();
             }
-            Mode::RestartFlags => return Task::none(),
-            Mode::MoveTarget => {
-                // 1, 2, … pick the account in the order the dialog lists them.
-                let digit = character.as_deref().and_then(|c| c.parse::<usize>().ok()).filter(|d| *d >= 1);
-                let target = digit.and_then(|d| self.move_targets().get(d - 1).copied());
-                return match target {
-                    Some(index) => self.perform(Action::MoveTo(index), true),
-                    None => Task::none(),
-                };
-            }
-            Mode::ForkTarget => {
-                let digit = character.as_deref().and_then(|c| c.parse::<usize>().ok()).filter(|d| *d >= 1);
-                return match digit.and_then(|d| self.fork_targets().get(d - 1).copied()) {
-                    Some(index) => self.perform(Action::ForkTo(index), true),
-                    None => Task::none(),
-                };
+            Mode::Relaunch => {
+                match named {
+                    Some(Named::Enter) => return self.submit_relaunch(),
+                    Some(Named::Tab) => self.relaunch.keep = !self.relaunch.keep,
+                    _ => {
+                        // 1, 2, … pick the account in the order the dialog lists them.
+                        let digit = character.as_deref().and_then(|c| c.parse::<usize>().ok()).filter(|d| *d >= 1);
+                        if let Some(index) = digit.map(|d| d - 1).filter(|i| *i < self.model.accounts.len()) {
+                            self.relaunch.target = index;
+                        }
+                    }
+                }
+                self.relaunch.error = None;
+                return Task::none();
             }
             Mode::NewSession => return self.on_new_session_key(named, character.as_deref(), cmd, modifiers.shift()),
             Mode::Reply | Mode::Rename => {
@@ -2934,9 +2942,8 @@ impl Brain {
             "y" => self.answer_permission(true),
             "n" => self.answer_permission(false),
             "p" => self.toggle_pin(),
-            "m" => self.toggle_mute(),
             "s" => self.cycle_snooze(),
-            "a" => return self.move_to_other_account(false),
+            "a" => return self.act(Action::Relaunch),
             "f" => return self.act(Action::Fork),
             "x" => return self.end_selected(false),
             "c" => {
@@ -3003,7 +3010,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::MoveTarget | Mode::ForkTarget | Mode::RestartFlags | Mode::Sync | Mode::Keys => {
+            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys => {
                 self.mode = Mode::Normal;
                 unfocus()
             }
@@ -3129,7 +3136,7 @@ impl Brain {
             }
             Action::Open => self.open_selected(),
             Action::OpenInITerm => self.open_selected(),
-            Action::TakeOver => self.take_over(confirmed),
+            Action::TakeOver => return self.open_relaunch(relaunch::Preset::TakeOver),
             Action::Pin => self.toggle_pin(),
             Action::OpenBeside => {
                 // The terminal that was on screen stays on the left, this one opens beside it.
@@ -3156,25 +3163,11 @@ impl Brain {
             Action::Export => return self.export_selected(),
             Action::Mute => self.toggle_mute(),
             Action::Snooze => self.cycle_snooze(),
-            Action::RestartWith => return self.open_restart_dialog(),
-            Action::MoveTo(index) => {
-                if self.mode == Mode::MoveTarget {
-                    self.mode = Mode::Normal;
-                }
-                return self.move_selected(index, confirmed);
-            }
-            Action::Fork => {
-                if self.selected_session().is_some() {
-                    self.armed = None;
-                    self.mode = Mode::ForkTarget;
-                }
-            }
-            Action::ForkTo(index) => {
-                if self.mode == Mode::ForkTarget {
-                    self.mode = Mode::Normal;
-                }
-                return self.fork_selected(index);
-            }
+            Action::Relaunch => return self.open_relaunch(relaunch::Preset::Move),
+            Action::Fork => return self.open_relaunch(relaunch::Preset::Fork),
+            Action::RestartWith => return self.open_relaunch(relaunch::Preset::Restart),
+            Action::MoveTo(index) => return self.move_selected(index, Vec::new()),
+            Action::ForkTo(index) => return self.fork_selected(index, Vec::new()),
             Action::End => return self.end_selected(confirmed),
             Action::Hide => self.hide_selected(confirmed),
             Action::Trash => self.trash_selected(confirmed),
@@ -3370,9 +3363,17 @@ impl Brain {
         });
     }
 
-    /// `S`: not snoozed → 15 min → 1 h → until tomorrow 9:00 → not snoozed.
+    /// `S`: not snoozed → 15 min → 1 h → until tomorrow 9:00 → until something happens in it
+    /// (hidden, as `⌫ ⌫`) → back.
     fn cycle_snooze(&mut self) {
-        let Some(key) = self.selected.clone() else { return };
+        let Some(session) = self.selected_session() else { return };
+        let key = session.key.clone();
+        if self.prefs.is_hidden(&key, session.last_activity_ms) {
+            self.prefs.unhide(&key);
+            self.prefs.save();
+            self.set_status(t("Wieder da.", "Back."));
+            return;
+        }
         let now = now_ms();
         let tomorrow = (chrono::Local::now() + chrono::Duration::days(1))
             .date_naive()
@@ -3386,7 +3387,13 @@ impl Brain {
             None => Some(quarter),
             Some(until) if until <= quarter + 60_000 => Some(hour),
             Some(until) if until <= hour + 60_000 => tomorrow,
-            Some(_) => None,
+            Some(_) => {
+                self.prefs.snooze(&key, None);
+                self.prefs.hide(&key, now);
+                self.prefs.save();
+                self.set_status(t("Pausiert, bis sich in der Session etwas tut.", "Snoozed until something happens in the session."));
+                return;
+            }
         };
         self.prefs.snooze(&key, next);
         self.prefs.save();
@@ -3468,7 +3475,7 @@ impl Brain {
     /// `F`: the conversation so far goes on as a new background session in the account at
     /// `target_index`, attached in Brain; the original keeps running. Into another account the
     /// transcript is copied first, as for a move.
-    fn fork_selected(&mut self, target_index: usize) -> Task<Message> {
+    pub(super) fn fork_selected(&mut self, target_index: usize, flags: Vec<String>) -> Task<Message> {
         let Some(session) = self.selected_session() else { return Task::none() };
         let (Some(session_id), Some(cwd)) = (session.session_id.clone(), session.cwd.clone()) else {
             self.set_status(t("Zu dieser Session fehlt die ID oder der Ordner.", "This session has no id or folder."));
@@ -3495,34 +3502,18 @@ impl Brain {
             if let Some(transcript) = transcript {
                 brain_core::transcript::copy_to_account(&transcript, &target).map_err(|e| e.to_string())?;
             }
-            brain_core::agents::fork(&target, std::path::Path::new(&cwd), &session_id, name.as_deref())
+            brain_core::agents::fork(&target, std::path::Path::new(&cwd), &session_id, name.as_deref(), &flags)
         });
         Task::perform(forked, move |result| Message::Started(target_id.clone(), result))
     }
 
-    /// `A`: with one other account, `A A` moves there; with more, `A` asks which.
-    fn move_to_other_account(&mut self, confirmed: bool) -> Task<Message> {
-        match self.move_targets().as_slice() {
-            [] => {
-                self.set_status(t("Es gibt kein zweites Konto.", "There is no other account."));
-                Task::none()
-            }
-            [only] => self.move_selected(*only, confirmed),
-            _ => {
-                self.armed = None;
-                self.mode = Mode::MoveTarget;
-                Task::none()
-            }
-        }
-    }
-
-    fn move_selected(&mut self, target_index: usize, confirmed: bool) -> Task<Message> {
+    pub(super) fn move_selected(&mut self, target_index: usize, flags: Vec<String>) -> Task<Message> {
         let Some(key) = self.selected.clone() else { return Task::none() };
-        self.move_session(key, target_index, confirmed)
+        self.move_session(key, target_index, flags)
     }
 
-    /// Continues the session in the account at `target_index`.
-    pub(super) fn move_session(&mut self, key: SessionKey, target_index: usize, confirmed: bool) -> Task<Message> {
+    /// Continues the session in the account at `target_index`, with `flags` for its new start.
+    pub(super) fn move_session(&mut self, key: SessionKey, target_index: usize, flags: Vec<String>) -> Task<Message> {
         let Some(session) = self.model.board.get(&key) else { return Task::none() };
         let Some(target) = self.model.accounts.get(target_index).cloned().filter(|t| t.id != key.account) else {
             self.set_status(t("Es gibt kein zweites Konto.", "There is no other account."));
@@ -3536,15 +3527,6 @@ impl Brain {
         let (session_id, cwd, pid, name) = (session.session_id.clone(), session.cwd.clone(), session.pid, session.name.clone());
         let running_agent = session.agent.clone().filter(|a| a.is_active());
         let in_brain = session.agent.is_some();
-        if !confirmed && !self.arm('a', &key) {
-            let target = target.id.clone();
-            self.set_status(if ended {
-                tr!("Nochmal A setzt die Session in {target} fort.", "Press A again to resume the session in {target}.")
-            } else {
-                tr!("Nochmal A zieht die Session nach {target} um.", "Press A again to move the session to {target}.")
-            });
-            return Task::none();
-        }
         let (Some(session_id), Some(cwd)) = (session_id, cwd) else {
             self.set_status(t("Zu dieser Session fehlt die ID oder der Ordner.", "This session has no id or folder."));
             return Task::none();
@@ -3571,7 +3553,7 @@ impl Brain {
                     brain_core::agents::stop(&source, &agent.id)?;
                 }
                 brain_core::transcript::copy_to_account(&transcript, &target).map_err(|e| e.to_string())?;
-                brain_core::agents::fork(&target, std::path::Path::new(&cwd), &session_id, name.as_deref())
+                brain_core::agents::fork(&target, std::path::Path::new(&cwd), &session_id, name.as_deref(), &flags)
             });
             return Task::perform(moved, move |result| Message::Started(target_id.clone(), result));
         }
@@ -3580,7 +3562,8 @@ impl Brain {
             return Task::none();
         }
         let config_dir = (target.id != "main").then(|| target.config_dir.display().to_string());
-        let outcome = terminal::open_new(&cwd, config_dir.as_deref(), &format!("claude --resume {session_id} --fork-session"));
+        let extra: String = flags.iter().map(|f| format!(" {}", crate::format::shell_quote(f))).collect();
+        let outcome = terminal::open_new(&cwd, config_dir.as_deref(), &format!("claude --resume {session_id} --fork-session{extra}"));
         if !matches!(outcome, Outcome::Done) {
             self.report(outcome, None);
             return Task::none();
@@ -3918,7 +3901,7 @@ impl Brain {
 
     /// `I` twice: moves a session running in an iTerm tab into Brain. Brain sends it `/exit`,
     /// waits until it ended, and continues it in the background under the same id.
-    fn take_over(&mut self, confirmed: bool) {
+    pub(super) fn take_over(&mut self) {
         let Some(session) = self.selected_session() else { return };
         let key = session.key.clone();
         if session.agent.is_some() || self.terminals.contains_key(&key) {
@@ -3928,10 +3911,6 @@ impl Brain {
         let ended = session.phase() == Phase::Ended;
         if !ended && !session.accepts_input() {
             self.set_status(t("Übernehmen geht, sobald die Session auf dich wartet.", "Taking over works once the session waits for you."));
-            return;
-        }
-        if !confirmed && !self.arm('i', &key) {
-            self.set_status(t("Nochmal I holt die Session nach Brain (das iTerm-Tab wird beendet).", "Press I again to move the session into Brain (its iTerm tab ends)."));
             return;
         }
         if self.blocked_in_demo() {

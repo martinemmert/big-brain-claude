@@ -298,7 +298,7 @@ impl Brain {
     /// confirmation.
     fn link_move(&mut self, key: SessionKey, account: &str) -> Task<Message> {
         let Some(index) = self.model.accounts.iter().position(|a| a.id == account) else { return Task::none() };
-        self.move_session(key, index, true)
+        self.move_session(key, index, Vec::new())
     }
 }
 

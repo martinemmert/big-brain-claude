@@ -30,9 +30,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::AccountSetup => account_setup(brain),
         Mode::Sync => sync_accounts(brain),
         Mode::Keys => keys_sheet(brain),
-        Mode::MoveTarget => account_target(brain, false),
-        Mode::ForkTarget => account_target(brain, true),
-        Mode::RestartFlags => restart_flags(brain),
+        Mode::Relaunch => relaunch(brain),
         Mode::NewSession => new_session(brain),
         _ if brain.prefs.layout == Layout::Today => today(brain),
         _ => detail(brain, now),
@@ -223,7 +221,7 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
         open.push((t("Fortsetzen", "Resume").to_string(), "⏎", Action::Resume, false));
         open.push((t("In iTerm fortsetzen", "Resume in iTerm").to_string(), "⌥⏎", Action::OpenInITerm, false));
     } else if caps.focus {
-        open.push((t("Zum Terminal", "Open terminal").to_string(), "⏎", Action::Open, false));
+        open.push((t("Öffnen", "Open").to_string(), "⏎", Action::Open, false));
     }
     if s.agent.is_none() && (ended || s.accepts_input()) {
         open.push((t("Nach Brain holen", "Move into Brain").to_string(), "I", Action::TakeOver, false));
@@ -254,19 +252,14 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
     };
     let mut keep = vec![(pin.to_string(), "P", Action::Pin, false)];
     let mute = if brain.prefs.is_muted(&s.key) { t("Benachrichtigungen an", "Unmute") } else { t("Stummschalten", "Mute") };
-    keep.push((mute.to_string(), "M", Action::Mute, false));
-    if !ended {
-        keep.push((t("Pausieren (15 min → 1 h → morgen)", "Snooze (15 min → 1 h → tomorrow)").to_string(), "S", Action::Snooze, false));
+    keep.push((mute.to_string(), "", Action::Mute, false));
+    let hidden = brain.prefs.is_hidden(&s.key, s.last_activity_ms);
+    if hidden {
+        keep.push((t("Wieder einblenden", "Show again").to_string(), "S", Action::Snooze, false));
+    } else if !ended {
+        keep.push((t("Pausieren (15 min → 1 h → morgen → bis sich etwas tut)", "Snooze (15 min → 1 h → tomorrow → until something happens)").to_string(), "S", Action::Snooze, false));
     }
-    // One line per account it can continue in; `A` is the key when there is only one.
-    let targets = brain.move_targets();
-    for &index in &targets {
-        let id = &brain.model.accounts[index].id;
-        let key = if targets.len() == 1 { "A" } else { "" };
-        keep.push((tr!("In {id} fortsetzen", "Continue in {id}"), key, Action::MoveTo(index), false));
-    }
-    keep.push((t("Forken in …", "Fork into …").to_string(), "F", Action::Fork, false));
-    keep.push((t("Neu starten mit …", "Restart with …").to_string(), "", Action::RestartWith, false));
+    keep.push((t("Weiterführen … (Konto, Fork, Flags)", "Go on … (account, fork, flags)").to_string(), "A", Action::Relaunch, false));
     groups.push(keep);
 
     let mut remove = Vec::new();
@@ -275,8 +268,10 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
     } else if !ended && s.accepts_input() {
         remove.push((t("Beenden", "End").to_string(), "X", Action::End, false));
     }
-    let hidden = brain.prefs.is_hidden(&s.key, s.last_activity_ms);
-    remove.push((if hidden { t("Einblenden", "Show again") } else { t("Ausblenden", "Hide") }.to_string(), "⌫", Action::Hide, false));
+    // A running session is put away with S; an ended one is hidden until something happens.
+    if ended && !hidden {
+        remove.push((t("Ausblenden", "Hide").to_string(), "⌫", Action::Hide, false));
+    }
     if ended || s.agent.as_ref().is_some_and(|a| !a.is_active()) {
         remove.push((t("In den Papierkorb", "Move to Trash").to_string(), "⌘⌫", Action::Trash, true));
     }
@@ -1911,93 +1906,91 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
     .into()
 }
 
-/// "Restart with …": the flags the selected session goes on with.
-fn restart_flags(brain: &Brain) -> Element<'_, Message> {
-    let name = brain.selected_session().map(|s| s.display_name()).unwrap_or_default();
-    let field = text_input("--chrome", &brain.restart.flags)
-        .id(crate::app::RESTART_FLAGS)
-        .on_input(Message::RestartFlagsChanged)
-        .on_submit(Message::RestartSubmit)
-        .padding([8, 12])
-        .size(14)
-        .font(style::MONO)
-        .style(field_style);
-    let mut body = column![
-        dialog_title(tr!("„{name}“ neu starten mit …", "Restart “{name}” with …")),
-        text(t(
-            "Claude nimmt Flags nur beim Start: Die Session endet und läuft mit ihrem ganzen Verlauf weiter – wo sie lief (Hintergrund, Brain oder iTerm). Zum Beispiel --chrome, --model opus, --permission-mode plan.",
-            "Claude takes flags only at start: the session ends and goes on with all of its history, where it ran (background, Brain or iTerm). For example --chrome, --model opus, --permission-mode plan.",
-        ))
-        .size(13)
-        .line_height(1.5)
-        .color(TEXT)
-        .font(UI),
-        field,
-    ]
-    .spacing(14)
-    .max_width(640);
-    if let Some(err) = &brain.restart.error {
-        body = body.push(text(err.clone()).size(12.5).color(CALLS).font(UI));
-    }
-    body = body.push(action(t("Neu starten", "Restart"), "⏎", true, Some(Message::RestartSubmit)));
-    body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
-}
-
-/// `A` with several accounts, or `F`: where the selected session continues or is forked into,
-/// each account with how much of its limits is used, so the one with room is easy to spot.
-fn account_target(brain: &Brain, fork: bool) -> Element<'_, Message> {
-    let name = brain.selected_session().map(|s| s.display_name()).unwrap_or_default();
-    let targets = if fork { brain.fork_targets() } else { brain.move_targets() };
-    let rows = targets.into_iter().enumerate().map(|(nth, index)| {
-        let account = &brain.model.accounts[index];
+/// "Go on …" (`A`, `F`, `I`, "Restart with …"): the account (each with how much of its limits is
+/// used, so the one with room is easy to spot), whether the original keeps running, flags for the
+/// new start, and in one sentence what ⏎ does with that.
+fn relaunch(brain: &Brain) -> Element<'_, Message> {
+    let Some(session) = brain.selected_session() else { return Space::new().into() };
+    let name = session.display_name();
+    let dialog = &brain.relaunch;
+    let own = brain.account_index(&session.key.account);
+    let rows = brain.model.accounts.iter().enumerate().map(|(index, account)| {
         let usage = brain_core::usage::account_limits(&brain.model.usage, &account.id).map(|s| {
             let part = |label: &str, limit: Option<brain_core::usage::Limit>| limit.map(|l| format!("{label} {:.0}%", l.used_percentage));
             [part("5h", s.five_hour), part("7d", s.seven_day)].into_iter().flatten().collect::<Vec<_>>().join("  ·  ")
         });
         let usage = usage.filter(|u| !u.is_empty()).unwrap_or_else(|| t("noch keine Nutzungsdaten", "no usage yet").to_string());
-        let line = row![
-            kbd(format!("{}", nth + 1)),
-            account_badge(&account.id, index),
-            text(account.config_dir.display().to_string()).size(12).color(TEXT_FAINT).font(UI),
-            Space::new().width(Fill),
-            text(usage).size(12.5).color(TEXT_MUTED).font(UI),
-        ]
-        .spacing(10)
-        .align_y(iced::Center)
-        .padding([8, 12]);
-        mouse_area(container(line).style(|_| boxed(SURFACE, LINE, 8.0)))
-            .on_press(Message::MenuPick(if fork { Action::ForkTo(index) } else { Action::MoveTo(index) }))
+        let chosen = index == dialog.target;
+        let mut line = row![kbd(format!("{}", index + 1)), account_badge(&account.id, index)].spacing(10).align_y(iced::Center);
+        if index == own {
+            line = line.push(text(t("ihr Konto", "its account")).size(12).color(TEXT_FAINT).font(UI));
+        }
+        let line = line.push(Space::new().width(Fill)).push(text(usage).size(12.5).color(TEXT_MUTED).font(UI)).padding([8, 12]);
+        let edge = if chosen { WORKING } else { LINE };
+        mouse_area(container(line).style(move |_| boxed(if chosen { RAISED } else { SURFACE }, edge, 8.0)))
+            .on_press(Message::RelaunchTarget(index))
             .interaction(iced::mouse::Interaction::Pointer)
             .into()
     });
-    let (title, intro) = if fork {
-        (
-            tr!("„{name}“ forken in …", "Fork “{name}” into …"),
-            t(
-                "Eine neue Session macht mit dem Verlauf bis jetzt weiter, im Hintergrund und hier in Brain; die Session selbst läuft weiter. 1, 2, … oder klicken; esc bricht ab.",
-                "A new session goes on with the history so far, in the background and here in Brain; the session itself keeps running. 1, 2, … or click; esc cancels.",
+    let original = segmented(vec![
+        (t("Original beenden", "End the original").to_string(), !dialog.keep, Message::RelaunchKeep(false)),
+        (t("Original weiterlaufen lassen (Fork)", "Keep the original running (fork)").to_string(), dialog.keep, Message::RelaunchKeep(true)),
+    ]);
+    let field = text_input(t("Flags, optional: --chrome  --model opus", "Flags, optional: --chrome  --model opus"), &dialog.flags)
+        .id(crate::app::RELAUNCH_FLAGS)
+        .on_input(Message::RelaunchFlags)
+        .on_submit(Message::RelaunchSubmit)
+        .padding([8, 12])
+        .size(13.5)
+        .font(style::MONO)
+        .style(field_style);
+    let target = brain.model.accounts.get(dialog.target).map(|a| a.id.clone()).unwrap_or_default();
+    let (what, ready) = match brain.relaunch_choice() {
+        Ok(app::Relaunch::Fork(_)) => (
+            tr!(
+                "Forkt in {target}: Eine neue Session macht mit dem Verlauf bis jetzt weiter, im Hintergrund und hier in Brain. Das Original läuft weiter.",
+                "Forks into {target}: a new session goes on with the history so far, in the background and here in Brain. The original keeps running."
             ),
-        )
-    } else {
-        (
-            tr!("„{name}“ fortsetzen in …", "Continue “{name}” in …"),
-            t(
-                "Die Session läuft im gewählten Konto weiter, mit ihrem ganzen Verlauf. 1, 2, … oder klicken; esc bricht ab.",
-                "The session goes on in the chosen account, with all of its history. 1, 2, … or click; esc cancels.",
+            true,
+        ),
+        Ok(app::Relaunch::Move(_)) => (
+            tr!(
+                "Zieht nach {target} um: Die Session läuft dort mit ihrem ganzen Verlauf weiter, das Original wird beendet.",
+                "Moves to {target}: the session goes on there with all of its history, the original ends."
             ),
-        )
+            true,
+        ),
+        Ok(app::Relaunch::Restart(flags)) => {
+            let shown = flags.join(" ");
+            (
+                tr!(
+                    "Startet neu mit {shown}: Claude nimmt Flags nur beim Start. Die Session endet und läuft weiter, wo sie lief.",
+                    "Restarts with {shown}: Claude takes flags only at start. The session ends and goes on where it ran."
+                ),
+                true,
+            )
+        }
+        Ok(app::Relaunch::TakeOver) => (
+            t("Holt die Session aus iTerm in Brain: Das iTerm-Tab endet, die Session läuft hier im Hintergrund weiter.", "Moves the session from iTerm into Brain: its iTerm tab ends, the session goes on here in the background.").to_string(),
+            true,
+        ),
+        Err(why) => (why, false),
     };
-    column![
-        dialog_title(title),
-        text(intro)
-        .size(12.5)
-        .color(TEXT_MUTED)
-        .font(UI),
-        column(rows).spacing(8).max_width(620),
+    let mut body = column![
+        dialog_title(tr!("„{name}“ weiterführen", "Go on with “{name}”")),
+        text(t("Konto (1, 2, …)", "Account (1, 2, …)")).size(12).color(TEXT_MUTED).font(style::semibold()),
+        column(rows).spacing(6),
+        row![original, text(t("⇥ wechselt", "⇥ switches")).size(11.5).color(TEXT_FAINT).font(UI)].spacing(10).align_y(iced::Center),
+        field,
+        text(what).size(13).line_height(1.5).color(if ready { TEXT } else { TURN }).font(UI),
     ]
-    .spacing(14)
-    .padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 })
-    .into()
+    .spacing(12)
+    .max_width(640);
+    if let Some(err) = &dialog.error {
+        body = body.push(text(err.clone()).size(12.5).color(CALLS).font(UI));
+    }
+    body = body.push(action(t("Weiterführen", "Go on"), "⏎", true, ready.then_some(Message::RelaunchSubmit)));
+    body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
 }
 
 /// A new Claude account from the existing ones: its name, what it gets from where, and where
@@ -2288,10 +2281,11 @@ fn keys_sheet(_brain: &Brain) -> Element<'_, Message> {
                 ("Y  N", t("Freigabe erlauben · ablehnen", "allow · deny a permission")),
                 ("R", t("umbenennen", "rename")),
                 ("P", t("anheften", "pin")),
-                ("S", t("pausieren", "snooze")),
-                ("⌫ ⌫", t("ausblenden, bis sich etwas tut", "hide until something happens")),
-                ("A", t("in ein anderes Konto umziehen", "move to another account")),
-                ("F", t("in ein Konto forken", "fork into an account")),
+                ("S", t("pausieren: 15 min → 1 h → morgen → bis sich etwas tut", "snooze: 15 min → 1 h → tomorrow → until something happens")),
+                ("⌫ ⌫", t("gleich bis sich etwas tut", "straight to until something happens")),
+                ("A", t("weiterführen: Konto, Fork, Flags", "go on: account, fork, flags")),
+                ("F", t("forken (Original läuft weiter)", "fork (the original keeps running)")),
+                ("I", t("aus iTerm in Brain holen", "move from iTerm into Brain")),
                 ("X X", t("beenden", "end")),
                 ("⌘⌫ ⌘⌫", t("in den Papierkorb", "move to the Trash")),
                 ("⌘E", t("längerer Prompt (Composer)", "longer prompt (composer)")),

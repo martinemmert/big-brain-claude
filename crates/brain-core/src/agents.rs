@@ -138,11 +138,12 @@ pub fn resume_with(account: &Account, cwd: &Path, session_id: &str, name: Option
 
 /// Continues a copy of a session in the background under a new id (`--fork-session`): how a
 /// conversation moves to another account, whose transcript folder it was copied into.
-pub fn fork(account: &Account, cwd: &Path, session_id: &str, name: Option<&str>) -> Result<String, String> {
+pub fn fork(account: &Account, cwd: &Path, session_id: &str, name: Option<&str>, extra: &[String]) -> Result<String, String> {
     let mut args = vec!["--bg", "--resume", session_id, "--fork-session"];
     if let Some(name) = name {
         args.extend(["-n", name]);
     }
+    args.extend(extra.iter().map(String::as_str));
     started(claude(account, &args).current_dir(cwd))
 }
 
