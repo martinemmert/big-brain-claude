@@ -3,12 +3,14 @@
 
 use std::path::{Path, PathBuf};
 
-/// `path` as a folder inside `home` (links resolved), or `None` outside it or when it is no
-/// folder.
+/// `path` as a folder inside `home` (links resolved), or `None` outside it, when it is no folder,
+/// or when it lies in a hidden one (`~/.ssh`, Brain's and Claude's own folders), which nobody
+/// browses to.
 pub fn inside(home: &Path, path: &Path) -> Option<PathBuf> {
     let home = home.canonicalize().ok()?;
     let path = path.canonicalize().ok()?;
-    (path.starts_with(&home) && path.is_dir()).then_some(path)
+    let hidden = path.strip_prefix(&home).ok()?.components().any(|c| c.as_os_str().to_string_lossy().starts_with('.'));
+    (!hidden && path.is_dir()).then_some(path)
 }
 
 /// The folders in `dir` by name, without hidden ones.
@@ -44,5 +46,6 @@ mod tests {
         assert_eq!(inside(&home, &home.join("Work/notes.txt")), None);
         assert_eq!(inside(&home, &home.join("..")), None);
         assert_eq!(inside(&home, &home.join("missing")), None);
+        assert_eq!(inside(&home, &home.join("Work/.git")), None, "nothing hidden");
     }
 }
