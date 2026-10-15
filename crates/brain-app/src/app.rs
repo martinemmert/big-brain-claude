@@ -3290,7 +3290,7 @@ impl Brain {
 
     fn start_rename(&mut self) -> Task<Message> {
         let Some(session) = self.selected_session() else { return Task::none() };
-        if !session.accepts_input() {
+        if !session.waits_for_input() {
             self.set_status(t(
                 "Umbenennen geht nur, wenn die Session fertig ist und auf dich wartet.",
                 "Renaming works only while the session has finished and waits for you.",
@@ -3298,7 +3298,7 @@ impl Brain {
             return Task::none();
         }
         if !self.can_type_into_selected() {
-            self.set_status(t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal."));
+            self.set_status(self.why_brain_cant_type());
             return Task::none();
         }
         self.rename = session.display_name();
@@ -3318,7 +3318,7 @@ impl Brain {
 
     fn start_reply(&mut self) -> Task<Message> {
         let Some(session) = self.selected_session() else { return Task::none() };
-        if !session.accepts_input() {
+        if !session.waits_for_input() {
             self.set_status(t(
                 "Antworten geht, sobald die Session fertig ist und auf dich wartet.",
                 "You can reply once the session has finished and waits for you.",
@@ -3326,7 +3326,7 @@ impl Brain {
             return Task::none();
         }
         if !self.can_type_into_selected() {
-            self.set_status(t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal."));
+            self.set_status(self.why_brain_cant_type());
             return Task::none();
         }
         self.reply.clear();
@@ -3349,7 +3349,7 @@ impl Brain {
     /// terminal in Brain when it runs there, else through the terminal app it runs in.
     fn type_into_selected(&mut self, text: &str, done: String) -> Task<Message> {
         let Some(key) = self.selected.clone() else { return Task::none() };
-        if !self.model.board.get(&key).is_some_and(|s| s.accepts_input()) {
+        if !self.model.board.get(&key).is_some_and(|s| s.waits_for_input()) {
             self.set_status(t("Die Session arbeitet inzwischen wieder – nichts geschickt.", "The session is working again – nothing sent."));
             return Task::none();
         }
@@ -3365,9 +3365,23 @@ impl Brain {
     }
 
     /// Whether Brain can type into the selected session: its terminal in Brain, or a terminal
-    /// app that takes typed text.
+    /// app that takes typed text. A background session has no terminal app: only its terminal
+    /// in Brain takes text.
     fn can_type_into_selected(&self) -> bool {
-        self.selected.as_ref().is_some_and(|k| self.terminals.contains_key(k)) || self.capabilities().type_text
+        let Some(key) = self.selected.as_ref() else { return false };
+        if self.terminals.contains_key(key) {
+            return true;
+        }
+        self.model.board.get(key).is_some_and(|s| s.agent.is_none()) && self.capabilities().type_text
+    }
+
+    /// Why typing into the selected session doesn't work, for the status line.
+    fn why_brain_cant_type(&self) -> &'static str {
+        if self.selected_session().is_some_and(|s| s.agent.is_some()) {
+            t("Öffne die Session zuerst in Brain (⏎), dann tippt Brain in ihr Terminal.", "Open the session in Brain first (⏎), then Brain types into its terminal.")
+        } else {
+            t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal.")
+        }
     }
 
     /// Y / N on an open permission dialog: Return picks its default "Yes", Esc declines.
