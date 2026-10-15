@@ -3778,7 +3778,7 @@ impl Brain {
                 command.push_str(&format!(" --model {}", shell_quote(model)));
             }
             if let Some(prompt) = &prompt {
-                command.push_str(&format!(" {}", shell_quote(prompt)));
+                command.push_str(&format!(" -- {}", shell_quote(prompt)));
             }
             let config_dir = (account.id != "main").then(|| account.config_dir.display().to_string());
             let outcome = terminal::open_new(&folder, config_dir.as_deref(), &command);

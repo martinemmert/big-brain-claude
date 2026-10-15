@@ -114,8 +114,10 @@ pub fn start(account: &Account, cwd: &Path, model: Option<&str>, name: Option<&s
     if let Some(name) = name {
         args.extend(["-n", name]);
     }
+    // After `--` the prompt is never an option, even one that starts with `-` (a task for later,
+    // a prompt from the phone).
     if let Some(prompt) = prompt.filter(|p| !p.trim().is_empty()) {
-        args.push(prompt);
+        args.extend(["--", prompt]);
     }
     started(claude(account, &args).current_dir(cwd))
 }
