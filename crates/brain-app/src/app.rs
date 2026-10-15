@@ -78,6 +78,8 @@ pub enum Mode {
     RestartFlags,
     /// What syncing the accounts would do, and the user's choice where they conflict.
     Sync,
+    /// `?`: every key.
+    Keys,
 }
 
 /// What a line of the command palette does.
@@ -108,6 +110,8 @@ pub enum PaletteCommand {
     SetUpAccount,
     /// Bring the accounts' setup and memory in step.
     SyncAccounts,
+    /// Show every key.
+    Keys,
 }
 
 /// Slash commands the palette offers for the selected session.
@@ -859,15 +863,10 @@ impl Brain {
                 Task::none()
             }
             Message::Reply(text) => {
-                // A digit typed into the empty reply field picks that quick reply.
+                // A digit typed into the empty reply field fills in that quick reply; ⏎ sends it.
+                // Sending right away would answer "4" to Claude's numbered question with a commit.
                 let quick = self.reply.is_empty() && text.len() == 1 && text.chars().all(|c| ('1'..='9').contains(&c));
-                match quick.then(|| config::quick_replies().get(text.parse::<usize>().unwrap_or(1) - 1).cloned()).flatten() {
-                    Some(reply) => {
-                        self.reply = reply;
-                        return self.submit_reply();
-                    }
-                    None => self.reply = text,
-                }
+                self.reply = quick.then(|| config::quick_replies().get(text.parse::<usize>().unwrap_or(1) - 1).cloned()).flatten().unwrap_or(text);
                 Task::none()
             }
             Message::ReplySubmit => self.submit_reply(),
@@ -1860,6 +1859,7 @@ impl Brain {
         all.push((t("iPhone koppeln (Brain Link)", "Pair a phone (Brain Link)").to_string(), "", PaletteCommand::PairPhone));
         all.push((t("Neues Claude-Konto einrichten", "Set up a new Claude account").to_string(), "", PaletteCommand::SetUpAccount));
         all.push((t("Konten abgleichen (Einstellungen, Skills, Gedächtnis)", "Sync accounts (settings, skills, memory)").to_string(), "", PaletteCommand::SyncAccounts));
+        all.push((t("Alle Tasten", "All keys").to_string(), "?", PaletteCommand::Keys));
         all.push((t("Beendete Sessions zeigen / verbergen", "Show / hide ended sessions").to_string(), "E", PaletteCommand::ToggleEnded));
         all.push((t("Nach Projekten gruppieren", "Group by project").to_string(), "G", PaletteCommand::ToggleProjects));
         all.push((t("Heute", "Today").to_string(), "D", PaletteCommand::ToggleToday));
@@ -1913,6 +1913,10 @@ impl Brain {
             }
             PaletteCommand::SetUpAccount => self.open_account_setup(),
             PaletteCommand::SyncAccounts => self.open_sync(),
+            PaletteCommand::Keys => {
+                self.mode = Mode::Keys;
+                Task::none()
+            }
             PaletteCommand::PairPhone => {
                 self.pair_phone();
                 Task::none()
@@ -2767,6 +2771,12 @@ impl Brain {
             }
             Mode::Pairing | Mode::AccountSetup => return Task::none(),
             Mode::Sync => return self.on_sync_key(named, character.as_deref()),
+            Mode::Keys => {
+                if text.as_deref() == Some("?") {
+                    self.mode = Mode::Normal;
+                }
+                return Task::none();
+            }
             Mode::RestartFlags => return Task::none(),
             Mode::MoveTarget => {
                 // 1, 2, … pick the account in the order the dialog lists them.
@@ -2866,6 +2876,10 @@ impl Brain {
         if text.as_deref() == Some("/") {
             return self.start_search();
         }
+        if text.as_deref() == Some("?") {
+            self.mode = Mode::Keys;
+            return Task::none();
+        }
         let Some(character) = character else { return Task::none() };
         match character.as_str() {
             "j" => return self.select_index(&list, next),
@@ -2936,7 +2950,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::MoveTarget | Mode::ForkTarget | Mode::RestartFlags | Mode::Sync => {
+            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::MoveTarget | Mode::ForkTarget | Mode::RestartFlags | Mode::Sync | Mode::Keys => {
                 self.mode = Mode::Normal;
                 unfocus()
             }

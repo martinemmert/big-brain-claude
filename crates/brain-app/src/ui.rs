@@ -29,6 +29,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::Pairing => pairing(brain),
         Mode::AccountSetup => account_setup(brain),
         Mode::Sync => sync_accounts(brain),
+        Mode::Keys => keys_sheet(brain),
         Mode::MoveTarget => account_target(brain, false),
         Mode::ForkTarget => account_target(brain, true),
         Mode::RestartFlags => restart_flags(brain),
@@ -810,12 +811,14 @@ fn session_pane(brain: &Brain, now: i64) -> Element<'_, Message> {
     };
     let phase = s.phase();
     let caps = brain.capabilities();
-    let primary = if s.agent.is_some() {
-        action(t("Öffnen", "Attach"), "⏎", phase == Phase::NeedsYou, Some(Message::Do(Action::Open)))
-    } else if phase == Phase::Ended {
+    // One verb for getting to the session wherever it runs; never the loud button: when the
+    // session waits, the callout's Reply or Allow is the next step.
+    let primary = if phase == Phase::Ended {
         action(t("Fortsetzen", "Resume"), "⏎", false, Some(Message::Do(Action::Resume)))
+    } else if s.agent.is_some() {
+        action(t("Öffnen", "Open"), "⏎", false, Some(Message::Do(Action::Open)))
     } else {
-        action(t("Zum Terminal", "Open terminal"), "⏎", phase == Phase::NeedsYou, caps.focus.then_some(Message::Do(Action::Open)))
+        action(t("Öffnen", "Open"), "⏎", false, caps.focus.then_some(Message::Do(Action::Open)))
     };
 
     let mut header = row![name(brain, s), account_badge(&s.key.account, brain.account_index(&s.key.account))].spacing(10).align_y(iced::Center);
@@ -974,7 +977,8 @@ fn callout<'a>(brain: &'a Brain, s: &'a Session, now: i64, caps: brain_terminal:
             .font(UI)
             .padding([7, 10])
             .style(field_style);
-        body = body.push(row![field, text(t("⏎ senden · esc", "⏎ send · esc")).size(11).color(TEXT_MUTED).font(UI)].spacing(8).align_y(iced::Center));
+        let hint = if brain.reply.is_empty() { t("1–9 übernimmt · ⏎ senden · esc", "1–9 fills in · ⏎ send · esc") } else { t("⏎ senden · esc", "⏎ send · esc") };
+        body = body.push(row![field, text(hint).size(11).color(TEXT_MUTED).font(UI)].spacing(8).align_y(iced::Center));
         if brain.reply.is_empty() {
             let quick = config::quick_replies().into_iter().enumerate().map(|(i, reply)| {
                 container(row![kbd(format!("{}", i + 1)), text(reply).size(12).color(TEXT).font(UI)].spacing(6).align_y(iced::Center))
@@ -990,7 +994,7 @@ fn callout<'a>(brain: &'a Brain, s: &'a Session, now: i64, caps: brain_terminal:
         actions.push(action(t("Erlauben", "Allow"), "Y", true, caps.keys.then_some(Message::Do(Action::Allow))));
         actions.push(action(t("Ablehnen", "Deny"), "N", false, caps.keys.then_some(Message::Do(Action::Deny))));
     } else if s.accepts_input() && brain.mode != Mode::Reply {
-        actions.push(action(t("Antworten", "Reply"), "T", false, caps.type_text.then_some(Message::Do(Action::StartReply))));
+        actions.push(action(t("Antworten", "Reply"), "T", true, caps.type_text.then_some(Message::Do(Action::StartReply))));
     }
     if !actions.is_empty() {
         body = body.push(row(actions).spacing(8));
@@ -2164,36 +2168,36 @@ fn pairing(brain: &Brain) -> Element<'_, Message> {
 
 // ---- footer -----------------------------------------------------------------------
 
+/// The few keys that matter for the selected session right now; everything else is behind ⌘K
+/// and `?`.
+fn footer_hints(brain: &Brain) -> Vec<(&'static str, &'static str)> {
+    if brain.tab == DetailTab::Terminal && brain.selected.as_ref().is_some_and(|k| brain.terminals.contains_key(k)) {
+        return vec![
+            ("⏎ ⌘2", t("ins Terminal", "into terminal")),
+            ("⌘1", t("zur Liste", "to the list")),
+            ("⌘T", t("Shell", "shell")),
+            ("⌘D", t("teilen", "split")),
+        ];
+    }
+    let mut hints = vec![("↑↓", t("wählen", "select"))];
+    match brain.selected_session() {
+        None => hints.push(("⌘N", t("neue Session", "new session"))),
+        Some(s) if s.phase() == Phase::Ended => hints.push(("⏎", t("fortsetzen", "resume"))),
+        Some(s) => {
+            if s.awaiting_permission() {
+                hints.push(("Y N", t("erlauben · ablehnen", "allow · deny")));
+            } else if s.accepts_input() {
+                hints.push(("T", t("antworten", "reply")));
+            }
+            hints.push(("⏎", t("öffnen", "open")));
+        }
+    }
+    hints.push(("/", t("suchen", "search")));
+    hints
+}
+
 fn footer(brain: &Brain) -> Element<'_, Message> {
-    let terminal_hints: [(&str, &str); 10] = [
-        ("⏎ ⌘2", t("ins Terminal", "into terminal")),
-        ("⌘1", t("zur Liste", "to the list")),
-        ("⌘K", t("Befehle", "commands")),
-        ("⌘E", t("Composer", "composer")),
-        ("⌘T", t("Shell", "shell")),
-        ("⌘D", t("teilen", "split")),
-        ("⌘-Klick", t("Pfad öffnen", "open path")),
-        ("⌘V", t("Screenshot einfügen", "paste screenshot")),
-        ("⌥⏎", t("in iTerm", "in iTerm")),
-        ("I", t("nach Brain holen", "move into Brain")),
-    ];
-    let hints: [(&str, &str); 10] = [
-        ("↑↓", t("wählen", "select")),
-        ("⏎", t("öffnen", "open")),
-        ("/", t("suchen", "search")),
-        ("T", t("antworten", "reply")),
-        ("Y N", t("Freigabe", "permission")),
-        ("R", t("umbenennen", "rename")),
-        ("P M S", t("anheften · stumm · pausieren", "pin · mute · snooze")),
-        ("G", t("Projekte", "projects")),
-        ("X A", t("beenden · Konto", "end · account")),
-        ("⌫ C", t("ausblenden · aufräumen", "hide · clean up")),
-    ];
-    let shown: Vec<(&str, &str)> = if brain.tab == DetailTab::Terminal && brain.selected.as_ref().is_some_and(|k| brain.terminals.contains_key(k)) {
-        terminal_hints.to_vec()
-    } else {
-        hints.to_vec()
-    };
+    let shown = footer_hints(brain);
     // A status message takes the whole footer while it shows: the hints would push it off the
     // edge, and "press again" prompts must not be missed.
     if let Some((message, _)) = &brain.status {
@@ -2216,8 +2220,79 @@ fn footer(brain: &Brain) -> Element<'_, Message> {
             })
             .into();
     }
-    let bar = row(shown.into_iter().map(|(key, label)| row![kbd(key), text(label).size(11.5).color(TEXT_FAINT).font(UI)].spacing(5).align_y(iced::Center).into()))
-        .spacing(12)
-        .align_y(iced::Center);
+    let hint = |(key, label): (&'static str, &'static str)| -> Element<'_, Message> {
+        row![kbd(key), text(label).size(11.5).color(TEXT_FAINT).font(UI)].spacing(5).align_y(iced::Center).into()
+    };
+    let always = [("⌘K", t("Befehle", "commands")), ("?", t("alle Tasten", "all keys"))];
+    let bar = row![
+        row(shown.into_iter().map(hint)).spacing(12).align_y(iced::Center),
+        Space::new().width(Fill),
+        row(always.into_iter().map(hint)).spacing(12).align_y(iced::Center),
+    ]
+    .align_y(iced::Center);
     container(bar).height(32).padding([0, 14]).center_y(32).width(Fill).clip(true).style(|_| style::fill(CHROME)).into()
+}
+
+/// `?`: every key, by what it acts on. The footer only shows the few the moment needs.
+fn keys_sheet(_brain: &Brain) -> Element<'_, Message> {
+    let groups: [(&str, Vec<(&str, &str)>); 3] = [
+        (
+            t("Liste", "List"),
+            vec![
+                ("↑↓  j k", t("wählen", "select")),
+                ("1–9", t("n-te Session öffnen", "open the n-th session")),
+                ("⏎", t("öffnen (beendete: fortsetzen)", "open (ended: resume)")),
+                ("⌥⏎", t("in iTerm öffnen", "open in iTerm")),
+                ("/", t("Liste durchsuchen", "search the list")),
+                ("⇥", t("Konto-Filter", "account filter")),
+                ("G", t("nach Projekt gruppieren", "group by project")),
+                ("D", t("Heute", "today")),
+                ("C", t("aufräumen", "clean up")),
+                ("⌘N", t("neue Session", "new session")),
+            ],
+        ),
+        (
+            t("Session", "Session"),
+            vec![
+                ("T", t("antworten (1–9 übernimmt eine Schnellantwort)", "reply (1–9 fills in a quick reply)")),
+                ("Y  N", t("Freigabe erlauben · ablehnen", "allow · deny a permission")),
+                ("R", t("umbenennen", "rename")),
+                ("P", t("anheften", "pin")),
+                ("S", t("pausieren", "snooze")),
+                ("⌫ ⌫", t("ausblenden, bis sich etwas tut", "hide until something happens")),
+                ("A", t("in ein anderes Konto umziehen", "move to another account")),
+                ("F", t("in ein Konto forken", "fork into an account")),
+                ("X X", t("beenden", "end")),
+                ("⌘⌫ ⌘⌫", t("in den Papierkorb", "move to the Trash")),
+                ("⌘E", t("längerer Prompt (Composer)", "longer prompt (composer)")),
+                ("⌘F", t("im ganzen Gespräch suchen", "find in the whole conversation")),
+                ("⌘⇧C", t("letzte Antwort kopieren", "copy the last answer")),
+            ],
+        ),
+        (
+            t("Ansicht und Terminal", "View and terminal"),
+            vec![
+                ("← →", t("Tabs wechseln", "switch tabs")),
+                ("⌘2  ⌘J", t("Tastatur ins Terminal", "keyboard into the terminal")),
+                ("⌘1  ⌘[", t("zurück zur Liste", "back to the list")),
+                ("⌘T", t("Shell im Projektordner", "shell in the project folder")),
+                ("⌘D", t("Terminal teilen", "split the terminal")),
+                ("⌘⇧A", t("alle Terminals im Überblick", "all terminals at a glance")),
+                ("⌘-Klick", t("Pfad oder Link öffnen", "open a path or link")),
+                ("⌘V", t("Screenshot ins Terminal", "paste a screenshot")),
+                ("⌘K", t("Befehle", "commands")),
+                ("esc", t("schließen", "close")),
+            ],
+        ),
+    ];
+    let columns = groups.into_iter().map(|(title, keys)| {
+        let lines = keys.into_iter().map(|(key, label)| {
+            row![container(kbd(key)).width(76), text(label).size(12.5).color(TEXT).font(UI)].spacing(10).align_y(iced::Center).into()
+        });
+        column![text(title).size(12).color(TEXT_MUTED).font(style::semibold()), column(lines).spacing(7)].spacing(10).width(Fill).into()
+    });
+    column![dialog_title(t("Tasten", "Keys")), scrollable(row(columns).spacing(28)).height(Fill).style(scrollbar)]
+        .spacing(18)
+        .padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 })
+        .into()
 }
