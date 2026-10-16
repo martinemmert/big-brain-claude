@@ -593,6 +593,9 @@ pub struct Brain {
     /// `A`, `X`, `⌫` or `⌘⌫` was pressed once on this session: a second press within 5 s acts.
     armed: Option<(char, SessionKey, Instant)>,
     armed_path: Option<(String, SessionKey, Instant)>,
+    /// Sessions a move just started for: until the board lists them as moved, a second move
+    /// (a double tap on the phone) would fork them into the target twice.
+    moving: HashMap<SessionKey, Instant>,
     /// The session whose context menu is open, and where it opens.
     pub context_menu: Option<(SessionKey, iced::Point)>,
     /// The session selected before a right click selected another one: "open beside" keeps it.
@@ -740,6 +743,7 @@ impl Brain {
             new_session: NewSession::default(),
             armed: None,
             armed_path: None,
+            moving: HashMap::new(),
             context_menu: None,
             before_menu: None,
             pointer: iced::Point::ORIGIN,
@@ -3538,6 +3542,9 @@ impl Brain {
             return Task::none();
         };
         let ended = session.phase() == Phase::Ended;
+        if self.moving.get(&key).is_some_and(|at| at.elapsed() < MOVE_SETTLE) {
+            return Task::none();
+        }
         if !movable(session) {
             self.set_status(t("Umziehen geht, sobald die Session fertig ist und auf dich wartet.", "Moving works once the session has finished and waits for you."));
             return Task::none();
@@ -3545,6 +3552,10 @@ impl Brain {
         let (session_id, cwd, pid, name) = (session.session_id.clone(), session.cwd.clone(), session.pid, session.name.clone());
         let running_agent = session.agent.clone().filter(|a| a.is_active());
         let in_brain = session.agent.is_some();
+        // A phone's move (confirmed) takes the Mac's pending `A` for this session with it.
+        if confirmed && self.armed.as_ref().is_some_and(|(_, k, _)| *k == key) {
+            self.armed = None;
+        }
         if !confirmed && !self.arm('a', &key) {
             let target = target.id.clone();
             self.set_status(if ended {
@@ -3562,6 +3573,7 @@ impl Brain {
             return Task::none();
         }
         let Some(source) = self.model.account(&key.account).cloned() else { return Task::none() };
+        self.moving.insert(key.clone(), Instant::now());
         // A folder trusted there is trusted here: the moved session doesn't stop at the question.
         let _ = brain_core::account_setup::carry_trust(&source, &target, &brain_core::account::home_dir(), &cwd);
         let Some(transcript) = brain_core::transcript::find_transcript(&source, &session_id) else {
@@ -4139,6 +4151,9 @@ fn restore_saved(model: &mut Model, prefs: &Prefs) {
         model.board.add_ended(key, cwd, insight, modified);
     }
 }
+
+/// How long a session just moved counts as moving, until the board has caught up.
+const MOVE_SETTLE: Duration = Duration::from_secs(30);
 
 /// Whether the session can move to another account now. One that runs in Brain is stopped, so
 /// it only must not be mid-turn; one in iTerm gets `/exit` typed, so its prompt box must be
