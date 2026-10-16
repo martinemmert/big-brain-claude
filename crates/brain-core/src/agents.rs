@@ -172,13 +172,14 @@ pub fn start_team(account: &Account, cwd: &Path, options: &Start) -> Result<Stri
 /// The panes of Brain's team sessions in tmux: the pid of the program each runs (Claude) and
 /// the tmux session's name. Empty without tmux or without such sessions.
 pub fn team_panes() -> std::collections::HashMap<u32, String> {
-    let Ok(out) = Command::new("tmux").args(["list-panes", "-a", "-F", "#{session_name}\t#{pane_pid}"]).output() else {
+    // A space between them: tmux writes a tab in a format out escaped. Brain's names have none.
+    let Ok(out) = Command::new("tmux").args(["list-panes", "-a", "-F", "#{session_name} #{pane_pid}"]).output() else {
         return Default::default();
     };
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|line| {
-            let (session, pid) = line.split_once('\t')?;
+            let (session, pid) = line.rsplit_once(' ')?;
             session.starts_with(TEAM_TMUX_PREFIX).then(|| Some((pid.trim().parse().ok()?, session.to_string()))).flatten()
         })
         .collect()
