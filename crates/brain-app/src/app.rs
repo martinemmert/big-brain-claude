@@ -461,7 +461,8 @@ pub enum Item<'a> {
     /// `action`: a link at the section's right edge and what it sends.
     Section { title: String, count: usize, alert: bool, action: Option<Box<(String, Message)>> },
     Hint(String),
-    /// A session that asks something. `options`: how many option buttons the card has.
+    /// A session that asks something. `options`: how many option buttons the card has (for a
+    /// permission: 1 when it shows the command).
     Decide { s: &'a Session, nav: usize, ask: Ask, options: usize },
     /// A finished session to read.
     Report(&'a Session, usize),
@@ -480,6 +481,8 @@ pub const CARD_H: f32 = 88.0;
 pub const BUTTONS_H: f32 = 34.0;
 /// One option button of an AskUserQuestion card.
 pub const OPTION_H: f32 = 32.0;
+/// The line with the tool and command a permission card asks about.
+pub const CMD_H: f32 = 31.0;
 pub const REPORT_H: f32 = 72.0;
 /// The line under a maybe-question that says why it is listed.
 pub const WHY_H: f32 = 18.0;
@@ -494,7 +497,7 @@ impl Item<'_> {
             Item::Section { .. } => SECTION_H,
             Item::Hint(_) => HINT_H,
             Item::Decide { ask, options, .. } => match ask {
-                Ask::Permission => CARD_H + BUTTONS_H,
+                Ask::Permission => CARD_H + *options as f32 * CMD_H + BUTTONS_H,
                 Ask::Maybe => CARD_H + WHY_H + BUTTONS_H,
                 Ask::Options => CARD_H + *options as f32 * OPTION_H,
                 Ask::Question => CARD_H,
@@ -2582,6 +2585,7 @@ impl Brain {
         for (s, ask) in &groups.decide {
             let options = match ask {
                 Ask::Options => self.question_buttons(&s.key),
+                Ask::Permission => usize::from(s.insight.tool.is_some()),
                 _ => 0,
             };
             items.push(Item::Decide { s, nav: next(), ask: *ask, options });

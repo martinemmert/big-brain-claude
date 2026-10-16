@@ -211,6 +211,9 @@ pub struct Insight {
     pub asks: bool,
     /// The last sentence of that reply: a request or a question stands there, not in its start.
     pub closing: Option<String>,
+    /// The tool call the last reply ended with, tool and argument in one line, until a result
+    /// or a prompt follows: what a permission dialog would allow.
+    pub tool: Option<String>,
 }
 
 impl Insight {
@@ -290,12 +293,14 @@ pub fn insight(transcript: &Path) -> Insight {
                 if user_texts(&entry).next().is_some() {
                     out.asks = false;
                 }
+                out.tool = None;
             }
             "assistant" => {
                 if let Some(ts) = ts {
                     out.turn = Some((Turn::Working, ts));
                 }
                 let message = entry.get("message");
+                out.tool = last_tool(message);
                 if let Some(text) = last_text(message) {
                     out.asks = ends_with_question(text);
                     out.closing = last_sentence(text);
@@ -319,6 +324,15 @@ pub fn insight(transcript: &Path) -> Insight {
         }
     }
     out
+}
+
+/// The last tool call of an assistant message as "Tool: argument".
+fn last_tool(message: Option<&Value>) -> Option<String> {
+    let blocks = message.and_then(|m| m.get("content")).and_then(Value::as_array)?;
+    let block = blocks.iter().rev().find(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))?;
+    let name = block.get("name")?.as_str()?;
+    let summary = tool_summary(name, block.get("input").unwrap_or(&Value::Null));
+    Some(if summary.is_empty() { name.to_string() } else { format!("{name}: {summary}") })
 }
 
 /// The last text block of an assistant message.
@@ -535,6 +549,16 @@ mod tests {
         assert!(!insight(&path).asks);
         let (_dir, path) = transcript(&[&reply("Fertig.")]);
         assert!(!insight(&path).asks);
+    }
+
+    #[test]
+    fn a_tool_call_stays_until_its_result_comes() {
+        let call = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"git push\n  --force-with-lease"}}]},"timestamp":"2026-10-02T14:00:05Z"}"#;
+        let result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]},"timestamp":"2026-10-02T14:00:09Z"}"#;
+        let (_dir, path) = transcript(&[call]);
+        assert_eq!(insight(&path).tool.as_deref(), Some("Bash: git push --force-with-lease"));
+        let (_dir, path) = transcript(&[call, result]);
+        assert_eq!(insight(&path).tool, None);
     }
 
     #[test]

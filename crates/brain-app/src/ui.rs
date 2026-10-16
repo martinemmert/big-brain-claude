@@ -582,6 +582,15 @@ fn card<'a>(brain: &'a Brain, s: &'a Session, ask: Ask, now: i64) -> Element<'a,
     let mut body = column![meta, text(clip(&headline, 100)).size(14).line_height(1.4).color(question_color).font(question_font)].spacing(7);
     match ask {
         Ask::Permission => {
+            if let Some(tool) = &s.insight.tool {
+                body = body.push(
+                    container(text(clip(tool, 70)).size(11.5).color(style::CODE).font(MONO).wrapping(text::Wrapping::None))
+                        .padding([5, 8])
+                        .width(Fill)
+                        .clip(true)
+                        .style(|_| boxed(INK, LINE, 6.0)),
+                );
+            }
             let allow = Message::Steer(Command::Permission { key: s.key.clone(), allow: true, since_ms: s.phase_since_ms() });
             let deny = Message::Steer(Command::Permission { key: s.key.clone(), allow: false, since_ms: s.phase_since_ms() });
             body = body.push(row![action(t("Erlauben", "Allow"), key_cap("Y"), true, Some(allow)), action(t("Ablehnen", "Deny"), key_cap("N"), false, Some(deny))].spacing(6));
@@ -622,7 +631,11 @@ fn card<'a>(brain: &'a Brain, s: &'a Session, ask: Ask, now: i64) -> Element<'a,
             );
         }
     }
-    let height = Item::Decide { s, nav: 0, ask, options: if ask == Ask::Options { brain.question_buttons(&s.key) } else { 0 } }.height();
+    let height = Item::Decide { s, nav: 0, ask, options: match ask {
+        Ask::Options => brain.question_buttons(&s.key),
+        Ask::Permission => usize::from(s.insight.tool.is_some()),
+        _ => 0,
+    } }.height();
     let background = if selected { RAISED } else if hovered { style::HOVER } else if maybe { Color::TRANSPARENT } else { SURFACE };
     let edge = match (selected, maybe) {
         (true, _) => alpha(color, 0x77),

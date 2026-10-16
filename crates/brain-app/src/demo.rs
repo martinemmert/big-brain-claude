@@ -227,6 +227,7 @@ pub fn build() -> Demo {
                 turn: None,
                 asks: false,
                 closing: None,
+                tool: None,
                 model: Some(model.into()),
                 context_tokens: Some(tokens),
                 permission_mode: Some(mode.into()),
