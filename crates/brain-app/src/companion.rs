@@ -1410,8 +1410,7 @@ mod tests {
         let port = probe.local_addr().unwrap().port();
         drop(probe);
         let account = Account { id: "main".into(), config_dir: dir.join("claude") };
-        let second = Account { id: "second".into(), config_dir: dir.join("claude-second") };
-        let link = Link::start_in(dir.join("link"), port, vec![account, second]).unwrap();
+        let link = Link::start_in(dir.join("link"), port, vec![account]).unwrap();
         let token = std::fs::read_to_string(dir.join("link").join("token")).unwrap();
         let bearer = format!("Authorization: Bearer {token}");
         let curl = |args: &[&str]| {
@@ -1498,7 +1497,8 @@ mod tests {
         std::fs::write(project.join("0331aa00-1111-2222-3333-444455556666.jsonl"), lines.join("\n")).unwrap();
         // Next to Brain's own port, so it runs while Brain (with Brain Link on) does.
         let port = PORT + 1;
-        let link = Link::start_in(dir.join("link"), port, vec![account]).unwrap();
+        let second = Account { id: "second".into(), config_dir: dir.join("claude-second") };
+        let link = Link::start_in(dir.join("link"), port, vec![account, second]).unwrap();
         let now = chrono::Utc::now().timestamp_millis();
         let view = |id: &str, name: &str, phase: &'static str, group: &'static str, headline: &str, minutes: i64| View {
             account: "main".into(),
