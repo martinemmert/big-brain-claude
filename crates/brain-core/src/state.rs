@@ -20,6 +20,19 @@ pub enum Phase {
     Ended,
 }
 
+/// What a session asks of the user. The order of the variants is the order on the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Ask {
+    /// A permission dialog is open.
+    Permission,
+    /// An AskUserQuestion with options waits for its answer.
+    Options,
+    /// Claude reported `brain report --waiting`.
+    Question,
+    /// The turn ended with a question mark. Only a guess: quiet, no count.
+    Maybe,
+}
+
 /// Turn state as observed by a hook or by Claude Code's own session file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Signal {
@@ -180,6 +193,23 @@ impl Session {
         self.asked.as_ref()
     }
 
+    /// What the session asks of the user, if anything. `open_question` says whether its
+    /// AskUserQuestion is still unanswered; only the transcript tells ([`crate::qa::answered`]).
+    pub fn ask(&self, open_question: bool) -> Option<Ask> {
+        let phase = self.phase();
+        if open_question {
+            Some(Ask::Options)
+        } else if self.awaiting_permission() {
+            Some(Ask::Permission)
+        } else if phase == Phase::NeedsYou && self.question.is_some() {
+            Some(Ask::Question)
+        } else if phase == Phase::YourTurn && self.insight.asks {
+            Some(Ask::Maybe)
+        } else {
+            None
+        }
+    }
+
     pub fn phase(&self) -> Phase {
         // A background session's state comes from `claude agents`, which knows it best.
         if let Some(agent) = &self.agent {
@@ -187,7 +217,6 @@ impl Session {
             // when the turn ended, so an idle process falls through to the usual rules.
             let process_idle = matches!(self.current_signal(), Some((Signal::Idle | Signal::Waiting, _)));
             match agent.state.as_str() {
-                "blocked" => return Phase::NeedsYou,
                 "idle" => return Phase::YourTurn,
                 "starting" | "running" | "working" if !process_idle => return Phase::Working,
                 // With its process still there it waits for the next prompt: the usual rules
@@ -773,7 +802,7 @@ mod tests {
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::YourTurn, "an idle process beats a late 'working'");
         board.apply_session_file("second", &file("busy", 20), true);
                 board.set_agents("second", &[agent("blocked")]);
-        assert_eq!(board.get(&key()).unwrap().phase(), Phase::NeedsYou);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::Working);
         assert!(!board.get(&key()).unwrap().accepts_input());
         board.set_agents("second", &[agent("failed")]);
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::Ended);
@@ -786,6 +815,48 @@ mod tests {
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::YourTurn);
         board.set_agents("second", &[agent("done")]);
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::Ended);
+    }
+
+    #[test]
+    fn a_blocked_background_session_is_only_as_urgent_as_its_status_file_says() {
+        let agent = BackgroundAgent {
+            id: "s1".into(),
+            session_id: "s1".into(),
+            name: None,
+            cwd: None,
+            state: "blocked".into(),
+            started_ms: Some(0),
+            pid: None,
+        };
+        let mut board = Board::default();
+        board.apply_session_file("second", &file("idle", 0), true);
+        board.set_agents("second", &[agent.clone()]);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::YourTurn);
+        board.apply_session_file("second", &file("waiting", 5), true);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::NeedsYou);
+    }
+
+    #[test]
+    fn each_signal_makes_its_own_kind_of_ask() {
+        let mut board = Board::default();
+        board.apply_event(&ev(0, Source::Hook, Kind::Prompt, None));
+        board.apply_event(&ev(5, Source::Hook, Kind::Stop, Some("Fertig. Weiter?")));
+        board.apply_insight(&key(), Insight { asks: true, ..Insight::default() });
+        assert_eq!(board.get(&key()).unwrap().ask(false), Some(Ask::Maybe));
+        assert_eq!(board.get(&key()).unwrap().ask(true), Some(Ask::Options));
+
+        board.apply_event(&ev(10, Source::Hook, Kind::Prompt, None));
+        board.apply_event(&ev(11, Source::Hook, Kind::Permission, Some("Bash?")));
+        board.apply_session_file("second", &file("waiting", 11), true);
+        assert_eq!(board.get(&key()).unwrap().ask(false), Some(Ask::Permission));
+
+        board.apply_event(&ev(20, Source::Hook, Kind::Prompt, None));
+        board.apply_event(&ev(21, Source::Report, Kind::Waiting, Some("Postgres?")));
+        board.apply_event(&ev(22, Source::Hook, Kind::Stop, None));
+        board.apply_session_file("second", &file("idle", 22), true);
+        // The question mark of the reply is only a guess next to an explicit report.
+        assert_eq!(board.get(&key()).unwrap().ask(false), Some(Ask::Question));
+        assert!(Ask::Permission < Ask::Options && Ask::Options < Ask::Question && Ask::Question < Ask::Maybe);
     }
 
     #[test]

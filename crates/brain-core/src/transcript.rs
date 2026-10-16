@@ -207,6 +207,8 @@ pub struct Insight {
     /// How the session was started: `cli` (a terminal), `claude-desktop`, or `sdk-py`,
     /// `sdk-ts`, `sdk-cli` for sessions a program started (reviews, `claude -p` scripts).
     pub entrypoint: Option<String>,
+    /// The last reply of the turn ends with a question mark.
+    pub asks: bool,
 }
 
 impl Insight {
@@ -283,12 +285,18 @@ pub fn insight(transcript: &Path) -> Insight {
                     Turn::Working
                 };
                 out.turn = Some((state, ts));
+                if user_texts(&entry).next().is_some() {
+                    out.asks = false;
+                }
             }
             "assistant" => {
                 if let Some(ts) = ts {
                     out.turn = Some((Turn::Working, ts));
                 }
                 let message = entry.get("message");
+                if let Some(text) = last_text(message) {
+                    out.asks = ends_with_question(text);
+                }
                 if let Some(model) = message.and_then(|m| m.get("model")).and_then(Value::as_str) {
                     out.model = Some(model.to_string());
                 }
@@ -308,6 +316,22 @@ pub fn insight(transcript: &Path) -> Insight {
         }
     }
     out
+}
+
+/// The last text block of an assistant message.
+fn last_text(message: Option<&Value>) -> Option<&str> {
+    let blocks = message.and_then(|m| m.get("content")).and_then(Value::as_array)?;
+    blocks
+        .iter()
+        .rev()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+        .find_map(|b| b.get("text").and_then(Value::as_str).filter(|t| !t.trim().is_empty()))
+}
+
+/// Whether a reply ends with `?`, ignoring trailing whitespace, emphasis marks, brackets and quotes.
+fn ends_with_question(text: &str) -> bool {
+    text.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '*' | '_' | '`' | ')' | '"' | '”' | '»'))
+        .ends_with('?')
 }
 
 /// File paths of the editing tool calls in an assistant message.
@@ -475,6 +499,22 @@ mod tests {
         let path = dir.path().join("s.jsonl");
         std::fs::write(&path, lines.join("\n")).unwrap();
         (dir, path)
+    }
+
+    #[test]
+    fn a_reply_ending_in_a_question_mark_asks_until_the_next_prompt() {
+        let reply = |text: &str| {
+            format!(
+                r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"{text}"}}]}},"timestamp":"2026-10-02T14:00:05Z"}}"#
+            )
+        };
+        let prompt = r#"{"type":"user","message":{"role":"user","content":"Ja"},"timestamp":"2026-10-02T14:01:00Z"}"#;
+        let (_dir, path) = transcript(&[&reply("Fertig. **Soll ich weitermachen?**")]);
+        assert!(insight(&path).asks);
+        let (_dir, path) = transcript(&[&reply("Soll ich weitermachen?"), prompt]);
+        assert!(!insight(&path).asks);
+        let (_dir, path) = transcript(&[&reply("Fertig.")]);
+        assert!(!insight(&path).asks);
     }
 
     #[test]
