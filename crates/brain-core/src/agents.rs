@@ -163,6 +163,9 @@ pub fn start_team(account: &Account, cwd: &Path, options: &Start) -> Result<Stri
     command.arg("claude").args(start_args(options));
     let out = command.output().map_err(|e| e.to_string())?;
     if out.status.success() {
+        // The largest client sizes the window: Brain's terminal joins it hidden too (for a reply
+        // from the phone), and a hidden one is tiny.
+        let _ = Command::new("tmux").args(["set-window-option", "-t", &name, "window-size", "largest"]).output();
         Ok(name)
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
