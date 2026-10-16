@@ -292,6 +292,12 @@ impl Session {
         }
     }
 
+    /// What a finished session says last: its own report, else the last sentence of its reply
+    /// (a request stands there), else the headline.
+    pub fn closing_line(&self) -> Option<String> {
+        self.done.clone().or_else(|| self.insight.closing.clone()).or_else(|| self.headline())
+    }
+
     /// Subagents, shells, monitors … the last turn left running.
     pub fn background_tasks(&self) -> &[BackgroundTask] {
         &self.background

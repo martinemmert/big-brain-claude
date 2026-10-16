@@ -209,6 +209,8 @@ pub struct Insight {
     pub entrypoint: Option<String>,
     /// The last reply of the turn ends with a question mark.
     pub asks: bool,
+    /// The last sentence of that reply: a request or a question stands there, not in its start.
+    pub closing: Option<String>,
 }
 
 impl Insight {
@@ -296,6 +298,7 @@ pub fn insight(transcript: &Path) -> Insight {
                 let message = entry.get("message");
                 if let Some(text) = last_text(message) {
                     out.asks = ends_with_question(text);
+                    out.closing = last_sentence(text);
                 }
                 if let Some(model) = message.and_then(|m| m.get("model")).and_then(Value::as_str) {
                     out.model = Some(model.to_string());
@@ -326,6 +329,23 @@ fn last_text(message: Option<&Value>) -> Option<&str> {
         .rev()
         .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
         .find_map(|b| b.get("text").and_then(Value::as_str).filter(|t| !t.trim().is_empty()))
+}
+
+/// The last sentence of a reply's last line, at most 300 characters.
+fn last_sentence(text: &str) -> Option<String> {
+    let line = text.lines().rev().map(str::trim).find(|l| !l.is_empty())?;
+    let chars: Vec<(usize, char)> = line.char_indices().collect();
+    let start = chars
+        .windows(3)
+        .rev()
+        .find(|w| matches!(w[0].1, '.' | '!' | '?') && w[1].1 == ' ' && !w[2].1.is_whitespace())
+        .map_or(0, |w| w[2].0);
+    let sentence = &line[start..];
+    let mut sentence: String = sentence.chars().take(300).collect();
+    if sentence.len() < line[start..].len() {
+        sentence.push('…');
+    }
+    Some(sentence)
 }
 
 /// Whether a reply ends with `?`, ignoring trailing whitespace, emphasis marks, brackets and quotes.
@@ -515,6 +535,13 @@ mod tests {
         assert!(!insight(&path).asks);
         let (_dir, path) = transcript(&[&reply("Fertig.")]);
         assert!(!insight(&path).asks);
+    }
+
+    #[test]
+    fn the_closing_sentence_is_the_last_one_of_the_last_line() {
+        assert_eq!(last_sentence("Alles gebaut.\n\nSag mir, welche passen. Danach baue ich sie.").as_deref(), Some("Danach baue ich sie."));
+        assert_eq!(last_sentence("Ich warte auf deinen Neustart von Docker.\n").as_deref(), Some("Ich warte auf deinen Neustart von Docker."));
+        assert_eq!(last_sentence("   "), None);
     }
 
     #[test]
