@@ -175,7 +175,8 @@ pub fn start_team(account: &Account, cwd: &Path, options: &Start) -> Result<Stri
 /// The panes of Brain's team sessions in tmux: the pid of the program each runs (Claude) and
 /// the tmux session's name. Empty without tmux or without such sessions.
 pub fn team_panes() -> std::collections::HashMap<u32, String> {
-    // A space between them: tmux writes a tab in a format out escaped. Brain's names have none.
+    // A space between them: without a UTF-8 locale tmux writes a tab as `_`. Brain's names have
+    // no space.
     let Ok(out) = Command::new("tmux").args(["list-panes", "-a", "-F", "#{session_name} #{pane_pid}"]).output() else {
         return Default::default();
     };
@@ -186,6 +187,18 @@ pub fn team_panes() -> std::collections::HashMap<u32, String> {
             session.starts_with(TEAM_TMUX_PREFIX).then(|| Some((pid.trim().parse().ok()?, session.to_string()))).flatten()
         })
         .collect()
+}
+
+/// Types `text` into a team's tmux session, then Enter as a key of its own (not part of a
+/// paste): for a team no terminal shows.
+pub fn type_into_team(tmux: &str, text: &str) -> Result<(), String> {
+    let run = |args: &[&str]| -> Result<(), String> {
+        let out = Command::new("tmux").env("LC_CTYPE", "C.UTF-8").args(args).output().map_err(|e| e.to_string())?;
+        out.status.success().then_some(()).ok_or_else(|| String::from_utf8_lossy(&out.stderr).trim().to_string())
+    };
+    run(&["send-keys", "-t", tmux, "-l", "--", text])?;
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    run(&["send-keys", "-t", tmux, "Enter"])
 }
 
 /// The arguments for a new session's options, after `--bg` or as an interactive one.
@@ -263,6 +276,7 @@ pub fn remove(account: &Account, id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
 
     #[test]
     fn reads_the_id_from_the_background_start_message() {

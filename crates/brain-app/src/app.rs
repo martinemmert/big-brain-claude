@@ -3342,6 +3342,14 @@ impl Brain {
             return task;
         }
         let Some(pid) = self.model.board.get(&key).map(|s| s.pid) else { return Task::none() };
+        // A team Brain started runs in tmux, where no terminal app shows it.
+        if let Some(tmux) = self.team_panes.get(&pid).cloned() {
+            match brain_core::agents::type_into_team(&tmux, text) {
+                Ok(()) => self.set_status(done),
+                Err(err) => self.set_status(tr!("tmux: {err}", "tmux: {err}")),
+            }
+            return Task::none();
+        }
         let outcome = terminal::type_text(pid, text);
         self.report(outcome, Some(done));
         Task::none()
