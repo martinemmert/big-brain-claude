@@ -74,7 +74,9 @@ Die Tabs (`←` `→`):
   laufende Session um (sie startet dafür neu, das Gespräch bleibt). Hat eine Session Agenten, zeigt der Tab **Team** ihre Fragen an dich
   („Frage an Martin: …“, mit Mitteilung; „Antworten“ schreibt dem Lead, der gibt es weiter), wer
   arbeitet und wer wartet, was jeder verbraucht hat (Tokens rein/raus, aus den Transkripten der
-  Mitglieder), ihre Nachrichten und die Anleitung (`team_guide`, Standard
+  Mitglieder), den Stand der Aufgabe (die Datei des Leads unter `team_state_dir`, Standard
+  `~/.claude-mods/team-state/<repo>/<branch>.md`), ihre Nachrichten mit Typ (`[BLOCKER]`, `[EINWAND]`
+  rot) und die Anleitung (`team_guide`, Standard
   `~/.claude-mods/agenten-team-anleitung.md`).
 - **Öffnen:** `⏎` oder Doppelklick. Läuft die Session in Brain, öffnet sie sich hier; eine beendete
   wird hier fortgesetzt. `⌥⏎` öffnet sie stattdessen in iTerm.

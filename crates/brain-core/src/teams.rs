@@ -48,6 +48,38 @@ pub struct TeamMessage {
     pub answered: bool,
 }
 
+/// The kinds a team message's first line names, `[TYP] <aufgabe> <kürzel>: <Kern>`.
+pub const KINDS: [&str; 8] = ["AUFTRAG", "FRAGE", "ANTWORT", "INFO", "EINWAND", "BLOCKER", "FERTIG", "STILL"];
+
+impl TeamMessage {
+    /// Its kind and the text after it, when the first line starts with one (`[BLOCKER] …`).
+    pub fn kind(&self) -> Option<(&'static str, &str)> {
+        let rest = self.text.trim_start().strip_prefix('[')?;
+        let (kind, text) = rest.split_once(']')?;
+        let kind = KINDS.iter().find(|k| **k == kind.trim())?;
+        Some((kind, text.trim_start()))
+    }
+}
+
+/// The team's state file for the task in `cwd`, written by its lead:
+/// `<dir>/<repo name>/<branch, / as __>.md`. The repo name is the checkout's folder or, for a
+/// git worktree, its main repository's: whichever has the file.
+pub fn state_file(dir: &Path, cwd: &Path) -> Option<PathBuf> {
+    let git = |args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("git").arg("-C").arg(cwd).args(args).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty())
+    };
+    let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"]).filter(|b| b != "HEAD")?;
+    let checkout = git(&["rev-parse", "--show-toplevel"]).map(PathBuf::from);
+    let main = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]).map(PathBuf::from).and_then(|common| common.parent().map(Path::to_path_buf));
+    let file = format!("{}.md", branch.replace('/', "__"));
+    [checkout, main]
+        .into_iter()
+        .flatten()
+        .filter_map(|repo| repo.file_name().map(|n| dir.join(n).join(&file)))
+        .find(|path| path.is_file())
+}
+
 impl Team {
     /// The questions for the person nobody answered yet, oldest first.
     pub fn open_questions(&self) -> impl Iterator<Item = &TeamMessage> {
@@ -140,6 +172,34 @@ mod tests {
 
     fn message(id: &str, from: &str, question: bool, answered: bool) -> TeamMessage {
         TeamMessage { id: id.into(), from: from.into(), to: "lead".into(), text: "…".into(), at: 1, question, answered }
+    }
+
+    #[test]
+    fn a_message_names_its_kind_in_its_first_line() {
+        let with = |text: &str| TeamMessage { text: text.into(), ..message("1", "pruefer", false, false) };
+        assert_eq!(with("[BLOCKER] fux-2 P1: Test rot").kind(), Some(("BLOCKER", "fux-2 P1: Test rot")));
+        assert_eq!(with("  [ FERTIG ] alles grün").kind(), Some(("FERTIG", "alles grün")));
+        assert_eq!(with("[LAUNE] heute gut").kind(), None);
+        assert_eq!(with("Frage an Martin: ja?").kind(), None);
+    }
+
+    #[test]
+    fn the_state_file_is_found_by_the_checkouts_or_the_main_repos_name() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("fux");
+        let git = |dir: &Path, args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap().status.success(), "{args:?}");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "feature/teams"]);
+        git(&repo, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "start"]);
+        let worktree = root.path().join("fux-wt");
+        git(&repo, &["worktree", "add", "-q", "-b", "fix/tab", worktree.to_str().unwrap()]);
+        let dir = root.path().join("team-state");
+        std::fs::create_dir_all(dir.join("fux")).unwrap();
+        assert_eq!(state_file(&dir, &repo), None, "nothing written yet");
+        std::fs::write(dir.join("fux/feature__teams.md"), "# Teams").unwrap();
+        std::fs::write(dir.join("fux/fix__tab.md"), "# Tab").unwrap();
+        assert_eq!(state_file(&dir, &repo), Some(dir.join("fux/feature__teams.md")));
+        assert_eq!(state_file(&dir, &worktree), Some(dir.join("fux/fix__tab.md")), "a worktree: by the main repository's name");
     }
 
     #[test]

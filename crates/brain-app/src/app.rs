@@ -512,6 +512,10 @@ pub struct Brain {
     pub team_guide: Option<String>,
     /// What each of the selected session's agents used, while the Team tab shows.
     pub team_usage: Vec<brain_core::teams::MemberUsage>,
+    /// The state of the selected session's task as its team's lead wrote it, while the Team tab
+    /// shows, and for which session and when it was read.
+    pub team_state: Option<String>,
+    team_state_read: Option<(SessionKey, Instant)>,
     /// The tasks for later while their dialog is open, and the picked one.
     pub later: Vec<brain_core::later::Item>,
     pub later_pick: usize,
@@ -681,6 +685,8 @@ impl Brain {
             team_notified: None,
             team_guide: None,
             team_usage: Vec::new(),
+            team_state: None,
+            team_state_read: None,
             later: Vec::new(),
             later_pick: 0,
             status: None,
@@ -1581,6 +1587,13 @@ impl Brain {
         if self.tab == DetailTab::Team {
             self.team_guide = std::fs::read_to_string(config::team_guide()).ok();
             self.team_usage = self.selected.as_ref().and_then(|k| self.model.transcript_path(k)).map(|t| brain_core::teams::usage(&t)).unwrap_or_default();
+            // Finding the state file asks for the branch: every few seconds, not on every tick.
+            let fresh = self.team_state_read.as_ref().is_some_and(|(k, at)| Some(k) == self.selected.as_ref() && at.elapsed() < Duration::from_secs(3));
+            if let (false, Some(key)) = (fresh, self.selected.clone()) {
+                let cwd = self.model.board.get(&key).and_then(|s| s.cwd.clone());
+                self.team_state = cwd.and_then(|c| brain_core::teams::state_file(&config::team_state_dir(), std::path::Path::new(&c))).and_then(|f| std::fs::read_to_string(f).ok());
+                self.team_state_read = Some((key, Instant::now()));
+            }
         }
 
         let open: Vec<(SessionKey, brain_core::teams::TeamMessage)> =
@@ -1607,7 +1620,7 @@ impl Brain {
 
     /// Whether the selected session has agents or team messages, so the Team tab shows.
     pub fn has_team(&self) -> bool {
-        self.selected.as_ref().and_then(|k| self.teams.get(k)).is_some_and(|t| !t.members.is_empty() || !t.messages.is_empty())
+        self.selected.as_ref().is_some_and(|k| self.in_team(k) || self.teams.get(k).is_some_and(|t| !t.members.is_empty() || !t.messages.is_empty()))
     }
 
     /// "Answer" on a question to the person in the Team tab: the reply field, addressed to the

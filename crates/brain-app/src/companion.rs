@@ -209,6 +209,7 @@ impl Link {
             version: AtomicU64::new(1),
             usage: RwLock::new(Vec::new()),
             places: RwLock::new(Places::default()),
+            folders: RwLock::new(Default::default()),
             commands: Mutex::new(sender),
         });
         let listener = std::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port))).map_err(|e| e.to_string())?;
@@ -240,6 +241,13 @@ impl Link {
         }
         if let Ok(mut current) = self.state.places.write() {
             *current = places;
+        }
+    }
+
+    /// Each session's folder by its id: where its team's state file is looked for.
+    pub fn publish_folders(&self, folders: std::collections::HashMap<String, PathBuf>) {
+        if let Ok(mut current) = self.state.folders.write() {
+            *current = folders;
         }
     }
 
@@ -469,6 +477,8 @@ struct State {
     version: AtomicU64,
     usage: RwLock<Vec<UsageView>>,
     places: RwLock<Places>,
+    /// Each session's folder by its id, for the team's state file.
+    folders: RwLock<std::collections::HashMap<String, PathBuf>>,
     commands: Mutex<Sender<Command>>,
 }
 
@@ -644,7 +654,10 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 let team = brain_core::teams::load(&home_dir(), &key.id).unwrap_or_default();
                 // Tokens per agent, from their transcripts beside the session's.
                 let usage = transcript_of(state, &key).map(|t| brain_core::teams::usage(&t)).unwrap_or_default();
-                reply(StatusCode::OK, &serde_json::json!({ "members": team.members, "messages": team.messages, "usage": usage }))
+                // The task's state as the team's lead wrote it (Markdown), when there is one.
+                let folder = state.folders.read().ok().and_then(|f| f.get(&key.id).cloned());
+                let task = folder.and_then(|f| brain_core::teams::state_file(&crate::config::team_state_dir(), &f)).and_then(|f| std::fs::read_to_string(f).ok());
+                reply(StatusCode::OK, &serde_json::json!({ "members": team.members, "messages": team.messages, "usage": usage, "state": task }))
             })
             .await
         }

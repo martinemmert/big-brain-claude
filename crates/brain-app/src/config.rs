@@ -38,6 +38,20 @@ pub fn team_guide() -> std::path::PathBuf {
     }
 }
 
+/// Where the agent team's lead keeps each task's state (`team_state_dir`, by default
+/// `~/.claude-mods/team-state`), shown in the Team tab.
+pub fn team_state_dir() -> std::path::PathBuf {
+    let home = brain_core::account::home_dir();
+    let configured = read().and_then(|v| v.get("team_state_dir")?.as_str().map(str::to_string));
+    match configured.as_deref().map(str::trim) {
+        Some(path) if !path.is_empty() => match path.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => path.into(),
+        },
+        _ => home.join(".claude-mods/team-state"),
+    }
+}
+
 /// The quick-terminal hotkey (`quick_terminal`), e.g. "cmd+shift+b". Off unless set: a global
 /// key overrides the same combination everywhere, including macOS' own shortcuts (⌃⌥Space
 /// switches the input source), so only a key the user picked is taken.

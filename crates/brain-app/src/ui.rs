@@ -1044,7 +1044,7 @@ fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     // Only sessions with agents (a team, subagents) have the tab; the count is who still works.
     if let Some(team) = brain.teams.get(&s.key).filter(|t| !t.members.is_empty() || !t.messages.is_empty()) {
         tabs.push((DetailTab::Team, "Team", Some(team.active().count())));
-    } else if brain.tab == DetailTab::Team {
+    } else if brain.tab == DetailTab::Team || brain.in_team(&s.key) {
         tabs.push((DetailTab::Team, "Team", None));
     }
     // Only sessions that held a council have the tab.
@@ -1903,12 +1903,15 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
 }
 
 /// The Team tab: questions to the person first (answered through the lead, the session itself),
-/// then who works and who waits, what they wrote each other, and the team's guide.
+/// then the task's state as the lead wrote it, who works and who waits, what they used and wrote
+/// each other, and the team's guide.
 fn team<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     let mut content = column![].spacing(14).padding(Padding { top: 12.0, right: 12.0, bottom: 20.0, left: 0.0 });
-    let Some(team) = brain.teams.get(&s.key) else {
-        return content.push(text(t("Noch keine Agenten in dieser Session.", "No agents in this session yet.")).size(12.5).color(TEXT_MUTED).font(UI)).into();
-    };
+    static NO_TEAM: brain_core::teams::Team = brain_core::teams::Team { members: Vec::new(), messages: Vec::new() };
+    let team = brain.teams.get(&s.key).unwrap_or(&NO_TEAM);
+    if team.members.is_empty() && team.messages.is_empty() && brain.team_state.is_none() {
+        content = content.push(text(t("Noch keine Agenten in dieser Session.", "No agents in this session yet.")).size(12.5).color(TEXT_MUTED).font(UI));
+    }
     let open: Vec<&brain_core::teams::TeamMessage> = team.open_questions().collect();
     if !open.is_empty() {
         content = content.push(section_title(t("Fragen an dich", "Questions for you"), open.len(), true));
@@ -1926,6 +1929,11 @@ fn team<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
             .align_y(iced::Center);
             content = content.push(container(line).padding([8, 12]).width(Fill).style(|_| boxed(SURFACE, LINE, 8.0)));
         }
+    }
+    // The task's state file, which only the lead writes: stage, findings, rounds, open questions.
+    if let Some(state) = &brain.team_state {
+        content = content.push(text(t("Stand der Aufgabe", "State of the task")).size(12).color(TEXT_MUTED).font(style::semibold()));
+        content = content.push(container(markdown::prose(state, 12.5)).padding([10, 14]).width(Fill).style(|_| boxed(SURFACE, LINE, 8.0)));
     }
     if !team.members.is_empty() {
         content = content.push(section_title(t("Mitglieder", "Members"), team.members.len(), false));
@@ -1972,15 +1980,23 @@ fn team<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
         let start = team.messages.len().saturating_sub(30);
         for message in &team.messages[start..] {
             let at = clock(message.at);
-            let color = if message.question { CALLS } else { TEXT };
-            content = content.push(
-                row![
-                    text(at).size(11.5).color(TEXT_FAINT).font(MONO),
-                    text(format!("{} → {}", message.from, message.to)).size(11.5).color(TEXT_MUTED).font(UI),
-                    text(clip(&message.text, 220)).size(12).color(color).font(UI),
-                ]
-                .spacing(8),
-            );
+            // `[BLOCKER] …`: the kind as a label, blockers and objections stand out.
+            let (kind, body) = match message.kind() {
+                Some((kind, body)) => (Some(kind), body),
+                None => (None, message.text.as_str()),
+            };
+            let alarming = message.question || matches!(kind, Some("BLOCKER" | "EINWAND"));
+            let mut line = row![
+                text(at).size(11.5).color(TEXT_FAINT).font(MONO),
+                text(format!("{} → {}", message.from, message.to)).size(11.5).color(TEXT_MUTED).font(UI),
+            ]
+            .spacing(8);
+            if let Some(kind) = kind {
+                let fill = if alarming { CALLS } else { RAISED };
+                line = line.push(container(text(kind).size(10.5).color(TEXT_STRONG).font(style::semibold())).padding([1, 6]).style(move |_| boxed(fill, Color::TRANSPARENT, 4.0)));
+            }
+            line = line.push(text(clip(body, 220)).size(12).color(if alarming { CALLS } else { TEXT }).font(UI));
+            content = content.push(line);
         }
     }
     if let Some(guide) = &brain.team_guide {

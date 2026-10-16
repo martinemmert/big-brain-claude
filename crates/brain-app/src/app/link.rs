@@ -104,6 +104,7 @@ impl Brain {
         let Some(link) = &self.link else { return Task::none() };
         link.publish(self.link_views(now));
         link.publish_more(self.link_usage(now), self.link_places());
+        link.publish_folders(self.model.board.keys().filter_map(|k| Some((k.id.clone(), std::path::PathBuf::from(self.model.board.get(k)?.cwd.clone()?)))).collect());
         let commands = link.take_commands();
         let tasks: Vec<Task<Message>> = commands.into_iter().map(|command| self.run_link_command(command, true)).collect();
         Task::batch(tasks)
