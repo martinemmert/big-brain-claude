@@ -62,22 +62,17 @@ impl TeamMessage {
 }
 
 /// The team's state file for the task in `cwd`, written by its lead:
-/// `<dir>/<repo name>/<branch, / as __>.md`. The repo name is the checkout's folder or, for a
-/// git worktree, its main repository's: whichever has the file.
+/// `<dir>/<repo>/<branch, / as __>.md`, `<repo>` the main repository's folder name, in a git
+/// worktree too (the lead's convention: the folder of `git rev-parse --git-common-dir`).
 pub fn state_file(dir: &Path, cwd: &Path) -> Option<PathBuf> {
     let git = |args: &[&str]| -> Option<String> {
         let out = std::process::Command::new("git").arg("-C").arg(cwd).args(args).output().ok()?;
         out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty())
     };
     let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"]).filter(|b| b != "HEAD")?;
-    let checkout = git(&["rev-parse", "--show-toplevel"]).map(PathBuf::from);
-    let main = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]).map(PathBuf::from).and_then(|common| common.parent().map(Path::to_path_buf));
-    let file = format!("{}.md", branch.replace('/', "__"));
-    [checkout, main]
-        .into_iter()
-        .flatten()
-        .filter_map(|repo| repo.file_name().map(|n| dir.join(n).join(&file)))
-        .find(|path| path.is_file())
+    let common = PathBuf::from(git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?);
+    let repo = common.parent()?.file_name()?;
+    Some(dir.join(repo).join(format!("{}.md", branch.replace('/', "__")))).filter(|path| path.is_file())
 }
 
 impl Team {
@@ -184,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn the_state_file_is_found_by_the_checkouts_or_the_main_repos_name() {
+    fn the_state_file_is_found_by_the_main_repos_name() {
         let root = tempfile::tempdir().unwrap();
         let repo = root.path().join("fux");
         let git = |dir: &Path, args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap().status.success(), "{args:?}");
