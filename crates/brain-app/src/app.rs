@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use brain_core::state::{Phase, Session, SessionKey};
+use brain_core::state::{Ask, Phase, Session, SessionKey};
 use brain_terminal::{self as terminal, Capabilities, Key, Outcome};
 use iced::keyboard::{self, key::Named};
 use iced::widget::{operation, scrollable};
@@ -24,11 +24,9 @@ use crate::i18n::t;
 use crate::menubar::MenuBar;
 use crate::model::Model;
 use crate::notify::{self, Notifier};
-use crate::prefs::{Layout, Prefs};
+use crate::prefs::Prefs;
 use crate::tr;
 
-/// Sessions on "your turn" for longer than this move to the "resting" section.
-pub const RESTING_AFTER_MS: i64 = 2 * 60 * 60 * 1000;
 /// Ended sessions show in the list for a day; older ones through the search.
 pub const ENDED_RECENT_MS: i64 = 24 * 60 * 60 * 1000;
 const SNOOZE_MS: i64 = 15 * 60 * 1000;
@@ -93,8 +91,6 @@ pub enum PaletteCommand {
     /// The selected session goes on as an agent team (true) or without one.
     Team(bool),
     ToggleEnded,
-    ToggleProjects,
-    ToggleToday,
     ToggleBackground,
     /// Show or hide sessions programs started (SDK reviews, `claude -p`).
     ToggleAutomated,
@@ -184,7 +180,6 @@ pub enum Action {
     Deny,
     StartReply,
     StartRename,
-    CopyDigest,
     StartTerminal,
     OpenInITerm,
     TakeOver,
@@ -237,12 +232,16 @@ pub enum Message {
     LaterPick(usize),
     /// Answer a team member's question to the person (its name).
     TeamAnswer(String),
-    Layout(Layout),
     Filter(Option<String>),
     ToggleBackground,
     ToggleAutomated,
-    ToggleResting,
     ToggleEnded,
+    /// A card's button: the same command the phone sends.
+    Steer(crate::companion::Command),
+    /// "alle gesehen": every report in the reading zone counts as read.
+    SeeAll,
+    /// "Nur Bericht" on a maybe-question: it counts as a report, not as a question.
+    OnlyReport(SessionKey),
     Tab(DetailTab),
     Do(Action),
     CleanupAge(usize),
@@ -414,14 +413,14 @@ pub struct ChangesCache {
 pub struct Groups<'a> {
     /// Ended sessions the user marked with `P` to resume later.
     pub saved: Vec<&'a Session>,
-    pub pinned: Vec<&'a Session>,
-    pub attention: Vec<&'a Session>,
-    pub working: Vec<&'a Session>,
-    pub resting: Vec<&'a Session>,
-    pub snoozed: Vec<&'a Session>,
+    /// Sessions that ask something of the user, by kind and then longest waiting first. A
+    /// question that is only a guess ([`Ask::Maybe`]) comes last.
+    pub decide: Vec<(&'a Session, Ask)>,
+    /// Finished and not yet looked at, newest first.
+    pub read: Vec<&'a Session>,
+    /// Everything else that lives, by project.
+    pub quiet: Vec<(String, Vec<&'a Session>)>,
     pub ended: Vec<&'a Session>,
-    /// Whether the resting group is open (or a search shows everything).
-    pub resting_open: bool,
     /// Ended over a day ago, shown only while searching.
     pub older_ended: usize,
     /// Hidden with ⌫, shown only while searching.
@@ -435,41 +434,57 @@ pub struct Groups<'a> {
 impl<'a> Groups<'a> {
     pub fn navigable(&self, include_ended: bool) -> Vec<&'a Session> {
         let mut all: Vec<&Session> = self.saved.clone();
-        all.extend(self.live().into_iter().filter(|s| self.resting_open || !self.resting.iter().any(|r| r.key == s.key)));
+        all.extend(self.live());
         if include_ended {
             all.extend(&self.ended);
         }
         all
     }
 
+    /// The running sessions in drawing order.
     pub fn live(&self) -> Vec<&'a Session> {
-        let mut all: Vec<&Session> = Vec::new();
-        all.extend(&self.pinned);
-        all.extend(&self.attention);
-        all.extend(&self.working);
-        all.extend(&self.resting);
-        all.extend(&self.snoozed);
+        let mut all: Vec<&Session> = self.decide.iter().map(|(s, _)| *s).collect();
+        all.extend(&self.read);
+        all.extend(self.quiet.iter().flat_map(|(_, sessions)| sessions.iter().copied()));
         all
     }
 
-    pub fn live_count(&self) -> usize {
-        self.pinned.len() + self.attention.len() + self.working.len() + self.resting.len() + self.snoozed.len()
+    /// How many sessions wait for a decision. A guess ([`Ask::Maybe`]) doesn't count.
+    pub fn deciding(&self) -> usize {
+        self.decide.iter().filter(|(_, ask)| *ask != Ask::Maybe).count()
     }
 }
 
 /// One entry of the session list, in drawing order. The list's height is known from these, so
 /// keyboard navigation can keep the selection in view.
 pub enum Item<'a> {
-    Section { title: String, count: usize, alert: bool, toggle: Option<Message> },
+    /// `action`: a link at the section's right edge and what it sends.
+    Section { title: String, count: usize, alert: bool, action: Option<Box<(String, Message)>> },
     Hint(String),
-    Card(&'a Session, usize),
+    /// A session that asks something. `options`: how many option buttons the card has.
+    Decide { s: &'a Session, nav: usize, ask: Ask, options: usize },
+    /// A finished session to read.
+    Report(&'a Session, usize),
     Row(&'a Session, usize),
+    /// The project's name above its sessions in the quiet zone.
+    Project(String),
+    /// Under the projects: the toggles for ended, background and automated sessions.
+    Footer,
 }
 
 pub const SECTION_H: f32 = 34.0;
 pub const HINT_H: f32 = 36.0;
 pub const ROW_H: f32 = 36.0;
-pub const CARD_H: f32 = 76.0;
+pub const CARD_H: f32 = 88.0;
+/// The button row of a permission or maybe-question card.
+pub const BUTTONS_H: f32 = 34.0;
+/// One option button of an AskUserQuestion card.
+pub const OPTION_H: f32 = 32.0;
+pub const REPORT_H: f32 = 72.0;
+/// The line under a maybe-question that says why it is listed.
+pub const WHY_H: f32 = 18.0;
+pub const PROJECT_H: f32 = 26.0;
+pub const FOOTER_H: f32 = 40.0;
 pub const LIST_GAP: f32 = 6.0;
 pub const LIST_TOP: f32 = 4.0;
 
@@ -478,8 +493,16 @@ impl Item<'_> {
         match self {
             Item::Section { .. } => SECTION_H,
             Item::Hint(_) => HINT_H,
-            Item::Card(..) => CARD_H,
+            Item::Decide { ask, options, .. } => match ask {
+                Ask::Permission => CARD_H + BUTTONS_H,
+                Ask::Maybe => CARD_H + WHY_H + BUTTONS_H,
+                Ask::Options => CARD_H + *options as f32 * OPTION_H,
+                Ask::Question => CARD_H,
+            },
+            Item::Report(..) => REPORT_H,
             Item::Row(..) => ROW_H,
+            Item::Project(_) => PROJECT_H,
+            Item::Footer => FOOTER_H,
         }
     }
 }
@@ -494,8 +517,6 @@ pub struct Brain {
     pub selected: Option<SessionKey>,
     pub hovered: Option<SessionKey>,
     pub show_ended: bool,
-    /// The "resting for over 2 h" group is open.
-    pub show_resting: bool,
     /// The clean-up dialog's age choice (index into CLEANUP_DAYS).
     pub cleanup_age: usize,
     /// Each session's agents and their messages, as its mod reported them, and when each
@@ -642,7 +663,7 @@ pub struct Brain {
     titlebar_ready: bool,
     /// What the detail pane showed last; when it changes, the message list is built anew and
     /// starts at its newest message again.
-    detail_shape: (Layout, Mode, DetailTab),
+    detail_shape: (Mode, DetailTab),
     /// A click selected a session: once its terminal shows, it gets the keys.
     focus_on_select: bool,
     /// The new-account dialog.
@@ -653,7 +674,7 @@ pub struct Brain {
     pending_restart: Option<restart::PendingRestart>,
     restart_flags: HashMap<SessionKey, Vec<String>>,
     /// Per session that waits: what it was read at, and the question it asks.
-    link_questions: HashMap<SessionKey, (link::QuestionReadAt, Option<brain_core::qa::OpenQuestion>)>,
+    pub(crate) questions: HashMap<SessionKey, (link::QuestionReadAt, Option<brain_core::qa::OpenQuestion>)>,
     /// Brain Link, the companion app's server, while it runs.
     link: Option<crate::companion::Link>,
     /// The pairing code as an image.
@@ -679,7 +700,6 @@ impl Brain {
             selected: None,
             hovered: None,
             show_ended: false,
-            show_resting: false,
             cleanup_age: 1,
             teams: HashMap::new(),
             team_panes: HashMap::new(),
@@ -766,10 +786,10 @@ impl Brain {
             synced_selection: None,
             dragging_sidebar: false,
             titlebar_ready: false,
-            detail_shape: (Layout::Status, Mode::Normal, DetailTab::Messages),
+            detail_shape: (Mode::Normal, DetailTab::Messages),
             focus_on_select: false,
             account_setup: account::AccountSetup::default(),
-            link_questions: HashMap::new(),
+            questions: HashMap::new(),
             restart: restart::RestartDialog::default(),
             pending_restart: None,
             restart_flags: HashMap::new(),
@@ -800,7 +820,7 @@ impl Brain {
     }
 
     pub fn title(&self) -> String {
-        let waiting = self.waiting_counts().0;
+        let waiting = self.deciding();
         if waiting > 0 { tr!("Brain – {waiting} warten", "Brain – {waiting} waiting") } else { "Brain".into() }
     }
 
@@ -839,13 +859,9 @@ impl Brain {
         Subscription::batch(subscriptions)
     }
 
-    /// Sessions waiting for the user (in the attention and pinned groups), and how many call.
-    pub fn waiting_counts(&self) -> (usize, usize) {
-        let groups = self.groups(now_ms());
-        let waiting: Vec<&Session> =
-            groups.attention.iter().chain(&groups.pinned).copied().filter(|s| matches!(s.phase(), Phase::NeedsYou | Phase::YourTurn)).collect();
-        let calling = waiting.iter().filter(|s| s.phase() == Phase::NeedsYou).count();
-        (waiting.len(), calling)
+    /// How many sessions wait for a decision (not counting a question that is only a guess).
+    pub fn deciding(&self) -> usize {
+        self.groups(now_ms()).deciding()
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -937,11 +953,6 @@ impl Brain {
                 Task::none()
             }
             Message::TeamAnswer(from) => self.answer_team_question(&from),
-            Message::Layout(layout) => {
-                self.prefs.layout = layout;
-                self.prefs.save();
-                Task::none()
-            }
             Message::Filter(filter) => {
                 self.filter = filter;
                 Task::none()
@@ -954,8 +965,14 @@ impl Brain {
                 self.toggle_automated();
                 Task::none()
             }
-            Message::ToggleResting => {
-                self.show_resting = !self.show_resting;
+            Message::Steer(command) => self.run_link_command(command, true),
+            Message::SeeAll => {
+                self.see_all();
+                Task::none()
+            }
+            Message::OnlyReport(key) => {
+                self.prefs.mark_report(&key, now_ms());
+                self.prefs.save();
                 Task::none()
             }
             Message::ToggleEnded => {
@@ -1433,7 +1450,9 @@ impl Brain {
         }
         self.watch_screenshots();
         let now = now_ms();
-        for item in self.model.refresh() {
+        let refreshed = self.model.refresh();
+        self.refresh_questions();
+        for item in refreshed {
             if self.prefs.snoozed_until(&item.key, now).is_some() || self.prefs.is_muted(&item.key) || self.filtered_background(&item.key) {
                 continue;
             }
@@ -1501,11 +1520,19 @@ impl Brain {
         }
         if let Some(key) = &self.selected {
             self.bells.remove(key);
+            // Looking at a session in the front window is what makes its report read.
+            if app_is_active() {
+                if let Some(since) = self.model.board.get(key).map(|s| s.phase_since_ms()) {
+                    if self.prefs.see(key, now, since) {
+                        self.prefs.save();
+                    }
+                }
+            }
         }
         let mut scroll = self.sync_conversation();
         let attach = self.sync_terminal();
         self.sync_shown_terminal();
-        let shape = (self.prefs.layout, if matches!(self.mode, Mode::NewSession | Mode::Cleanup | Mode::Later) { self.mode } else { Mode::Normal }, self.tab);
+        let shape = (if matches!(self.mode, Mode::NewSession | Mode::Cleanup | Mode::Later) { self.mode } else { Mode::Normal }, self.tab);
         if shape != self.detail_shape {
             self.detail_shape = shape;
             self.messages_at_bottom = true;
@@ -1514,9 +1541,9 @@ impl Brain {
         self.sync_host();
         self.sync_projects();
         self.conflicts = self.compute_conflicts();
-        let (waiting, calling) = self.waiting_counts();
+        let deciding = self.deciding();
         if let Some(menubar) = self.menubar.as_mut() {
-            menubar.show(waiting, calling);
+            menubar.show(deciding, deciding);
         }
         // The Files tab and the find results follow the transcript as it grows.
         let files = self.load_files();
@@ -1750,12 +1777,7 @@ impl Brain {
             return self.selected.clone();
         }
         let groups = self.groups(now_ms());
-        groups
-            .attention
-            .iter()
-            .chain(&groups.pinned)
-            .find(|s| self.terminals.contains_key(&s.key))
-            .map(|s| s.key.clone())
+        groups.live().into_iter().find(|s| self.terminals.contains_key(&s.key)).map(|s| s.key.clone())
     }
 
     /// A reply typed into a notification: straight into the session when Brain can type into it
@@ -1931,8 +1953,6 @@ impl Brain {
         all.push((t("iPhone koppeln (Brain Link)", "Pair a phone (Brain Link)").to_string(), "", PaletteCommand::PairPhone));
         all.push((t("Neues Claude-Konto einrichten", "Set up a new Claude account").to_string(), "", PaletteCommand::SetUpAccount));
         all.push((t("Beendete Sessions zeigen / verbergen", "Show / hide ended sessions").to_string(), "E", PaletteCommand::ToggleEnded));
-        all.push((t("Nach Projekten gruppieren", "Group by project").to_string(), "G", PaletteCommand::ToggleProjects));
-        all.push((t("Heute", "Today").to_string(), "D", PaletteCommand::ToggleToday));
         all.push((t("Hintergrund-Sessions zeigen / verbergen", "Show / hide background sessions").to_string(), "B", PaletteCommand::ToggleBackground));
         all.push((t("Automatische Sessions (Reviews, Skripte) zeigen / verbergen", "Show / hide automated sessions (reviews, scripts)").to_string(), "U", PaletteCommand::ToggleAutomated));
 
@@ -2007,16 +2027,6 @@ impl Brain {
                 self.toggle_ended();
                 Task::none()
             }
-            PaletteCommand::ToggleProjects => {
-                self.prefs.layout = if self.prefs.layout == Layout::Projects { Layout::Status } else { Layout::Projects };
-                self.prefs.save();
-                Task::none()
-            }
-            PaletteCommand::ToggleToday => {
-                self.prefs.layout = if self.prefs.layout == Layout::Today { Layout::Status } else { Layout::Today };
-                self.prefs.save();
-                Task::none()
-            }
             PaletteCommand::ToggleBackground => {
                 self.toggle_background();
                 Task::none()
@@ -2046,9 +2056,8 @@ impl Brain {
     fn broadcast_targets(&self) -> Vec<SessionKey> {
         let groups = self.groups(now_ms());
         groups
-            .attention
-            .iter()
-            .chain(&groups.pinned)
+            .live()
+            .into_iter()
             .filter(|s| s.phase() == Phase::YourTurn && !s.awaiting_permission() && self.can_send(&s.key))
             .map(|s| s.key.clone())
             .collect()
@@ -2466,18 +2475,16 @@ impl Brain {
         let searching = !self.search.is_empty();
         let mut groups = Groups {
             saved: vec![],
-            pinned: vec![],
-            attention: vec![],
-            working: vec![],
-            resting: vec![],
-            snoozed: vec![],
+            decide: vec![],
+            read: vec![],
+            quiet: vec![],
             ended: vec![],
-            resting_open: self.show_resting || searching,
             older_ended: 0,
             hidden: 0,
             background: 0,
             automated: 0,
         };
+        let mut quiet: Vec<&Session> = Vec::new();
         let visible = self
             .model
             .board
@@ -2506,111 +2513,93 @@ impl Brain {
                 groups.hidden += 1;
                 continue;
             }
-            if self.prefs.is_pinned(&session.key) {
-                if ended {
+            if ended {
+                if self.prefs.is_pinned(&session.key) {
                     groups.saved.push(session);
+                } else if searching || now - session.last_activity_ms < ENDED_RECENT_MS {
+                    groups.ended.push(session);
                 } else {
-                    groups.pinned.push(session);
+                    groups.older_ended += 1;
                 }
                 continue;
             }
-            let waiting = matches!(session.phase(), Phase::NeedsYou | Phase::YourTurn);
-            if waiting && self.prefs.snoozed_until(&session.key, now).is_some() {
-                groups.snoozed.push(session);
-                continue;
-            }
-            match session.phase() {
-                Phase::NeedsYou => groups.attention.push(session),
-                Phase::YourTurn if now - session.phase_since_ms() > RESTING_AFTER_MS => groups.resting.push(session),
-                Phase::YourTurn => groups.attention.push(session),
-                Phase::Working | Phase::Background => groups.working.push(session),
-                Phase::Ended if searching || now - session.last_activity_ms < ENDED_RECENT_MS => groups.ended.push(session),
-                Phase::Ended => groups.older_ended += 1,
+            let since = session.phase_since_ms();
+            // The selected session stays where it is while it's selected, so nothing jumps away
+            // under the cursor when it counts as seen.
+            let selected = self.selected.as_ref() == Some(&session.key);
+            let seen = !selected && self.prefs.is_seen(&session.key, since);
+            let snoozed = self.prefs.snoozed_until(&session.key, now).is_some();
+            let open_question = self.questions.get(&session.key).is_some_and(|(_, q)| q.is_some());
+            let ask = session
+                .ask(open_question)
+                .filter(|_| !snoozed)
+                .filter(|ask| *ask != Ask::Maybe || !(seen || self.prefs.is_report(&session.key, since)));
+            if let Some(ask) = ask {
+                groups.decide.push((session, ask));
+            } else if session.phase() == Phase::YourTurn && !snoozed && !seen {
+                groups.read.push(session);
+            } else {
+                quiet.push(session);
             }
         }
-        // Resting: most recently finished first.
-        groups.resting.reverse();
+        groups.decide.sort_by_key(|(s, ask)| (*ask, s.phase_since_ms()));
+        groups.read.sort_by_key(|s| std::cmp::Reverse(s.phase_since_ms()));
+        for session in quiet {
+            let name = self.projects.get(&session.key).map(|(n, _)| n.clone()).unwrap_or_else(|| session.display_name());
+            match groups.quiet.iter_mut().find(|(n, _)| *n == name) {
+                Some((_, list)) => list.push(session),
+                None => groups.quiet.push((name, vec![session])),
+            }
+        }
         groups
     }
 
     /// The list in drawing order: sections, hints and sessions.
-    pub fn items<'a>(&'a self, groups: &Groups<'a>, now: i64) -> Vec<Item<'a>> {
+    pub fn items<'a>(&'a self, groups: &Groups<'a>, _now: i64) -> Vec<Item<'a>> {
         let searching = !self.search.is_empty();
         let mut items = Vec::new();
-        let mut nav = 0usize;
-        let mut push = |items: &mut Vec<Item<'a>>, s: &'a Session| {
-            let snoozed = self.prefs.snoozed_until(&s.key, now).is_some();
-            let waiting = matches!(s.phase(), Phase::NeedsYou | Phase::YourTurn) && !snoozed;
-            let recent = now - s.phase_since_ms() <= RESTING_AFTER_MS || s.phase() == Phase::NeedsYou;
-            items.push(if waiting && recent { Item::Card(s, nav) } else { Item::Row(s, nav) });
-            nav += 1;
+        let position = std::cell::Cell::new(0usize);
+        let next = || {
+            let n = position.get();
+            position.set(n + 1);
+            n
         };
+        let push = |items: &mut Vec<Item<'a>>, s: &'a Session| items.push(Item::Row(s, next()));
         if searching && groups.navigable(true).is_empty() {
             let query = self.search.clone();
             items.push(Item::Hint(tr!("Keine Session passt zu „{query}“. Esc leert die Suche.", "No session matches “{query}”. Esc clears the search.")));
         }
         if !groups.saved.is_empty() {
-            items.push(Item::Section { title: t("Zum Fortsetzen gemerkt", "Saved to resume").into(), count: groups.saved.len(), alert: false, toggle: None });
+            items.push(Item::Section { title: t("Zum Fortsetzen gemerkt", "Saved to resume").into(), count: groups.saved.len(), alert: false, action: None });
             for s in &groups.saved {
                 push(&mut items, s);
             }
         }
-        if self.prefs.layout != Layout::Status {
-            let mut live = groups.live();
-            live.sort_by_key(|s| s.phase());
-            let mut projects: Vec<(String, Vec<&Session>)> = Vec::new();
-            for session in live {
-                let name = self.projects.get(&session.key).map(|(n, _)| n.clone()).unwrap_or_else(|| session.display_name());
-                match projects.iter_mut().find(|(n, _)| *n == name) {
-                    Some((_, list)) => list.push(session),
-                    None => projects.push((name, vec![session])),
-                }
+        items.push(Item::Section { title: t("Zu entscheiden", "To decide").into(), count: groups.deciding(), alert: true, action: None });
+        if groups.decide.is_empty() && !searching {
+            items.push(Item::Hint(t("Nichts wartet auf dich.", "Nothing is waiting for you.").into()));
+        }
+        for (s, ask) in &groups.decide {
+            let options = match ask {
+                Ask::Options => self.question_buttons(&s.key),
+                _ => 0,
+            };
+            items.push(Item::Decide { s, nav: next(), ask: *ask, options });
+        }
+        if !groups.read.is_empty() {
+            let action = (t("alle gesehen", "all seen").to_string(), Message::SeeAll);
+            items.push(Item::Section { title: t("Zum Lesen", "To read").into(), count: groups.read.len(), alert: false, action: Some(Box::new(action)) });
+            for s in &groups.read {
+                items.push(Item::Report(s, next()));
             }
-            if projects.is_empty() && !searching {
-                items.push(Item::Hint(t("Keine laufenden Sessions.", "No running sessions.").into()));
-            }
-            for (name, sessions) in projects {
-                let alert = sessions.iter().any(|s| s.phase() == Phase::NeedsYou);
-                items.push(Item::Section { title: name, count: sessions.len(), alert, toggle: None });
-                for s in sessions {
-                    push(&mut items, s);
-                }
-            }
-        } else {
-            if !groups.pinned.is_empty() {
-                items.push(Item::Section { title: t("Angeheftet", "Pinned").into(), count: groups.pinned.len(), alert: false, toggle: None });
-                for s in &groups.pinned {
-                    push(&mut items, s);
-                }
-            }
-            items.push(Item::Section { title: t("Braucht dich", "Needs you").into(), count: groups.attention.len(), alert: true, toggle: None });
-            if groups.attention.is_empty() && !searching {
-                items.push(Item::Hint(t("Gerade wartet keine Session auf dich.", "No session is waiting for you right now.").into()));
-            }
-            for s in &groups.attention {
+        }
+        if !groups.quiet.is_empty() {
+            items.push(Item::Section { title: t("Projekte", "Projects").into(), count: groups.quiet.iter().map(|(_, l)| l.len()).sum(), alert: false, action: None });
+        }
+        for (name, sessions) in &groups.quiet {
+            items.push(Item::Project(name.clone()));
+            for s in sessions {
                 push(&mut items, s);
-            }
-            if !groups.working.is_empty() {
-                items.push(Item::Section { title: t("Arbeitet", "Working").into(), count: groups.working.len(), alert: false, toggle: None });
-                for s in &groups.working {
-                    push(&mut items, s);
-                }
-            }
-            if !groups.resting.is_empty() {
-                let open = groups.resting_open;
-                let title = format!("{} {}", t("Ruht seit über 2 h", "Resting for over 2 h"), if open { "▾" } else { "▸" });
-                items.push(Item::Section { title, count: groups.resting.len(), alert: false, toggle: Some(Message::ToggleResting) });
-                if open {
-                    for s in &groups.resting {
-                        push(&mut items, s);
-                    }
-                }
-            }
-            if !groups.snoozed.is_empty() {
-                items.push(Item::Section { title: t("Pausiert", "Snoozed").into(), count: groups.snoozed.len(), alert: false, toggle: None });
-                for s in &groups.snoozed {
-                    push(&mut items, s);
-                }
             }
         }
         let mut notes: Vec<String> = Vec::new();
@@ -2626,17 +2615,37 @@ impl Brain {
             let notes = notes.join(" · ");
             items.push(Item::Hint(tr!("{notes} – / sucht darin, C räumt auf.", "{notes} – / searches them, C cleans up.")));
         }
-        if !groups.ended.is_empty() {
-            let open = self.include_ended();
-            let title = format!("{} {}", t("Beendet", "Ended"), if open { "▾" } else { "▸" });
-            items.push(Item::Section { title, count: groups.ended.len(), alert: false, toggle: Some(Message::ToggleEnded) });
-            if open {
-                for s in &groups.ended {
-                    push(&mut items, s);
-                }
+        if !groups.ended.is_empty() || groups.background > 0 || groups.automated > 0 || self.prefs.show_background || self.prefs.show_automated {
+            items.push(Item::Footer);
+        }
+        if self.include_ended() {
+            for s in &groups.ended {
+                push(&mut items, s);
             }
         }
         items
+    }
+
+    /// How many option buttons the open question of the session gets: only a single question
+    /// without multiple choice can be answered with a click.
+    pub fn question_buttons(&self, key: &SessionKey) -> usize {
+        match self.questions.get(key).and_then(|(_, q)| q.as_ref()) {
+            Some(q) if q.items.len() == 1 && !q.items[0].multi_select => q.items[0].options.len(),
+            _ => 0,
+        }
+    }
+
+    /// "alle gesehen": the reports in the reading zone count as read.
+    fn see_all(&mut self) {
+        let now = now_ms();
+        let unread: Vec<(SessionKey, i64)> = self.groups(now).read.iter().map(|s| (s.key.clone(), s.phase_since_ms())).collect();
+        let mut changed = false;
+        for (key, since) in unread {
+            changed |= self.prefs.see(&key, now, since);
+        }
+        if changed {
+            self.prefs.save();
+        }
     }
 
     /// Scrolls the list so the selected session is visible (the first one: to the very top).
@@ -2647,7 +2656,7 @@ impl Brain {
         let mut top = LIST_TOP;
         for item in self.items(&groups, now) {
             let found = match &item {
-                Item::Card(s, nav) | Item::Row(s, nav) if s.key == key => Some(*nav),
+                Item::Decide { s, nav, .. } | Item::Report(s, nav) | Item::Row(s, nav) if s.key == key => Some(*nav),
                 _ => None,
             };
             if let Some(nav) = found {
@@ -2903,9 +2912,6 @@ impl Brain {
             self.trash_selected(false);
             return Task::none();
         }
-        if cmd && character.as_deref() == Some("c") && self.prefs.layout == Layout::Today {
-            return self.act(Action::CopyDigest);
-        }
         if cmd || modifiers.control() {
             return Task::none();
         }
@@ -2984,25 +2990,8 @@ impl Brain {
             }
             "l" => self.open_later(),
             "i" => return self.act(Action::TakeOver),
-            "h" => self.show_resting = !self.show_resting,
             "b" => self.toggle_background(),
             "u" => self.toggle_automated(),
-            "g" => {
-                self.prefs.layout = if self.prefs.layout == Layout::Projects { Layout::Status } else { Layout::Projects };
-                self.prefs.save();
-            }
-            "d" => {
-                self.prefs.layout = if self.prefs.layout == Layout::Today { Layout::Status } else { Layout::Today };
-                self.prefs.save();
-            }
-            digit if digit.len() == 1 && ('1'..='9').contains(&digit.chars().next().unwrap()) => {
-                let index = digit.parse::<usize>().unwrap() - 1;
-                if index < list.len() {
-                    let scroll = self.select_index(&list, index);
-                    self.open_selected();
-                    return scroll;
-                }
-            }
             _ => {}
         }
         Task::none()
@@ -3117,9 +3106,8 @@ impl Brain {
         app.unhide(None);
         let groups = self.groups(now_ms());
         let waiting = groups
-            .attention
-            .iter()
-            .chain(&groups.pinned)
+            .live()
+            .into_iter()
             .filter(|s| matches!(s.phase(), Phase::NeedsYou | Phase::YourTurn))
             .find(|s| self.terminals.contains_key(&s.key) || s.agent.is_some())
             .map(|s| s.key.clone());
@@ -3203,12 +3191,6 @@ impl Brain {
             Action::StartReply => return self.start_reply(),
             Action::StartRename => return self.start_rename(),
             Action::StartTerminal => return self.open_terminal(true),
-            Action::CopyDigest => {
-                let date = chrono::Local::now().format("%d.%m.%Y").to_string();
-                let markdown = brain_core::digest::markdown(&tr!("Heute, {date}", "Today, {date}"), &self.today_digest());
-                self.set_status(t("Tagesübersicht kopiert.", "Copied the day's digest."));
-                return iced::clipboard::write(markdown);
-            }
         }
         Task::none()
     }
@@ -4111,24 +4093,6 @@ impl Brain {
         let id = account.id.clone();
         let resumed = off_thread(move || brain_core::agents::resume(&account, std::path::Path::new(&cwd), &session_id, name.as_deref()));
         Task::perform(resumed, move |result| Message::Started(id.clone(), result))
-    }
-
-    // ---- today ------------------------------------------------------------------
-
-    /// The day's digest: what each session reported as done, per project.
-    pub fn today_digest(&self) -> Vec<brain_core::digest::ProjectDay> {
-        let sessions = self
-            .model
-            .board
-            .keys()
-            .filter(|k| self.filter.as_ref().is_none_or(|f| *f == k.account))
-            .filter_map(|k| {
-                let session = self.model.board.get(k)?;
-                let project = self.projects.get(k).map(|(name, _)| name.clone()).unwrap_or_else(|| session.display_name());
-                Some((project, session))
-            })
-            .collect::<Vec<_>>();
-        brain_core::digest::day(sessions, chrono::Local::now().date_naive())
     }
 }
 

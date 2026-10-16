@@ -180,7 +180,7 @@ pub fn hint<'a, M: 'a>(label: impl Into<String>) -> Element<'a, M> {
 /// Section title with its count, e.g. "Braucht dich 3". `alert` turns the count red.
 pub fn section_title<'a, M: 'a>(title: impl Into<String>, count: usize, alert: bool) -> Element<'a, M> {
     let count: Element<'a, M> = if alert && count > 0 {
-        container(text(count.to_string()).size(11).color(TEXT_STRONG).font(bold()))
+        container(text(count.to_string()).size(11).color(INK).font(bold()))
             .padding([0, 6])
             .style(|_| boxed(CALLS, Color::TRANSPARENT, 8.0))
             .into()
@@ -196,10 +196,21 @@ pub fn section_title<'a, M: 'a>(title: impl Into<String>, count: usize, alert: b
 pub fn action<'a, M: Clone + 'a>(label: impl Into<String>, key: impl Into<String>, strong: bool, on_press: Option<M>) -> Element<'a, M> {
     let enabled = on_press.is_some();
     let key = key.into();
-    let mut content = row![text(label.into()).size(12.5).color(TEXT_STRONG).font(semibold())].spacing(8).align_y(iced::Center);
+    // Text on the alert colour is ink: white on red doesn't read.
+    let on_alert = if strong { INK } else { TEXT_STRONG };
+    let mut content = row![text(label.into()).size(12.5).color(on_alert).font(semibold())].spacing(8).align_y(iced::Center);
     // A button without a shortcut has no key cap.
     if !key.is_empty() {
-        content = content.push(kbd(key));
+        content = content.push(if strong {
+            container(text(key).size(10.5).color(INK).font(UI))
+                .padding([1, 5])
+                .height(18)
+                .center_y(18)
+                .style(|_| boxed(alpha(INK, 0x2e), alpha(INK, 0x40), 4.0))
+                .into()
+        } else {
+            kbd(key)
+        });
     }
     button(content)
         .padding([6, 12])
@@ -216,7 +227,7 @@ pub fn action<'a, M: Clone + 'a>(label: impl Into<String>, key: impl Into<String
             let faded = |c: Color| if enabled { c } else { Color { a: c.a * 0.4, ..c } };
             button::Style {
                 background: Some(Background::Color(faded(bg))),
-                text_color: faded(TEXT_STRONG),
+                text_color: faded(on_alert),
                 border: Border { color: faded(edge), width: if edge.a > 0.0 { 1.0 } else { 0.0 }, radius: 8.0.into() },
                 ..button::Style::default()
             }

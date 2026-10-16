@@ -64,7 +64,8 @@ pub struct View {
     pub name: String,
     /// `needs_you`, `your_turn`, `working`, `background` or `ended`.
     pub phase: &'static str,
-    /// The list section, as Brain's: `pinned`, `attention`, `working`, `resting` or `ended`.
+    /// The list section, as Brain's: `attention` (decide now), `read` (reports and guesses at a
+    /// question), `quiet` (everything else that lives) or `ended`.
     pub group: &'static str,
     pub headline: Option<String>,
     /// When the current phase began (epoch ms).

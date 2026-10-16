@@ -225,6 +225,8 @@ pub fn build() -> Demo {
             Insight {
                 // No turn signal: the demo's state comes from its events and status files.
                 turn: None,
+                asks: false,
+                closing: None,
                 model: Some(model.into()),
                 context_tokens: Some(tokens),
                 permission_mode: Some(mode.into()),

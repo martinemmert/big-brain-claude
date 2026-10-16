@@ -17,22 +17,31 @@ Terminal laufen und hilft, die Liste kurz zu halten.
 
 ## Die Liste
 
-Links stehen die Sessions, wer auf dich wartet zuerst, am längsten Wartende oben:
+Links stehen die Sessions in drei Zonen:
 
-- **Rot:** Claude fragt etwas oder braucht eine Freigabe.
-- **Gelb:** Der Turn ist fertig, du bist dran.
-- **Blau:** Claude arbeitet; **hellblau:** fertig, aber Subagents oder Hintergrund-Shells laufen noch.
+- **Zu entscheiden** (rot, mit Zahl): Claude braucht eine Freigabe (**Erlauben** / **Ablehnen**), stellt
+  eine Frage mit Optionen (ein Klick auf die Option antwortet) oder hat mit `brain report --waiting`
+  gefragt. Die Reihenfolge ist Freigabe, Optionen, Frage, darin die am längsten Wartende zuerst.
+  Wartet nichts, steht dort „Nichts wartet auf dich.“
+  - **Frage?** (gelber Streifen, kein Zähler): Der Turn endete ohne Meldung, der letzte Satz endet
+    mit „?“. Die Karte verschwindet, sobald du die Session öffnest und weiterklickst, oder mit
+    **Nur Bericht**.
+- **Zum Lesen:** fertige Sessions, die du noch nicht angesehen hast, neueste zuerst, mit dem
+  letzten Satz der Antwort. Als gesehen zählt eine Session, wenn du sie in Brains vorderem Fenster
+  auswählst und dann weiterklickst; **alle gesehen** macht das für die ganze Zone.
+- **Projekte:** alles andere, was läuft, nach Projekt gruppiert: blau arbeitet, hellblau
+  Subagents oder Hintergrund-Shells laufen noch, grau ruht, gelb wartet ohne Signal.
 
-Oben in der Titelleiste:
+Angeheftete Sessions (★) stehen in ihrer Zone; beendete angeheftete unter „Zum Fortsetzen gemerkt“.
+Die Fußzeile unter den Projekten klappt auf:
 
-- **Ansichten:** Status, Projekte (`G`) und Heute (`D`, was jede Session heute erledigt hat;
-  `⌘C` kopiert das als Markdown).
-- **Kontofilter:** umschalten mit `⇥`.
-- **„◌ N im Hintergrund“ (`B`)** blendet Claudes Hintergrund-Sessions ein.
-- **„⚙ N automatisch“ (`U`)** blendet Sessions ein, die Programme gestartet haben, etwa
+- **▸ N beendet** (`E`)
+- **▸ N im Hintergrund** (`B`) blendet Claudes Hintergrund-Sessions ein.
+- **▸ automatisch** (`U`) blendet Sessions ein, die Programme gestartet haben, etwa
   Security-Reviews nach Commits oder `claude -p`-Skripte. Standardmäßig ausgeblendet.
 
-Weitere Gruppen: Angeheftete (★), Ruhende (`H` klappt sie auf), Beendete (`E`).
+Oben in der Titelleiste steht die Zahl der Wartenden und der Kontofilter (umschalten mit `⇥`).
+Tastenkürzel stehen nur auf der gewählten Karte.
 
 - **Suchen:** `/` durchsucht die Liste nach Name, Ordner, Konto und Überschrift.
 - **Rechtsklick** auf eine Session zeigt alle passenden Aktionen mit ihren Kürzeln.
@@ -203,7 +212,6 @@ Alles optional, in `~/.claude-brain/config.json`:
 | Taste | Wirkung |
 |---|---|
 | `↑` `↓`, `j` `k` | Session wählen |
-| `1`–`9` | n-te Session öffnen |
 | `⏎`, Doppelklick | öffnen (in Brain, sonst im Terminal-Programm) |
 | `⌥⏎` | in iTerm öffnen |
 | `⌘2` / `⌘1` | ins Terminal / zurück zur Liste |
@@ -227,8 +235,7 @@ Alles optional, in `~/.claude-brain/config.json`:
 | `A` `A` | ins andere Konto |
 | `C` | aufräumen |
 | `L` | für später |
-| `G` / `D` | nach Projekten / Heute |
-| `B` / `U` / `E` / `H` | Hintergrund / automatische / beendete / ruhende Sessions |
+| `B` / `U` / `E` | Hintergrund / automatische / beendete Sessions |
 | `⇥` | Kontofilter |
 | `←` `→` | Tabs wechseln |
 | `esc` | Dialog oder Ansicht schließen, Suche leeren |

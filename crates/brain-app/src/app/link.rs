@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use brain_core::state::{Phase, Session, SessionKey};
+use brain_core::state::{Ask, Phase, Session, SessionKey};
 use brain_terminal::{self as terminal, Key};
 use iced::widget::image;
 use iced::Task;
@@ -100,7 +100,6 @@ impl Brain {
         if self.link.is_none() {
             return Task::none();
         }
-        self.refresh_link_questions();
         let Some(link) = &self.link else { return Task::none() };
         link.publish(self.link_views(now));
         link.publish_more(self.link_usage(now), self.link_places());
@@ -111,20 +110,21 @@ impl Brain {
     }
 
     /// The open question of each session that waits for the user, read again only when its
-    /// transcript grew or its mod reported another one.
-    fn refresh_link_questions(&mut self) {
+    /// transcript grew or its mod reported another one. Brain's list needs them to tell a
+    /// question from a permission, so this runs on every refresh, not only with Brain Link on.
+    pub(super) fn refresh_questions(&mut self) {
         let waiting: Vec<_> = self.model.board.keys().filter(|k| self.model.board.get(k).is_some_and(|s| s.phase() == Phase::NeedsYou)).cloned().collect();
-        self.link_questions.retain(|k, _| waiting.contains(k));
+        self.questions.retain(|k, _| waiting.contains(k));
         for key in waiting {
             let Some(path) = self.model.transcript_path(&key) else { continue };
             let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             let asked = self.model.board.get(&key).and_then(|s| s.asked()).map(|q| q.call.clone());
             let seen = (len, asked);
-            if self.link_questions.get(&key).is_some_and(|(at, _)| *at == seen) {
+            if self.questions.get(&key).is_some_and(|(at, _)| *at == seen) {
                 continue;
             }
             let question = self.open_question(&key);
-            self.link_questions.insert(key, (seen, question));
+            self.questions.insert(key, (seen, question));
         }
     }
 
@@ -177,20 +177,20 @@ impl Brain {
     /// The sessions as Brain lists them, section by section.
     fn link_views(&self, now: i64) -> Vec<View> {
         let groups = self.groups(now);
-        let sections: [(&'static str, &Vec<&Session>); 6] = [
-            ("pinned", &groups.pinned),
-            ("attention", &groups.attention),
-            ("working", &groups.working),
-            ("resting", &groups.resting),
-            ("resting", &groups.snoozed),
-            ("ended", &groups.ended),
+        let asking = |maybe: bool| groups.decide.iter().filter(move |(_, ask)| (*ask == Ask::Maybe) == maybe).map(|(s, _)| *s);
+        let quiet = groups.quiet.iter().flat_map(|(_, sessions)| sessions.iter().copied());
+        let sections: [(&'static str, Vec<&Session>); 4] = [
+            ("attention", asking(false).collect()),
+            ("read", asking(true).chain(groups.read.iter().copied()).collect()),
+            ("quiet", quiet.collect()),
+            ("ended", groups.ended.clone()),
         ];
         sections.iter().flat_map(|(group, sessions)| sessions.iter().map(move |s| self.link_view(s, group))).collect()
     }
 
     fn link_view(&self, s: &Session, group: &'static str) -> View {
         let phase = s.phase();
-        let question = if phase == Phase::NeedsYou { self.link_questions.get(&s.key).and_then(|(_, q)| q.clone()) } else { None };
+        let question = if phase == Phase::NeedsYou { self.questions.get(&s.key).and_then(|(_, q)| q.clone()) } else { None };
         View {
             account: s.key.account.clone(),
             id: s.key.id.clone(),
@@ -269,8 +269,8 @@ impl Brain {
                 let open = self.open_question(&key).filter(|q| q.call == call);
                 let Some(question) = open else {
                     self.set_status(tr!(
-                        "Vom Handy: „{name}“ fragt inzwischen etwas anderes – Antwort nicht gesendet.",
-                        "From the phone: “{name}” asks something else by now – answer not sent."
+                        "„{name}“ fragt inzwischen etwas anderes – Antwort nicht gesendet.",
+                        "“{name}” asks something else by now – answer not sent."
                     ));
                     return Task::none();
                 };
@@ -280,10 +280,10 @@ impl Brain {
                 let keys = single.and_then(|picks| brain_core::qa::answer_keys(&question, &picks));
                 let typed = if keys.is_none() { answer_text(&question, &answers) } else { None };
                 if keys.is_none() && typed.is_none() {
-                    self.set_status(tr!("Vom Handy: die Antwort passt nicht zu „{name}“s Frage.", "From the phone: the answer doesn't fit “{name}”'s question."));
+                    self.set_status(tr!("Die Antwort passt nicht zu „{name}“s Frage.", "The answer doesn't fit “{name}”'s question."));
                     return Task::none();
                 }
-                let answered = tr!("Antwort vom Handy an „{name}“ gegeben.", "Answered “{name}” from the phone.");
+                let answered = tr!("Antwort an „{name}“ gegeben.", "Answered “{name}”.");
                 if self.terminals.contains_key(&key) {
                     self.set_status(answered);
                     return match (keys, typed) {
@@ -303,8 +303,8 @@ impl Brain {
                     return if sent { type_later(key, text) } else { Task::none() };
                 }
                 self.set_status(tr!(
-                    "Vom Handy: „{name}“ läuft nicht in Brain – bitte dort antworten.",
-                    "From the phone: “{name}” doesn't run in Brain – answer it there."
+                    "„{name}“ läuft nicht in Brain – bitte dort antworten.",
+                    "“{name}” doesn't run in Brain – answer it there."
                 ));
                 Task::none()
             }
@@ -375,18 +375,18 @@ impl Brain {
             },
             Command::Permission { allow, since_ms, .. } => {
                 // A question isn't a permission: Allow would pick its first option.
-                let asking = self.link_questions.get(&key).is_some_and(|(_, q)| q.is_some());
+                let asking = self.questions.get(&key).is_some_and(|(_, q)| q.is_some());
                 // Only the dialog the phone showed: one that opened since was never seen there.
                 if asking || permission_since != Some(since_ms) {
                     if permission_open {
                         self.set_status(tr!(
-                            "Vom Handy: „{name}“ fragt inzwischen etwas anderes – Freigabe nicht gesendet.",
-                            "From the phone: “{name}” asks something else by now – permission not sent."
+                            "„{name}“ fragt inzwischen etwas anderes – Freigabe nicht gesendet.",
+                            "“{name}” asks something else by now – permission not sent."
                         ));
                     }
                     return Task::none();
                 }
-                let done = if allow { tr!("Freigabe vom Handy für „{name}“ erteilt.", "Permission for “{name}” allowed from the phone.") } else { tr!("Freigabe vom Handy für „{name}“ abgelehnt.", "Permission for “{name}” denied from the phone.") };
+                let done = if allow { tr!("Freigabe für „{name}“ erteilt.", "Permission for “{name}” allowed.") } else { tr!("Freigabe für „{name}“ abgelehnt.", "Permission for “{name}” denied.") };
                 if self.terminals.contains_key(&key) {
                     self.set_status(done);
                     // Return picks the dialog's default "Yes", Esc declines.
