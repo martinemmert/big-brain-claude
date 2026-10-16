@@ -154,6 +154,7 @@ mod tests {
             text: Some("Migrating\nthe   store".into()),
             tasks: None,
             name: None,
+            questions: None,
         };
         board.apply_event(&event);
 

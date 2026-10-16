@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::event::{BackgroundTask, Kind};
+use crate::event::{BackgroundTask, Kind, Question};
 
 /// The subset of the Claude Code hook stdin payload Brain cares about.
 #[derive(Debug, Deserialize)]
@@ -20,6 +20,9 @@ pub struct HookPayload {
     pub last_assistant_message: Option<String>,
     /// `Stop`: background shells, subagents, monitors … still running.
     pub background_tasks: Option<Vec<BackgroundTask>>,
+    /// `PreToolUse` / `PostToolUse`
+    pub tool_name: Option<String>,
+    pub tool_input: Option<serde_json::Value>,
 }
 
 impl HookPayload {
@@ -30,8 +33,22 @@ impl HookPayload {
             "Notification" => Some(Kind::Permission),
             "Stop" => Some(Kind::Stop),
             "SessionEnd" => Some(Kind::SessionEnd),
+            "PreToolUse" if self.asks() => Some(Kind::Question),
+            "PostToolUse" if self.asks() => Some(Kind::Answered),
             _ => None,
         }
+    }
+
+    fn asks(&self) -> bool {
+        self.tool_name.as_deref() == Some("AskUserQuestion")
+    }
+
+    /// The questions of a `PreToolUse` for AskUserQuestion.
+    pub fn questions(&self) -> Option<Vec<Question>> {
+        if self.kind()? != Kind::Question {
+            return None;
+        }
+        serde_json::from_value(self.tool_input.as_ref()?.get("questions")?.clone()).ok()
     }
 
     /// Short human text for the timeline: the prompt, the notification message,
@@ -118,6 +135,8 @@ mod tests {
             message: None,
             last_assistant_message: None,
             background_tasks: None,
+            tool_name: None,
+            tool_input: None,
         };
 
         assert_eq!(payload.kind(), Some(Kind::Stop));
@@ -128,5 +147,19 @@ mod tests {
     fn one_line_truncates_on_char_boundaries() {
         assert_eq!(one_line("äöü äöü", 5), "äöü…");
         assert_eq!(one_line("kurz", 5), "kurz");
+    }
+
+    #[test]
+    fn ask_user_question_hooks_carry_the_questions() {
+        let input = r#"{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Tea or coffee?","multiSelect":false,"options":[{"label":"Tea","description":"Green"},{"label":"Coffee"}]}]}}"#;
+        let payload: HookPayload = serde_json::from_str(input).unwrap();
+        assert_eq!(payload.kind(), Some(Kind::Question));
+        let questions = payload.questions().unwrap();
+        assert_eq!(questions[0].question, "Tea or coffee?");
+        assert_eq!(questions[0].options[0].description, "Green");
+        assert_eq!(questions[0].options[1].label, "Coffee");
+
+        let other: HookPayload = serde_json::from_str(r#"{"hook_event_name":"PreToolUse","tool_name":"Bash"}"#).unwrap();
+        assert_eq!(other.kind(), None);
     }
 }

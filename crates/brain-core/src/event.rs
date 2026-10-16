@@ -27,6 +27,25 @@ pub enum Kind {
     Doing,
     Waiting,
     Done,
+    Question,
+    Answered,
+}
+
+/// One question of an AskUserQuestion call.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Question {
+    pub question: String,
+    #[serde(default)]
+    pub options: Vec<QuestionOption>,
+    #[serde(default, rename = "multiSelect")]
+    pub multi_select: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuestionOption {
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
 }
 
 /// Work a session left running when its turn ended (Stop hook `background_tasks`).
@@ -66,4 +85,6 @@ pub struct Event {
     /// sessions keep it after their status file is gone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub questions: Option<Vec<Question>>,
 }

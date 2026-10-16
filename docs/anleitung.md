@@ -6,7 +6,7 @@ Terminal laufen und hilft, die Liste kurz zu halten.
 
 ## Einrichten
 
-- **Installieren:** `./scripts/install.sh` baut Brain, legt `Brain.app` nach `~/Applications`, den
+- **Installieren:** `./scripts/install-macos.sh` (macOS) bzw. `./scripts/install-linux.sh` (Linux) baut Brain, legt `Brain.app` nach `~/Applications`, den
   `brain`-Befehl nach `~/.cargo/bin` und richtet jedes Konto ein. Danach gilt alles für jede neue
   Claude-Session.
 - **Wie Sessions melden:** über den **Brain-Mod** (läuft in Claude Code selbst) und, als

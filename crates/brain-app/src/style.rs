@@ -2,7 +2,7 @@
 //! you, your turn, working, done), per-account hues, and the small pieces every view uses.
 
 use brain_core::state::Phase;
-use iced::widget::{button, container, row, text, Space};
+use iced::widget::{button, column, container, row, text, Space};
 use iced::{border, color, font, Background, Border, Color, Element, Font, Length, Padding, Shadow, Vector};
 
 // Surfaces, darkest to lightest.
@@ -32,8 +32,14 @@ pub const ENDED: Color = color!(0x4a5272);
 pub const CODE: Color = color!(0xc8d4ff);
 
 /// macOS's system font (San Francisco) and Menlo for paths and code.
+#[cfg(target_os = "macos")]
 pub const UI: Font = Font::with_name(".SF NS");
+#[cfg(target_os = "macos")]
 pub const MONO: Font = Font::with_name("Menlo");
+#[cfg(not(target_os = "macos"))]
+pub const UI: Font = Font::DEFAULT;
+#[cfg(not(target_os = "macos"))]
+pub const MONO: Font = Font::MONOSPACE;
 
 pub fn weight(weight: font::Weight) -> Font {
     Font { weight, ..UI }
@@ -136,9 +142,35 @@ pub fn terminal_palette() -> iced_term::ColorPalette {
     }
 }
 
-/// A key cap like `⏎` or `/`.
+/// macOS key symbols as Linux labels; shortcuts that also work from a terminal take Ctrl+Shift.
+pub fn keys(label: &str) -> String {
+    if cfg!(target_os = "macos") {
+        return label.to_string();
+    }
+    let mut out = String::new();
+    let mut chars = label.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '⌘' if chars.peek() == Some(&'-') => out.push_str(crate::i18n::t("Strg", "Ctrl")),
+            '⌘' => {
+                let shift = chars.next_if_eq(&'⇧').is_some() || chars.peek().is_some_and(|k| "12JDTKEAV[".contains(k.to_ascii_uppercase()));
+                out.push_str(crate::i18n::t("Strg+", "Ctrl+"));
+                if shift {
+                    out.push_str("Shift+");
+                }
+            }
+            '⇧' => out.push_str("Shift+"),
+            '⌥' => out.push_str("Alt+"),
+            '⌫' => out.push_str("Backspace"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// A key cap like `⏎` or `/`; at least square, so single keys line up.
 pub fn kbd<'a, M: 'a>(label: impl Into<String>) -> Element<'a, M> {
-    container(text(label.into()).size(10.5).color(TEXT_MUTED).font(UI))
+    container(column![text(keys(&label.into())).size(10.5).color(TEXT_MUTED).font(UI), Space::new().width(8)].align_x(iced::Center))
         .padding([1, 5])
         .height(18)
         .center_y(18)
@@ -290,4 +322,20 @@ pub fn rail<'a, M: 'a>(color: Color, radius: f32) -> Element<'a, M> {
             ..container::Style::default()
         })
         .into()
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod tests {
+    use super::keys;
+    use crate::i18n::t;
+
+    #[test]
+    fn mac_symbols_become_linux_keys() {
+        let ctrl = t("Strg+", "Ctrl+");
+        assert_eq!(keys("⌘F"), format!("{ctrl}F"));
+        assert_eq!(keys("⌘K"), format!("{ctrl}Shift+K"));
+        assert_eq!(keys("⌘⇧C"), format!("{ctrl}Shift+C"));
+        assert_eq!(keys("⌥⏎ ⌘⌫"), format!("Alt+⏎ {ctrl}Backspace"));
+        assert_eq!(keys("⌘-Klick"), format!("{}-Klick", t("Strg", "Ctrl")));
+    }
 }

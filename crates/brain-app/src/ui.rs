@@ -19,7 +19,7 @@ use crate::style::{
 use crate::tr;
 
 /// Room for the window's traffic lights at the left of the title bar.
-const TRAFFIC_LIGHTS: f32 = 78.0;
+const TRAFFIC_LIGHTS: f32 = if cfg!(target_os = "macos") { 78.0 } else { 14.0 };
 
 pub fn view(brain: &Brain) -> Element<'_, Message> {
     let now = now_ms();
@@ -72,7 +72,24 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::Composer => composer(brain),
         _ => context_menu(brain).unwrap_or_else(|| Space::new().into()),
     };
-    stack![window, overlay].into()
+    stack![window, overlay, error_toast(brain)].into()
+}
+
+/// Above the footer at the bottom right; a click dismisses it.
+fn error_toast(brain: &Brain) -> Element<'_, Message> {
+    let Some((message, _)) = &brain.error else { return Space::new().into() };
+    let toast = mouse_area(
+        container(row![text("!").size(13).color(CALLS).font(style::bold()), text(message.as_str()).size(12.5).color(TEXT_STRONG).font(UI).line_height(1.4)].spacing(10))
+            .padding([10, 14])
+            .max_width(460)
+            .style(|_| container::Style {
+                shadow: iced::Shadow { color: alpha(CALLS, 0x40), offset: iced::Vector::new(0.0, 4.0), blur_radius: 18.0 },
+                ..boxed(RAISED, CALLS, 8.0)
+            }),
+    )
+    .on_press(Message::DismissError)
+    .interaction(iced::mouse::Interaction::Pointer);
+    container(toast).width(Fill).height(Fill).align_right(Fill).align_bottom(Fill).padding(Padding { bottom: 44.0, right: 16.0, ..Padding::ZERO }).into()
 }
 
 /// ⌘E: a longer prompt for the selected session, with templates and pasted screenshots.
@@ -81,7 +98,7 @@ fn composer(brain: &Brain) -> Element<'_, Message> {
     let editor = iced::widget::text_editor(&brain.composer)
         .id(app::COMPOSER)
         .on_action(Message::ComposerEdit)
-        .placeholder(t("Prompt schreiben … (⌘V fügt einen Screenshot ein)", "Write the prompt … (⌘V adds a screenshot)"))
+        .placeholder(style::keys(t("Prompt schreiben … (⌘V fügt einen Screenshot ein)", "Write the prompt … (⌘V adds a screenshot)")))
         .height(260)
         .padding(12)
         .size(14)
@@ -150,7 +167,7 @@ fn palette(brain: &Brain) -> Element<'_, Message> {
     let first = brain.palette_index.saturating_sub(SHOWN - 1);
     let rows = entries.into_iter().enumerate().skip(first).take(SHOWN).map(|(i, (label, keys, command))| -> Element<'_, Message> {
         let chosen = i == brain.palette_index;
-        button(row![text(label).size(13).color(if chosen { TEXT_STRONG } else { TEXT }).font(UI).width(Fill), text(keys).size(11.5).color(TEXT_FAINT).font(UI)].spacing(12).align_y(iced::Center))
+        button(row![text(label).size(13).color(if chosen { TEXT_STRONG } else { TEXT }).font(UI).width(Fill), text(style::keys(keys)).size(11.5).color(TEXT_FAINT).font(UI)].spacing(12).align_y(iced::Center))
             .padding([7, 12])
             .width(Fill)
             .on_press(Message::PaletteRun(command))
@@ -162,7 +179,7 @@ fn palette(brain: &Brain) -> Element<'_, Message> {
             .into()
     });
     let list = column(rows).spacing(1);
-    let panel = container(column![container(row![text("⌘K").size(12).color(TEXT_FAINT), field].spacing(10).align_y(iced::Center)).padding([0, 8]), divider(), list].spacing(6))
+    let panel = container(column![container(row![text(style::keys("⌘K")).size(12).color(TEXT_FAINT), field].spacing(10).align_y(iced::Center)).padding([0, 8]), divider(), list].spacing(6))
         .padding(8)
         .width(620)
         .style(|_| container::Style {
@@ -197,7 +214,7 @@ fn screenshot_offer(brain: &Brain) -> Option<Element<'_, Message>> {
 
 // ---- context menu -----------------------------------------------------------------
 
-const MENU_WIDTH: f32 = 250.0;
+const MENU_WIDTH: f32 = 300.0;
 const MENU_ROW: f32 = 28.0;
 const MENU_PADDING: f32 = 5.0;
 /// A separator's height: 1 pt line, 4 pt above and below.
@@ -314,8 +331,9 @@ fn context_menu(brain: &Brain) -> Option<Element<'_, Message>> {
         };
         let color = if danger { CALLS_SOFT } else { TEXT };
         button(
-            row![text(label).size(13).color(color).font(UI).width(Fill), text(keys).size(11.5).color(TEXT_FAINT).font(UI)]
+            row![text(label).size(13).color(color).font(UI).width(Fill), kbd(keys)]
                 .spacing(12)
+                .height(Fill)
                 .align_y(iced::Center),
         )
         .padding([0, 10])
@@ -998,7 +1016,17 @@ fn callout<'a>(brain: &'a Brain, s: &'a Session, now: i64, caps: brain_terminal:
         }
     }
     let mut actions: Vec<Element<'a, Message>> = Vec::new();
-    if s.awaiting_permission() {
+    let questions = brain.open_questions();
+    if !questions.is_empty() {
+        for q in questions {
+            body = body.push(text(q.question.clone()).size(13).color(TEXT_STRONG).font(style::semibold()));
+            for (i, option) in q.options.iter().enumerate() {
+                let description = if option.description.is_empty() { String::new() } else { format!(" – {}", option.description) };
+                body = body.push(text(format!("{}. {}{description}", i + 1, option.label)).size(12.5).color(TEXT).font(UI));
+            }
+        }
+        actions.push(action(t("Zur Session", "Go to session"), "⏎", true, Some(Message::Do(Action::Open))));
+    } else if s.awaiting_permission() {
         actions.push(action(t("Erlauben", "Allow"), "Y", true, caps.keys.then_some(Message::Do(Action::Allow))));
         actions.push(action(t("Ablehnen", "Deny"), "N", false, caps.keys.then_some(Message::Do(Action::Deny))));
     } else if s.accepts_input() && brain.mode != Mode::Reply {
@@ -1006,12 +1034,41 @@ fn callout<'a>(brain: &'a Brain, s: &'a Session, now: i64, caps: brain_terminal:
     }
     if !actions.is_empty() {
         body = body.push(row(actions).spacing(8));
+        let blocked = !brain.terminals.contains_key(&s.key) && if s.awaiting_permission() { !caps.keys } else { !caps.type_text };
+        if let Some(limit) = brain.typing_limit().filter(|_| blocked) {
+            body = body.push(text(limit_help(limit)).size(12).color(TEXT_MUTED).font(UI).line_height(1.4));
+        }
     }
     container(row![rail(color, 10.0), container(body).padding(Padding { top: 12.0, right: 14.0, bottom: 12.0, left: 12.0 }).width(Fill)].height(Length::Shrink))
         .width(Fill)
         .clip(true)
         .style(move |_| boxed(alpha(color, 0x14), alpha(color, 0x3a), 10.0))
         .into()
+}
+
+/// What to change so Brain can type into the terminal.
+fn limit_help(limit: &brain_terminal::Limit) -> String {
+    use brain_terminal::Limit;
+    let supported = if cfg!(target_os = "macos") { t("iTerm2 oder tmux", "iTerm2 or tmux") } else { t("Konsole oder tmux", "Konsole or tmux") };
+    match limit {
+        Limit::KonsoleLocked => t(
+            "Konsole lässt Brain nicht tippen. In Konsole: Einstellungen → Konsole einrichten → Allgemein → „Sicherheitsrelevante Teile der D-Bus-Schnittstelle aktivieren“. Danach dieses Konsole-Fenster schließen, neu öffnen und die Session mit claude --resume fortsetzen.",
+            "Konsole doesn't let Brain type. In Konsole: Settings → Configure Konsole → General → “Enable the security sensitive parts of the DBus API”. Then close this Konsole window, open a new one and continue the session with claude --resume.",
+        )
+        .to_string(),
+        Limit::TerminalApp => tr!(
+            "In Terminal.app kann Brain nur das Fenster nach vorne holen. Zum Antworten aus Brain die Session in {supported} starten.",
+            "In Terminal.app Brain can only bring the window forward. To reply from Brain, start the session in {supported}."
+        ),
+        Limit::Editor => tr!(
+            "Ins Terminal von VS Code und Cursor kann Brain nicht tippen. Zum Antworten aus Brain die Session in {supported} starten.",
+            "Brain can't type into the terminal of VS Code or Cursor. To reply from Brain, start the session in {supported}."
+        ),
+        Limit::Unknown(name) => tr!(
+            "Das Terminal „{name}“ kann Brain nicht steuern. Zum Antworten aus Brain die Session in {supported} starten.",
+            "Brain can't control the terminal “{name}”. To reply from Brain, start the session in {supported}."
+        ),
+    }
 }
 
 /// "Edits the same files as X: a.rs, b.rs" and "Works in the same checkout as Y".
@@ -1454,13 +1511,24 @@ fn messages<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
         scrollable(column(markdown::timeline(s)).padding(Padding { top: 12.0, right: 8.0, bottom: 20.0, left: 0.0 })).height(Fill).style(scrollbar).into()
     } else if brain.find.trim().is_empty() && !brain.prompts_only {
         let list = brain.conversation.as_ref().map(|c| c.messages.as_slice()).unwrap_or_default();
-        let children = if list.is_empty() { vec![hint(t("Diese Session hat noch keine Nachrichten.", "This session has no messages yet."))] } else { markdown::conversation(list) };
-        scrollable(column(children).spacing(14).padding(Padding { top: 4.0, right: 12.0, bottom: 24.0, left: 0.0 }))
+        let children = if list.is_empty() { vec![hint(t("Diese Session hat noch keine Nachrichten.", "This session has no messages yet."))] } else { markdown::conversation(list, Message::CopyText) };
+        let list = scrollable(column(children).spacing(14).padding(Padding { top: 4.0, right: 12.0, bottom: 24.0, left: 0.0 }))
             .id(app::MESSAGES)
             .on_scroll(Message::MessagesScrolled)
             .height(Fill)
-            .style(scrollbar)
-            .into()
+            .style(scrollbar);
+        let to_end: Element<'_, Message> = if brain.messages_at_bottom {
+            Space::new().into()
+        } else {
+            container(style::text_button(t("↓ Ans Ende", "↓ To the end"), true, Message::MessagesToEnd))
+                .width(Fill)
+                .height(Fill)
+                .align_right(Fill)
+                .align_bottom(Fill)
+                .padding(Padding { bottom: 12.0, right: 24.0, ..Padding::ZERO })
+                .into()
+        };
+        stack![list, to_end].into()
     } else {
         whole_session(brain)
     };
@@ -1552,7 +1620,7 @@ fn whole_session(brain: &Brain) -> Element<'_, Message> {
         let open = brain.expanded == Some(i);
         let content: Element<'_, Message> = if open {
             column![
-                column(markdown::conversation(std::slice::from_ref(message))).spacing(8),
+                column(markdown::conversation(std::slice::from_ref(message), Message::CopyText)).spacing(8),
                 row![action(t("Kopieren", "Copy"), "", false, Some(Message::CopyText(message.text.clone())))],
             ]
             .spacing(8)
@@ -1861,7 +1929,7 @@ fn new_session(brain: &Brain) -> Element<'_, Message> {
     content = content.push(scrollable(column(choices).spacing(2)).height(Fill).style(scrollbar));
     content = content.push(
         container(
-            text(t("⏎ wählen/starten · ↑↓ · ⇥ Konto · ⌘I Brain/iTerm · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc", "⏎ pick/start · ↑↓ · ⇥ account · ⌘I Brain/iTerm · ⌘E edit template · ⌘⇧N new template · esc"))
+            text(style::keys(t("⏎ wählen/starten · ↑↓ · ⇥ Konto, bei Pfad ergänzen · ⌘I Brain/iTerm · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc", "⏎ pick/start · ↑↓ · ⇥ account, completes a path · ⌘I Brain/iTerm · ⌘E edit template · ⌘⇧N new template · esc")))
                 .size(11.5)
                 .color(TEXT_FAINT)
                 .font(UI),
@@ -1891,10 +1959,10 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
         };
         row![
             style::dot(phase_color(s.phase()), 7.0),
-            name_label(s, 12.5, TEXT_STRONG),
+            container(name_label(s, 12.5, TEXT_STRONG)).width(Fill),
             account_badge(&s.key.account, brain.account_index(&s.key.account)),
-            text(kind).size(12.5).color(TEXT_FAINT).font(UI),
-            text(ago_phrase(s.last_activity_ms, now)).size(12.5).color(TEXT_MUTED).font(UI),
+            container(text(kind).size(12.5).color(TEXT_FAINT).font(UI)).width(220),
+            container(text(ago_phrase(s.last_activity_ms, now)).size(12.5).color(TEXT_MUTED).font(UI)).width(140),
         ]
         .spacing(10)
         .align_y(iced::Center)
@@ -1907,7 +1975,7 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
         text(summary).size(12.5).color(TEXT_MUTED).font(UI),
         scrollable(column(rows).spacing(2)).height(Fill).style(scrollbar),
         container(
-            text(t("H alle ausblenden · ⌘⌫ ⌘⌫ alle in den Papierkorb · ⇥ Alter · esc", "H hide all · ⌘⌫ ⌘⌫ move all to the Trash · ⇥ age · esc"))
+            text(style::keys(t("H alle ausblenden · ⌘⌫ ⌘⌫ alle in den Papierkorb · ⇥ Alter · esc", "H hide all · ⌘⌫ ⌘⌫ move all to the Trash · ⇥ age · esc")))
                 .size(11.5)
                 .color(TEXT_FAINT)
                 .font(UI),
@@ -1915,6 +1983,7 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
         .padding(Padding { bottom: 16.0, ..Padding::ZERO }),
     ]
     .spacing(14)
+    .width(Fill)
     .padding(Padding { top: 24.0, right: 28.0, bottom: 0.0, left: 28.0 })
     .into()
 }

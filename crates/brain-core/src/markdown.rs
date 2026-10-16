@@ -46,15 +46,25 @@ pub fn parse(markdown: &str) -> Vec<Block> {
         let trimmed = line.trim_start();
         let indent = line.len() - trimmed.len();
 
-        if let Some(fence) = trimmed.strip_prefix("```") {
+        if let Some((marker, info)) = fence(trimmed) {
             flush(&mut paragraph, &mut blocks);
-            let lang = Some(fence.trim().to_string()).filter(|l| !l.is_empty());
+            let lang = Some(info.to_string()).filter(|l| !l.is_empty());
+            // Fences nested inside (a `sql` block in a `markdown` block) open with an info
+            // string and close bare; only the bare fence matching this one ends the block.
+            let mut depth = 0;
             let mut code = Vec::new();
             for code_line in lines.by_ref() {
-                if code_line.trim_start().starts_with("```") {
-                    break;
+                if let Some((inner, inner_info)) = fence(code_line.trim_start()) {
+                    if inner.starts_with(marker) && inner_info.is_empty() {
+                        if depth == 0 {
+                            break;
+                        }
+                        depth -= 1;
+                    } else if inner.chars().next() == marker.chars().next() && !inner_info.is_empty() {
+                        depth += 1;
+                    }
                 }
-                code.push(code_line);
+                code.push(strip_indent(code_line, indent));
             }
             blocks.push(Block::Code { lang, text: code.join("\n") });
             continue;
@@ -99,6 +109,19 @@ pub fn parse(markdown: &str) -> Vec<Block> {
     }
     flush(&mut paragraph, &mut blocks);
     blocks
+}
+
+/// A code fence (three or more backticks or tildes) and its info string.
+fn fence(line: &str) -> Option<(&str, &str)> {
+    let ch = line.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let len = line.chars().take_while(|c| *c == ch).count();
+    (len >= 3).then(|| (&line[..len], line[len..].trim()))
+}
+
+/// Removes up to `indent` leading spaces, the indentation of the opening fence.
+fn strip_indent(line: &str, indent: usize) -> &str {
+    let spaces = line.bytes().take(indent).take_while(|b| *b == b' ').count();
+    &line[spaces..]
 }
 
 fn heading(line: &str) -> Option<(u8, &str)> {
@@ -211,6 +234,28 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0][1].spans.len(), 1);
         assert_eq!(blocks[8], Block::Rule);
+    }
+
+    #[test]
+    fn nested_fences_stay_inside_the_outer_code_block() {
+        let md = "```markdown\n## Was\n\n  ```sql\n  SELECT 1;\n  ```\n\nEnde\n```\nDanach";
+
+        let blocks = parse(md);
+
+        assert_eq!(blocks.len(), 2);
+        let Block::Code { lang: Some(lang), text } = &blocks[0] else { panic!("code") };
+        assert_eq!(lang, "markdown");
+        assert_eq!(text, "## Was\n\n  ```sql\n  SELECT 1;\n  ```\n\nEnde");
+        assert!(matches!(&blocks[1], Block::Paragraph(p) if p.text == "Danach"));
+    }
+
+    #[test]
+    fn longer_fences_and_indentation_follow_the_opening_fence() {
+        let md = "  ````md\n  ```\n  x\n  ```\n  ````";
+
+        let blocks = parse(md);
+
+        assert_eq!(blocks, vec![Block::Code { lang: Some("md".into()), text: "```\nx\n```".into() }]);
     }
 
     #[test]

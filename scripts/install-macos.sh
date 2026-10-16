@@ -14,7 +14,7 @@ if [ -z "${BRAIN_SIGN_IDENTITY:-}" ]; then
   BRAIN_SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -n 1)"
 fi
 export BRAIN_SIGN_IDENTITY
-./scripts/bundle.sh
+./scripts/bundle-macos.sh
 
 echo "→ brain CLI"
 mkdir -p "$HOME/.cargo/bin"

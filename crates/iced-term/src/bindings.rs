@@ -343,6 +343,10 @@ fn platform_keyboard_bindings() -> Vec<(Binding<InputKind>, BindingAction)> {
         KeyboardBinding;
         "c", Modifiers::SHIFT | Modifiers::COMMAND; BindingAction::Copy;
         "v", Modifiers::SHIFT | Modifiers::COMMAND; BindingAction::Paste;
+        // Brain: word left / right / delete instead of the macOS line edits.
+        ArrowLeft,  Modifiers::COMMAND; BindingAction::Esc("\x1b[1;5D".into());
+        ArrowRight, Modifiers::COMMAND; BindingAction::Esc("\x1b[1;5C".into());
+        Backspace,  Modifiers::COMMAND; BindingAction::Char('\x17');
     )
 }
 
@@ -398,6 +402,17 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn ctrl_keys_move_and_delete_by_word() {
+        let layout = BindingsLayout::default();
+        let action = |key| layout.get_action(InputKind::KeyCode(key), Modifiers::COMMAND, TermMode::empty());
+        assert_eq!(action(Named::Backspace), BindingAction::Char('\x17'));
+        assert_eq!(action(Named::ArrowLeft), BindingAction::Esc("\x1b[1;5D".into()));
+        assert_eq!(action(Named::ArrowRight), BindingAction::Esc("\x1b[1;5C".into()));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
     fn command_keys_edit_the_line_like_macos() {
         let layout = BindingsLayout::default();
         let action = |key| layout.get_action(InputKind::KeyCode(key), Modifiers::COMMAND, TermMode::empty());

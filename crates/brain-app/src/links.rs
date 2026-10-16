@@ -2,18 +2,25 @@
 
 use std::sync::Mutex;
 
+#[cfg(target_os = "macos")]
 use objc2::rc::Retained;
+#[cfg(target_os = "macos")]
 use objc2::runtime::AnyObject;
+#[cfg(target_os = "macos")]
 use objc2::{define_class, msg_send, sel, AnyThread};
+#[cfg(target_os = "macos")]
 use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
 
 static OPENED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+#[cfg(target_os = "macos")]
 /// `'GURL'`: the Apple Event class and id macOS sends for a URL the app is registered for.
 const GET_URL: u32 = u32::from_be_bytes(*b"GURL");
+#[cfg(target_os = "macos")]
 /// `'----'`: the event's direct object, here the URL.
 const DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
 
+#[cfg(target_os = "macos")]
 define_class!(
     // SAFETY: NSObject has no subclassing requirements; no Drop impl.
     #[unsafe(super(NSObject))]
@@ -41,6 +48,7 @@ define_class!(
     }
 );
 
+#[cfg(target_os = "macos")]
 /// Asks macOS to hand `brain://` URLs (registered in Info.plist) to Brain. The handler object
 /// lives for the whole run.
 pub fn listen_for_urls() {
@@ -57,6 +65,12 @@ pub fn listen_for_urls() {
         ];
     }
     std::mem::forget(handler);
+}
+
+/// Linux: only links given on the command line.
+#[cfg(not(target_os = "macos"))]
+pub fn listen_for_urls() {
+    OPENED.lock().unwrap().extend(std::env::args().skip(1).filter(|a| a.starts_with("brain://")));
 }
 
 /// Sessions asked for since the last call, as account and pid of their process.

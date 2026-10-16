@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent
 BUILD = ROOT / "build"
 OUT = ROOT / "out" / "brain-explainer.mp4"
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-ICON = (ROOT.parent / "assets" / "icon.png").as_uri()
+ICON = (ROOT.parent / "assets" / "icon-1024.png").as_uri()
 
 FPS = 30
 W, H = 3840, 2160          # working canvas (2× of 1080p)
@@ -204,7 +204,7 @@ CARDS = {
   <pre class=mono style="font-size:27px; line-height:1.6; padding:34px 44px; color:#d5d9e6;">\
 <span style="color:#5aa9ff">$</span> git clone https://github.com/martinemmert/big-brain-claude.git
 <span style="color:#5aa9ff">$</span> cd big-brain-claude
-<span style="color:#5aa9ff">$</span> ./scripts/install.sh
+<span style="color:#5aa9ff">$</span> ./scripts/install-macos.sh
 <span style="color:#8c93aa">→ brain CLI
 → Brain.app
 → Hooks &amp; Protokoll</span>

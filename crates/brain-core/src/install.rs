@@ -5,6 +5,9 @@ use serde_json::{json, Map, Value};
 /// Hook events Brain listens to.
 pub const HOOK_EVENTS: [&str; 5] = ["SessionStart", "UserPromptSubmit", "Notification", "Stop", "SessionEnd"];
 
+/// Hook events Brain listens to only for AskUserQuestion.
+pub const QUESTION_EVENTS: [&str; 2] = ["PreToolUse", "PostToolUse"];
+
 /// Recognises hook entries written by an earlier install.
 const HOOK_MARKER: &str = "brain hook";
 pub const PERMISSION_RULE: &str = "Bash(brain report:*)";
@@ -49,16 +52,20 @@ pub fn patch_settings(settings: &mut Value, hook_command: &str, mod_dir: Option<
         *hooks = json!({});
     }
     let hooks = hooks.as_object_mut().expect("object");
-    for event in HOOK_EVENTS {
+    for event in HOOK_EVENTS.into_iter().chain(QUESTION_EVENTS) {
         let groups = hooks.entry(event).or_insert_with(|| json!([]));
         if !groups.is_array() {
             *groups = json!([]);
         }
         let groups = groups.as_array_mut().expect("array");
         groups.retain(|group| !group_is_brain(group));
-        groups.push(json!({
+        let mut group = json!({
             "hooks": [{ "type": "command", "command": hook_command, "timeout": 5 }]
-        }));
+        });
+        if QUESTION_EVENTS.contains(&event) {
+            group["matcher"] = json!("AskUserQuestion");
+        }
+        groups.push(group);
     }
 
     if let Some(brain) = hook_command.strip_suffix(" hook") {

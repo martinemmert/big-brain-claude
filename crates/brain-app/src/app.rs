@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use brain_core::state::{Phase, Session, SessionKey};
-use brain_terminal::{self as terminal, Capabilities, Key, Outcome};
+use brain_terminal::{self as terminal, Capabilities, Key, Limit, Outcome};
 use iced::keyboard::{self, key::Named};
 use iced::widget::{operation, scrollable};
 use iced::{window, Subscription, Task};
@@ -34,6 +34,7 @@ pub const RESTING_AFTER_MS: i64 = 2 * 60 * 60 * 1000;
 /// Ended sessions show in the list for a day; older ones through the search.
 pub const ENDED_RECENT_MS: i64 = 24 * 60 * 60 * 1000;
 const SNOOZE_MS: i64 = 15 * 60 * 1000;
+const ERROR_SECS: u64 = 30;
 /// How long after typing into a terminal its program may still write the clipboard (OSC 52):
 /// long enough for `/copy` and its picker, too short for output that arrives later.
 const CLIPBOARD_AFTER_TYPING: Duration = Duration::from_secs(10);
@@ -266,6 +267,7 @@ pub enum Message {
     OpenUrl(String),
     ListScrolled(scrollable::Viewport),
     MessagesScrolled(scrollable::Viewport),
+    MessagesToEnd,
     CheckPrs,
     PrsLoaded(HashMap<SessionKey, brain_core::github::PullRequest>),
     ChangesLoaded(SessionKey, Option<brain_core::changes::Changes>),
@@ -300,6 +302,7 @@ pub enum Message {
     /// A search hit or a prompt clicked open (its index in the history), or closed again.
     Expand(Option<usize>),
     CopyText(String),
+    DismissError,
     Exported(Result<std::path::PathBuf, String>),
     /// A lens of the Messages tab, from the find bar.
     Lens(Lens),
@@ -412,6 +415,8 @@ pub struct NewSession {
     pub chosen: Option<Chosen>,
     /// ⌥⏎ starts it in an iTerm tab instead of in Brain.
     pub in_iterm: bool,
+    /// Folders in the typed path's parent that match its last part, read when the field changes.
+    pub dirs: Vec<String>,
 }
 
 pub struct Chosen {
@@ -538,6 +543,8 @@ pub struct Brain {
     /// The clean-up dialog's age choice (index into CLEANUP_DAYS).
     pub cleanup_age: usize,
     pub status: Option<(String, Instant)>,
+    /// A failed terminal action; stays until clicked away or `ERROR_SECS` pass.
+    pub error: Option<(String, Instant)>,
     pub tab: DetailTab,
     pub conversation: Option<Conversation>,
     pub files: Option<FilesCache>,
@@ -586,7 +593,7 @@ pub struct Brain {
     /// Reminders sent while a session keeps waiting: since when it waits, and how many.
     reminders: HashMap<SessionKey, (i64, u32)>,
     /// The terminal hosting the selected session and what Brain can do with it.
-    host: Option<(SessionKey, Capabilities)>,
+    host: Option<(SessionKey, Capabilities, Option<Limit>)>,
     /// Project name and worktree per session.
     pub projects: HashMap<SessionKey, (String, Option<String>)>,
     /// The checked-out working tree per session (for conflicts and PR lookups).
@@ -623,7 +630,7 @@ pub struct Brain {
     pub update: Option<crate::links::Update>,
     /// What the list and the message pane show, to keep the selection and new messages in view.
     list_viewport: Option<(f32, f32)>,
-    messages_at_bottom: bool,
+    pub messages_at_bottom: bool,
     /// Terminals running sessions inside Brain, per session; they keep running while another
     /// session is selected.
     pub terminals: HashMap<SessionKey, iced_term::Terminal>,
@@ -709,6 +716,7 @@ impl Brain {
             show_snoozed: false,
             cleanup_age: 1,
             status: None,
+            error: None,
             tab: DetailTab::Messages,
             conversation: None,
             mode: Mode::Normal,
@@ -934,8 +942,7 @@ impl Brain {
             }
             Message::RenameSubmit => self.submit_rename(),
             Message::NewInput(text) => {
-                self.new_session.folder = text;
-                self.new_session.pick = 0;
+                self.set_new_session_input(text);
                 Task::none()
             }
             Message::NewSubmit => self.confirm_new_session(),
@@ -986,12 +993,16 @@ impl Brain {
                 Task::none()
             }
             Message::OpenUrl(url) => {
-                let _ = std::process::Command::new("open").arg(url).spawn();
+                let _ = std::process::Command::new(OPEN).arg(url).spawn();
                 Task::none()
             }
             Message::ListScrolled(viewport) => {
                 self.list_viewport = Some((viewport.absolute_offset().y, viewport.bounds().height));
                 Task::none()
+            }
+            Message::MessagesToEnd => {
+                self.messages_at_bottom = true;
+                operation::snap_to_end(MESSAGES)
             }
             Message::MessagesScrolled(viewport) => {
                 self.messages_at_bottom = viewport.relative_offset().y >= 0.98 || viewport.content_bounds().height <= viewport.bounds().height;
@@ -1067,6 +1078,10 @@ impl Brain {
             }
             Message::Expand(index) => {
                 self.expanded = index;
+                Task::none()
+            }
+            Message::DismissError => {
+                self.error = None;
                 Task::none()
             }
             Message::CopyText(text) => {
@@ -1526,6 +1541,9 @@ impl Brain {
         if self.status.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(6)) {
             self.status = None;
         }
+        if self.error.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(ERROR_SECS)) {
+            self.error = None;
+        }
         Task::batch(tasks)
     }
 
@@ -1627,7 +1645,9 @@ impl Brain {
             if self.prefs.is_muted(&key) || self.prefs.snoozed_until(&key, now).is_some() || self.is_quiet(&key) {
                 continue;
             }
-            let entry = self.reminders.entry(key.clone()).or_insert((since, 0));
+            // A session seen waiting for the first time (start, shown again, unmuted) gets no backlog.
+            let missed = ((now - since) / interval).clamp(0, MAX_REMINDERS as i64) as u32;
+            let entry = self.reminders.entry(key.clone()).or_insert((since, missed));
             if entry.0 != since {
                 *entry = (since, 0);
             }
@@ -2352,7 +2372,7 @@ impl Brain {
             // and `open` would hand other schemes (file://, ssh:, app schemes) to whatever app.
             let lower = link.to_ascii_lowercase();
             if lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:") {
-                let _ = std::process::Command::new("open").arg(link).spawn();
+                let _ = std::process::Command::new(OPEN).arg(link).spawn();
             } else {
                 self.set_status(tr!("Nur Web-Links öffnet Brain: {link}", "Brain opens web links only: {link}"));
             }
@@ -2455,12 +2475,13 @@ impl Brain {
             self.host = None;
             return;
         };
-        if self.model.is_demo() || self.host.as_ref().is_some_and(|(k, _)| *k == key) {
+        if self.model.is_demo() || self.host.as_ref().is_some_and(|(k, ..)| *k == key) {
             return;
         }
         let Some(pid) = self.model.board.get(&key).map(|s| s.pid) else { return };
-        let caps = terminal::host_of(pid).map(|host| terminal::capabilities(&host)).unwrap_or(Capabilities { focus: false, type_text: false, keys: false });
-        self.host = Some((key, caps));
+        let host = terminal::host_of(pid);
+        let caps = host.as_ref().map(terminal::capabilities).unwrap_or(Capabilities { focus: false, type_text: false, keys: false });
+        self.host = Some((key, caps, host.as_ref().and_then(terminal::limit)));
     }
 
     /// Project names for the sessions (git is asked once per directory).
@@ -2747,8 +2768,21 @@ impl Brain {
             return Capabilities { focus: true, type_text: true, keys: true };
         }
         match &self.host {
-            Some((key, caps)) if Some(key) == self.selected.as_ref() => *caps,
+            Some((key, caps, _)) if Some(key) == self.selected.as_ref() => *caps,
             _ => Capabilities { focus: false, type_text: false, keys: false },
+        }
+    }
+
+    /// The selected session's open AskUserQuestion.
+    pub fn open_questions(&self) -> &[brain_core::event::Question] {
+        self.selected_session().and_then(|s| s.asking.as_deref()).unwrap_or_default()
+    }
+
+    /// Why Brain can't type into the selected session's terminal.
+    pub fn typing_limit(&self) -> Option<&Limit> {
+        match &self.host {
+            Some((key, _, limit)) if Some(key) == self.selected.as_ref() => limit.as_ref(),
+            _ => None,
         }
     }
 
@@ -2773,6 +2807,10 @@ impl Brain {
             _ => None,
         };
         let cmd = modifiers.command();
+
+        // Linux: Ctrl belongs to the terminal, so shortcuts from inside it need Ctrl+Shift.
+        let in_terminal = (self.tab == DetailTab::Terminal || self.overview) && (self.focused_terminal.is_some() || self.focused_shell.is_some());
+        let global = cmd && (cfg!(target_os = "macos") || !in_terminal || modifiers.shift());
         if self.context_menu.take().is_some() && named == Some(Named::Escape) {
             return Task::none();
         }
@@ -2787,7 +2825,7 @@ impl Brain {
         if named == Some(Named::Escape) && !terminal_keeps_keys {
             return self.escape();
         }
-        if cmd && self.tab == DetailTab::Terminal && self.focused_terminal.is_some() && character.as_deref() == Some("v") {
+        if global && self.tab == DetailTab::Terminal && self.focused_terminal.is_some() && character.as_deref() == Some("v") {
             // A copied screenshot: the terminal pastes text only, so Brain saves the picture and
             // pastes its path, which Claude Code turns into an attachment.
             if let Some(path) = crate::clipboard::save_image() {
@@ -2803,7 +2841,7 @@ impl Brain {
             return Task::none();
         }
         // ⌘2 / ⌘J: keyboard into the terminal; ⌘1 / ⌘[: back to the session list.
-        if cmd && matches!(character.as_deref(), Some("2") | Some("j")) {
+        if global && matches!(character.as_deref(), Some("2") | Some("j")) {
             return if self.has_terminal() {
                 self.tab = DetailTab::Terminal;
                 self.focus_terminal()
@@ -2812,22 +2850,22 @@ impl Brain {
             };
         }
         // ⌘D splits the terminal, ⌘⇧A shows all of them: also from inside a terminal.
-        if cmd && character.as_deref() == Some("d") && self.tab == DetailTab::Terminal {
+        if global && character.as_deref() == Some("d") && self.tab == DetailTab::Terminal {
             return self.update(Message::ToggleSplit);
         }
-        if cmd && modifiers.shift() && character.as_deref() == Some("a") {
+        if global && modifiers.shift() && character.as_deref() == Some("a") {
             return self.update(Message::ToggleOverview);
         }
         // ⌘T: the session's shell, also from inside a terminal.
-        if cmd && character.as_deref() == Some("t") && self.mode == Mode::Normal {
+        if global && character.as_deref() == Some("t") && self.mode == Mode::Normal {
             return self.toggle_shell();
         }
         // ⌘K: the command palette, ⌘E: the composer, also from inside the terminal.
-        if cmd && character.as_deref() == Some("k") {
+        if global && character.as_deref() == Some("k") {
             return self.open_palette();
         }
         // Only from the normal view: in the new-session dialog ⌘E opens the template in an editor.
-        if cmd && character.as_deref() == Some("e") && self.mode == Mode::Normal {
+        if global && character.as_deref() == Some("e") && self.mode == Mode::Normal {
             return self.open_composer();
         }
         if self.mode == Mode::Composer {
@@ -2856,7 +2894,7 @@ impl Brain {
             }
             return Task::none();
         }
-        if cmd && matches!(character.as_deref(), Some("1") | Some("[")) {
+        if global && matches!(character.as_deref(), Some("1") | Some("[")) {
             self.focused_terminal = None;
             self.focused_shell = None;
             if self.mode == Mode::Search {
@@ -3101,12 +3139,16 @@ impl Brain {
         self.filter = options[next].clone();
     }
 
+    fn set_error(&mut self, message: impl Into<String>) {
+        self.error = Some((crate::style::keys(&message.into()), Instant::now()));
+    }
+
     pub fn set_status(&mut self, message: impl Into<String>) {
         let message = message.into();
         if !self.model.is_demo() {
             brain_core::log::write(&brain_core::account::home_dir(), "status", &message);
         }
-        self.status = Some((message, Instant::now()));
+        self.status = Some((crate::style::keys(&message), Instant::now()));
     }
 
     /// Demo pids are made up and may belong to unrelated processes: nothing is ever sent.
@@ -3124,12 +3166,12 @@ impl Brain {
                     self.set_status(message);
                 }
             }
-            Outcome::NoTerminal => self.set_status(t(
+            Outcome::NoTerminal => self.set_error(t(
                 "Kein Terminal zu dieser Session gefunden (beendet oder ohne Terminal gestartet).",
                 "No terminal found for this session (it ended or runs without one).",
             )),
-            Outcome::Unsupported(reason) => self.set_status(reason),
-            Outcome::Failed(reason) => self.set_status(tr!("Fehlgeschlagen: {reason}", "Failed: {reason}")),
+            Outcome::Unsupported(reason) => self.set_error(reason),
+            Outcome::Failed(reason) => self.set_error(tr!("Fehlgeschlagen: {reason}", "Failed: {reason}")),
         }
     }
 
@@ -3137,13 +3179,16 @@ impl Brain {
     /// comes forward with the longest-waiting session that runs (or can run) here, keyboard in
     /// its terminal.
     fn quick_terminal(&mut self) -> Task<Message> {
-        let Some(mtm) = objc2::MainThreadMarker::new() else { return Task::none() };
-        let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-        if app.isActive() && !app.isHidden() && self.focused_terminal.is_some() {
-            app.hide(None);
-            return Task::none();
+        #[cfg(target_os = "macos")]
+        {
+            let Some(mtm) = objc2::MainThreadMarker::new() else { return Task::none() };
+            let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+            if app.isActive() && !app.isHidden() && self.focused_terminal.is_some() {
+                app.hide(None);
+                return Task::none();
+            }
+            app.unhide(None);
         }
-        app.unhide(None);
         let groups = self.groups(now_ms());
         let waiting = groups
             .attention
@@ -3163,6 +3208,7 @@ impl Brain {
 
     /// Brings Brain's window to the front (notification click, menu bar, `brain://` link).
     fn bring_forward(&self) -> Task<Message> {
+        #[cfg(target_os = "macos")]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             objc2_app_kit::NSApplication::sharedApplication(mtm).activate();
         }
@@ -3398,6 +3444,10 @@ impl Brain {
         let Some(session) = self.selected_session() else { return };
         if !session.awaiting_permission() {
             self.set_status(t("Gerade ist keine Freigabe offen.", "No permission request is open right now."));
+            return;
+        }
+        if !self.open_questions().is_empty() {
+            self.set_status(t("Das ist eine Rückfrage, keine Freigabe – in der Session beantworten.", "That's a question, not a permission – answer it in the session."));
             return;
         }
         if !self.capabilities().keys {
@@ -3809,10 +3859,15 @@ impl Brain {
         let mut sessions: Vec<&Session> = self.model.board.keys().filter_map(|k| self.model.board.get(k)).collect();
         sessions.sort_by_key(|s| std::cmp::Reverse(s.last_activity_ms));
         let mut folders: Vec<String> = Vec::new();
-        if query.starts_with('/') || query.starts_with('~') {
-            let home = brain_core::account::home_dir().display().to_string();
-            folders.push(query.replacen('~', &home, 1));
-        }
+        let query = match expand_path(query) {
+            Some(path) => {
+                let typed = if path.len() > 1 { path.trim_end_matches('/') } else { &path };
+                folders.push(typed.to_string());
+                folders.extend(self.new_session.dirs.iter().filter(|d| d.as_str() != typed).cloned());
+                path
+            }
+            None => query.to_string(),
+        };
         let terms: Vec<String> = query.to_lowercase().split_whitespace().map(str::to_string).collect();
         for cwd in sessions.iter().filter_map(|s| s.cwd.clone()) {
             let lower = cwd.to_lowercase();
@@ -3883,11 +3938,39 @@ impl Brain {
         match named {
             Some(Named::ArrowDown) => self.new_session.pick = (self.new_session.pick + 1).min(count.saturating_sub(1)),
             Some(Named::ArrowUp) => self.new_session.pick = self.new_session.pick.saturating_sub(1),
+            Some(Named::Tab) if expand_path(&self.new_session.folder).is_some() => return self.complete_path(),
             Some(Named::Tab) => self.new_session.account = (self.new_session.account + 1) % self.model.accounts.len().max(1),
             // Every other key goes to the field (it lost its focus to a click).
             _ => return operation::focus(NEW_SESSION),
         }
         Task::none()
+    }
+
+    fn set_new_session_input(&mut self, text: String) {
+        // The folders below show from two typed letters on, or right after a `/`.
+        let shown = expand_path(&text).is_some_and(|path| path.ends_with('/') || path.rsplit('/').next().is_some_and(|name| name.chars().count() >= 2));
+        self.new_session.dirs = if shown { subfolders(&text).into_iter().map(|p| p.display().to_string()).collect() } else { Vec::new() };
+        self.new_session.folder = text;
+        self.new_session.pick = 0;
+    }
+
+    /// ⇥ on a typed path: completes the folder name as far as it is unambiguous.
+    fn complete_path(&mut self) -> Task<Message> {
+        let query = self.new_session.folder.clone();
+        let names: Vec<String> = subfolders(&query).iter().filter_map(|p| Some(p.file_name()?.to_string_lossy().into_owned())).collect();
+        let Some(first) = names.first() else { return Task::none() };
+        let mut common = first.clone();
+        for name in &names[1..] {
+            let len = common.chars().zip(name.chars()).take_while(|(a, b)| a == b).map(|(a, _)| a.len_utf8()).sum();
+            common.truncate(len);
+        }
+        let head = &query[..query.rfind('/').map_or(0, |i| i + 1)];
+        let completed = if names.len() == 1 { format!("{head}{common}/") } else { format!("{head}{common}") };
+        if completed.len() <= query.len() {
+            return Task::none();
+        }
+        self.set_new_session_input(completed);
+        operation::move_cursor_to_end(NEW_SESSION)
     }
 
     /// ⏎ in the dialog: pick a template or folder, take a placeholder value, or start.
@@ -4102,14 +4185,17 @@ fn lookup_prs(sessions: Vec<(SessionKey, String)>) -> HashMap<SessionKey, brain_
     out
 }
 
-/// Opens a file with the app macOS uses for its type (your Markdown editor for templates).
+const OPEN: &str = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+
+/// Opens a file with the app the system uses for its type (your Markdown editor for templates).
 fn open_in_editor(path: &std::path::Path) {
-    let _ = std::process::Command::new("open").arg(path).spawn();
+    let _ = std::process::Command::new(OPEN).arg(path).spawn();
 }
 
 /// "In editor" for a file from the reader. The path came from a session's output, so it never
 /// goes to plain `open` (a `.command` or `.app` would run): text opens in the default text
 /// editor (`open -t`), pictures and PDFs in Preview, anything else not at all.
+#[cfg(target_os = "macos")]
 fn open_reader_file(reader: &Reader) {
     let extension = reader.path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
     let mut command = std::process::Command::new("open");
@@ -4122,9 +4208,27 @@ fn open_reader_file(reader: &Reader) {
     let _ = command.arg(&reader.path).spawn();
 }
 
+/// Only text, pictures and PDFs: a script would run.
+#[cfg(not(target_os = "macos"))]
+fn open_reader_file(reader: &Reader) {
+    let extension = reader.path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    match &reader.kind {
+        ReaderKind::Code(..) | ReaderKind::Image(_) => {}
+        ReaderKind::Unreadable(_) if extension == "pdf" => {}
+        ReaderKind::Unreadable(_) => return,
+    }
+    let _ = std::process::Command::new(OPEN).arg(&reader.path).spawn();
+}
+
 /// Whether macOS has Brain as the active app (the one that gets the keyboard).
+#[cfg(target_os = "macos")]
 fn app_is_active() -> bool {
     objc2::MainThreadMarker::new().is_none_or(|mtm| objc2_app_kit::NSApplication::sharedApplication(mtm).isActive())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn app_is_active() -> bool {
+    true
 }
 
 /// A path as a shell word, like iTerm pastes dropped files: spaces and specials backslashed.
@@ -4158,6 +4262,7 @@ fn resolve_path(link: &str, cwd: &str) -> Option<std::path::PathBuf> {
 /// Loads a file for the reader: Markdown rendered, images shown, other text highlighted.
 /// Markdown is read in YAMV (Yet Another Markdown Viewer): math, Mermaid, footnotes and the
 /// rest of extended Markdown, which Brain's own reader doesn't draw.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const YAMV: &str = "de.martinemmert.projects.yamv";
 
 fn is_markdown(path: &std::path::Path) -> bool {
@@ -4168,11 +4273,19 @@ fn is_markdown(path: &std::path::Path) -> bool {
 fn open_markdown(path: std::path::PathBuf) -> Task<Message> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let opened = off_thread(move || {
-        let in_yamv = std::process::Command::new("open").args(["-b", YAMV]).arg(&path).status().is_ok_and(|s| s.success());
-        if !in_yamv {
-            let _ = std::process::Command::new("open").arg("-t").arg(&path).status();
+        #[cfg(target_os = "macos")]
+        {
+            let in_yamv = std::process::Command::new("open").args(["-b", YAMV]).arg(&path).status().is_ok_and(|s| s.success());
+            if !in_yamv {
+                let _ = std::process::Command::new("open").arg("-t").arg(&path).status();
+            }
+            in_yamv
         }
-        in_yamv
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = std::process::Command::new(OPEN).arg(&path).status();
+            true
+        }
     });
     Task::perform(opened, move |in_yamv| Message::MarkdownOpened(name.clone(), in_yamv))
 }
@@ -4187,11 +4300,41 @@ fn read_file(path: std::path::PathBuf) -> Reader {
     } else {
         match std::fs::read_to_string(&path) {
             Ok(text) => ReaderKind::Code(iced::widget::text_editor::Content::with_text(&text), extension),
-            Err(_) if extension == "pdf" => ReaderKind::Unreadable(t("Ein PDF – ⌘⏎ öffnet es in der Vorschau.", "A PDF – ⌘⏎ opens it in Preview.").into()),
+            Err(_) if extension == "pdf" => ReaderKind::Unreadable(crate::style::keys(t("Ein PDF – ⌘⏎ öffnet es in der Vorschau.", "A PDF – ⌘⏎ opens it in Preview."))),
             Err(_) => ReaderKind::Unreadable(t("Keine Textdatei – der Reader zeigt sie nicht.", "Not a text file – the reader can't show it.").into()),
         }
     };
     Reader { path, kind }
+}
+
+/// A typed path with `~` expanded; None when the text isn't a path.
+fn expand_path(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.starts_with('/') {
+        return Some(text.to_string());
+    }
+    let rest = text.strip_prefix('~').filter(|r| r.is_empty() || r.starts_with('/'))?;
+    Some(format!("{}{rest}", brain_core::account::home_dir().display()))
+}
+
+/// The folders next to the typed path's last part whose name starts with it (any case):
+/// `~/Projekte/bi` → `~/Projekte/big-brain-claude`. Hidden ones only when the part starts with `.`.
+fn subfolders(text: &str) -> Vec<std::path::PathBuf> {
+    let Some(path) = expand_path(text) else { return Vec::new() };
+    let (parent, prefix) = path.rsplit_once('/').unwrap_or(("", &path));
+    let prefix = prefix.to_lowercase();
+    let Ok(entries) = std::fs::read_dir(if parent.is_empty() { "/" } else { parent }) else { return Vec::new() };
+    let mut dirs: Vec<std::path::PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().to_lowercase();
+            name.starts_with(&prefix) && (prefix.starts_with('.') || !name.starts_with('.'))
+        })
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    dirs
 }
 
 #[cfg(test)]
@@ -4215,4 +4358,20 @@ mod tests {
         assert_eq!(resolve_path("src/app.rs.", &cwd), Some(file));
         assert_eq!(resolve_path("src/missing.rs", &cwd), None);
     }
+
+    #[test]
+    fn typed_paths_list_the_folders_starting_with_their_last_part() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["big-brain", "Bilder", "other", ".bin"] {
+            std::fs::create_dir(dir.path().join(name)).unwrap();
+        }
+        std::fs::write(dir.path().join("bits.txt"), "x").unwrap();
+        let root = dir.path().display().to_string();
+        let names = |text: String| subfolders(&text).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>();
+        assert_eq!(names(format!("{root}/bi")), ["Bilder", "big-brain"]);
+        assert_eq!(names(format!("{root}/.b")), [".bin"]);
+        assert_eq!(names(format!("{root}/")).len(), 3);
+        assert!(subfolders("bi").is_empty());
+    }
 }
+

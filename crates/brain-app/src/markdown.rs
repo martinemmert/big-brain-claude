@@ -28,7 +28,8 @@ fn cells(font: &ChatFont, chars: f32) -> Length {
     Length::Fixed((font.size * 0.62 * chars).ceil() + 1.0)
 }
 
-pub fn conversation<'a, M: 'a>(messages: &[Message]) -> Vec<Element<'a, M>> {
+/// `copy` makes code blocks copyable.
+pub fn conversation<'a, M: Clone + 'a>(messages: &[Message], copy: fn(String) -> M) -> Vec<Element<'a, M>> {
     let font = chat_font::get();
     let mut out = Vec::new();
     let mut i = 0;
@@ -42,7 +43,7 @@ pub fn conversation<'a, M: 'a>(messages: &[Message]) -> Vec<Element<'a, M>> {
         }
         out.push(match message.role {
             Role::User => prompt(font, message),
-            Role::Assistant => gutter(font, DOT, TEXT, body_in(font, &message.text)),
+            Role::Assistant => gutter(font, DOT, TEXT, body_in(font, &message.text, Some(copy))),
             Role::System => note_line(font, &message.text),
             Role::Tool => unreachable!(),
         });
@@ -120,15 +121,15 @@ fn short_tool_name(tool: &str) -> String {
 
 /// Markdown in the system font (code in Menlo), for text that isn't part of the terminal-like
 /// conversation.
-pub fn prose<'a, M: 'a>(source: &str, size: f32) -> Element<'a, M> {
-    body_in(&ChatFont { regular: UI, bold: style::semibold(), code: style::MONO, size }, source)
+pub fn prose<'a, M: Clone + 'a>(source: &str, size: f32) -> Element<'a, M> {
+    body_in(&ChatFont { regular: UI, bold: style::semibold(), code: style::MONO, size }, source, None)
 }
 
-fn body_in<'a, M: 'a>(font: &ChatFont, source: &str) -> Element<'a, M> {
-    column(markdown::parse(source).into_iter().map(|b| block(font, b))).spacing(font.size * 0.6).into()
+fn body_in<'a, M: Clone + 'a>(font: &ChatFont, source: &str, copy: Option<fn(String) -> M>) -> Element<'a, M> {
+    column(markdown::parse(source).into_iter().map(|b| block(font, b, copy))).spacing(font.size * 0.6).into()
 }
 
-fn block<'a, M: 'a>(font: &ChatFont, block: Block) -> Element<'a, M> {
+fn block<'a, M: Clone + 'a>(font: &ChatFont, block: Block, copy: Option<fn(String) -> M>) -> Element<'a, M> {
     match block {
         // The terminal has one size: headings are bold, the first levels also brighter.
         Block::Heading { level, text: heading } => styled(font, &heading, if level <= 2 { TEXT_STRONG } else { TEXT }, true),
@@ -143,9 +144,27 @@ fn block<'a, M: 'a>(font: &ChatFont, block: Block) -> Element<'a, M> {
             .padding(Padding { left: indent as f32 * font.size * 0.62 * 2.0, ..Padding::ZERO })
             .into()
         }
-        Block::Code { text: code, .. } => container(text(code).size(font.size).color(style::CODE).font(font.code).line_height(1.45))
-            .padding(Padding { left: font.size * 0.62 * 2.0, ..Padding::ZERO })
-            .into(),
+        Block::Code { lang, text: code } => {
+            let body = text(code.clone()).size(font.size).color(style::CODE).font(font.code).line_height(1.45);
+            let content: Element<'a, M> = match copy {
+                Some(copy) => crate::sticky::sticky(
+                    container(
+                        row![
+                            text(lang.unwrap_or_default()).size(11).color(TEXT_FAINT).font(UI).width(Fill),
+                            style::text_button(t("Kopieren", "Copy"), false, copy(code)),
+                        ]
+                        .align_y(iced::Center),
+                    )
+                    .width(Fill)
+                    .padding(Padding { bottom: 2.0, ..Padding::ZERO })
+                    .style(|_| style::fill(SURFACE)),
+                    body,
+                )
+                .into(),
+                None => body.into(),
+            };
+            container(content).padding([6, 10]).width(Fill).style(|_| boxed(SURFACE, LINE, 6.0)).into()
+        }
         Block::Quote(quote) => row![
             text("│ ").size(font.size).color(TEXT_FAINT).font(font.regular),
             styled(font, &quote, TEXT_MUTED, false),
@@ -227,6 +246,11 @@ fn timeline_entry<'a, M: 'a>(event: &Event) -> Element<'a, M> {
         Kind::Doing => (WORKING, raw),
         Kind::Waiting => (style::CALLS, format!("{}: {raw}", t("Frage", "Question"))),
         Kind::Done => (style::DONE, format!("{}: {raw}", t("Erledigt", "Done"))),
+        Kind::Question => {
+            let asked = event.questions.as_ref().and_then(|q| q.first()).map(|q| q.question.clone()).unwrap_or_default();
+            (style::CALLS, format!("{}: {asked}", t("Rückfrage", "Question")))
+        }
+        Kind::Answered => (TEXT_FAINT, t("Rückfrage beantwortet", "Question answered").into()),
     };
     let reported = event.source == Source::Report;
     let time = event.ts.with_timezone(&Local).format("%H:%M").to_string();

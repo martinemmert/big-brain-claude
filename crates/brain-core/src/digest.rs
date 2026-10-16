@@ -94,6 +94,7 @@ mod tests {
             text: Some(text.into()),
             tasks: None,
             name: None,
+            questions: None,
         }
     }
 
