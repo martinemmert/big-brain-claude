@@ -66,6 +66,12 @@ Die Tabs (`←` `→`):
   in Brains Terminal weiter, auch wenn Brain beendet wird.
 - **Antwort-Profil wechseln:** `⌘K` → „Antwort-Profil von …“ tippt `/output-style <Name>` in die
   Session; es gilt ab der nächsten Nachricht.
+- **Agenten-Team:** `⌘T` im Neue-Session-Dialog startet die Session als Team wie `claude-team`
+  (Agent `team_agent`, Standard `dirigent`; Plugin-Ordner `team_plugin_dir`, Standard
+  `~/.claude-mods/team-chat`). Hat eine Session Agenten, zeigt der Tab **Team** ihre Fragen an dich
+  („Frage an Martin: …“, mit Mitteilung; „Antworten“ schreibt dem Lead, der gibt es weiter), wer
+  arbeitet und wer wartet, ihre Nachrichten und die Anleitung (`team_guide`, Standard
+  `~/.claude-mods/agenten-team-anleitung.md`).
 - **Öffnen:** `⏎` oder Doppelklick. Läuft die Session in Brain, öffnet sie sich hier; eine beendete
   wird hier fortgesetzt. `⌥⏎` öffnet sie stattdessen in iTerm.
 - **Aus iTerm holen:** `I` `I` holt eine Session aus ihrem iTerm-Tab nach Brain, ohne dass das

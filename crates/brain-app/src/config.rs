@@ -7,6 +7,37 @@ fn read() -> Option<Value> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
 
+/// How Brain starts an agent team: the lead agent (`team_agent`, "dirigent" by default) and a
+/// plugin folder loaded with it (`team_plugin_dir`, by default `~/.claude-mods/team-chat` when
+/// it exists).
+pub fn team_start() -> brain_core::agents::TeamStart {
+    let config = read();
+    let text = |key: &str| config.as_ref().and_then(|v| v.get(key)?.as_str().map(str::to_string)).filter(|s| !s.trim().is_empty());
+    let home = brain_core::account::home_dir();
+    let plugin_dir = match text("team_plugin_dir") {
+        Some(dir) => Some(match dir.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => dir.into(),
+        }),
+        None => Some(home.join(".claude-mods/team-chat")).filter(|d| d.is_dir()),
+    };
+    brain_core::agents::TeamStart { lead: text("team_agent").unwrap_or_else(|| "dirigent".into()), plugin_dir }
+}
+
+/// The agent team's guide (`team_guide`, by default `~/.claude-mods/agenten-team-anleitung.md`),
+/// shown in the Team tab.
+pub fn team_guide() -> std::path::PathBuf {
+    let home = brain_core::account::home_dir();
+    let configured = read().and_then(|v| v.get("team_guide")?.as_str().map(str::to_string));
+    match configured.as_deref().map(str::trim) {
+        Some(path) if !path.is_empty() => match path.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => path.into(),
+        },
+        _ => home.join(".claude-mods/agenten-team-anleitung.md"),
+    }
+}
+
 /// The quick-terminal hotkey (`quick_terminal`), e.g. "cmd+shift+b". Off unless set: a global
 /// key overrides the same combination everywhere, including macOS' own shortcuts (⌃⌥Space
 /// switches the input source), so only a key the user picked is taken.

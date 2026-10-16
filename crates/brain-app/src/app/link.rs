@@ -209,6 +209,8 @@ impl Brain {
             permission_since_ms: (s.awaiting_permission() && question.is_none()).then(|| s.phase_since_ms()),
             question,
             can_reply: phase != Phase::Ended && (self.can_send(&s.key) || s.agent.as_ref().is_some_and(|a| a.is_active())),
+            team_questions: self.teams.get(&s.key).map(|t| t.open_questions().cloned().collect()).unwrap_or_default(),
+            team_active: self.teams.get(&s.key).filter(|t| !t.members.is_empty()).map(|t| t.active().count()),
         }
     }
 
@@ -226,7 +228,7 @@ impl Brain {
             | Command::Resume { key }
             | Command::Restart { key, .. }
             | Command::End { key } => key.clone(),
-            Command::Start { account, folder, prompt, style } => return self.link_start(account, folder, prompt.clone(), style.clone()),
+            Command::Start { account, folder, prompt, style, team } => return self.link_start(account, folder, prompt.clone(), style.clone(), *team),
         };
         let Some(session) = self.model.board.get(&key) else { return Task::none() };
         let name = session.display_name();
@@ -390,14 +392,15 @@ impl Brain {
 impl Brain {
     /// A session started from the phone runs in the background; Brain lists it without taking
     /// the selection on the Mac.
-    fn link_start(&mut self, account: &str, folder: &str, prompt: Option<String>, style: Option<String>) -> Task<Message> {
+    fn link_start(&mut self, account: &str, folder: &str, prompt: Option<String>, style: Option<String>, team: bool) -> Task<Message> {
+        let team = team.then(crate::config::team_start);
         let Some(account) = self.model.account(account).cloned() else { return Task::none() };
         // Only a style the account knows: anything else would quietly fall back to Default.
         let style = style.filter(|s| brain_core::styles::available(&account.config_dir, Some(std::path::Path::new(folder))).iter().any(|known| known.name == *s));
         let folder_name = folder.rsplit('/').find(|p| !p.is_empty()).unwrap_or(folder).to_string();
         self.set_status(tr!("Vom Handy: neue Session in {folder_name} …", "From the phone: new session in {folder_name} …"));
         let folder = folder.to_string();
-        let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), None, None, style.as_deref(), prompt.as_deref()));
+        let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), &brain_core::agents::Start { style, prompt, team, ..Default::default() }));
         Task::perform(started, Message::LinkStarted)
     }
 }

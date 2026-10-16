@@ -89,6 +89,10 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
 - **Conflicts.** A warning when two sessions edit the same files, read
   from their transcripts, and a softer hint when they change files in the same checkout.
 - **Today.** What every session reported as done today, per project; copy it as Markdown.
+- **Agent teams.** `⌘T` in New session starts one like `claude-team`; the **Team** tab shows the
+  members (working or waiting), their messages, their questions for you (answered through the lead,
+  with a notification) and the team's guide. From Brain's mod (`$.agent.list()`,
+  `session.send`/`receive`); on the phone too.
 - **For later.** `/later <task>` in any session (or `brain later "<task>"`, which Claude uses too) notes a
   task with its folder; `L` lists them, `⏎` starts one as a new session there, `⌫` checks it off.
 - **Timeline.** Every hook event and report of a session.

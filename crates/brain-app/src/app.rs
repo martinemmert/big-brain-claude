@@ -125,6 +125,9 @@ pub enum DetailTab {
     Files,
     /// Claude's questions and the answers given.
     Questions,
+    /// The session's agents (an agent team, subagents), their messages and questions to the
+    /// person, and the team's guide (shown once the session has agents).
+    Team,
     /// The councils of the konsil skill (shown once the session has one).
     Konsil,
     /// A real terminal running the session inside Brain (`claude attach` / `claude --resume`).
@@ -230,6 +233,8 @@ pub enum Message {
     NewPick(usize),
     /// A click on a task for later picks it.
     LaterPick(usize),
+    /// Answer a team member's question to the person (its name).
+    TeamAnswer(String),
     Layout(Layout),
     Filter(Option<String>),
     ToggleBackground,
@@ -332,6 +337,8 @@ pub enum Message {
     NewPlace(bool),
     /// The new session's output style; none keeps the account's.
     NewStyle(Option<String>),
+    /// The new session as an agent team or not.
+    NewTeam(bool),
     /// The new-account dialog: the name typed, its preview, create, and the outcome.
     AccountSetupName(String),
     AccountSetupPlanned(u64, brain_core::account_setup::Plan),
@@ -376,6 +383,8 @@ pub struct NewSession {
     pub in_iterm: bool,
     /// ⇧⇥: the output style it starts with; none keeps what the account's settings say.
     pub style: Option<String>,
+    /// ⌘T: as an agent team, led by the configured agent (`claude-team`).
+    pub team: bool,
 }
 
 pub struct Chosen {
@@ -485,6 +494,14 @@ pub struct Brain {
     pub show_resting: bool,
     /// The clean-up dialog's age choice (index into CLEANUP_DAYS).
     pub cleanup_age: usize,
+    /// Each session's agents and their messages, as its mod reported them, and when each
+    /// session's file was read.
+    pub teams: HashMap<SessionKey, brain_core::teams::Team>,
+    teams_read: HashMap<String, std::time::SystemTime>,
+    /// Questions to the person already notified about; the first read only sets the baseline.
+    team_notified: Option<HashSet<String>>,
+    /// The team guide while the Team tab shows.
+    pub team_guide: Option<String>,
     /// The tasks for later while their dialog is open, and the picked one.
     pub later: Vec<brain_core::later::Item>,
     pub later_pick: usize,
@@ -647,6 +664,10 @@ impl Brain {
             show_ended: false,
             show_resting: false,
             cleanup_age: 1,
+            teams: HashMap::new(),
+            teams_read: HashMap::new(),
+            team_notified: None,
+            team_guide: None,
             later: Vec::new(),
             later_pick: 0,
             status: None,
@@ -892,6 +913,7 @@ impl Brain {
                 self.later_pick = index;
                 Task::none()
             }
+            Message::TeamAnswer(from) => self.answer_team_question(&from),
             Message::Layout(layout) => {
                 self.prefs.layout = layout;
                 self.prefs.save();
@@ -1350,6 +1372,10 @@ impl Brain {
                 self.new_session.style = style;
                 Task::none()
             }
+            Message::NewTeam(team) => {
+                self.new_session.team = team;
+                Task::none()
+            }
             Message::NewPlace(in_iterm) => {
                 self.new_session.in_iterm = in_iterm;
                 Task::none()
@@ -1401,6 +1427,7 @@ impl Brain {
                 notify::Response::Reply(key, text) => tasks.push(self.reply_from_notification(key, text)),
             }
         }
+        self.refresh_teams(now);
         tasks.push(self.serve_link(now));
         tasks.push(self.load_changes());
         let linked: Vec<SessionKey> = crate::links::take_sessions()
@@ -1502,6 +1529,67 @@ impl Brain {
             self.tab = DetailTab::Messages;
         }
         Task::none()
+    }
+
+    /// Reads the teams the sessions' mods reported, only files that changed, and notifies each
+    /// new question to the person once (not for muted or snoozed sessions).
+    fn refresh_teams(&mut self, now: i64) {
+        let home = brain_core::account::home_dir();
+        let by_id: HashMap<String, SessionKey> = self.model.board.keys().map(|k| (k.id.clone(), k.clone())).collect();
+        for entry in std::fs::read_dir(home.join(".claude-brain/teams")).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let Some(id) = path.file_stem().and_then(|s| s.to_str()).filter(|_| path.extension().is_some_and(|e| e == "json")) else { continue };
+            let Some(key) = by_id.get(id) else { continue };
+            let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else { continue };
+            if self.teams_read.get(id) == Some(&modified) {
+                continue;
+            }
+            if let Some(team) = brain_core::teams::load(&home, id) {
+                self.teams.insert(key.clone(), team);
+                self.teams_read.insert(id.to_string(), modified);
+            }
+        }
+        self.teams.retain(|k, _| by_id.contains_key(&k.id));
+        if self.tab == DetailTab::Team {
+            self.team_guide = std::fs::read_to_string(config::team_guide()).ok();
+        }
+
+        let open: Vec<(SessionKey, brain_core::teams::TeamMessage)> =
+            self.teams.iter().flat_map(|(key, team)| team.open_questions().map(move |q| (key.clone(), q.clone()))).collect();
+        let Some(notified) = self.team_notified.as_mut() else {
+            self.team_notified = Some(open.into_iter().map(|(_, q)| q.id).collect());
+            return;
+        };
+        let mut posts = Vec::new();
+        for (key, question) in open {
+            if notified.insert(question.id.clone()) {
+                posts.push((key, question));
+            }
+        }
+        for (key, question) in posts {
+            if self.prefs.is_muted(&key) || self.prefs.snoozed_until(&key, now).is_some() {
+                continue;
+            }
+            let name = self.model.board.get(&key).map(|s| s.display_name()).unwrap_or_default();
+            let from = question.from.clone();
+            self.notifier.post(&key, &name, &tr!("Frage von {from}", "Question from {from}"), &plain(&question.text), true);
+        }
+    }
+
+    /// Whether the selected session has agents or team messages, so the Team tab shows.
+    pub fn has_team(&self) -> bool {
+        self.selected.as_ref().and_then(|k| self.teams.get(k)).is_some_and(|t| !t.members.is_empty() || !t.messages.is_empty())
+    }
+
+    /// "Answer" on a question to the person in the Team tab: the reply field, addressed to the
+    /// member who asked; the lead (the session itself) passes it on.
+    fn answer_team_question(&mut self, from: &str) -> Task<Message> {
+        let task = self.start_reply();
+        if self.mode != Mode::Reply {
+            return task;
+        }
+        self.reply = tr!("Antwort an {from}: ", "Answer to {from}: ");
+        Task::batch([task, operation::move_cursor_to_end(REPLY)])
     }
 
     /// Live sessions with a folder, for the background PR lookup.
@@ -2781,8 +2869,9 @@ impl Brain {
                     DetailTab::Timeline => DetailTab::Changes,
                     DetailTab::Changes => DetailTab::Files,
                     DetailTab::Files => DetailTab::Questions,
-                    DetailTab::Questions if self.has_konsil() => DetailTab::Konsil,
-                    DetailTab::Questions | DetailTab::Konsil => DetailTab::Terminal,
+                    DetailTab::Questions if self.has_team() => DetailTab::Team,
+                    DetailTab::Questions | DetailTab::Team if self.has_konsil() => DetailTab::Konsil,
+                    DetailTab::Questions | DetailTab::Team | DetailTab::Konsil => DetailTab::Terminal,
                     DetailTab::Terminal => DetailTab::Messages,
                 };
                 return Task::batch([self.load_changes(), self.load_files()]);
@@ -2794,8 +2883,11 @@ impl Brain {
                     DetailTab::Changes => DetailTab::Timeline,
                     DetailTab::Files => DetailTab::Changes,
                     DetailTab::Questions => DetailTab::Files,
+                    DetailTab::Team => DetailTab::Questions,
+                    DetailTab::Konsil if self.has_team() => DetailTab::Team,
                     DetailTab::Konsil => DetailTab::Questions,
                     DetailTab::Terminal if self.has_konsil() => DetailTab::Konsil,
+                    DetailTab::Terminal if self.has_team() => DetailTab::Team,
                     DetailTab::Terminal => DetailTab::Questions,
                 };
                 return Task::batch([self.load_changes(), self.load_files()]);
@@ -3591,7 +3683,7 @@ impl Brain {
         self.mode = Mode::Normal;
         self.set_status(t("Starte die Aufgabe als neue Session …", "Starting the task as a new session …"));
         let id = account.id.clone();
-        let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), None, None, None, Some(&task.text)));
+        let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), &brain_core::agents::Start { prompt: Some(task.text.clone()), ..Default::default() }));
         Task::perform(started, move |result| Message::Started(id.clone(), result))
     }
 
@@ -3721,6 +3813,10 @@ impl Brain {
             self.new_session.in_iterm = !self.new_session.in_iterm;
             return Task::none();
         }
+        if cmd && character == Some("t") {
+            self.new_session.team = !self.new_session.team;
+            return Task::none();
+        }
         if cmd && shift && character == Some("n") {
             let dir = brain_core::templates::templates_dir(&brain_core::account::home_dir());
             let prompt = t(
@@ -3842,6 +3938,7 @@ impl Brain {
         let name = chosen.map(|c| c.template.name.clone());
         let in_iterm = self.new_session.in_iterm;
         let style = self.new_session.style.clone();
+        let team = self.new_session.team.then(config::team_start);
         self.mode = Mode::Normal;
         let Some(account) = self.model.accounts.get(self.new_session.account).cloned() else { return unfocus() };
         if self.blocked_in_demo() {
@@ -3849,6 +3946,12 @@ impl Brain {
         }
         if in_iterm {
             let mut command = String::from("claude");
+            if let Some(team) = &team {
+                command = format!("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 ENABLE_STOP_REVIEW=0 claude --agent {}", shell_quote(&team.lead));
+                if let Some(dir) = &team.plugin_dir {
+                    command.push_str(&format!(" --plugin-dir {}", shell_quote(&dir.display().to_string())));
+                }
+            }
             if let Some(model) = &model {
                 command.push_str(&format!(" --model {}", shell_quote(model)));
             }
@@ -3866,7 +3969,7 @@ impl Brain {
         self.set_status(t("Starte die Session in Brain …", "Starting the session in Brain …"));
         let id = account.id.clone();
         let started = off_thread(move || {
-            brain_core::agents::start(&account, std::path::Path::new(&folder), model.as_deref(), name.as_deref(), style.as_deref(), prompt.as_deref())
+            brain_core::agents::start(&account, std::path::Path::new(&folder), &brain_core::agents::Start { model, name, style, prompt, team })
         });
         Task::batch([unfocus(), Task::perform(started, move |result| Message::Started(id.clone(), result))])
     }

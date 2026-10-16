@@ -26,6 +26,7 @@ pub mod sessions;
 pub mod state;
 pub mod store;
 pub mod styles;
+pub mod teams;
 pub mod templates;
 pub mod transcript;
 pub mod usage;

@@ -104,26 +104,58 @@ pub fn started_id(output: &str) -> Option<String> {
     (!id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric())).then(|| id.to_string())
 }
 
-/// Starts a background session in `cwd` (`claude --bg`), with an optional model, name, output
-/// style and first prompt; returns its short id, or what `claude` said (e.g. an untrusted folder).
-pub fn start(account: &Account, cwd: &Path, model: Option<&str>, name: Option<&str>, style: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
-    let mut args = vec!["--bg"];
-    if let Some(model) = model {
-        args.extend(["--model", model]);
+/// What a new background session starts with, each optional.
+#[derive(Debug, Clone, Default)]
+pub struct Start {
+    pub model: Option<String>,
+    pub name: Option<String>,
+    /// Its output style (`--settings {"outputStyle": …}`).
+    pub style: Option<String>,
+    pub prompt: Option<String>,
+    /// As an agent team, led by this agent.
+    pub team: Option<TeamStart>,
+}
+
+/// An agent team (experimental in Claude Code): the lead agent and a plugin folder to load with
+/// it (a team chat), as `claude --agent <lead>` with agent teams turned on.
+#[derive(Debug, Clone)]
+pub struct TeamStart {
+    pub lead: String,
+    pub plugin_dir: Option<std::path::PathBuf>,
+}
+
+/// Starts a background session in `cwd` (`claude --bg`); returns its short id, or what `claude`
+/// said (e.g. an untrusted folder).
+pub fn start(account: &Account, cwd: &Path, options: &Start) -> Result<String, String> {
+    let mut args: Vec<String> = vec!["--bg".into()];
+    if let Some(model) = &options.model {
+        args.extend(["--model".into(), model.clone()]);
     }
-    if let Some(name) = name {
-        args.extend(["-n", name]);
+    if let Some(name) = &options.name {
+        args.extend(["-n".into(), name.clone()]);
     }
-    let settings = style.map(crate::styles::settings);
-    if let Some(settings) = &settings {
-        args.extend(["--settings", settings]);
+    if let Some(style) = &options.style {
+        args.extend(["--settings".into(), crate::styles::settings(style)]);
+    }
+    if let Some(team) = &options.team {
+        args.extend(["--agent".into(), team.lead.clone()]);
+        // A flag, not CLAUDE_CODE_PLUGIN_DIRS: the settings' value of that (Brain's mod) wins.
+        if let Some(dir) = &team.plugin_dir {
+            args.extend(["--plugin-dir".into(), dir.display().to_string()]);
+        }
     }
     // After `--` the prompt is never an option, even one that starts with `-` (a task for later,
     // a prompt from the phone).
-    if let Some(prompt) = prompt.filter(|p| !p.trim().is_empty()) {
-        args.extend(["--", prompt]);
+    if let Some(prompt) = options.prompt.as_deref().filter(|p| !p.trim().is_empty()) {
+        args.extend(["--".into(), prompt.to_string()]);
     }
-    started(claude(account, &args).current_dir(cwd))
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut command = claude(account, &args);
+    if options.team.is_some() {
+        // What `claude-team` sets: agent teams on, the security plugin's stop review off.
+        command.env("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1").env("ENABLE_STOP_REVIEW", "0");
+    }
+    started(command.current_dir(cwd))
 }
 
 /// Continues an existing session in the background under its id (`claude --bg --resume`),

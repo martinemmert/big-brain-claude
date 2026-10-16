@@ -827,6 +827,7 @@ fn session_pane(brain: &Brain, now: i64) -> Element<'_, Message> {
         DetailTab::Changes => changes(brain, s),
         DetailTab::Files => with_reader(brain, files(brain, s)),
         DetailTab::Questions => questions(brain, s),
+        DetailTab::Team => scrollable(team(brain, s)).height(Fill).style(scrollbar).into(),
         DetailTab::Konsil => scrollable(crate::konsil::view(brain, &s.key)).height(Fill).style(scrollbar).into(),
         DetailTab::Terminal => terminal(brain, s),
     };
@@ -1040,6 +1041,12 @@ fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
         (DetailTab::Files, t("Dateien", "Files"), file_count),
         (DetailTab::Questions, t("Fragen", "Questions"), question_count),
     ];
+    // Only sessions with agents (a team, subagents) have the tab; the count is who still works.
+    if let Some(team) = brain.teams.get(&s.key).filter(|t| !t.members.is_empty() || !t.messages.is_empty()) {
+        tabs.push((DetailTab::Team, "Team", Some(team.active().count())));
+    } else if brain.tab == DetailTab::Team {
+        tabs.push((DetailTab::Team, "Team", None));
+    }
     // Only sessions that held a council have the tab.
     if konsil_count > 0 || brain.tab == DetailTab::Konsil {
         tabs.push((DetailTab::Konsil, "Konsil", Some(konsil_count)));
@@ -1797,6 +1804,12 @@ fn new_session(brain: &Brain) -> Element<'_, Message> {
     let mut styles = vec![(t("wie eingestellt", "as configured").to_string(), dialog.style.is_none(), Message::NewStyle(None))];
     styles.extend(brain.new_session_styles().into_iter().map(|s| (s.name.clone(), dialog.style.as_deref() == Some(s.name.as_str()), Message::NewStyle(Some(s.name)))));
     content = content.push(row![text(t("Profil", "Style")).size(12.5).color(TEXT_MUTED).font(UI), segmented(styles)].spacing(10).align_y(iced::Center));
+    // ⌘T: as an agent team, the configured lead agent (`claude-team`).
+    let kind = vec![
+        (t("Session", "Session").to_string(), !dialog.team, Message::NewTeam(false)),
+        (t("Team", "Team").to_string(), dialog.team, Message::NewTeam(true)),
+    ];
+    content = content.push(row![text(t("Art", "Kind")).size(12.5).color(TEXT_MUTED).font(UI), segmented(kind)].spacing(10).align_y(iced::Center));
     if let Some(c) = chosen.filter(|c| !c.template.prompt.is_empty()) {
         let prompt: String = c.template.fill(&c.values).lines().take(6).collect::<Vec<_>>().join("\n");
         content = content.push(container(text(prompt).size(12.5).color(TEXT).font(UI).line_height(1.5)).padding([9, 12]).width(Fill).style(|_| boxed(SURFACE, LINE, 8.0)));
@@ -1831,7 +1844,7 @@ fn new_session(brain: &Brain) -> Element<'_, Message> {
     content = content.push(scrollable(column(choices).spacing(2)).height(Fill).style(scrollbar));
     content = content.push(
         container(
-            text(t("⏎ wählen/starten · ↑↓ · ~/ → Ordner · ⇥ Konto · ⇧⇥ Profil · ⌘I Brain/iTerm · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc", "⏎ pick/start · ↑↓ · ~/ → folders · ⇥ account · ⇧⇥ style · ⌘I Brain/iTerm · ⌘E edit template · ⌘⇧N new template · esc"))
+            text(t("⏎ wählen/starten · ↑↓ · ~/ → Ordner · ⇥ Konto · ⇧⇥ Profil · ⌘T Team · ⌘I Brain/iTerm · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc", "⏎ pick/start · ↑↓ · ~/ → folders · ⇥ account · ⇧⇥ style · ⌘T team · ⌘I Brain/iTerm · ⌘E edit template · ⌘⇧N new template · esc"))
                 .size(11.5)
                 .color(TEXT_FAINT)
                 .font(UI),
@@ -1887,6 +1900,77 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
     .spacing(14)
     .padding(Padding { top: 24.0, right: 28.0, bottom: 0.0, left: 28.0 })
     .into()
+}
+
+/// The Team tab: questions to the person first (answered through the lead, the session itself),
+/// then who works and who waits, what they wrote each other, and the team's guide.
+fn team<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
+    let mut content = column![].spacing(14).padding(Padding { top: 12.0, right: 12.0, bottom: 20.0, left: 0.0 });
+    let Some(team) = brain.teams.get(&s.key) else {
+        return content.push(text(t("Noch keine Agenten in dieser Session.", "No agents in this session yet.")).size(12.5).color(TEXT_MUTED).font(UI)).into();
+    };
+    let open: Vec<&brain_core::teams::TeamMessage> = team.open_questions().collect();
+    if !open.is_empty() {
+        content = content.push(section_title(t("Fragen an dich", "Questions for you"), open.len(), true));
+        for question in open {
+            let line = row![
+                column![
+                    text(question.from.clone()).size(12).color(CALLS).font(style::semibold()),
+                    text(question.text.clone()).size(12.5).color(TEXT_STRONG).font(UI).line_height(1.45),
+                ]
+                .spacing(3)
+                .width(Fill),
+                action(t("Antworten", "Answer"), "", true, Some(Message::TeamAnswer(question.from.clone()))),
+            ]
+            .spacing(10)
+            .align_y(iced::Center);
+            content = content.push(container(line).padding([8, 12]).width(Fill).style(|_| boxed(SURFACE, LINE, 8.0)));
+        }
+    }
+    if !team.members.is_empty() {
+        content = content.push(section_title(t("Mitglieder", "Members"), team.members.len(), false));
+        for member in &team.members {
+            let (label, color) = match member.status.as_str() {
+                "running" | "pending" => (t("arbeitet", "working"), WORKING),
+                "idle" | "waiting" => (t("wartet", "waiting"), TURN),
+                "completed" => (t("fertig", "done"), TEXT_FAINT),
+                _ => (member.status.as_str(), CALLS_SOFT),
+            };
+            let last = team.messages.iter().rev().find(|m| m.from == member.name).map(|m| clip(&m.text, 110)).unwrap_or_default();
+            content = content.push(
+                row![
+                    style::dot(color, 7.0),
+                    text(member.name.clone()).size(12.5).color(TEXT_STRONG).font(style::semibold()),
+                    text(member.r#type.clone()).size(11.5).color(TEXT_FAINT).font(UI),
+                    text(label).size(11.5).color(color).font(UI),
+                    text(last).size(11.5).color(TEXT_MUTED).font(UI),
+                ]
+                .spacing(10)
+                .align_y(iced::Center),
+            );
+        }
+    }
+    if !team.messages.is_empty() {
+        content = content.push(section_title(t("Nachrichten", "Messages"), team.messages.len(), false));
+        let start = team.messages.len().saturating_sub(30);
+        for message in &team.messages[start..] {
+            let at = clock(message.at);
+            let color = if message.question { CALLS } else { TEXT };
+            content = content.push(
+                row![
+                    text(at).size(11.5).color(TEXT_FAINT).font(MONO),
+                    text(format!("{} → {}", message.from, message.to)).size(11.5).color(TEXT_MUTED).font(UI),
+                    text(clip(&message.text, 220)).size(12).color(color).font(UI),
+                ]
+                .spacing(8),
+            );
+        }
+    }
+    if let Some(guide) = &brain.team_guide {
+        content = content.push(text(t("Anleitung", "Guide")).size(12).color(TEXT_MUTED).font(style::semibold()));
+        content = content.push(markdown::prose(guide, 13.0));
+    }
+    content.into()
 }
 
 /// `L`: tasks noted for later (`/later …` in a session), started from here as a new session.

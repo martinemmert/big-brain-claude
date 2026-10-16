@@ -80,6 +80,13 @@ pub struct View {
     pub question: Option<brain_core::qa::OpenQuestion>,
     /// Brain can deliver a reply (its terminal, an iTerm tab, or a background session).
     pub can_reply: bool,
+    /// Questions of the session's team members to the person, not answered yet; the phone
+    /// answers with a reply "Antwort an <from>: …", which the lead passes on.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub team_questions: Vec<brain_core::teams::TeamMessage>,
+    /// How many of its agents still work or wait (none: no agents).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_active: Option<usize>,
 }
 
 /// What the phone asked Brain to do.
@@ -91,7 +98,7 @@ pub enum Command {
     Answer { key: SessionKey, call: String, answers: Vec<Picked> },
     /// A new background session in one of the offered folders, with an optional first prompt and
     /// output style.
-    Start { account: String, folder: String, prompt: Option<String>, style: Option<String> },
+    Start { account: String, folder: String, prompt: Option<String>, style: Option<String>, team: bool },
     /// `since_ms`: when the dialog the user answered opened ([`View::permission_since_ms`]).
     Permission { key: SessionKey, allow: bool, since_ms: i64 },
     /// Esc for a working session: Claude stops what it does.
@@ -113,7 +120,7 @@ pub struct Picked {
 }
 
 /// What this Brain Link offers beyond the first version, for the phone to show only what works.
-const FEATURES: [&str; 11] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands"];
+const FEATURES: [&str; 12] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands", "team"];
 /// How long a read with `wait` waits for something new before it answers anyway.
 const WAIT: Duration = Duration::from_secs(25);
 /// How often a waiting read looks again.
@@ -544,7 +551,9 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
             let prompt = field("prompt").filter(|p| !p.trim().is_empty());
             // Brain checks the style against the account's when it starts the session.
             let style = field("output_style").filter(|s| !s.trim().is_empty());
-            let sent = state.commands.lock().map(|s| s.send(Command::Start { account, folder, prompt, style }).is_ok()).unwrap_or(false);
+            // As an agent team (`claude-team`), led by the configured agent.
+            let team = body.get("team").and_then(|t| t.as_bool()).unwrap_or(false);
+            let sent = state.commands.lock().map(|s| s.send(Command::Start { account, folder, prompt, style, team }).is_ok()).unwrap_or(false);
             if sent {
                 reply(StatusCode::ACCEPTED, &serde_json::json!({ "ok": true }))
             } else {
@@ -622,6 +631,11 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 _ => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "action" }))),
             };
             send_command(&state, command)
+        }
+        // The session's agents and their messages, as its mod reported them.
+        (Method::GET, ["v1", "sessions", account, id, "team"]) => {
+            let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
+            off_thread(state.clone(), move |_| reply(StatusCode::OK, &brain_core::teams::load(&home_dir(), &key.id).unwrap_or_default())).await
         }
         // What `/…` completes to (as the session's mod reported it) and the styles it can switch to.
         (Method::GET, ["v1", "sessions", account, id, "commands"]) => {
@@ -1138,6 +1152,8 @@ mod tests {
             permission_since_ms: None,
             question: None,
             can_reply: true,
+            team_questions: Vec::new(),
+            team_active: None,
         }]);
         let token = std::fs::read_to_string(dir.join("token")).unwrap();
         let curl = |args: &[&str]| {
@@ -1201,7 +1217,7 @@ mod tests {
                     call: "toolu_2".into(),
                     answers: vec![Picked { picks: vec![0, 2], other: None }, Picked { picks: vec![], other: Some("lieber so".into()) }],
                 },
-                Command::Start { account: "main".into(), folder: "/w/fin".into(), prompt: Some("los".into()), style: None },
+                Command::Start { account: "main".into(), folder: "/w/fin".into(), prompt: Some("los".into()), style: None, team: false },
                 Command::Interrupt { key: key.clone() },
                 Command::Reply { key: key.clone(), text: "/compact".into() },
                 Command::Resume { key: key.clone() },
@@ -1455,6 +1471,8 @@ mod tests {
             permission_since_ms: (phase == "needs_you").then_some(now - minutes * 60_000),
             question: None,
             can_reply: phase != "ended",
+            team_questions: Vec::new(),
+            team_active: None,
         };
         link.publish(vec![
             view("9a1527b8-0000-0000-0000-000000000001", "Phoenix", "needs_you", "attention", "Bash: composer test --filter BookingExport", 2),

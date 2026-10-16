@@ -64,6 +64,13 @@ enum Command {
         #[arg(long)]
         json_file: std::path::PathBuf,
     },
+    /// Called by Brain's mod: the session's agents and their messages, for Brain's Team tab.
+    Team {
+        /// `{session_id, members, messages}` in a file of `~/.claude-brain/inbox/`; the file is
+        /// deleted after reading.
+        #[arg(long)]
+        json_file: std::path::PathBuf,
+    },
     /// Mark a council of the konsil skill; Brain reads its course from the transcript and shows
     /// it in the Konsil tab.
     Konsil {
@@ -182,6 +189,16 @@ fn main() -> ExitCode {
             run_report(&store, &accounts, kind, &text.join(" "))
         }
         Command::Later { text, json_file } => run_later(&accounts, &text.join(" "), json_file.and_then(|f| take_inbox_file(&f))),
+        Command::Team { json_file } => {
+            // Like a hook: never disturbs the session, no output, always success.
+            if let Some(payload) = take_inbox_file(&json_file).and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok()) {
+                let id = payload.get("session_id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                if let Ok(team) = serde_json::from_value::<brain_core::teams::Team>(payload) {
+                    let _ = brain_core::teams::save(&home, &id, &team);
+                }
+            }
+            ExitCode::SUCCESS
+        }
         Command::Commands { json_file } => {
             // Like a hook: never disturbs the session, no output, always success.
             if let Some(payload) = take_inbox_file(&json_file).and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok()) {
