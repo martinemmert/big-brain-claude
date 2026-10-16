@@ -157,7 +157,6 @@ impl Prefs {
         true
     }
 
-    /// Whether the user chose "only a report" since `since_ms`.
     /// The first start of the list with a reading zone: the finished sessions there count as
     /// seen, so "Zum Lesen" starts empty. Only once. Returns whether anything changed.
     pub fn start_seen(&mut self, finished: impl IntoIterator<Item = (SessionKey, i64)>, now_ms: i64) -> bool {
@@ -171,6 +170,7 @@ impl Prefs {
         true
     }
 
+    /// Whether the user chose "only a report" since `since_ms`.
     pub fn is_report(&self, key: &SessionKey, since_ms: i64) -> bool {
         self.reports.get(&id(key)).is_some_and(|at| *at >= since_ms)
     }

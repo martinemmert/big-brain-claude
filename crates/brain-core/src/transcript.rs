@@ -332,8 +332,11 @@ pub fn insight(transcript: &Path) -> Insight {
             _ => {}
         }
     }
+    // A subagent's call isn't what a dialog would allow: that is a command of the subagent.
     if let [(_, line)] = open_calls.as_slice() {
-        out.tool = Some(line.clone());
+        if !line.starts_with("Agent: ") && !line.starts_with("Task: ") && line != "Agent" && line != "Task" {
+            out.tool = Some(line.clone());
+        }
     }
     out
 }
@@ -577,6 +580,17 @@ mod tests {
         assert_eq!(insight(&path).tool.as_deref(), Some("Bash: git push --force-with-lease"));
         let (_dir, path) = transcript(&[call, result]);
         assert_eq!(insight(&path).tool, None);
+    }
+
+    #[test]
+    fn a_subagent_call_shows_no_command() {
+        let call = |name: &str| format!(r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"t1","name":"{name}","input":{{"description":"Review it"}}}}]}},"timestamp":"2026-10-02T14:00:05Z"}}"#);
+        for name in ["Agent", "Task"] {
+            let (_dir, path) = transcript(&[&call(name)]);
+            assert_eq!(insight(&path).tool, None);
+        }
+        let (_dir, path) = transcript(&[&call("Skill")]);
+        assert_eq!(insight(&path).tool.as_deref(), Some("Skill: Review it"));
     }
 
     #[test]
