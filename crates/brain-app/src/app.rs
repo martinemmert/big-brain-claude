@@ -693,6 +693,14 @@ impl Brain {
             prefs.save();
         }
         let demo = model.is_demo();
+        if !demo {
+            let now = now_ms();
+            let finished: Vec<(SessionKey, i64)> =
+                model.board.sorted().into_iter().filter(|s| s.phase() == Phase::YourTurn).map(|s| (s.key.clone(), s.phase_since_ms())).collect();
+            if prefs.start_seen(finished, now) {
+                prefs.save();
+            }
+        }
         restore_saved(&mut model, &prefs);
         let mut brain = Self {
             model,

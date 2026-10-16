@@ -31,6 +31,10 @@ pub struct Prefs {
     /// Session id → when the user last looked at it (epoch ms).
     #[serde(default)]
     seen: BTreeMap<String, i64>,
+    /// The sessions that were finished when the list with a reading zone first started were
+    /// marked as seen, once.
+    #[serde(default)]
+    seen_started: bool,
     /// Session id → when the user chose "only a report" for it (epoch ms).
     #[serde(default)]
     reports: BTreeMap<String, i64>,
@@ -154,6 +158,19 @@ impl Prefs {
     }
 
     /// Whether the user chose "only a report" since `since_ms`.
+    /// The first start of the list with a reading zone: the finished sessions there count as
+    /// seen, so "Zum Lesen" starts empty. Only once. Returns whether anything changed.
+    pub fn start_seen(&mut self, finished: impl IntoIterator<Item = (SessionKey, i64)>, now_ms: i64) -> bool {
+        if self.seen_started {
+            return false;
+        }
+        self.seen_started = true;
+        for (key, since_ms) in finished {
+            self.see(&key, now_ms, since_ms);
+        }
+        true
+    }
+
     pub fn is_report(&self, key: &SessionKey, since_ms: i64) -> bool {
         self.reports.get(&id(key)).is_some_and(|at| *at >= since_ms)
     }
@@ -219,6 +236,17 @@ mod tests {
         assert!(!prefs.is_report(&key, 2_000));
         prefs.forget(&key);
         assert!(!prefs.is_seen(&key, 0) && !prefs.is_report(&key, 0));
+    }
+
+    #[test]
+    fn the_first_start_marks_the_finished_sessions_as_seen_once() {
+        let mut prefs: Prefs = serde_json::from_str(r#"{"pinned":["main:abc"]}"#).unwrap();
+        let key = SessionKey { account: "main".into(), id: "abc".into() };
+        assert!(prefs.start_seen([(key.clone(), 1_000)], 2_000));
+        assert!(prefs.is_seen(&key, 1_000));
+        let later = SessionKey { account: "main".into(), id: "new".into() };
+        assert!(!prefs.start_seen([(later.clone(), 3_000)], 4_000));
+        assert!(!prefs.is_seen(&later, 3_000));
     }
 
     #[test]
