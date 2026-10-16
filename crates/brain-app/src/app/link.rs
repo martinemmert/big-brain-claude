@@ -238,7 +238,8 @@ impl Brain {
         let permission_open = session.awaiting_permission();
         let permission_since = permission_open.then(|| session.phase_since_ms());
         let pid = session.pid;
-        let in_background = session.agent.as_ref().is_some_and(|a| a.is_active());
+        // A team in tmux too: Brain's terminal joins it first (tmux attach), like `claude attach`.
+        let in_background = session.agent.as_ref().is_some_and(|a| a.is_active()) || self.in_team(&key);
         match command {
             Command::Reply { text, .. } => {
                 if permission_open {
