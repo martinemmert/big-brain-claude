@@ -640,7 +640,13 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
         // The session's agents and their messages, as its mod reported them.
         (Method::GET, ["v1", "sessions", account, id, "team"]) => {
             let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
-            off_thread(state.clone(), move |_| reply(StatusCode::OK, &brain_core::teams::load(&home_dir(), &key.id).unwrap_or_default())).await
+            off_thread(state.clone(), move |state| {
+                let team = brain_core::teams::load(&home_dir(), &key.id).unwrap_or_default();
+                // Tokens per agent, from their transcripts beside the session's.
+                let usage = transcript_of(state, &key).map(|t| brain_core::teams::usage(&t)).unwrap_or_default();
+                reply(StatusCode::OK, &serde_json::json!({ "members": team.members, "messages": team.messages, "usage": usage }))
+            })
+            .await
         }
         // What `/…` completes to (as the session's mod reported it) and the styles it can switch to.
         (Method::GET, ["v1", "sessions", account, id, "commands"]) => {

@@ -510,6 +510,8 @@ pub struct Brain {
     team_notified: Option<HashSet<String>>,
     /// The team guide while the Team tab shows.
     pub team_guide: Option<String>,
+    /// What each of the selected session's agents used, while the Team tab shows.
+    pub team_usage: Vec<brain_core::teams::MemberUsage>,
     /// The tasks for later while their dialog is open, and the picked one.
     pub later: Vec<brain_core::later::Item>,
     pub later_pick: usize,
@@ -678,6 +680,7 @@ impl Brain {
             teams_read: HashMap::new(),
             team_notified: None,
             team_guide: None,
+            team_usage: Vec::new(),
             later: Vec::new(),
             later_pick: 0,
             status: None,
@@ -1577,6 +1580,7 @@ impl Brain {
         self.teams.retain(|k, _| by_id.contains_key(&k.id));
         if self.tab == DetailTab::Team {
             self.team_guide = std::fs::read_to_string(config::team_guide()).ok();
+            self.team_usage = self.selected.as_ref().and_then(|k| self.model.transcript_path(k)).map(|t| brain_core::teams::usage(&t)).unwrap_or_default();
         }
 
         let open: Vec<(SessionKey, brain_core::teams::TeamMessage)> =

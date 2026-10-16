@@ -60,6 +60,54 @@ impl Team {
     }
 }
 
+/// What one of the session's agents used: Claude Code keeps each agent's transcript beside the
+/// session's (`<session>/subagents/agent-….jsonl`, with `….meta.json` naming it).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct MemberUsage {
+    pub name: String,
+    pub model: Option<String>,
+    /// Input tokens, cache reads and writes included.
+    pub input: u64,
+    pub output: u64,
+}
+
+/// Each agent's usage for the session whose transcript is `transcript`, most first. A response
+/// is written as several lines with the same message id and the same usage: counted once.
+pub fn usage(transcript: &Path) -> Vec<MemberUsage> {
+    let dir = transcript.with_extension("").join("subagents");
+    let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let mut out: Vec<MemberUsage> = Vec::new();
+    for path in entries.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "jsonl")) {
+        let meta: serde_json::Value = std::fs::read(path.with_extension("meta.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let text = |key: &str| meta.get(key).and_then(|v| v.as_str()).map(str::to_string);
+        let name = text("name").or_else(|| text("agentType")).unwrap_or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
+        let mut by_message: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
+        let mut model = text("model");
+        for line in std::fs::read_to_string(&path).unwrap_or_default().lines() {
+            let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+            let Some(message) = entry.get("message") else { continue };
+            let Some(usage) = message.get("usage") else { continue };
+            let n = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+            let input = n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens");
+            let id = message.get("id").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| line.to_string());
+            by_message.insert(id, (input, n("output_tokens")));
+            if let Some(m) = message.get("model").and_then(|v| v.as_str()) {
+                model = Some(m.to_string());
+            }
+        }
+        let (input, output) = by_message.values().fold((0, 0), |(i, o), (mi, mo)| (i + mi, o + mo));
+        match out.iter_mut().find(|u| u.name == name) {
+            Some(known) => {
+                known.input += input;
+                known.output += output;
+            }
+            None => out.push(MemberUsage { name, model, input, output }),
+        }
+    }
+    out.sort_by_key(|u| std::cmp::Reverse(u.input + u.output));
+    out
+}
+
 fn file(home: &Path, session_id: &str) -> Option<PathBuf> {
     let plain = !session_id.is_empty() && session_id.len() <= 64 && session_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
     plain.then(|| home.join(".claude-brain/teams").join(format!("{session_id}.json")))
@@ -92,6 +140,24 @@ mod tests {
 
     fn message(id: &str, from: &str, question: bool, answered: bool) -> TeamMessage {
         TeamMessage { id: id.into(), from: from.into(), to: "lead".into(), text: "…".into(), at: 1, question, answered }
+    }
+
+    #[test]
+    fn usage_per_agent_counts_each_response_once() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("809e1e5f.jsonl");
+        let dir = root.path().join("809e1e5f/subagents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("agent-abote-1.meta.json"), r#"{"name":"bote","model":"haiku","teamName":"session-809e1e5f"}"#).unwrap();
+        let line = |id: &str, out: u64| format!(r#"{{"type":"assistant","message":{{"id":"{id}","model":"claude-haiku-5-5","usage":{{"input_tokens":4,"cache_read_input_tokens":100,"cache_creation_input_tokens":10,"output_tokens":{out}}}}}}}"#);
+        // The first response in two lines (two content blocks), then a second one.
+        std::fs::write(dir.join("agent-abote-1.jsonl"), [line("m1", 30), line("m1", 30), line("m2", 6)].join("\n")).unwrap();
+        std::fs::write(dir.join("agent-aplaner-2.jsonl"), line("m3", 500)).unwrap();
+        let usage = usage(&transcript);
+        assert_eq!(usage.len(), 2);
+        assert_eq!((usage[0].name.as_str(), usage[0].output), ("agent-aplaner-2", 500), "no meta: the file's name");
+        assert_eq!((usage[1].name.as_str(), usage[1].input, usage[1].output), ("bote", 228, 36));
+        assert_eq!(usage[1].model.as_deref(), Some("claude-haiku-5-5"));
     }
 
     #[test]

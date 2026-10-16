@@ -1950,6 +1950,23 @@ fn team<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
             );
         }
     }
+    // Tokens per agent, from their transcripts beside the session's (finished ones too).
+    if !brain.team_usage.is_empty() {
+        content = content.push(section_title(t("Verbrauch", "Usage"), brain.team_usage.len(), false));
+        for usage in &brain.team_usage {
+            let model = usage.model.as_deref().map(short_model).unwrap_or_default();
+            let (input, output) = (format_tokens(usage.input), format_tokens(usage.output));
+            content = content.push(
+                row![
+                    text(usage.name.clone()).size(12.5).color(TEXT_STRONG).font(style::semibold()),
+                    text(model).size(11.5).color(TEXT_FAINT).font(UI),
+                    text(tr!("{input} rein · {output} raus", "{input} in · {output} out")).size(11.5).color(TEXT_MUTED).font(UI),
+                ]
+                .spacing(10)
+                .align_y(iced::Center),
+            );
+        }
+    }
     if !team.messages.is_empty() {
         content = content.push(section_title(t("Nachrichten", "Messages"), team.messages.len(), false));
         let start = team.messages.len().saturating_sub(30);

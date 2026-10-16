@@ -73,7 +73,8 @@ Die Tabs (`←` `→`):
   wenn Brain beendet wird. `⌘K` → „Als Agenten-Team fortsetzen“ / „Ohne Team fortsetzen“ schaltet eine
   laufende Session um (sie startet dafür neu, das Gespräch bleibt). Hat eine Session Agenten, zeigt der Tab **Team** ihre Fragen an dich
   („Frage an Martin: …“, mit Mitteilung; „Antworten“ schreibt dem Lead, der gibt es weiter), wer
-  arbeitet und wer wartet, ihre Nachrichten und die Anleitung (`team_guide`, Standard
+  arbeitet und wer wartet, was jeder verbraucht hat (Tokens rein/raus, aus den Transkripten der
+  Mitglieder), ihre Nachrichten und die Anleitung (`team_guide`, Standard
   `~/.claude-mods/agenten-team-anleitung.md`).
 - **Öffnen:** `⏎` oder Doppelklick. Läuft die Session in Brain, öffnet sie sich hier; eine beendete
   wird hier fortgesetzt. `⌥⏎` öffnet sie stattdessen in iTerm.
