@@ -27,7 +27,8 @@ pub enum Ask {
     Permission,
     /// An AskUserQuestion with options waits for its answer.
     Options,
-    /// Claude reported `brain report --waiting`.
+    /// Claude reported `brain report --waiting`, or something waits that Brain can't say more
+    /// about.
     Question,
     /// The turn ended with a question mark. Only a guess: quiet, no count.
     Maybe,
@@ -168,8 +169,10 @@ impl Session {
     fn current_signal(&self) -> Option<(Signal, i64)> {
         // After a stop hook (and no new prompt) the file's `waiting` can only be
         // Claude Code's idle reminder, not a permission prompt.
+        // The reminder keeps the time the turn ended: a later one must not make a report that
+        // was read look new again.
         let file = self.file_signal.map(|(signal, ts)| match signal {
-            Signal::Waiting if self.turn_open == Some(false) => (Signal::Idle, ts),
+            Signal::Waiting if self.turn_open == Some(false) => (Signal::Idle, self.hook_signal.map_or(ts, |(_, hook)| hook.min(ts))),
             _ => (signal, ts),
         });
         // The newest of the three wins; on a tie the hook, then the file.
@@ -201,7 +204,9 @@ impl Session {
             Some(Ask::Options)
         } else if self.awaiting_permission() {
             Some(Ask::Permission)
-        } else if phase == Phase::NeedsYou && self.question.is_some() {
+        } else if phase == Phase::NeedsYou || (phase == Phase::YourTurn && self.question.is_some()) {
+            // Also a permission only a hook reported so far, and a question of a background
+            // session whose agent says idle: no buttons, but it waits for the user.
             Some(Ask::Question)
         } else if phase == Phase::YourTurn && self.insight.asks {
             Some(Ask::Maybe)
@@ -840,6 +845,41 @@ mod tests {
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::YourTurn);
         board.apply_session_file("second", &file("waiting", 5), true);
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::NeedsYou);
+    }
+
+    #[test]
+    fn an_idle_background_session_with_a_waiting_report_asks_a_question() {
+        let mut board = Board::default();
+        board.apply_session_file("second", &file("idle", 0), true);
+        board.set_agents(
+            "second",
+            &[BackgroundAgent { id: "s1".into(), session_id: "s1".into(), name: None, cwd: None, state: "idle".into(), started_ms: Some(0), pid: None }],
+        );
+        board.apply_event(&ev(5, Source::Report, Kind::Waiting, Some("Postgres?")));
+        let s = board.get(&key()).unwrap();
+        assert_eq!(s.phase(), Phase::YourTurn);
+        assert_eq!(s.ask(false), Some(Ask::Question));
+    }
+
+    #[test]
+    fn a_permission_only_the_hook_reported_still_asks() {
+        let mut board = Board::default();
+        board.apply_event(&ev(0, Source::Hook, Kind::Prompt, None));
+        board.apply_event(&ev(5, Source::Hook, Kind::Permission, Some("Bash?")));
+        let s = board.get(&key()).unwrap();
+        assert!(!s.awaiting_permission());
+        assert_eq!(s.ask(false), Some(Ask::Question));
+    }
+
+    #[test]
+    fn a_late_idle_reminder_does_not_move_the_end_of_the_turn() {
+        let mut board = Board::default();
+        board.apply_event(&ev(0, Source::Hook, Kind::Prompt, None));
+        board.apply_event(&ev(5, Source::Hook, Kind::Stop, Some("Fertig")));
+        board.apply_session_file("second", &file("waiting", 65), true);
+        let s = board.get(&key()).unwrap();
+        assert_eq!(s.phase(), Phase::YourTurn);
+        assert_eq!(s.phase_since_ms(), (1_790_000_000 + 5) * 1000);
     }
 
     #[test]
