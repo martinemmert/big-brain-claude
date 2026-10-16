@@ -213,10 +213,11 @@ conversations, the plugins' files, or `skills/synced` (claude.ai's own, per Clau
 
 ## Brain Link (the iPhone companion)
 
-**Brain Companion** (repo `brain-companion`, .NET MAUI) shows the sessions on the iPhone, reads
-along, replies, answers permission dialogs and moves a session to another account; Brain carries
-those out on the Mac as it does for a reply typed in Brain (a move as with `A`). ⌘K → *Pair a phone (Brain Link)* turns the server on and shows a QR code;
-the iPhone camera opens it in the app.
+**Brain Companion** (repo `brain-companion-native`, SwiftUI; before that `brain-companion`, .NET
+MAUI) shows the sessions on the iPhone, reads along, replies, answers permission dialogs and
+moves a session to another account; Brain carries those out on the Mac as it does for a reply
+typed in Brain (a move as with `A`). ⌘K → *Pair a phone (Brain Link)* turns the server on and
+shows a QR code; the iPhone camera opens it in the app.
 
 - Off until paired, then it starts with Brain. HTTPS on port 48620 on every interface, so the
   phone reaches it while both are in the same Wi-Fi. The pairing offers the Mac's Bonjour name
@@ -228,6 +229,10 @@ the iPhone camera opens it in the app.
   new token; *Turn Brain Link off* closes the server.
 - A permission answer carries when the dialog it answers opened; Brain sends it only while that
   same dialog is open.
+- The phone sees what a session changed in its folder (git status, each file's diff) and opens
+  the files the session wrote, edited or read; nothing else on the disk.
+- Photos and PDFs from the phone land in `~/.claude-brain/link/inbox/<session>/` (0600); the
+  reply names their paths, so Claude reads them.
 
 ## Install
 

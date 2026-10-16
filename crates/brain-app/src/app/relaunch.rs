@@ -61,6 +61,8 @@ pub(super) struct PendingRestart {
     key: SessionKey,
     flags: Vec<String>,
     in_brain: bool,
+    /// Asked for from the phone: it goes on in the background.
+    from_phone: bool,
 }
 
 /// The flags as words (none is fine), or why not: Brain's own flags are refused.
@@ -130,7 +132,16 @@ impl Brain {
         match choice {
             Relaunch::Fork(flags) => self.fork_selected(target, flags),
             Relaunch::Move(flags) => self.move_selected(target, flags),
-            Relaunch::Restart(flags) => self.restart_with(flags),
+            Relaunch::Restart(flags) => {
+                let Some(key) = self.selected.clone() else { return Task::none() };
+                match self.restart_session(key, flags, false) {
+                    Ok(task) => task,
+                    Err(err) => {
+                        self.set_status(err);
+                        Task::none()
+                    }
+                }
+            }
             Relaunch::TakeOver => {
                 self.take_over();
                 Task::none()
@@ -138,13 +149,12 @@ impl Brain {
         }
     }
 
-    /// End the session if it runs, and resume it with the flags where it ran.
-    fn restart_with(&mut self, flags: Vec<String>) -> Task<Message> {
-        let Some(session) = self.selected_session() else { return Task::none() };
-        let key = session.key.clone();
+    /// End the session if it runs, and resume it with the flags where it ran. From the phone
+    /// (`from_phone`) it goes on in the background, so Brain on the Mac keeps its selection.
+    pub(super) fn restart_session(&mut self, key: SessionKey, flags: Vec<String>, from_phone: bool) -> Result<Task<Message>, String> {
+        let Some(session) = self.model.board.get(&key) else { return Err(t("Die Session gibt es nicht mehr.", "The session is gone.").into()) };
         let (Some(session_id), Some(cwd), Some(account)) = (session.session_id.clone(), session.cwd.clone(), self.model.account(&key.account).cloned()) else {
-            self.set_status(t("Zu dieser Session fehlt die ID oder der Ordner.", "This session has no id or folder."));
-            return Task::none();
+            return Err(t("Zu dieser Session fehlt die ID oder der Ordner.", "This session has no id or folder.").into());
         };
         let ended = session.phase() == Phase::Ended;
         let agent = session.agent.clone();
@@ -162,18 +172,35 @@ impl Brain {
                 }
                 brain_core::agents::resume_with(&account, std::path::Path::new(&cwd), &session_id, name.as_deref(), &flags)
             });
-            return Task::perform(restarted, move |result| Message::Started(id.clone(), result));
+            return Ok(Task::perform(restarted, move |result| Message::Started(id.clone(), result)));
         }
         if ended {
-            return self.resume_in_brain(key, flags);
+            if from_phone {
+                return Ok(self.resume_in_background(&key, flags));
+            }
+            return Ok(self.resume_in_brain(key, flags));
         }
         if !accepts_input {
             self.set_status(t("Neu starten geht, sobald die Session fertig ist und auf dich wartet.", "Restarting works once the session has finished and waits for you."));
-            return Task::none();
+            return Ok(Task::none());
         }
         let in_brain = self.terminals.contains_key(&key);
-        self.pending_restart = Some(PendingRestart { key, flags, in_brain });
-        self.type_into_selected("/exit", t("Beende die Session für den Neustart …", "Ending the session for the restart …").into())
+        self.pending_restart = Some(PendingRestart { key: key.clone(), flags, in_brain, from_phone });
+        Ok(self.type_into(&key, "/exit", t("Beende die Session für den Neustart …", "Ending the session for the restart …").into()))
+    }
+
+    /// An ended session goes on in the background (`claude --bg --resume`), with flags if any.
+    pub(super) fn resume_in_background(&mut self, key: &SessionKey, flags: Vec<String>) -> Task<Message> {
+        let Some(session) = self.model.board.get(key) else { return Task::none() };
+        let (Some(session_id), Some(cwd), Some(account)) = (session.session_id.clone(), session.cwd.clone(), self.model.account(&key.account).cloned()) else {
+            self.set_status(t("Zu dieser Session fehlt die ID oder der Ordner.", "This session has no id or folder."));
+            return Task::none();
+        };
+        let name = session.name.clone();
+        self.set_status(t("Setze die Session im Hintergrund fort …", "Resuming the session in the background …"));
+        let id = account.id.clone();
+        let resumed = off_thread(move || brain_core::agents::resume_with(&account, std::path::Path::new(&cwd), &session_id, name.as_deref(), &flags));
+        Task::perform(resumed, move |result| Message::Started(id.clone(), result))
     }
 
     /// Once the session asked to end has ended: resume it with its flags.
@@ -186,7 +213,10 @@ impl Brain {
         if session.phase() != Phase::Ended {
             return Task::none();
         }
-        let Some(PendingRestart { key, flags, in_brain }) = self.pending_restart.take() else { return Task::none() };
+        let Some(PendingRestart { key, flags, in_brain, from_phone }) = self.pending_restart.take() else { return Task::none() };
+        if from_phone {
+            return self.resume_in_background(&key, flags);
+        }
         if in_brain {
             return self.resume_in_brain(key, flags);
         }
