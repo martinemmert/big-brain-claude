@@ -89,6 +89,8 @@ pub struct View {
     pub team_active: Option<usize>,
     /// It runs as an agent team Brain started (in tmux): the phone offers to go on without.
     pub in_team: bool,
+    /// It can move to another account now (as `A` in Brain): ended, or not in the middle of a turn.
+    pub movable: bool,
 }
 
 /// What the phone asked Brain to do.
@@ -113,6 +115,8 @@ pub enum Command {
     End { key: SessionKey },
     /// The session goes on as an agent team (true) or without one: a restart, as with flags.
     Team { key: SessionKey, on: bool },
+    /// Goes on in another account, as `A` in Brain does.
+    Move { key: SessionKey, account: String },
 }
 
 /// The answer to one question: the options picked (one, or several where the question takes
@@ -124,7 +128,7 @@ pub struct Picked {
 }
 
 /// What this Brain Link offers beyond the first version, for the phone to show only what works.
-const FEATURES: [&str; 12] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands", "team"];
+const FEATURES: [&str; 13] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands", "team", "move"];
 /// How long a read with `wait` waits for something new before it answers anyway.
 const WAIT: Duration = Duration::from_secs(25);
 /// How often a waiting read looks again.
@@ -634,6 +638,10 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                     None => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "name" }))),
                 },
                 Some("end") => Command::End { key },
+                Some("move") => match body.get("account").and_then(|a| a.as_str()).filter(|a| *a != key.account && state.accounts.iter().any(|known| known.id == *a)) {
+                    Some(account) => Command::Move { account: account.to_string(), key },
+                    None => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "account" }))),
+                },
                 Some("team") => Command::Team { key, on: body.get("on").and_then(|o| o.as_bool()).unwrap_or(true) },
                 Some("style") => match body.get("name").and_then(|n| n.as_str()).and_then(session_name) {
                     Some(name) => Command::Reply { key, text: format!("/output-style {name}") },
@@ -1162,7 +1170,8 @@ mod tests {
         let port = probe.local_addr().unwrap().port();
         drop(probe);
         let account = Account { id: "main".into(), config_dir: dir.join("claude") };
-        let link = Link::start_in(dir.clone(), port, vec![account]).unwrap();
+        let second = Account { id: "second".into(), config_dir: dir.join("claude-second") };
+        let link = Link::start_in(dir.clone(), port, vec![account, second]).unwrap();
         link.publish(vec![View {
             account: "main".into(),
             id: "0331-ab".into(),
@@ -1179,6 +1188,7 @@ mod tests {
             team_questions: Vec::new(),
             team_active: None,
             in_team: false,
+            movable: true,
         }]);
         let token = std::fs::read_to_string(dir.join("token")).unwrap();
         let curl = |args: &[&str]| {
@@ -1216,12 +1226,16 @@ mod tests {
         assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\",\"folder\":\"/w/fin\",\"prompt\":\"los\"}", "BASE/v1/sessions"]).ends_with("202"));
         // Steering: interrupt, compact and rename (typed as the session's commands), resume, restart with flags, end.
         let control = |body: &str| curl(&["-H", &bearer, "-d", body, "BASE/v1/sessions/main/0331-ab/control"]);
-        for body in ["{\"action\":\"interrupt\"}", "{\"action\":\"compact\"}", "{\"action\":\"resume\"}", "{\"action\":\"restart\",\"flags\":\"--model opus\"}", "{\"action\":\"rename\",\"name\":\"Neue\\nAusgabe\"}", "{\"action\":\"end\"}", "{\"action\":\"style\",\"name\":\"Concise\"}", "{\"action\":\"team\",\"on\":true}"] {
+        for body in ["{\"action\":\"interrupt\"}", "{\"action\":\"compact\"}", "{\"action\":\"resume\"}", "{\"action\":\"restart\",\"flags\":\"--model opus\"}", "{\"action\":\"rename\",\"name\":\"Neue\\nAusgabe\"}", "{\"action\":\"end\"}", "{\"action\":\"style\",\"name\":\"Concise\"}", "{\"action\":\"team\",\"on\":true}", "{\"action\":\"move\",\"account\":\"second\"}"] {
             assert!(control(body).ends_with("202"), "{body}");
         }
         // Brain's own flags and unknown actions are refused.
         assert!(control("{\"action\":\"restart\",\"flags\":\"--resume x\"}").ends_with("400"));
         assert!(control("{\"action\":\"reboot\"}").ends_with("400"));
+        // Only another account Brain knows.
+        assert!(control("{\"action\":\"move\",\"account\":\"main\"}").ends_with("400"));
+        assert!(control("{\"action\":\"move\",\"account\":\"nope\"}").ends_with("400"));
+        assert!(control("{\"action\":\"move\"}").ends_with("400"));
         assert!(control("{\"action\":\"rename\",\"name\":\" \"}").ends_with("400"), "a name is needed");
         // The session's commands (none reported here) and the styles it can switch to.
         let listed = curl(&["-H", &bearer, "BASE/v1/sessions/main/0331-ab/commands"]);
@@ -1250,7 +1264,8 @@ mod tests {
                 Command::Reply { key: key.clone(), text: "/rename Neue Ausgabe".into() },
                 Command::End { key: key.clone() },
                 Command::Reply { key: key.clone(), text: "/output-style Concise".into() },
-                Command::Team { key, on: true },
+                Command::Team { key: key.clone(), on: true },
+                Command::Move { key, account: "second".into() },
             ]
         );
 
@@ -1395,7 +1410,8 @@ mod tests {
         let port = probe.local_addr().unwrap().port();
         drop(probe);
         let account = Account { id: "main".into(), config_dir: dir.join("claude") };
-        let link = Link::start_in(dir.join("link"), port, vec![account]).unwrap();
+        let second = Account { id: "second".into(), config_dir: dir.join("claude-second") };
+        let link = Link::start_in(dir.join("link"), port, vec![account, second]).unwrap();
         let token = std::fs::read_to_string(dir.join("link").join("token")).unwrap();
         let bearer = format!("Authorization: Bearer {token}");
         let curl = |args: &[&str]| {
@@ -1500,6 +1516,7 @@ mod tests {
             team_questions: Vec::new(),
             team_active: None,
             in_team: false,
+            movable: true,
         };
         link.publish(vec![
             view("9a1527b8-0000-0000-0000-000000000001", "Phoenix", "needs_you", "attention", "Bash: composer test --filter BookingExport", 2),

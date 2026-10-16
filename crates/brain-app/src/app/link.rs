@@ -213,6 +213,7 @@ impl Brain {
             team_questions: self.teams.get(&s.key).map(|t| t.open_questions().cloned().collect()).unwrap_or_default(),
             team_active: self.teams.get(&s.key).filter(|t| !t.members.is_empty()).map(|t| t.active().count()),
             in_team: self.in_team(&s.key),
+            movable: super::movable(s),
         }
     }
 
@@ -230,7 +231,8 @@ impl Brain {
             | Command::Resume { key }
             | Command::Restart { key, .. }
             | Command::End { key }
-            | Command::Team { key, .. } => key.clone(),
+            | Command::Team { key, .. }
+            | Command::Move { key, .. } => key.clone(),
             Command::Start { account, folder, prompt, style, team } => return self.link_start(account, folder, prompt.clone(), style.clone(), *team),
         };
         let Some(session) = self.model.board.get(&key) else { return Task::none() };
@@ -359,6 +361,11 @@ impl Brain {
                 // Any other session ends itself, once it waits for a prompt.
                 self.run_link_command(Command::Reply { key, text: "/exit".into() }, first_try)
             }
+            // As `A` in Brain, and confirmed: the phone asked for it itself.
+            Command::Move { account, .. } => match self.model.accounts.iter().position(|a| a.id == account) {
+                Some(index) => self.move_session(key, index, true),
+                None => Task::none(),
+            },
             Command::Restart { flags, .. } => match self.restart_session(key, flags, true) {
                 Ok(task) => task,
                 Err(err) => {
