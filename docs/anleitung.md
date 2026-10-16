@@ -68,7 +68,10 @@ Die Tabs (`←` `→`):
   Session; es gilt ab der nächsten Nachricht.
 - **Agenten-Team:** `⌘T` im Neue-Session-Dialog startet die Session als Team wie `claude-team`
   (Agent `team_agent`, Standard `dirigent`; Plugin-Ordner `team_plugin_dir`, Standard
-  `~/.claude-mods/team-chat`). Hat eine Session Agenten, zeigt der Tab **Team** ihre Fragen an dich
+  `~/.claude-mods/team-chat`). Ein Team braucht eine interaktive Session: Brain startet es in einer
+  unsichtbaren tmux-Session (`brain-team-…`), sein Terminal-Tab hängt sich daran, und es läuft weiter,
+  wenn Brain beendet wird. `⌘K` → „Als Agenten-Team fortsetzen“ / „Ohne Team fortsetzen“ schaltet eine
+  laufende Session um (sie startet dafür neu, das Gespräch bleibt). Hat eine Session Agenten, zeigt der Tab **Team** ihre Fragen an dich
   („Frage an Martin: …“, mit Mitteilung; „Antworten“ schreibt dem Lead, der gibt es weiter), wer
   arbeitet und wer wartet, ihre Nachrichten und die Anleitung (`team_guide`, Standard
   `~/.claude-mods/agenten-team-anleitung.md`).

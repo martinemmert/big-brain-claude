@@ -87,6 +87,8 @@ pub struct View {
     /// How many of its agents still work or wait (none: no agents).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_active: Option<usize>,
+    /// It runs as an agent team Brain started (in tmux): the phone offers to go on without.
+    pub in_team: bool,
 }
 
 /// What the phone asked Brain to do.
@@ -109,6 +111,8 @@ pub enum Command {
     Restart { key: SessionKey, flags: Vec<String> },
     /// A background session stops (its conversation stays), any other gets `/exit`.
     End { key: SessionKey },
+    /// The session goes on as an agent team (true) or without one: a restart, as with flags.
+    Team { key: SessionKey, on: bool },
 }
 
 /// The answer to one question: the options picked (one, or several where the question takes
@@ -620,6 +624,7 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                     None => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "name" }))),
                 },
                 Some("end") => Command::End { key },
+                Some("team") => Command::Team { key, on: body.get("on").and_then(|o| o.as_bool()).unwrap_or(true) },
                 Some("style") => match body.get("name").and_then(|n| n.as_str()).and_then(session_name) {
                     Some(name) => Command::Reply { key, text: format!("/output-style {name}") },
                     None => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "name" }))),
@@ -1154,6 +1159,7 @@ mod tests {
             can_reply: true,
             team_questions: Vec::new(),
             team_active: None,
+            in_team: false,
         }]);
         let token = std::fs::read_to_string(dir.join("token")).unwrap();
         let curl = |args: &[&str]| {
@@ -1191,7 +1197,7 @@ mod tests {
         assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\",\"folder\":\"/w/fin\",\"prompt\":\"los\"}", "BASE/v1/sessions"]).ends_with("202"));
         // Steering: interrupt, compact and rename (typed as the session's commands), resume, restart with flags, end.
         let control = |body: &str| curl(&["-H", &bearer, "-d", body, "BASE/v1/sessions/main/0331-ab/control"]);
-        for body in ["{\"action\":\"interrupt\"}", "{\"action\":\"compact\"}", "{\"action\":\"resume\"}", "{\"action\":\"restart\",\"flags\":\"--model opus\"}", "{\"action\":\"rename\",\"name\":\"Neue\\nAusgabe\"}", "{\"action\":\"end\"}", "{\"action\":\"style\",\"name\":\"Concise\"}"] {
+        for body in ["{\"action\":\"interrupt\"}", "{\"action\":\"compact\"}", "{\"action\":\"resume\"}", "{\"action\":\"restart\",\"flags\":\"--model opus\"}", "{\"action\":\"rename\",\"name\":\"Neue\\nAusgabe\"}", "{\"action\":\"end\"}", "{\"action\":\"style\",\"name\":\"Concise\"}", "{\"action\":\"team\",\"on\":true}"] {
             assert!(control(body).ends_with("202"), "{body}");
         }
         // Brain's own flags and unknown actions are refused.
@@ -1224,7 +1230,8 @@ mod tests {
                 Command::Restart { key: key.clone(), flags: vec!["--model".into(), "opus".into()] },
                 Command::Reply { key: key.clone(), text: "/rename Neue Ausgabe".into() },
                 Command::End { key: key.clone() },
-                Command::Reply { key, text: "/output-style Concise".into() },
+                Command::Reply { key: key.clone(), text: "/output-style Concise".into() },
+                Command::Team { key, on: true },
             ]
         );
 
@@ -1473,6 +1480,7 @@ mod tests {
             can_reply: phase != "ended",
             team_questions: Vec::new(),
             team_active: None,
+            in_team: false,
         };
         link.publish(vec![
             view("9a1527b8-0000-0000-0000-000000000001", "Phoenix", "needs_you", "attention", "Bash: composer test --filter BookingExport", 2),

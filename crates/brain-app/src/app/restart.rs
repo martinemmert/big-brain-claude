@@ -32,6 +32,8 @@ pub(super) struct PendingRestart {
     in_brain: bool,
     /// Asked for from the phone: it goes on in the background.
     from_phone: bool,
+    /// Team on or off: it goes on as an agent team in tmux, or without one in the background.
+    team: Option<bool>,
 }
 
 /// The flags as words, or why not: Brain's own flags are refused.
@@ -114,8 +116,58 @@ impl Brain {
             return Ok(Task::none());
         }
         let in_brain = self.terminals.contains_key(&key);
-        self.pending_restart = Some(PendingRestart { key: key.clone(), flags, in_brain, from_phone });
+        self.pending_restart = Some(PendingRestart { key: key.clone(), flags, in_brain, from_phone, team: None });
         Ok(self.type_into(&key, "/exit", t("Beende die Session für den Neustart …", "Ending the session for the restart …").into()))
+    }
+
+    /// Whether the session runs as an agent team Brain started (in tmux).
+    pub fn in_team(&self, key: &SessionKey) -> bool {
+        self.model.board.get(key).is_some_and(|s| s.phase() != Phase::Ended && self.team_panes.contains_key(&s.pid))
+    }
+
+    /// Team on: the conversation goes on as an agent team in tmux. Team off: it goes on without
+    /// one in the background. Claude takes both only at start, so a running session ends first
+    /// (a background one is stopped, any other gets `/exit` once it waits for you).
+    pub(super) fn switch_team(&mut self, key: SessionKey, on: bool) -> Result<Task<Message>, String> {
+        let Some(session) = self.model.board.get(&key) else { return Err(t("Die Session gibt es nicht mehr.", "The session is gone.").into()) };
+        let (Some(session_id), Some(cwd), Some(account)) = (session.session_id.clone(), session.cwd.clone(), self.model.account(&key.account).cloned()) else {
+            return Err(t("Zu dieser Session fehlt die ID oder der Ordner.", "This session has no id or folder.").into());
+        };
+        if on == self.in_team(&key) {
+            return Ok(Task::none());
+        }
+        let ended = session.phase() == Phase::Ended;
+        let agent = session.agent.clone().filter(|a| a.is_active());
+        let accepts_input = session.accepts_input();
+        let name = session.name.clone();
+        if on && (ended || agent.is_some()) {
+            self.set_status(t("Setze die Session als Team fort …", "Going on as a team …"));
+            let options = brain_core::agents::Start { name, team: Some(crate::config::team_start()), resume: Some(session_id), ..Default::default() };
+            let started = off_thread(move || {
+                if let Some(agent) = agent {
+                    brain_core::agents::stop(&account, &agent.id)?;
+                }
+                brain_core::agents::start_team(&account, std::path::Path::new(&cwd), &options)
+            });
+            return Ok(Task::perform(started, Message::TeamStarted));
+        }
+        if !accepts_input {
+            self.set_status(t("Umschalten geht, sobald die Session fertig ist und auf dich wartet.", "Switching works once the session has finished and waits for you."));
+            return Ok(Task::none());
+        }
+        self.pending_restart = Some(PendingRestart { key: key.clone(), flags: Vec::new(), in_brain: false, from_phone: true, team: Some(on) });
+        let note = if on { t("Beende die Session, sie geht als Team weiter …", "Ending the session, it goes on as a team …") } else { t("Beende das Team, die Session geht ohne weiter …", "Ending the team, the session goes on without one …") };
+        Ok(self.type_into(&key, "/exit", note.into()))
+    }
+
+    /// An ended session goes on as an agent team in tmux.
+    fn resume_as_team(&mut self, key: &SessionKey) -> Task<Message> {
+        let Some(session) = self.model.board.get(key) else { return Task::none() };
+        let (Some(session_id), Some(cwd), Some(account)) = (session.session_id.clone(), session.cwd.clone(), self.model.account(&key.account).cloned()) else { return Task::none() };
+        let options = brain_core::agents::Start { name: session.name.clone(), team: Some(crate::config::team_start()), resume: Some(session_id), ..Default::default() };
+        self.set_status(t("Setze die Session als Team fort …", "Going on as a team …"));
+        let started = off_thread(move || brain_core::agents::start_team(&account, std::path::Path::new(&cwd), &options));
+        Task::perform(started, Message::TeamStarted)
     }
 
     /// An ended session goes on in the background (`claude --bg --resume`), with flags if any.
@@ -142,7 +194,10 @@ impl Brain {
         if session.phase() != Phase::Ended {
             return Task::none();
         }
-        let Some(PendingRestart { key, flags, in_brain, from_phone }) = self.pending_restart.take() else { return Task::none() };
+        let Some(PendingRestart { key, flags, in_brain, from_phone, team }) = self.pending_restart.take() else { return Task::none() };
+        if team == Some(true) {
+            return self.resume_as_team(&key);
+        }
         if from_phone {
             return self.resume_in_background(&key, flags);
         }

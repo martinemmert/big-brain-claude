@@ -90,6 +90,8 @@ pub enum PaletteCommand {
     Find,
     Cleanup,
     Later,
+    /// The selected session goes on as an agent team (true) or without one.
+    Team(bool),
     ToggleEnded,
     ToggleProjects,
     ToggleToday,
@@ -293,6 +295,8 @@ pub enum Message {
     Term(iced_term::Event),
     /// A background session Brain started or took over: its account and short id, or why not.
     Started(String, Result<String, String>),
+    /// An agent team started in tmux (its tmux session), or why not.
+    TeamStarted(Result<String, String>),
     /// A Markdown file was handed to YAMV (`true`), or to the text editor because YAMV is missing.
     MarkdownOpened(String, bool),
     MousePressed,
@@ -497,6 +501,10 @@ pub struct Brain {
     /// Each session's agents and their messages, as its mod reported them, and when each
     /// session's file was read.
     pub teams: HashMap<SessionKey, brain_core::teams::Team>,
+    /// The tmux panes of agent teams Brain started (Claude's pid → tmux session), read every
+    /// few seconds, and when.
+    team_panes: HashMap<u32, String>,
+    team_panes_read: Option<Instant>,
     teams_read: HashMap<String, std::time::SystemTime>,
     /// Questions to the person already notified about; the first read only sets the baseline.
     team_notified: Option<HashSet<String>>,
@@ -665,6 +673,8 @@ impl Brain {
             show_resting: false,
             cleanup_age: 1,
             teams: HashMap::new(),
+            team_panes: HashMap::new(),
+            team_panes_read: None,
             teams_read: HashMap::new(),
             team_notified: None,
             team_guide: None,
@@ -1193,6 +1203,17 @@ impl Brain {
                     Task::none()
                 }
             },
+            Message::TeamStarted(result) => {
+                match result {
+                    Ok(tmux) => {
+                        self.team_panes_read = None;
+                        self.model.relist_transcripts();
+                        self.set_status(tr!("Team läuft in tmux ({tmux}) – es erscheint gleich.", "The team runs in tmux ({tmux}) – it shows up in a moment."));
+                    }
+                    Err(why) => self.set_status(tr!("Konnte das Team nicht starten: {why}", "Couldn't start the team: {why}")),
+                }
+                Task::none()
+            }
             Message::MousePressed => {
                 // Clicks move the keyboard in or out of a terminal; ask each shown one.
                 let mut asks: Vec<Task<Message>> = self
@@ -1534,6 +1555,10 @@ impl Brain {
     /// Reads the teams the sessions' mods reported, only files that changed, and notifies each
     /// new question to the person once (not for muted or snoozed sessions).
     fn refresh_teams(&mut self, now: i64) {
+        if self.team_panes_read.is_none_or(|at| at.elapsed() > Duration::from_secs(5)) {
+            self.team_panes = brain_core::agents::team_panes();
+            self.team_panes_read = Some(Instant::now());
+        }
         let home = brain_core::account::home_dir();
         let by_id: HashMap<String, SessionKey> = self.model.board.keys().map(|k| (k.id.clone(), k.clone())).collect();
         for entry in std::fs::read_dir(home.join(".claude-brain/teams")).into_iter().flatten().flatten() {
@@ -1868,6 +1893,11 @@ impl Brain {
                 all.push((tr!("In {id} fortsetzen", "Continue in {id}"), "", PaletteCommand::Act(Action::MoveTo(index))));
             }
             all.push((t("Neu starten mit … (z. B. --chrome)", "Restart with … (e.g. --chrome)").to_string(), "", PaletteCommand::Act(Action::RestartWith)));
+            if self.in_team(&session.key) {
+                all.push((t("Ohne Team fortsetzen", "Go on without the team").to_string(), "", PaletteCommand::Team(false)));
+            } else {
+                all.push((t("Als Agenten-Team fortsetzen", "Go on as an agent team").to_string(), "", PaletteCommand::Team(true)));
+            }
             all.push((t("Beenden / Hintergrund-Session stoppen", "End / stop the background session").to_string(), "X", PaletteCommand::Act(Action::End)));
             all.push((t("Ausblenden", "Hide").to_string(), "⌫", PaletteCommand::Act(Action::Hide)));
             all.push((t("In den Papierkorb", "Move to Trash").to_string(), "⌘⌫", PaletteCommand::Act(Action::Trash)));
@@ -1933,6 +1963,19 @@ impl Brain {
             PaletteCommand::Later => {
                 self.open_later();
                 Task::none()
+            }
+            PaletteCommand::Team(on) => {
+                let Some(key) = self.selected.clone() else { return Task::none() };
+                if self.blocked_in_demo() {
+                    return Task::none();
+                }
+                match self.switch_team(key, on) {
+                    Ok(task) => task,
+                    Err(err) => {
+                        self.set_status(err);
+                        Task::none()
+                    }
+                }
             }
             PaletteCommand::SetUpAccount => self.open_account_setup(),
             PaletteCommand::PairPhone => {
@@ -2149,20 +2192,24 @@ impl Brain {
     /// What the Terminal tab would run for the selected session: `claude attach` for a
     /// background session, `claude --resume` for an ended one. Sessions running in an iTerm tab
     /// can't be joined from outside, so they get none.
-    pub fn terminal_command(&self) -> Option<(Vec<String>, String)> {
+    pub fn terminal_command(&self) -> Option<(&'static str, Vec<String>, String)> {
         self.terminal_command_for(self.selected_session()?)
     }
 
-    fn terminal_command_for(&self, session: &Session) -> Option<(Vec<String>, String)> {
+    fn terminal_command_for(&self, session: &Session) -> Option<(&'static str, Vec<String>, String)> {
         let cwd = session.cwd.clone().unwrap_or_else(|| brain_core::account::home_dir().display().to_string());
         if let Some(agent) = &session.agent {
-            return Some((vec!["attach".into(), agent.id.clone()], cwd));
+            return Some(("claude", vec!["attach".into(), agent.id.clone()], cwd));
+        }
+        // An agent team Brain started runs in tmux: its terminal joins that.
+        if let Some(tmux) = self.team_panes.get(&session.pid).filter(|_| session.phase() != Phase::Ended) {
+            return Some(("tmux", vec!["attach".into(), "-t".into(), tmux.clone()], cwd));
         }
         if session.phase() == Phase::Ended {
             // A restart's flags come after the resume.
             let mut args = vec!["--resume".into(), session.session_id.clone()?];
             args.extend(self.restart_flags.get(&session.key).cloned().unwrap_or_default());
-            return Some((args, cwd));
+            return Some(("claude", args, cwd));
         }
         None
     }
@@ -2171,8 +2218,7 @@ impl Brain {
     fn selection_state(&self) -> Option<(SessionKey, bool)> {
         let attachable = self
             .selected_session()
-            .and_then(|s| s.agent.as_ref())
-            .is_some_and(|a| !matches!(a.state.as_str(), "failed" | "stopped"));
+            .is_some_and(|s| s.agent.as_ref().is_some_and(|a| !matches!(a.state.as_str(), "failed" | "stopped")) || (self.team_panes.contains_key(&s.pid) && s.phase() != Phase::Ended));
         self.selected.clone().map(|k| (k, attachable))
     }
 
@@ -2303,7 +2349,7 @@ impl Brain {
     /// Starts a session's terminal in Brain (`claude attach` or `claude --resume`), shown or
     /// not. False when the session has none or it didn't start.
     fn spawn_terminal(&mut self, key: &SessionKey) -> bool {
-        let Some((args, cwd)) = self.model.board.get(key).and_then(|s| self.terminal_command_for(s)) else { return false };
+        let Some((program, args, cwd)) = self.model.board.get(key).and_then(|s| self.terminal_command_for(s)) else { return false };
         {
             let mut env = HashMap::new();
             if let Some(account) = self.model.account(&key.account).filter(|a| a.id != "main") {
@@ -2316,7 +2362,7 @@ impl Brain {
                 font: iced_term::settings::FontSettings { size: font.size, font_type: font.regular, scale_factor: 1.4 },
                 theme: iced_term::settings::ThemeSettings::new(Box::new(crate::style::terminal_palette())),
                 backend: iced_term::settings::BackendSettings {
-                    program: "claude".into(),
+                    program: program.into(),
                     args,
                     env,
                     working_directory: Some(std::path::PathBuf::from(cwd)),
@@ -3966,11 +4012,16 @@ impl Brain {
             self.report(outcome, Some(t("Neue Session in iTerm gestartet.", "Started a new session in iTerm.").into()));
             return unfocus();
         }
+        let options = brain_core::agents::Start { model, name, style, prompt, team, resume: None };
+        // A team needs an interactive session: in tmux, which Brain's terminal joins.
+        if options.team.is_some() {
+            self.set_status(t("Starte das Team in tmux …", "Starting the team in tmux …"));
+            let started = off_thread(move || brain_core::agents::start_team(&account, std::path::Path::new(&folder), &options));
+            return Task::batch([unfocus(), Task::perform(started, Message::TeamStarted)]);
+        }
         self.set_status(t("Starte die Session in Brain …", "Starting the session in Brain …"));
         let id = account.id.clone();
-        let started = off_thread(move || {
-            brain_core::agents::start(&account, std::path::Path::new(&folder), &brain_core::agents::Start { model, name, style, prompt, team })
-        });
+        let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), &options));
         Task::batch([unfocus(), Task::perform(started, move |result| Message::Started(id.clone(), result))])
     }
 

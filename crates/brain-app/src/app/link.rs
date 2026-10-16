@@ -211,6 +211,7 @@ impl Brain {
             can_reply: phase != Phase::Ended && (self.can_send(&s.key) || s.agent.as_ref().is_some_and(|a| a.is_active())),
             team_questions: self.teams.get(&s.key).map(|t| t.open_questions().cloned().collect()).unwrap_or_default(),
             team_active: self.teams.get(&s.key).filter(|t| !t.members.is_empty()).map(|t| t.active().count()),
+            in_team: self.in_team(&s.key),
         }
     }
 
@@ -227,7 +228,8 @@ impl Brain {
             | Command::Interrupt { key }
             | Command::Resume { key }
             | Command::Restart { key, .. }
-            | Command::End { key } => key.clone(),
+            | Command::End { key }
+            | Command::Team { key, .. } => key.clone(),
             Command::Start { account, folder, prompt, style, team } => return self.link_start(account, folder, prompt.clone(), style.clone(), *team),
         };
         let Some(session) = self.model.board.get(&key) else { return Task::none() };
@@ -329,6 +331,13 @@ impl Brain {
                 }
                 self.resume_in_background(&key, Vec::new())
             }
+            Command::Team { on, .. } => match self.switch_team(key, on) {
+                Ok(task) => task,
+                Err(err) => {
+                    self.set_status(tr!("Vom Handy: Team umschalten geht nicht – {err}", "From the phone: can't switch the team – {err}"));
+                    Task::none()
+                }
+            },
             Command::End { .. } => {
                 // A background session stops as with X in Brain: its conversation stays.
                 if let Some(agent) = self.model.board.get(&key).and_then(|s| s.agent.clone()).filter(|a| a.is_active()) {
@@ -400,7 +409,13 @@ impl Brain {
         let folder_name = folder.rsplit('/').find(|p| !p.is_empty()).unwrap_or(folder).to_string();
         self.set_status(tr!("Vom Handy: neue Session in {folder_name} …", "From the phone: new session in {folder_name} …"));
         let folder = folder.to_string();
-        let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), &brain_core::agents::Start { style, prompt, team, ..Default::default() }));
+        let options = brain_core::agents::Start { style, prompt, team, ..Default::default() };
+        // A team needs an interactive session: in tmux, which Brain's terminal joins.
+        if options.team.is_some() {
+            let started = off_thread(move || brain_core::agents::start_team(&account, std::path::Path::new(&folder), &options));
+            return Task::perform(started, Message::TeamStarted);
+        }
+        let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), &options));
         Task::perform(started, Message::LinkStarted)
     }
 }

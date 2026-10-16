@@ -114,6 +114,8 @@ pub struct Start {
     pub prompt: Option<String>,
     /// As an agent team, led by this agent.
     pub team: Option<TeamStart>,
+    /// The conversation it continues (`--resume <session id>`).
+    pub resume: Option<String>,
 }
 
 /// An agent team (experimental in Claude Code): the lead agent and a plugin folder to load with
@@ -125,9 +127,69 @@ pub struct TeamStart {
 }
 
 /// Starts a background session in `cwd` (`claude --bg`); returns its short id, or what `claude`
-/// said (e.g. an untrusted folder).
+/// said (e.g. an untrusted folder). An agent team needs an interactive session: see
+/// [`start_team`].
 pub fn start(account: &Account, cwd: &Path, options: &Start) -> Result<String, String> {
     let mut args: Vec<String> = vec!["--bg".into()];
+    args.extend(start_args(options));
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut command = claude(account, &args);
+    if options.team.is_some() {
+        command.envs(TEAM_ENV);
+    }
+    started(command.current_dir(cwd))
+}
+
+/// What `claude-team` sets: agent teams on, the security plugin's stop review off.
+const TEAM_ENV: [(&str, &str); 2] = [("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1"), ("ENABLE_STOP_REVIEW", "0")];
+
+/// tmux sessions Brain starts an agent team in are named `brain-team-<when>`.
+pub const TEAM_TMUX_PREFIX: &str = "brain-team-";
+
+/// Starts an agent team: Claude Code makes teammates only in an interactive session, so it
+/// runs in a detached tmux session (`brain-team-…`), Claude itself as the pane's program, and
+/// goes on when Brain quits. Returns the tmux session's name.
+pub fn start_team(account: &Account, cwd: &Path, options: &Start) -> Result<String, String> {
+    let name = format!("{TEAM_TMUX_PREFIX}{}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+    let mut command = Command::new("tmux");
+    command.args(["new-session", "-d", "-s", &name, "-x", "200", "-y", "50", "-c"]).arg(cwd);
+    if account.id != "main" {
+        command.arg("-e").arg(format!("CLAUDE_CONFIG_DIR={}", account.config_dir.display()));
+    }
+    for (key, value) in TEAM_ENV {
+        command.arg("-e").arg(format!("{key}={value}"));
+    }
+    // Several arguments: tmux runs them as they are, no shell in between.
+    command.arg("claude").args(start_args(options));
+    let out = command.output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(name)
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+/// The panes of Brain's team sessions in tmux: the pid of the program each runs (Claude) and
+/// the tmux session's name. Empty without tmux or without such sessions.
+pub fn team_panes() -> std::collections::HashMap<u32, String> {
+    let Ok(out) = Command::new("tmux").args(["list-panes", "-a", "-F", "#{session_name}\t#{pane_pid}"]).output() else {
+        return Default::default();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (session, pid) = line.split_once('\t')?;
+            session.starts_with(TEAM_TMUX_PREFIX).then(|| Some((pid.trim().parse().ok()?, session.to_string()))).flatten()
+        })
+        .collect()
+}
+
+/// The arguments for a new session's options, after `--bg` or as an interactive one.
+fn start_args(options: &Start) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    if let Some(session_id) = &options.resume {
+        args.extend(["--resume".into(), session_id.clone()]);
+    }
     if let Some(model) = &options.model {
         args.extend(["--model".into(), model.clone()]);
     }
@@ -149,13 +211,7 @@ pub fn start(account: &Account, cwd: &Path, options: &Start) -> Result<String, S
     if let Some(prompt) = options.prompt.as_deref().filter(|p| !p.trim().is_empty()) {
         args.extend(["--".into(), prompt.to_string()]);
     }
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let mut command = claude(account, &args);
-    if options.team.is_some() {
-        // What `claude-team` sets: agent teams on, the security plugin's stop review off.
-        command.env("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1").env("ENABLE_STOP_REVIEW", "0");
-    }
-    started(command.current_dir(cwd))
+    args
 }
 
 /// Continues an existing session in the background under its id (`claude --bg --resume`),
