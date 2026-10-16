@@ -211,8 +211,9 @@ pub struct Insight {
     pub asks: bool,
     /// The last sentence of that reply: a request or a question stands there, not in its start.
     pub closing: Option<String>,
-    /// The tool call the last reply ended with, tool and argument in one line, until a result
-    /// or a prompt follows: what a permission dialog would allow.
+    /// The one tool call that has no result yet, tool and argument in one line: what a
+    /// permission dialog would allow. `None` when none or several are open (parallel calls),
+    /// since then it isn't known which one the dialog is about.
     pub tool: Option<String>,
 }
 
@@ -263,6 +264,8 @@ pub fn title_of(transcript: &Path) -> Option<String> {
 pub fn insight(transcript: &Path) -> Insight {
     let len = std::fs::metadata(transcript).map(|m| m.len()).unwrap_or(0);
     let mut out = Insight::default();
+    // Tool calls (id, line) of the main conversation that no result answered yet.
+    let mut open_calls: Vec<(String, String)> = Vec::new();
     for entry in tail_entries(transcript, len, 512 * 1024) {
         if entry.get("isSidechain").and_then(Value::as_bool).unwrap_or(false) {
             continue;
@@ -293,14 +296,20 @@ pub fn insight(transcript: &Path) -> Insight {
                 if user_texts(&entry).next().is_some() {
                     out.asks = false;
                 }
-                out.tool = None;
+                if user_texts(&entry).next().is_some() {
+                    open_calls.clear();
+                }
+                let answered = entry.get("message").and_then(|m| m.get("content")).and_then(Value::as_array).into_iter().flatten();
+                for id in answered.filter_map(|b| b.get("tool_use_id").and_then(Value::as_str)) {
+                    open_calls.retain(|(call, _)| call != id);
+                }
             }
             "assistant" => {
                 if let Some(ts) = ts {
                     out.turn = Some((Turn::Working, ts));
                 }
                 let message = entry.get("message");
-                out.tool = last_tool(message);
+                open_calls.extend(tool_calls(message));
                 if let Some(text) = last_text(message) {
                     out.asks = ends_with_question(text);
                     out.closing = last_sentence(text);
@@ -323,16 +332,25 @@ pub fn insight(transcript: &Path) -> Insight {
             _ => {}
         }
     }
+    if let [(_, line)] = open_calls.as_slice() {
+        out.tool = Some(line.clone());
+    }
     out
 }
 
-/// The last tool call of an assistant message as "Tool: argument".
-fn last_tool(message: Option<&Value>) -> Option<String> {
-    let blocks = message.and_then(|m| m.get("content")).and_then(Value::as_array)?;
-    let block = blocks.iter().rev().find(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))?;
-    let name = block.get("name")?.as_str()?;
-    let summary = tool_summary(name, block.get("input").unwrap_or(&Value::Null));
-    Some(if summary.is_empty() { name.to_string() } else { format!("{name}: {summary}") })
+/// The tool calls of an assistant message as (id, "Tool: argument").
+fn tool_calls(message: Option<&Value>) -> Vec<(String, String)> {
+    let blocks = message.and_then(|m| m.get("content")).and_then(Value::as_array);
+    blocks
+        .into_iter()
+        .flatten()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .filter_map(|b| {
+            let name = b.get("name")?.as_str()?;
+            let summary = tool_summary(name, b.get("input").unwrap_or(&Value::Null));
+            Some((b.get("id")?.as_str()?.to_string(), if summary.is_empty() { name.to_string() } else { format!("{name}: {summary}") }))
+        })
+        .collect()
 }
 
 /// The last text block of an assistant message.
@@ -553,12 +571,23 @@ mod tests {
 
     #[test]
     fn a_tool_call_stays_until_its_result_comes() {
-        let call = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"git push\n  --force-with-lease"}}]},"timestamp":"2026-10-02T14:00:05Z"}"#;
-        let result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]},"timestamp":"2026-10-02T14:00:09Z"}"#;
+        let call = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"git push\n  --force-with-lease"}}]},"timestamp":"2026-10-02T14:00:05Z"}"#;
+        let result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]},"timestamp":"2026-10-02T14:00:09Z"}"#;
         let (_dir, path) = transcript(&[call]);
         assert_eq!(insight(&path).tool.as_deref(), Some("Bash: git push --force-with-lease"));
         let (_dir, path) = transcript(&[call, result]);
         assert_eq!(insight(&path).tool, None);
+    }
+
+    #[test]
+    fn two_parallel_calls_show_no_command_until_one_is_left() {
+        let calls = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"rm -rf x"}}]},"timestamp":"2026-10-02T14:00:05Z"}"#;
+        let first = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]},"timestamp":"2026-10-02T14:00:06Z"}"#;
+        let sidechain = r#"{"type":"assistant","isSidechain":true,"message":{"role":"assistant","content":[{"type":"tool_use","id":"s1","name":"Bash","input":{"command":"other"}}]}}"#;
+        let (_dir, path) = transcript(&[calls]);
+        assert_eq!(insight(&path).tool, None);
+        let (_dir, path) = transcript(&[calls, first, sidechain]);
+        assert_eq!(insight(&path).tool.as_deref(), Some("Bash: rm -rf x"));
     }
 
     #[test]
