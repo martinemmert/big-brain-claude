@@ -123,6 +123,102 @@ pub fn exchanges(transcript: &Path) -> Vec<Exchange> {
     out
 }
 
+/// An AskUserQuestion call still waiting for its answer.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct OpenQuestion {
+    /// The tool call's id: an answer names it, so it can only ever reach this question.
+    pub call: String,
+    pub items: Vec<QuestionItem>,
+    /// Some question takes several picks (answered in the terminal, not with one key).
+    pub multi_select: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct QuestionItem {
+    pub question: String,
+    pub options: Vec<String>,
+    /// This question takes several picks.
+    pub multi_select: bool,
+}
+
+/// The AskUserQuestion call the session waits on, if any: the last one in the transcript that
+/// has no result yet. Reads only the transcript's end (the question is the last thing in it).
+pub fn open_question(transcript: &Path) -> Option<OpenQuestion> {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL: u64 = 1024 * 1024;
+    let mut file = std::fs::File::open(transcript).ok()?;
+    let len = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(TAIL))).ok()?;
+    let mut text = String::new();
+    file.read_to_string(&mut text).ok()?;
+    let mut open: Option<OpenQuestion> = None;
+    // The first line may be cut off by the seek; it doesn't parse and is skipped.
+    for line in text.lines() {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else { continue };
+        if entry.get("isSidechain").and_then(Value::as_bool).unwrap_or(false) {
+            continue;
+        }
+        let Some(blocks) = entry.get("message").and_then(|m| m.get("content")).and_then(Value::as_array) else { continue };
+        for block in blocks {
+            match block.get("type").and_then(Value::as_str) {
+                Some("tool_use") if block.get("name").and_then(Value::as_str) == Some("AskUserQuestion") => {
+                    let questions = block.get("input").and_then(|i| i.get("questions")).and_then(Value::as_array);
+                    let mut multi_select = false;
+                    let items = questions
+                        .into_iter()
+                        .flatten()
+                        .map(|q| {
+                            let multi = q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false);
+                            multi_select |= multi;
+                            QuestionItem {
+                                multi_select: multi,
+                                question: q.get("question").and_then(Value::as_str).unwrap_or_default().to_string(),
+                                options: q
+                                    .get("options")
+                                    .and_then(Value::as_array)
+                                    .into_iter()
+                                    .flatten()
+                                    .filter_map(|o| o.get("label").and_then(Value::as_str).map(str::to_string))
+                                    .collect(),
+                            }
+                        })
+                        .collect();
+                    let call = block.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+                    open = Some(OpenQuestion { call, items, multi_select });
+                }
+                Some("tool_result") => {
+                    let id = block.get("tool_use_id").and_then(Value::as_str);
+                    if open.as_ref().is_some_and(|o| Some(o.call.as_str()) == id) {
+                        open = None;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    open.filter(|o| !o.call.is_empty() && !o.items.is_empty())
+}
+
+/// The keys that answer an open question in Claude Code's dialog, as tested by hand: each
+/// question's option number in turn, and with several questions `1` on the review page that
+/// follows ("Submit answers"). `None` when a pick doesn't fit the question.
+pub fn answer_keys(question: &OpenQuestion, picks: &[usize]) -> Option<String> {
+    if question.multi_select || picks.len() != question.items.len() {
+        return None;
+    }
+    let mut keys = String::new();
+    for (item, &pick) in question.items.iter().zip(picks) {
+        if pick >= item.options.len() || pick >= 9 {
+            return None;
+        }
+        keys.push(char::from(b'1' + pick as u8));
+    }
+    if question.items.len() > 1 {
+        keys.push('1');
+    }
+    Some(keys)
+}
+
 /// The question a reply ends with: its last paragraph, when that ends with a question mark.
 fn closing_question(reply: &str) -> Option<String> {
     let last = reply.trim().rsplit("\n\n").next()?.trim();
@@ -132,6 +228,29 @@ fn closing_question(reply: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_the_open_question_and_the_keys_that_answer_it() {
+        let ask = serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "tool_use", "id": "toolu_1", "name": "AskUserQuestion", "input": { "questions": [
+            { "question": "Color?", "options": [{ "label": "Red" }, { "label": "Blue" }] },
+            { "question": "Size?", "options": [{ "label": "Small" }, { "label": "Large" }] }
+        ] } }] } });
+        let file = transcript(&[ask.clone()]);
+        let open = open_question(file.path()).unwrap();
+        assert_eq!((open.call.as_str(), open.items.len(), open.items[1].options[1].as_str()), ("toolu_1", 2, "Large"));
+        // Blue, Small, then "Submit answers" — what the dialog took in the test by hand.
+        assert_eq!(answer_keys(&open, &[1, 0]).as_deref(), Some("211"));
+        assert_eq!(answer_keys(&open, &[2, 0]), None);
+        assert_eq!(answer_keys(&open, &[1]), None);
+        let single = OpenQuestion { items: vec![open.items[0].clone()], ..open.clone() };
+        assert_eq!(answer_keys(&single, &[1]).as_deref(), Some("2"));
+        let multi = OpenQuestion { multi_select: true, ..single };
+        assert_eq!(answer_keys(&multi, &[1]), None);
+
+        let answered = serde_json::json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "toolu_1", "content": "ok" }] } });
+        let file = transcript(&[ask, answered]);
+        assert_eq!(open_question(file.path()), None);
+    }
 
     fn transcript(lines: &[serde_json::Value]) -> tempfile::NamedTempFile {
         let file = tempfile::NamedTempFile::new().unwrap();

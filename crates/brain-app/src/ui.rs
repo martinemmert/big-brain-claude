@@ -27,6 +27,11 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         _ if brain.overview => overview(brain),
         Mode::Cleanup => cleanup(brain),
         Mode::Pairing => pairing(brain),
+        Mode::AccountSetup => account_setup(brain),
+        Mode::Sync => sync_accounts(brain),
+        Mode::Keys => keys_sheet(brain),
+        Mode::Garden => garden(brain),
+        Mode::Relaunch => relaunch(brain),
         Mode::NewSession => new_session(brain),
         _ if brain.prefs.layout == Layout::Today => today(brain),
         _ => detail(brain, now),
@@ -234,7 +239,7 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
         open.push((t("Fortsetzen", "Resume").to_string(), "⏎", Action::Resume, false));
         open.push((t("In iTerm fortsetzen", "Resume in iTerm").to_string(), "⌥⏎", Action::OpenInITerm, false));
     } else if caps.focus {
-        open.push((t("Zum Terminal", "Open terminal").to_string(), "⏎", Action::Open, false));
+        open.push((t("Öffnen", "Open").to_string(), "⏎", Action::Open, false));
     }
     if s.agent.is_none() && (ended || s.accepts_input()) {
         open.push((t("Nach Brain holen", "Move into Brain").to_string(), "I", Action::TakeOver, false));
@@ -253,7 +258,10 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
     } else if s.accepts_input() && caps.type_text {
         talk.push((t("Antworten", "Reply").to_string(), "T", Action::StartReply, false));
     }
-    talk.push((t("Umbenennen", "Rename").to_string(), "R", Action::StartRename, false));
+    // Brain renames by typing `/rename`: only while the session waits.
+    if s.accepts_input() {
+        talk.push((t("Umbenennen", "Rename").to_string(), "R", Action::StartRename, false));
+    }
     groups.push(talk);
 
     let pinned = brain.prefs.is_pinned(&s.key);
@@ -265,13 +273,14 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
     };
     let mut keep = vec![(pin.to_string(), "P", Action::Pin, false)];
     let mute = if brain.prefs.is_muted(&s.key) { t("Benachrichtigungen an", "Unmute") } else { t("Stummschalten", "Mute") };
-    keep.push((mute.to_string(), "M", Action::Mute, false));
-    if !ended {
-        keep.push((t("Pausieren (15 min → 1 h → morgen)", "Snooze (15 min → 1 h → tomorrow)").to_string(), "S", Action::Snooze, false));
+    keep.push((mute.to_string(), "", Action::Mute, false));
+    let hidden = brain.prefs.is_hidden(&s.key, s.last_activity_ms);
+    if hidden {
+        keep.push((t("Wieder einblenden", "Show again").to_string(), "S", Action::Snooze, false));
+    } else if !ended {
+        keep.push((t("Pausieren (15 min → 1 h → morgen → bis sich etwas tut)", "Snooze (15 min → 1 h → tomorrow → until something happens)").to_string(), "S", Action::Snooze, false));
     }
-    if brain.model.accounts.len() > 1 {
-        keep.push((t("Im anderen Konto fortsetzen", "Continue in the other account").to_string(), "A", Action::OtherAccount, false));
-    }
+    keep.push((t("Weiterführen … (Konto, Fork, Flags)", "Go on … (account, fork, flags)").to_string(), "A", Action::Relaunch, false));
     groups.push(keep);
 
     let mut remove = Vec::new();
@@ -280,8 +289,14 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
     } else if !ended && s.accepts_input() {
         remove.push((t("Beenden", "End").to_string(), "X", Action::End, false));
     }
-    let hidden = brain.prefs.is_hidden(&s.key, s.last_activity_ms);
-    remove.push((if hidden { t("Einblenden", "Show again") } else { t("Ausblenden", "Hide") }.to_string(), "⌫", Action::Hide, false));
+    // When ending doesn't work (it hangs, or Brain can't reach it): stop the process.
+    if !ended && s.alive {
+        remove.push((t("Hart beenden (Prozess stoppen)", "End by force (stop the process)").to_string(), "", Action::ForceEnd, true));
+    }
+    // A running session is put away with S; an ended one is hidden until something happens.
+    if ended && !hidden {
+        remove.push((t("Ausblenden", "Hide").to_string(), "⌫", Action::Hide, false));
+    }
     if ended || s.agent.as_ref().is_some_and(|a| !a.is_active()) {
         remove.push((t("In den Papierkorb", "Move to Trash").to_string(), "⌘⌫", Action::Trash, true));
     }
@@ -354,22 +369,11 @@ fn divider<'a>() -> Element<'a, Message> {
 // ---- title bar --------------------------------------------------------------------
 
 fn titlebar(brain: &Brain) -> Element<'_, Message> {
-    let groups = brain.groups(now_ms());
-    let total = groups.live_count();
-    let (waiting, calling) = brain.waiting_counts();
-    let sessions = if total == 1 { t("1 Session", "1 session").to_string() } else { tr!("{total} Sessions", "{total} sessions") };
-    let summary = match waiting {
-        _ if total == 0 => t("Keine laufenden Sessions", "No running sessions").to_string(),
-        0 => tr!("{sessions}, niemand wartet", "{sessions}, nobody waiting"),
-        1 => tr!("{sessions}, 1 wartet auf dich", "{sessions}, 1 waiting for you"),
-        w => tr!("{sessions}, {w} warten auf dich", "{sessions}, {w} waiting for you"),
-    };
-
+    let (_, calling) = brain.waiting_counts();
     let mut bar = row![
         Space::new().width(TRAFFIC_LIGHTS),
         brand_mark(calling > 0),
         text("Brain").size(14).color(TEXT_STRONG).font(style::bold()),
-        text(summary).size(12.5).color(TEXT_MUTED).font(UI),
         Space::new().width(Fill),
     ]
     .spacing(12)
@@ -383,21 +387,15 @@ fn titlebar(brain: &Brain) -> Element<'_, Message> {
                 .style(|_, _| button::Style { background: Some(Background::Color(alpha(DONE, 0x22))), border: iced::border::rounded(6), ..button::Style::default() }),
         );
     }
-    let layout = brain.prefs.layout;
-    bar = bar.push(segmented(vec![
-        (t("Status", "Status").into(), layout == Layout::Status, Message::Layout(Layout::Status)),
-        (t("Projekte", "Projects").into(), layout == Layout::Projects, Message::Layout(Layout::Projects)),
-        (t("Heute", "Today").into(), layout == Layout::Today, Message::Layout(Layout::Today)),
-    ]));
-    if brain.prefs.show_background || groups.background > 0 {
-        let count = groups.background;
-        let label = if brain.prefs.show_background { t("◌ Hintergrund an", "◌ Background on").to_string() } else { tr!("◌ {count} im Hintergrund", "◌ {count} in background") };
-        bar = bar.push(style::text_button(label, brain.prefs.show_background, Message::ToggleBackground));
+    // Sessions Brain can't steer any more: the gardener ends them.
+    if brain.garden_count > 0 {
+        let count = brain.garden_count;
+        bar = bar.push(style::text_button(tr!("✂ {count} kaputt", "✂ {count} broken"), false, Message::OpenGarden));
     }
-    if brain.prefs.show_automated || groups.automated > 0 {
-        let count = groups.automated;
-        let label = if brain.prefs.show_automated { t("⚙ Automatisch an", "⚙ Automated on").to_string() } else { tr!("⚙ {count} automatisch", "⚙ {count} automated") };
-        bar = bar.push(style::text_button(label, brain.prefs.show_automated, Message::ToggleAutomated));
+    // A session start synced the accounts but left conflicts for the user.
+    if brain.sync.open > 0 {
+        let count = brain.sync.open;
+        bar = bar.push(style::text_button(tr!("⇄ {count} Konto-Konflikte", "⇄ {count} account conflicts"), false, Message::OpenSync));
     }
     let mut accounts = vec![(t("Alle", "All").to_string(), brain.filter.is_none(), Message::Filter(None))];
     accounts.extend(brain.model.accounts.iter().map(|a| (a.id.clone(), brain.filter.as_deref() == Some(&a.id), Message::Filter(Some(a.id.clone())))));
@@ -439,10 +437,22 @@ fn search(brain: &Brain) -> Element<'_, Message> {
         .padding([7, 2])
         .style(|theme, status| text_input::Style { border: Border::default(), background: Background::Color(Color::TRANSPARENT), ..field_style(theme, status) });
     let edge = if editing { alpha(WORKING, 0x99) } else { LINE };
+    let by_project = brain.prefs.layout == Layout::Projects;
+    let grouping = style::text_button(
+        t("Projekte", "Projects"),
+        by_project,
+        Message::Layout(if by_project { Layout::Status } else { Layout::Projects }),
+    );
     container(
-        container(row![text("⌕").size(13).color(TEXT_FAINT), field, kbd(if editing { "esc" } else { "/" })].spacing(6).align_y(iced::Center))
-            .padding([0, 10])
-            .style(move |_| boxed(INK, edge, 8.0)),
+        row![
+            container(row![text("⌕").size(13).color(TEXT_FAINT), field, kbd(if editing { "esc" } else { "/" })].spacing(6).align_y(iced::Center))
+                .padding([0, 10])
+                .width(Fill)
+                .style(move |_| boxed(INK, edge, 8.0)),
+            grouping,
+        ]
+        .spacing(8)
+        .align_y(iced::Center),
     )
     .padding(Padding { top: 12.0, right: 12.0, bottom: 6.0, left: 12.0 })
     .into()
@@ -783,7 +793,7 @@ fn other_pane<'a>(brain: &'a Brain, s: &'a Session) -> Element<'a, Message> {
     header = header
         .push(Space::new().width(Fill))
         .push(button(text("✕").size(13).color(TEXT_MUTED)).padding([4, 8]).on_press(Message::ToggleSplit).style(|_, _| button::Style::default()));
-    let head = mouse_area(column![header, iced::widget::row(meta_chips(brain, s)).spacing(6).wrap()].spacing(10))
+    let head = mouse_area(column![header, subtitle(brain, s)].spacing(10))
         .on_press(Message::ActivatePane)
         .interaction(iced::mouse::Interaction::Pointer);
     column![head, terminal_or_hint(brain, s)]
@@ -812,12 +822,14 @@ fn session_pane(brain: &Brain, now: i64) -> Element<'_, Message> {
     };
     let phase = s.phase();
     let caps = brain.capabilities();
-    let primary = if s.agent.is_some() {
-        action(t("Öffnen", "Attach"), "⏎", phase == Phase::NeedsYou, Some(Message::Do(Action::Open)))
-    } else if phase == Phase::Ended {
+    // One verb for getting to the session wherever it runs; never the loud button: when the
+    // session waits, the callout's Reply or Allow is the next step.
+    let primary = if phase == Phase::Ended {
         action(t("Fortsetzen", "Resume"), "⏎", false, Some(Message::Do(Action::Resume)))
+    } else if s.agent.is_some() {
+        action(t("Öffnen", "Open"), "⏎", false, Some(Message::Do(Action::Open)))
     } else {
-        action(t("Zum Terminal", "Open terminal"), "⏎", phase == Phase::NeedsYou, caps.focus.then_some(Message::Do(Action::Open)))
+        action(t("Öffnen", "Open"), "⏎", false, caps.focus.then_some(Message::Do(Action::Open)))
     };
 
     let mut header = row![name(brain, s), account_badge(&s.key.account, brain.account_index(&s.key.account))].spacing(10).align_y(iced::Center);
@@ -826,22 +838,16 @@ fn session_pane(brain: &Brain, now: i64) -> Element<'_, Message> {
     }
     header = header.push(Space::new().width(Fill)).push(primary);
 
-    let mut chips = meta_chips(brain, s);
-    if let Some(pr) = brain.prs.get(&s.key) {
-        chips.push(pr_chip(pr));
-    }
     let content: Element<'_, Message> = match brain.tab {
-        DetailTab::Messages => messages(brain),
-        DetailTab::Timeline => scrollable(column(markdown::timeline(s)).padding(Padding { top: 12.0, right: 8.0, bottom: 20.0, left: 0.0 })).height(Fill).style(scrollbar).into(),
-        DetailTab::Changes => changes(brain, s),
+        DetailTab::Messages | DetailTab::Timeline | DetailTab::Questions => messages(brain, s),
+        DetailTab::Changes => column![files_bar(brain, s), changes(brain, s)].spacing(10).height(Fill).into(),
         DetailTab::Files => with_reader(brain, files(brain, s)),
-        DetailTab::Questions => questions(brain, s),
         DetailTab::Konsil => scrollable(crate::konsil::view(brain, &s.key)).height(Fill).style(scrollbar).into(),
         DetailTab::Terminal => terminal(brain, s),
     };
     column![
         header,
-        iced::widget::row(chips).spacing(6).wrap(),
+        subtitle(brain, s),
         callout(brain, s, now, caps),
         tabs(brain, s),
         content,
@@ -893,43 +899,64 @@ fn context_gauge<'a>(brain: &'a Brain, s: &Session, percent: f64) -> Element<'a,
     if percent >= 80.0 && brain.can_send(&s.key) {
         line = line.push(style::text_button("/compact", false, Message::SendTo(s.key.clone(), "/compact".to_string())));
     }
-    container(line).padding([2, 8]).style(|_| boxed(SURFACE, LINE, 6.0)).into()
+    line.into()
 }
 
-/// Path, model, context, cost, permission mode, pid, start.
-fn meta_chips<'a>(brain: &'a Brain, s: &Session) -> Vec<Element<'a, Message>> {
+/// One quiet line under the name: where it runs, the model, how full the context is, what to
+/// know (a permission mode, days left to resume, the pull request). Cost, pid and start time
+/// on hover: they are for looking up, not for deciding.
+fn subtitle<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     if brain.mode == Mode::Rename {
-        return vec![text(t("⏎ schickt /rename an die Session, esc bricht ab", "⏎ sends /rename to the session, esc cancels")).size(12).color(TEXT_MUTED).font(UI).into()];
+        return text(t("⏎ schickt /rename an die Session, esc bricht ab", "⏎ sends /rename to the session, esc cancels")).size(12).color(TEXT_MUTED).font(UI).into();
     }
-    let mut meta = vec![chip(s.cwd.as_deref().map(tilde).unwrap_or_default(), true)];
     let info = &s.insight;
     let status = brain.model.snapshot(&s.key);
+    let quiet = |label: String| -> Element<'a, Message> { text(label).size(12).color(TEXT_MUTED).font(UI).into() };
+    let mut parts: Vec<Element<'a, Message>> = vec![text(s.cwd.as_deref().map(tilde).unwrap_or_default()).size(11.5).color(TEXT_MUTED).font(MONO).into()];
     if let Some(model) = &info.model {
-        meta.push(chip(short_model(model), false));
+        parts.push(quiet(short_model(model)));
     }
     // The status line knows the real fill level; the transcript only the token count.
     if let Some(percent) = status.and_then(|s| s.context_percent) {
-        meta.push(context_gauge(brain, s, percent));
+        parts.push(context_gauge(brain, s, percent));
     } else if let Some(tokens) = info.context_tokens {
         let tokens = format_tokens(tokens);
-        meta.push(chip(tr!("{tokens} Kontext", "{tokens} context"), false));
-    }
-    if let Some(cost) = status.and_then(|s| s.cost_usd).or(info.cost_usd) {
-        meta.push(chip(format!("${cost:.2}"), false));
+        parts.push(quiet(tr!("{tokens} Kontext", "{tokens} context")));
     }
     if let Some(mode) = info.permission_mode.as_deref().filter(|m| *m != "default") {
-        meta.push(chip(mode.to_string(), false));
+        parts.push(text(mode.to_string()).size(12).color(TURN).font(UI).into());
+    }
+    if !s.alive {
+        if let Some(days) = brain.model.days_left(s, now_ms()) {
+            parts.push(quiet(tr!("noch {days} Tage fortsetzbar", "resumable for {days} more days")));
+        }
+    }
+    let mut line = row![].spacing(8).align_y(iced::Center);
+    for (i, part) in parts.into_iter().enumerate() {
+        if i > 0 {
+            line = line.push(text("·").size(12).color(TEXT_FAINT));
+        }
+        line = line.push(part);
+    }
+    if let Some(pr) = brain.prs.get(&s.key) {
+        line = line.push(pr_chip(pr));
+    }
+    let mut details = Vec::new();
+    if let Some(cost) = status.and_then(|s| s.cost_usd).or(info.cost_usd) {
+        details.push(format!("${cost:.2}"));
     }
     if s.alive {
-        meta.push(chip(format!("pid {}", s.pid), false));
-    } else if let Some(days) = brain.model.days_left(s, now_ms()) {
-        meta.push(chip(tr!("noch {days} Tage fortsetzbar", "resumable for {days} more days"), false));
+        details.push(format!("pid {}", s.pid));
     }
     if let Some(started) = s.started_ms {
         let at = clock(started);
-        meta.push(chip(tr!("seit {at}", "since {at}"), false));
+        details.push(tr!("seit {at}", "since {at}"));
     }
-    meta
+    if details.is_empty() {
+        return line.into();
+    }
+    let card = container(text(details.join("  ·  ")).size(12).color(TEXT).font(UI)).padding([5, 9]).style(|_| boxed(RAISED, LINE_STRONG, 6.0));
+    iced::widget::tooltip(line, card, iced::widget::tooltip::Position::Bottom).gap(6).into()
 }
 
 /// The state box: what the session waits for, plus the actions that fit.
@@ -976,7 +1003,8 @@ fn callout<'a>(brain: &'a Brain, s: &'a Session, now: i64, caps: brain_terminal:
             .font(UI)
             .padding([7, 10])
             .style(field_style);
-        body = body.push(row![field, text(t("⏎ senden · esc", "⏎ send · esc")).size(11).color(TEXT_MUTED).font(UI)].spacing(8).align_y(iced::Center));
+        let hint = if brain.reply.is_empty() { t("1–9 übernimmt · ⏎ senden · esc", "1–9 fills in · ⏎ send · esc") } else { t("⏎ senden · esc", "⏎ send · esc") };
+        body = body.push(row![field, text(hint).size(11).color(TEXT_MUTED).font(UI)].spacing(8).align_y(iced::Center));
         if brain.reply.is_empty() {
             let quick = config::quick_replies().into_iter().enumerate().map(|(i, reply)| {
                 container(row![kbd(format!("{}", i + 1)), text(reply).size(12).color(TEXT).font(UI)].spacing(6).align_y(iced::Center))
@@ -1002,7 +1030,7 @@ fn callout<'a>(brain: &'a Brain, s: &'a Session, now: i64, caps: brain_terminal:
         actions.push(action(t("Erlauben", "Allow"), "Y", true, caps.keys.then_some(Message::Do(Action::Allow))));
         actions.push(action(t("Ablehnen", "Deny"), "N", false, caps.keys.then_some(Message::Do(Action::Deny))));
     } else if s.accepts_input() && brain.mode != Mode::Reply {
-        actions.push(action(t("Antworten", "Reply"), "T", false, caps.type_text.then_some(Message::Do(Action::StartReply))));
+        actions.push(action(t("Antworten", "Reply"), "T", true, caps.type_text.then_some(Message::Do(Action::StartReply))));
     }
     if !actions.is_empty() {
         body = body.push(row(actions).spacing(8));
@@ -1062,24 +1090,22 @@ fn conflict_lines<'a>(brain: &'a Brain, s: &Session) -> Vec<Element<'a, Message>
 
 fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     let message_count = brain.conversation.as_ref().map_or(0, |c| c.messages.len());
-    let change_count = brain.changes.as_ref().filter(|c| c.key == s.key).and_then(|c| c.changes.as_ref()).map_or(0, |c| c.files.len());
     let file_count = brain.files.as_ref().filter(|f| f.key == s.key).map(|f| f.files.len());
-    let question_count = brain.qa.as_ref().filter(|q| q.key == s.key).map(|q| q.exchanges.len());
     let konsil_count = brain.konsil.as_ref().filter(|k| k.key == s.key).map_or(0, |k| k.councils.len());
-    let mut tabs = vec![
-        (DetailTab::Messages, t("Nachrichten", "Messages"), Some(message_count)),
-        (DetailTab::Timeline, t("Verlauf", "Timeline"), Some(s.timeline.len())),
-        (DetailTab::Changes, t("Änderungen", "Changes"), Some(change_count)),
-        (DetailTab::Files, t("Dateien", "Files"), file_count),
-        (DetailTab::Questions, t("Fragen", "Questions"), question_count),
-    ];
+    let mut tabs = vec![(DetailTab::Messages, t("Nachrichten", "Messages"), Some(message_count)), (DetailTab::Files, t("Dateien", "Files"), file_count)];
     // Only sessions that held a council have the tab.
     if konsil_count > 0 || brain.tab == DetailTab::Konsil {
         tabs.push((DetailTab::Konsil, "Konsil", Some(konsil_count)));
     }
     tabs.push((DetailTab::Terminal, "Terminal", None));
+    // The lenses count as Messages, the git changes as Files.
+    let shown = match brain.tab {
+        DetailTab::Timeline | DetailTab::Questions => DetailTab::Messages,
+        DetailTab::Changes => DetailTab::Files,
+        tab => tab,
+    };
     let buttons = tabs.into_iter().map(|(tab, label, count)| {
-        let active = brain.tab == tab;
+        let active = shown == tab;
         let content = column![
             row![
                 text(label).size(13).font(if active { style::semibold() } else { style::medium() }).color(if active { TEXT_STRONG } else { TEXT_MUTED }),
@@ -1188,14 +1214,7 @@ fn files<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
         return hint(why);
     };
     let filter = brain.file_filter;
-    let count = |f: app::FileFilter| cache.files.iter().filter(|file| shows(f, file)).count();
-    let options = [
-        (app::FileFilter::All, t("Alle", "All")),
-        (app::FileFilter::Changed, t("Geschrieben", "Written")),
-        (app::FileFilter::Read, t("Gelesen", "Read")),
-        (app::FileFilter::Given, t("Mitgegeben", "Given")),
-    ];
-    let bar = segmented(options.into_iter().map(|(f, label)| (format!("{label} {}", count(f)), filter == f, Message::FileFilter(f))).collect());
+    let bar = files_bar(brain, s);
     let now = now_ms();
     let cwd = s.cwd.clone().unwrap_or_default();
     let rows: Vec<Element<'a, Message>> = cache
@@ -1299,6 +1318,26 @@ fn questions<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
         container(card).padding([10, 12]).width(Fill).style(|_| boxed(SURFACE, LINE, 8.0)).into()
     });
     scrollable(column(cards).spacing(8).padding(Padding { top: 4.0, right: 12.0, bottom: 24.0, left: 0.0 })).height(Fill).style(scrollbar).into()
+}
+
+/// The Files tab's choice: the files the session touched, by how, or the folder's git changes.
+fn files_bar<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
+    let on_changes = brain.tab == DetailTab::Changes;
+    let cache = brain.files.as_ref().filter(|f| f.key == s.key);
+    let count = |f: app::FileFilter| cache.map_or(0, |c| c.files.iter().filter(|file| shows(f, file)).count());
+    let options = [
+        (app::FileFilter::All, t("Alle", "All")),
+        (app::FileFilter::Changed, t("Geschrieben", "Written")),
+        (app::FileFilter::Read, t("Gelesen", "Read")),
+        (app::FileFilter::Given, t("Mitgegeben", "Given")),
+    ];
+    let filters = segmented(options.into_iter().map(|(f, label)| (format!("{label} {}", count(f)), !on_changes && brain.file_filter == f, Message::FileFilter(f))).collect());
+    let changed = brain.changes.as_ref().filter(|c| c.key == s.key).and_then(|c| c.changes.as_ref()).map(|c| c.files.len());
+    let git = match changed {
+        Some(n) => tr!("Git-Änderungen {n}", "Git changes {n}"),
+        None => t("Git-Änderungen", "Git changes").to_string(),
+    };
+    row![filters, segmented(vec![(git, on_changes, Message::Tab(DetailTab::Changes))])].spacing(8).align_y(iced::Center).into()
 }
 
 fn shows(filter: app::FileFilter, file: &brain_core::files::SessionFile) -> bool {
@@ -1465,8 +1504,12 @@ fn reader_pane(reader: &crate::app::Reader) -> Element<'_, Message> {
 
 /// The latest messages; with text in the find field, the matches in the whole session; with
 /// "Your prompts", everything you asked.
-fn messages(brain: &Brain) -> Element<'_, Message> {
-    let body: Element<'_, Message> = if brain.find.trim().is_empty() && !brain.prompts_only {
+fn messages<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
+    let body: Element<'a, Message> = if brain.tab == DetailTab::Questions {
+        questions(brain, s)
+    } else if brain.tab == DetailTab::Timeline {
+        scrollable(column(markdown::timeline(s)).padding(Padding { top: 12.0, right: 8.0, bottom: 20.0, left: 0.0 })).height(Fill).style(scrollbar).into()
+    } else if brain.find.trim().is_empty() && !brain.prompts_only {
         let list = brain.conversation.as_ref().map(|c| c.messages.as_slice()).unwrap_or_default();
         let children = if list.is_empty() { vec![hint(t("Diese Session hat noch keine Nachrichten.", "This session has no messages yet."))] } else { markdown::conversation(list, Message::CopyText) };
         let list = scrollable(column(children).spacing(14).padding(Padding { top: 4.0, right: 12.0, bottom: 24.0, left: 0.0 }))
@@ -1489,9 +1532,15 @@ fn messages(brain: &Brain) -> Element<'_, Message> {
     } else {
         whole_session(brain)
     };
+    let lens_open = brain.tab != DetailTab::Messages || brain.prompts_only || !brain.find.is_empty();
+    if !brain.find_open && !lens_open {
+        return body;
+    }
     column![messages_bar(brain), body].spacing(8).height(Fill).into()
 }
 
+/// ⌘F: find in the whole session, and the lenses on it: the conversation, only your prompts,
+/// Claude's questions with your answers, the session's events.
 fn messages_bar(brain: &Brain) -> Element<'_, Message> {
     let field = text_input(t("In der ganzen Session suchen", "Find in the whole session"), &brain.find)
         .id(app::FIND)
@@ -1505,16 +1554,25 @@ fn messages_bar(brain: &Brain) -> Element<'_, Message> {
         .padding([0, 10])
         .width(Fill)
         .style(move |_| boxed(INK, if active { alpha(WORKING, 0x99) } else { LINE }, 8.0));
-    let view = segmented(vec![
-        (t("Verlauf", "Conversation").to_string(), !brain.prompts_only, Message::PromptsOnly(false)),
-        (t("Deine Prompts", "Your prompts").to_string(), brain.prompts_only, Message::PromptsOnly(true)),
-    ]);
-    row![
-        find,
-        view,
-        action(t("Antwort kopieren", "Copy answer"), "⌘⇧C", false, Some(Message::Do(Action::CopyAnswer))),
-        action(t("Als Markdown", "As Markdown"), "", false, Some(Message::Do(Action::Export))),
-    ]
+    use app::Lens;
+    let lens = match brain.tab {
+        DetailTab::Questions => Lens::Questions,
+        DetailTab::Timeline => Lens::Events,
+        _ if brain.prompts_only => Lens::Prompts,
+        _ => Lens::Conversation,
+    };
+    let view = segmented(
+        [
+            (Lens::Conversation, t("Gespräch", "Conversation")),
+            (Lens::Prompts, t("Deine Prompts", "Your prompts")),
+            (Lens::Questions, t("Fragen", "Questions")),
+            (Lens::Events, t("Ereignisse", "Events")),
+        ]
+        .into_iter()
+        .map(|(l, label)| (label.to_string(), lens == l, Message::Lens(l)))
+        .collect(),
+    );
+    row![find, view]
     .spacing(8)
     .align_y(iced::Center)
     .into()
@@ -1930,6 +1988,298 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
     .into()
 }
 
+/// "Go on …" (`A`, `F`, `I`, "Restart with …"): the account (each with how much of its limits is
+/// used, so the one with room is easy to spot), whether the original keeps running, flags for the
+/// new start, and in one sentence what ⏎ does with that.
+fn relaunch(brain: &Brain) -> Element<'_, Message> {
+    let Some(session) = brain.selected_session() else { return Space::new().into() };
+    let name = session.display_name();
+    let dialog = &brain.relaunch;
+    let own = brain.account_index(&session.key.account);
+    let rows = brain.model.accounts.iter().enumerate().map(|(index, account)| {
+        let usage = brain_core::usage::account_limits(&brain.model.usage, &account.id).map(|s| {
+            let part = |label: &str, limit: Option<brain_core::usage::Limit>| limit.map(|l| format!("{label} {:.0}%", l.used_percentage));
+            [part("5h", s.five_hour), part("7d", s.seven_day)].into_iter().flatten().collect::<Vec<_>>().join("  ·  ")
+        });
+        let usage = usage.filter(|u| !u.is_empty()).unwrap_or_else(|| t("noch keine Nutzungsdaten", "no usage yet").to_string());
+        let chosen = index == dialog.target;
+        let mut line = row![kbd(format!("{}", index + 1)), account_badge(&account.id, index)].spacing(10).align_y(iced::Center);
+        if index == own {
+            line = line.push(text(t("ihr Konto", "its account")).size(12).color(TEXT_FAINT).font(UI));
+        }
+        let line = line.push(Space::new().width(Fill)).push(text(usage).size(12.5).color(TEXT_MUTED).font(UI)).padding([8, 12]);
+        let edge = if chosen { WORKING } else { LINE };
+        mouse_area(container(line).style(move |_| boxed(if chosen { RAISED } else { SURFACE }, edge, 8.0)))
+            .on_press(Message::RelaunchTarget(index))
+            .interaction(iced::mouse::Interaction::Pointer)
+            .into()
+    });
+    let original = segmented(vec![
+        (t("Original beenden", "End the original").to_string(), !dialog.keep, Message::RelaunchKeep(false)),
+        (t("Original weiterlaufen lassen (Fork)", "Keep the original running (fork)").to_string(), dialog.keep, Message::RelaunchKeep(true)),
+    ]);
+    let field = text_input(t("Flags, optional: --chrome  --model opus", "Flags, optional: --chrome  --model opus"), &dialog.flags)
+        .id(crate::app::RELAUNCH_FLAGS)
+        .on_input(Message::RelaunchFlags)
+        .on_submit(Message::RelaunchSubmit)
+        .padding([8, 12])
+        .size(13.5)
+        .font(style::MONO)
+        .style(field_style);
+    let target = brain.model.accounts.get(dialog.target).map(|a| a.id.clone()).unwrap_or_default();
+    let (what, ready) = match brain.relaunch_choice() {
+        Ok(app::Relaunch::Fork(_)) => (
+            tr!(
+                "Forkt in {target}: Eine neue Session macht mit dem Verlauf bis jetzt weiter, im Hintergrund und hier in Brain. Das Original läuft weiter.",
+                "Forks into {target}: a new session goes on with the history so far, in the background and here in Brain. The original keeps running."
+            ),
+            true,
+        ),
+        Ok(app::Relaunch::Move(_)) => (
+            tr!(
+                "Zieht nach {target} um: Die Session läuft dort mit ihrem ganzen Verlauf weiter, das Original wird beendet.",
+                "Moves to {target}: the session goes on there with all of its history, the original ends."
+            ),
+            true,
+        ),
+        Ok(app::Relaunch::Restart(flags)) => {
+            let shown = flags.join(" ");
+            (
+                tr!(
+                    "Startet neu mit {shown}: Claude nimmt Flags nur beim Start. Die Session endet und läuft weiter, wo sie lief.",
+                    "Restarts with {shown}: Claude takes flags only at start. The session ends and goes on where it ran."
+                ),
+                true,
+            )
+        }
+        Ok(app::Relaunch::TakeOver) => (
+            t("Holt die Session aus iTerm in Brain: Das iTerm-Tab endet, die Session läuft hier im Hintergrund weiter.", "Moves the session from iTerm into Brain: its iTerm tab ends, the session goes on here in the background.").to_string(),
+            true,
+        ),
+        Err(why) => (why, false),
+    };
+    let mut body = column![
+        dialog_title(tr!("„{name}“ weiterführen", "Go on with “{name}”")),
+        text(t("Konto (1, 2, …)", "Account (1, 2, …)")).size(12).color(TEXT_MUTED).font(style::semibold()),
+        column(rows).spacing(6),
+        row![original, text(t("⇥ wechselt", "⇥ switches")).size(11.5).color(TEXT_FAINT).font(UI)].spacing(10).align_y(iced::Center),
+        field,
+        text(what).size(13).line_height(1.5).color(if ready { TEXT } else { TURN }).font(UI),
+    ]
+    .spacing(12)
+    .max_width(640);
+    if let Some(err) = &dialog.error {
+        body = body.push(text(err.clone()).size(12.5).color(CALLS).font(UI));
+    }
+    body = body.push(action(t("Weiterführen", "Go on"), "⏎", true, ready.then_some(Message::RelaunchSubmit)));
+    body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
+}
+
+/// A new Claude account from the existing ones: its name, what it gets from where, and where
+/// the accounts differ.
+fn account_setup(brain: &Brain) -> Element<'_, Message> {
+    let dialog = &brain.account_setup;
+    let sources: Vec<&str> = brain.model.accounts.iter().map(|a| a.id.as_str()).collect();
+    let first = sources.first().copied().unwrap_or("main");
+    let all = sources.join(" + ");
+    let intro = tr!(
+        "Brain legt ~/.claude-<name> an und übernimmt aus {all} Einstellungen, CLAUDE.md, Skills, Agents, Commands, Plugins, MCP-Server und das Gedächtnis pro Projekt. Wo sie sich unterscheiden, gewinnt {first}; bei Gedächtnis-Notizen die neuere. Keine Anmeldung, keine Gespräche: Melde dich in der ersten Session mit /login an.",
+        "Brain makes ~/.claude-<name> with the settings, CLAUDE.md, skills, agents, commands, plugins, MCP servers and per-project memory of {all}. Where they differ, {first} wins; for memory notes the newer one. No login, no conversations: log in with /login in its first session."
+    );
+    let field = text_input(t("Name, z. B. work", "Name, e.g. work"), &dialog.name)
+        .id(crate::app::ACCOUNT_NAME)
+        .on_input(Message::AccountSetupName)
+        .on_submit(Message::AccountSetupCreate)
+        .padding([8, 12])
+        .size(14)
+        .style(field_style);
+    let mut body = column![dialog_title(t("Neues Claude-Konto", "New Claude account")), text(intro).size(13).line_height(1.5).color(TEXT).font(UI), field].spacing(14);
+    match &dialog.plan {
+        Some(Err(err)) => body = body.push(text(err.clone()).size(12.5).color(CALLS).font(UI)),
+        Some(Ok(plan)) => {
+            let differences = plan.conflicts().count();
+            let (folder, count) = (plan.target.display().to_string(), plan.items.len());
+            let summary = tr!("{folder} → {count} Einträge, {differences} Unterschiede", "{folder} → {count} items, {differences} differences");
+            body = body.push(text(summary).size(12.5).color(TEXT_MUTED).font(UI));
+            let rows = plan.items.iter().map(|item| {
+                let mut lines = column![row![
+                    text(item.what.clone()).size(12.5).color(TEXT_STRONG).font(UI),
+                    text(item.from.join(" + ")).size(11.5).color(TEXT_FAINT).font(UI),
+                ]
+                .spacing(10)]
+                .spacing(2);
+                for conflict in &item.conflicts {
+                    lines = lines.push(text(format!("≠ {conflict}")).size(11.5).color(TURN).font(UI));
+                }
+                lines.into()
+            });
+            body = body.push(scrollable(column(rows).spacing(6)).height(Fill).style(scrollbar));
+            let label = if dialog.busy { t("Wird eingerichtet …", "Setting up …") } else { t("Konto einrichten", "Set up account") };
+            body = body.push(action(label, "⏎", true, (!dialog.busy).then_some(Message::AccountSetupCreate)));
+        }
+        None => {}
+    }
+    body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
+}
+
+/// ⌘K "Sync accounts": the conflicts with each account's version (the chosen one marked), what
+/// is taken over from where, the memory notes as a count, and what accounts keep different.
+fn sync_accounts(brain: &Brain) -> Element<'_, Message> {
+    let dialog = &brain.sync;
+    let mut body = column![
+        dialog_title(t("Konten abgleichen", "Sync accounts")),
+        text(t(
+            "Was ein Konto seit dem letzten Abgleich geändert hat, bekommen die anderen: Einstellungen, CLAUDE.md, Skills, Agents, Commands, MCP-Server und das Gedächtnis pro Projekt. Wo Konten Verschiedenes geändert haben, entscheidest du; vorgeschlagen ist die neueste Änderung. Nach dem ersten Abgleich gleicht jeder Session-Start mit ab, Konflikte bleiben dann für hier.",
+            "What an account changed since the last sync goes to the others: settings, CLAUDE.md, skills, agents, commands, MCP servers and per-project memory. Where accounts changed things differently, you decide; the newest change is suggested. After the first sync every session start syncs too, conflicts are left for here.",
+        ))
+        .size(13)
+        .line_height(1.5)
+        .color(TEXT)
+        .font(UI),
+    ]
+    .spacing(14);
+    let Some(plan) = &dialog.plan else {
+        return body.push(text(t("Lese die Konten …", "Reading the accounts …")).size(12.5).color(TEXT_MUTED).font(UI)).padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into();
+    };
+    if plan.first {
+        body = body.push(
+            text(t(
+                "Erster Abgleich: Noch ist nichts als gelöscht bekannt, die Konten werden zusammengeführt.",
+                "First sync: nothing is known to be deleted yet, so the accounts are joined.",
+            ))
+            .size(12.5)
+            .color(TURN)
+            .font(UI),
+        );
+    }
+    let rows = dialog.rows();
+    let (notes, projects) = dialog.memory();
+    let conflicts = plan.conflicts();
+    let taken = rows.len() - conflicts;
+    body = body.push(
+        text(tr!(
+            "{conflicts} Konflikte · {taken} Übernahmen · {notes} Gedächtnis-Einträge in {projects} Projekten. Ziffern wählen die Version, K: Konten mit anderer Version behalten ihre, ⏎ gleicht ab, esc bricht ab.",
+            "{conflicts} conflicts · {taken} taken over · {notes} memory items in {projects} projects. Digits pick the version, K: accounts with another version keep theirs, ⏎ syncs, esc cancels."
+        ))
+        .size(12.5)
+        .color(TEXT_MUTED)
+        .font(UI),
+    );
+    if rows.is_empty() && notes == 0 {
+        body = body.push(text(t("Die Konten sind abgeglichen.", "The accounts are in step.")).size(13).color(DONE).font(UI));
+    }
+    let lines = rows.iter().zip(&dialog.choices).enumerate().map(|(index, (item, choice))| {
+        let taken = item.versions.iter().find(|v| v.account == choice.take).map(|v| v.value.clone());
+        let versions = item.versions.iter().enumerate().map(|(nth, version)| {
+            let chosen = version.account == choice.take;
+            let keeps = choice.keep && Some(version.value.clone()) != taken;
+            let mut label = format!("{} {}", version.account, version.describe(item.kind));
+            if keeps {
+                label.push_str(&format!(" · {}", t("behält", "keeps")));
+            }
+            let border = if chosen { WORKING } else { LINE };
+            let line = row![kbd(format!("{}", nth + 1)), text(label).size(12).color(if chosen { TEXT_STRONG } else { TEXT_MUTED }).font(UI)].spacing(6).align_y(iced::Center);
+            mouse_area(container(line).padding([3, 8]).style(move |_| boxed(SURFACE, border, 6.0)))
+                .on_press(Message::SyncPick(index, version.account.clone()))
+                .interaction(iced::mouse::Interaction::Pointer)
+                .into()
+        });
+        // ⚑: grants rights or runs commands; a session start never takes it over unseen.
+        let title = match (item.conflict, item.review) {
+            (true, _) => format!("≠ {}", item.label),
+            (false, true) => format!("⚑ {}", item.label),
+            _ => item.label.clone(),
+        };
+        let selected = index == dialog.selected;
+        let keep = style::text_button(t("K andere behalten ihre", "K others keep theirs"), choice.keep, Message::SyncKeep(index));
+        let content = column![
+            text(title).size(12.5).color(if item.conflict { TURN } else { TEXT_STRONG }).font(UI),
+            row(versions).push(keep).spacing(6).wrap(),
+        ]
+        .spacing(6);
+        let background = if selected { RAISED } else { SURFACE };
+        container(content).padding([8, 12]).width(Fill).style(move |_| boxed(background, if selected { LINE_STRONG } else { LINE }, 8.0)).into()
+    });
+    body = body.push(scrollable(column(lines).spacing(6)).height(Fill).style(scrollbar));
+    for (account, label) in &plan.kept {
+        body = body.push(text(tr!("= {label} – {account} behält seine Version", "= {label} – {account} keeps its own")).size(11.5).color(TEXT_FAINT).font(UI));
+    }
+    if let Some(err) = &dialog.error {
+        body = body.push(text(err.clone()).size(12.5).color(CALLS).font(UI));
+    }
+    let label = if dialog.busy { t("Gleiche ab …", "Syncing …") } else { t("Abgleichen", "Sync") };
+    // The first sync also records the base, even when nothing differs.
+    let ready = !dialog.busy && (plan.first || !rows.is_empty() || notes > 0);
+    body = body.push(action(label, "⏎", true, ready.then_some(Message::SyncApply)));
+    body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
+}
+
+/// The gardener: the sessions Brain lists but can't steer any more, why, and which get ended.
+fn garden(brain: &Brain) -> Element<'_, Message> {
+    use brain_core::garden::Reason;
+    let dialog = &brain.garden;
+    let mut body = column![
+        dialog_title(t("Gärtner", "Gardener")),
+        text(t(
+            "Sessions, die Brain listet, aber nicht mehr steuern kann. Beenden heißt: claude stop, sonst SIGTERM, zuletzt SIGKILL. Das Gespräch bleibt und lässt sich fortsetzen. Was dabei passiert, steht im Log (⌘K → Log öffnen).",
+            "Sessions Brain lists but can't steer any more. Ending means: claude stop, else SIGTERM, last SIGKILL. The conversation stays and can be resumed. What happens is in the log (⌘K → Open the log).",
+        ))
+        .size(13)
+        .line_height(1.5)
+        .color(TEXT)
+        .font(UI),
+    ]
+    .spacing(14)
+    .max_width(720);
+    if dialog.findings.is_empty() {
+        body = body.push(text(t("Alles in Ordnung: keine kaputten Sessions.", "All good: no broken sessions.")).size(13).color(DONE).font(UI));
+        return body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into();
+    }
+    let rows = dialog.findings.iter().zip(&dialog.chosen).enumerate().map(|(index, (finding, chosen))| {
+        let session = brain.model.board.get(&finding.key);
+        let name = session.map(|s| s.display_name()).unwrap_or_else(|| finding.key.id.clone());
+        let why = match &finding.reason {
+            Reason::LeftOver { newer } => {
+                let account = &newer.account;
+                tr!("Läuft doppelt: Dasselbe Gespräch läuft jetzt auch in {account}; das hier ist das alte Exemplar.", "Runs twice: the same conversation now runs in {account} too; this is the old copy.")
+            }
+            Reason::Unreachable { .. } => t("Nicht erreichbar: Ihr Terminal ging gleich nach dem Anhängen wieder zu.", "Unreachable: its terminal closed right after attaching.").to_string(),
+            Reason::Stuck { quiet_ms } => {
+                let hours = quiet_ms / 3_600_000;
+                tr!("Hängt vermutlich: „arbeitet“, aber seit {hours} h tut sich nichts.", "Probably stuck: “working”, but nothing happened for {hours} h.")
+            }
+        };
+        let mark = if *chosen { "☑" } else { "☐" };
+        let mut lines = column![
+            row![
+                text(mark).size(15).color(if *chosen { WORKING } else { TEXT_MUTED }),
+                text(name).size(13).color(TEXT_STRONG).font(style::semibold()),
+                account_badge(&finding.key.account, brain.account_index(&finding.key.account)),
+            ]
+            .spacing(10)
+            .align_y(iced::Center),
+            text(why).size(12.5).color(if finding.sure { TURN } else { TEXT_MUTED }).font(UI),
+        ]
+        .spacing(4);
+        if let Reason::Unreachable { said } = &finding.reason {
+            for line in said.iter().rev().take(4).rev() {
+                lines = lines.push(text(clip(line, 110)).size(11.5).color(TEXT_FAINT).font(MONO));
+            }
+        }
+        let selected = index == dialog.selected;
+        mouse_area(container(lines).padding([8, 12]).width(Fill).style(move |_| boxed(if selected { RAISED } else { SURFACE }, if selected { LINE_STRONG } else { LINE }, 8.0)))
+            .on_press(Message::GardenToggle(index))
+            .interaction(iced::mouse::Interaction::Pointer)
+            .into()
+    });
+    body = body.push(scrollable(column(rows).spacing(6)).height(Fill).style(scrollbar));
+    body = body.push(text(t("↑↓ wählen · Leertaste oder Klick: an/aus · ⏎ beenden · esc", "↑↓ select · space or click: on/off · ⏎ end · esc")).size(11.5).color(TEXT_FAINT).font(UI));
+    let count = dialog.chosen.iter().filter(|c| **c).count();
+    let label = if dialog.busy { t("Beende …", "Ending …").to_string() } else { tr!("{count} beenden", "End {count}") };
+    body = body.push(action(label, "⏎", true, (!dialog.busy && count > 0).then_some(Message::GardenEnd)));
+    body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
+}
+
 /// Brain Link: the code the iPhone camera scans, where Brain listens, and the way out.
 fn pairing(brain: &Brain) -> Element<'_, Message> {
     let mut body = column![
@@ -1989,37 +2339,36 @@ fn pairing(brain: &Brain) -> Element<'_, Message> {
 
 // ---- footer -----------------------------------------------------------------------
 
+/// The few keys that matter for the selected session right now; everything else is behind ⌘K
+/// and `?`.
+fn footer_hints(brain: &Brain) -> Vec<(&'static str, &'static str)> {
+    if brain.tab == DetailTab::Terminal && brain.selected.as_ref().is_some_and(|k| brain.terminals.contains_key(k)) {
+        return vec![
+            ("⏎ ⌘2", t("ins Terminal", "into terminal")),
+            ("⌘1", t("zur Liste", "to the list")),
+            ("⌘T", t("Shell", "shell")),
+            ("⌘D", t("teilen", "split")),
+        ];
+    }
+    let mut hints = vec![("↑↓", t("wählen", "select"))];
+    match brain.selected_session() {
+        None => hints.push(("⌘N", t("neue Session", "new session"))),
+        Some(s) if s.phase() == Phase::Ended => hints.push(("⏎", t("fortsetzen", "resume"))),
+        Some(s) => {
+            if s.awaiting_permission() {
+                hints.push(("Y N", t("erlauben · ablehnen", "allow · deny")));
+            } else if s.accepts_input() {
+                hints.push(("T", t("antworten", "reply")));
+            }
+            hints.push(("⏎", t("öffnen", "open")));
+        }
+    }
+    hints.push(("/", t("suchen", "search")));
+    hints
+}
+
 fn footer(brain: &Brain) -> Element<'_, Message> {
-    let terminal_hints: [(&str, &str); 10] = [
-        ("⏎ ⌘2", t("ins Terminal", "into terminal")),
-        ("⌘1", t("zur Liste", "to the list")),
-        ("⌘K", t("Befehle", "commands")),
-        ("⌘E", t("Composer", "composer")),
-        ("⌘T", t("Shell", "shell")),
-        ("⌘D", t("teilen", "split")),
-        ("⌘-Klick", t("Pfad öffnen", "open path")),
-        ("⌘V", t("Screenshot einfügen", "paste screenshot")),
-        ("⌥⏎", t("in iTerm", "in iTerm")),
-        ("I", t("nach Brain holen", "move into Brain")),
-    ];
-    let hints: [(&str, &str); 11] = [
-        ("↑↓", t("wählen", "select")),
-        ("⏎", t("öffnen", "open")),
-        ("⌘N", t("neue Session", "new session")),
-        ("/", t("suchen", "search")),
-        ("T", t("antworten", "reply")),
-        ("Y N", t("Freigabe", "permission")),
-        ("R", t("umbenennen", "rename")),
-        ("P M S", t("anheften · stumm · pausieren", "pin · mute · snooze")),
-        ("G", t("Projekte", "projects")),
-        ("X A", t("beenden · Konto", "end · account")),
-        ("⌫ C", t("ausblenden · aufräumen", "hide · clean up")),
-    ];
-    let shown: Vec<(&str, &str)> = if brain.tab == DetailTab::Terminal && brain.selected.as_ref().is_some_and(|k| brain.terminals.contains_key(k)) {
-        terminal_hints.to_vec()
-    } else {
-        hints.to_vec()
-    };
+    let shown = footer_hints(brain);
     // A status message takes the whole footer while it shows: the hints would push it off the
     // edge, and "press again" prompts must not be missed.
     if let Some((message, _)) = &brain.status {
@@ -2042,8 +2391,80 @@ fn footer(brain: &Brain) -> Element<'_, Message> {
             })
             .into();
     }
-    let bar = row(shown.into_iter().map(|(key, label)| row![kbd(key), text(label).size(11.5).color(TEXT_FAINT).font(UI)].spacing(5).align_y(iced::Center).into()))
-        .spacing(12)
-        .align_y(iced::Center);
+    let hint = |(key, label): (&'static str, &'static str)| -> Element<'_, Message> {
+        row![kbd(key), text(label).size(11.5).color(TEXT_FAINT).font(UI)].spacing(5).align_y(iced::Center).into()
+    };
+    let always = [("⌘K", t("Befehle", "commands")), ("?", t("alle Tasten", "all keys"))];
+    let bar = row![
+        row(shown.into_iter().map(hint)).spacing(12).align_y(iced::Center),
+        Space::new().width(Fill),
+        row(always.into_iter().map(hint)).spacing(12).align_y(iced::Center),
+    ]
+    .align_y(iced::Center);
     container(bar).height(32).padding([0, 14]).center_y(32).width(Fill).clip(true).style(|_| style::fill(CHROME)).into()
+}
+
+/// `?`: every key, by what it acts on. The footer only shows the few the moment needs.
+fn keys_sheet(_brain: &Brain) -> Element<'_, Message> {
+    let groups: [(&str, Vec<(&str, &str)>); 3] = [
+        (
+            t("Liste", "List"),
+            vec![
+                ("↑↓  j k", t("wählen", "select")),
+                ("1–9", t("n-te Session öffnen", "open the n-th session")),
+                ("⏎", t("öffnen (beendete: fortsetzen)", "open (ended: resume)")),
+                ("⌥⏎", t("in iTerm öffnen", "open in iTerm")),
+                ("/", t("Liste durchsuchen", "search the list")),
+                ("⇥", t("Konto-Filter", "account filter")),
+                ("G", t("nach Projekt gruppieren", "group by project")),
+                ("D", t("Heute", "today")),
+                ("C", t("aufräumen", "clean up")),
+                ("⌘N", t("neue Session", "new session")),
+            ],
+        ),
+        (
+            t("Session", "Session"),
+            vec![
+                ("T", t("antworten (1–9 übernimmt eine Schnellantwort)", "reply (1–9 fills in a quick reply)")),
+                ("Y  N", t("Freigabe erlauben · ablehnen", "allow · deny a permission")),
+                ("R", t("umbenennen", "rename")),
+                ("P", t("anheften", "pin")),
+                ("S", t("pausieren: 15 min → 1 h → morgen → bis sich etwas tut", "snooze: 15 min → 1 h → tomorrow → until something happens")),
+                ("⌫ ⌫", t("gleich bis sich etwas tut", "straight to until something happens")),
+                ("A", t("weiterführen: Konto, Fork, Flags", "go on: account, fork, flags")),
+                ("F", t("forken (Original läuft weiter)", "fork (the original keeps running)")),
+                ("I", t("aus iTerm in Brain holen", "move from iTerm into Brain")),
+                ("X X", t("beenden", "end")),
+                ("⌘⌫ ⌘⌫", t("in den Papierkorb", "move to the Trash")),
+                ("⌘E", t("längerer Prompt (Composer)", "longer prompt (composer)")),
+                ("⌘F", t("im ganzen Gespräch suchen", "find in the whole conversation")),
+                ("⌘⇧C", t("letzte Antwort kopieren", "copy the last answer")),
+            ],
+        ),
+        (
+            t("Ansicht und Terminal", "View and terminal"),
+            vec![
+                ("← →", t("Tabs wechseln", "switch tabs")),
+                ("⌘2  ⌘J", t("Tastatur ins Terminal", "keyboard into the terminal")),
+                ("⌘1  ⌘[", t("zurück zur Liste", "back to the list")),
+                ("⌘T", t("Shell im Projektordner", "shell in the project folder")),
+                ("⌘D", t("Terminal teilen", "split the terminal")),
+                ("⌘⇧A", t("alle Terminals im Überblick", "all terminals at a glance")),
+                ("⌘-Klick", t("Pfad oder Link öffnen", "open a path or link")),
+                ("⌘V", t("Screenshot ins Terminal", "paste a screenshot")),
+                ("⌘K", t("Befehle", "commands")),
+                ("esc", t("schließen", "close")),
+            ],
+        ),
+    ];
+    let columns = groups.into_iter().map(|(title, keys)| {
+        let lines = keys.into_iter().map(|(key, label)| {
+            row![container(kbd(key)).width(76), text(label).size(12.5).color(TEXT).font(UI)].spacing(10).align_y(iced::Center).into()
+        });
+        column![text(title).size(12).color(TEXT_MUTED).font(style::semibold()), column(lines).spacing(7)].spacing(10).width(Fill).into()
+    });
+    column![dialog_title(t("Tasten", "Keys")), scrollable(row(columns).spacing(28)).height(Fill).style(scrollbar)]
+        .spacing(18)
+        .padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 })
+        .into()
 }

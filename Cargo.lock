@@ -586,7 +586,7 @@ dependencies = [
 
 [[package]]
 name = "brain-app"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "base64 0.22.1",
  "block2 0.6.2",
@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "brain-cli"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "brain-core",
  "brain-terminal",
@@ -627,7 +627,7 @@ dependencies = [
 
 [[package]]
 name = "brain-core"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "chrono",
  "libc",
@@ -638,7 +638,7 @@ dependencies = [
 
 [[package]]
 name = "brain-terminal"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "serde",
  "zbus",
@@ -4039,6 +4039,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",

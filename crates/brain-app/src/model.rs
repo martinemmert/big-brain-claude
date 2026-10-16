@@ -145,6 +145,12 @@ impl Model {
     }
 
     /// Days until Claude Code deletes an ended session's transcript.
+    /// The accounts whose folder holds a transcript of the conversation `session_id` (a moved
+    /// one is in two).
+    pub fn accounts_holding(&self, session_id: &str) -> Vec<String> {
+        self.kept.iter().filter(|(_, ids)| ids.contains_key(session_id)).map(|(account, _)| account.clone()).collect()
+    }
+
     pub fn days_left(&self, session: &Session, now_ms: i64) -> Option<i64> {
         let days = self.account(&session.key.account)?.transcript_days() as i64;
         let left_ms = session.last_activity_ms + days * 86_400_000 - now_ms;
@@ -239,6 +245,20 @@ impl Model {
         }
         self.primed = true;
         attention
+    }
+
+    /// Where a session's transcript is, from the last listing of the account's transcripts.
+    pub fn transcript_path(&self, key: &SessionKey) -> Option<PathBuf> {
+        let session = self.board.get(key)?;
+        self.kept.get(&key.account)?.get(session.session_id.as_ref()?).cloned()
+    }
+
+    /// Finds the accounts again (after Brain made one).
+    pub fn reload_accounts(&mut self) {
+        if !self.is_demo() {
+            self.accounts = discover_accounts(&home_dir());
+            self.relist_transcripts();
+        }
     }
 
     /// Lists the transcripts again on the next refresh (after Brain deleted one).

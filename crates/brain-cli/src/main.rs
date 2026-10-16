@@ -52,6 +52,26 @@ enum Command {
         #[command(subcommand)]
         step: KonsilStep,
     },
+    /// Claude accounts: `brain account new <name>` makes one from the existing ones.
+    Account {
+        #[command(subcommand)]
+        action: AccountAction,
+    },
+    /// Keep the accounts' setup in step: settings, CLAUDE.md, skills, agents, commands, MCP
+    /// servers and memory notes. Shows what it would do; `--yes` does it. Conflicts stay open:
+    /// decide them in Brain (⌘K → Sync accounts). After the first sync, every session start
+    /// syncs too.
+    Sync {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Sessions Brain lists but can't steer any more (running twice after a move, or "working"
+    /// for hours without a sign of life). Shows them; `--yes` ends the sure ones for good
+    /// (`claude stop`, else SIGTERM, last SIGKILL); their conversations stay resumable.
+    Garden {
+        #[arg(long)]
+        yes: bool,
+    },
     /// Install hooks and the protocol section into every Claude account.
     Install,
     /// Remove Brain's hooks and protocol section from every Claude account.
@@ -87,6 +107,20 @@ enum Command {
     Show {
         /// The session as <account>:<pid>, e.g. main:4242.
         session: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AccountAction {
+    /// A new account folder `~/.claude-<name>` with the setup and memory of all accounts
+    /// (settings, CLAUDE.md, skills, agents, commands, plugins, MCP servers, memory notes;
+    /// main wins where they differ). Shows what it would do; `--yes` does it. No login, no
+    /// conversations: log in with `/login` in its first session.
+    New {
+        name: String,
+        /// Create it (without: only show the plan).
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -130,6 +164,17 @@ fn main() -> ExitCode {
             };
             if let Some(input) = input {
                 let _ = run_hook(&store, &accounts, &input, source);
+                // A new session: what changed in another account since comes along.
+                let starts = serde_json::from_str::<HookPayload>(&input).ok().and_then(|p| p.kind()) == Some(Kind::SessionStart);
+                if starts {
+                    match brain_core::sync::on_session_start(&brain_core::sync::default_dir(&home), &accounts, &home) {
+                        Ok(Some(outcome)) if outcome.synced > 0 || outcome.open > 0 => {
+                            brain_core::log::write(&home, "sync", &format!("session start: {} items synced, {} left for the dialog", outcome.synced, outcome.open));
+                        }
+                        Err(err) => brain_core::log::write(&home, "sync", &format!("session start: {err}")),
+                        _ => {}
+                    }
+                }
             }
             ExitCode::SUCCESS
         }
@@ -151,6 +196,9 @@ fn main() -> ExitCode {
             KonsilStep::Stand { .. } => ExitCode::SUCCESS,
             KonsilStep::End { decision } => run_report(&store, &accounts, Kind::Done, &format!("Konsil: {}", decision.join(" "))),
         },
+        Command::Account { action: AccountAction::New { name, yes } } => run_account_new(&accounts, &name, yes),
+        Command::Sync { yes } => run_sync(&accounts, yes),
+        Command::Garden { yes } => run_garden(&store, &accounts, yes),
         Command::Install => run_install(&accounts),
         Command::Uninstall => run_uninstall(&accounts),
         Command::Status => run_status(&store, &accounts),
@@ -362,6 +410,147 @@ fn run_install(accounts: &[Account]) -> ExitCode {
     }
     println!("New Claude sessions pick this up on start.");
     if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+}
+
+fn run_account_new(accounts: &[Account], name: &str, yes: bool) -> ExitCode {
+    let home = home_dir();
+    let target = match brain_core::account_setup::target_dir(&home, name) {
+        Ok(target) => target,
+        Err(err) => {
+            eprintln!("brain account new: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if accounts.is_empty() {
+        eprintln!("brain account new: no ~/.claude or ~/.claude-* account to take the setup from");
+        return ExitCode::FAILURE;
+    }
+    let plan = if yes {
+        match brain_core::account_setup::create(accounts, &home, &target) {
+            Ok(plan) => plan,
+            Err(err) => {
+                eprintln!("brain account new: {err}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        brain_core::account_setup::plan(accounts, &home, &target)
+    };
+    let names: Vec<&str> = accounts.iter().map(|a| a.id.as_str()).collect();
+    println!("{} {} from {}", if yes { "Made" } else { "Would make" }, target.display(), names.join(" + "));
+    for item in &plan.items {
+        println!("  {}  ({})", item.what, item.from.join(", "));
+        for conflict in &item.conflicts {
+            println!("      ≠ {conflict}");
+        }
+    }
+    if !yes {
+        println!("\nNothing written yet. `brain account new {name} --yes` makes it.");
+        return ExitCode::SUCCESS;
+    }
+    // Brain's hooks, mod and protocol section into the new account (and the others, as always).
+    let code = run_install(&brain_core::account::discover_accounts(&home));
+    println!("\nLog in with another Claude account in its first session:");
+    println!("  CLAUDE_CONFIG_DIR={} claude   then /login", target.display());
+    code
+}
+
+fn run_sync(accounts: &[Account], yes: bool) -> ExitCode {
+    use brain_core::sync;
+    let home = home_dir();
+    let dir = sync::default_dir(&home);
+    let plan = sync::plan(&dir, accounts, &home);
+    if plan.first {
+        println!("First sync: nothing is known to be deleted yet, so the accounts are joined.");
+    }
+    for item in &plan.items {
+        let versions: Vec<String> = item.versions.iter().map(|v| format!("{} {}", v.account, v.describe(item.kind))).collect();
+        if item.conflict {
+            println!("  ≠ {}  [{}]  newest: {}", item.label, versions.join(" · "), item.take);
+        } else {
+            println!("  {}  {} → {}", item.label, item.take, item.receivers().join(", "));
+        }
+    }
+    for (account, label) in &plan.kept {
+        println!("  = {label}  ({account} keeps its own)");
+    }
+    if plan.items.is_empty() {
+        println!("The accounts are in step.");
+        return ExitCode::SUCCESS;
+    }
+    if !yes {
+        println!("\nNothing written yet. `brain sync --yes` syncs; conflicts (≠) are decided in Brain.");
+        return ExitCode::SUCCESS;
+    }
+    match sync::apply(&dir, accounts, &home, &plan, &[]) {
+        Ok(outcome) => {
+            println!("\nSynced {} items; {} conflicts open.", outcome.synced, outcome.open);
+            if let Some(backup) = outcome.backup {
+                println!("What was replaced or deleted is in {}", backup.display());
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("brain sync: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_garden(store: &Store, accounts: &[Account], yes: bool) -> ExitCode {
+    use brain_core::garden::{self, Reason};
+    let mut board = load_board(store, accounts);
+    // Background sessions' state comes from `claude agents`, as in Brain.
+    for account in accounts {
+        if let Some(agents) = brain_core::agents::list(account) {
+            board.set_agents(&account.id, &agents);
+        }
+    }
+    let sessions = board.sorted();
+    let copied_to = |id: &str| -> Vec<String> {
+        accounts.iter().filter(|a| brain_core::transcript::find_transcript(a, id).is_some()).map(|a| a.id.clone()).collect()
+    };
+    let found = garden::findings(&sessions, Utc::now().timestamp_millis(), &Default::default(), &copied_to);
+    if found.is_empty() {
+        println!("No broken sessions.");
+        return ExitCode::SUCCESS;
+    }
+    for finding in &found {
+        let Some(s) = board.get(&finding.key) else { continue };
+        let why = match &finding.reason {
+            Reason::LeftOver { newer } => format!("runs twice; the newer copy is in {}", newer.account),
+            Reason::Unreachable { .. } => "unreachable".to_string(),
+            Reason::Stuck { quiet_ms } => format!("\"working\" but quiet for {} h (a guess: --yes leaves it)", quiet_ms / 3_600_000),
+        };
+        println!("  {} {:<28} {:<7} pid {:<6} {why}", if finding.sure { "✂" } else { "?" }, s.display_name(), s.key.account, s.pid);
+    }
+    if !yes {
+        println!("\nNothing ended yet. `brain garden --yes` ends the sure ones (✂).");
+        return ExitCode::SUCCESS;
+    }
+    let home = home_dir();
+    let mut failed = false;
+    for finding in found.iter().filter(|f| f.sure) {
+        let (Some(s), Some(account)) = (board.get(&finding.key), accounts.iter().find(|a| a.id == finding.key.account)) else { continue };
+        let name = s.display_name();
+        let line = match garden::end(account, s.pid, s.agent.as_ref().map(|a| a.id.as_str())) {
+            Ok(how) => {
+                println!("ended {name}: {how}");
+                format!("{name} ({}): ended – {how}", finding.key.account)
+            }
+            Err(why) => {
+                failed = true;
+                eprintln!("not ended {name}: {why}");
+                format!("{name} ({}): NOT ended – {why}", finding.key.account)
+            }
+        };
+        brain_core::log::write(&home, "garden", &line);
+    }
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 fn run_uninstall(accounts: &[Account]) -> ExitCode {

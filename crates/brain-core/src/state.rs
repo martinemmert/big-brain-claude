@@ -139,6 +139,11 @@ impl Session {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test(key: SessionKey, pid: u32) -> Self {
+        Self::new(key, pid)
+    }
+
     pub fn display_name(&self) -> String {
         if let Some(name) = self.name.as_deref().filter(|n| !n.is_empty()) {
             return name.to_string();
@@ -209,6 +214,17 @@ impl Session {
     /// Background sessions have no terminal of their own.
     pub fn accepts_input(&self) -> bool {
         self.agent.is_none() && self.alive && matches!(self.current_signal(), Some((Signal::Idle, _)))
+    }
+
+    /// Whether the session waits for typed input: its turn is over and no dialog is open. Unlike
+    /// [`Session::accepts_input`] this holds for a background session too, which takes it
+    /// through its terminal in Brain rather than a terminal app.
+    pub fn waits_for_input(&self) -> bool {
+        match &self.agent {
+            // "Needs you" may be a dialog, which typed text would answer.
+            Some(_) => matches!(self.phase(), Phase::YourTurn | Phase::Background),
+            None => self.accepts_input(),
+        }
     }
 
     /// Whether the session matches every whitespace-separated term of `query`
@@ -762,6 +778,42 @@ mod tests {
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::YourTurn);
         board.set_agents("second", &[agent("done")]);
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::Ended);
+    }
+
+    /// A background session has no terminal app to type through (`accepts_input` stays false),
+    /// but when its turn is over it waits for input like any other: Brain types into its
+    /// terminal in Brain then. Never while a dialog is open or Claude works.
+    #[test]
+    fn background_sessions_wait_for_input_on_their_turn() {
+        let mut board = Board::default();
+        board.apply_session_file("second", &file("idle", 10), true);
+        let agent = |state: &str| BackgroundAgent {
+            id: "s1".into(),
+            session_id: "s1".into(),
+            name: Some("QA Autopilot".into()),
+            cwd: None,
+            state: state.into(),
+            started_ms: Some(0),
+            pid: Some(4200),
+        };
+        board.set_agents("second", &[agent("idle")]);
+        let session = board.get(&key()).unwrap();
+        assert_eq!(session.phase(), Phase::YourTurn);
+        assert!(session.waits_for_input());
+        assert!(!session.accepts_input(), "no terminal app to type through");
+
+        board.set_agents("second", &[agent("blocked")]);
+        assert!(!board.get(&key()).unwrap().waits_for_input(), "a dialog is open: typed text would answer it");
+        board.apply_session_file("second", &file("busy", 20), true);
+        board.set_agents("second", &[agent("working")]);
+        assert!(!board.get(&key()).unwrap().waits_for_input());
+
+        // Not a background session: the same as before.
+        board.set_agents("second", &[]);
+        board.apply_session_file("second", &file("idle", 30), true);
+        let session = board.get(&key()).unwrap();
+        assert_eq!(session.waits_for_input(), session.accepts_input());
+        assert!(session.waits_for_input());
     }
 
     #[test]

@@ -23,19 +23,25 @@ Links stehen die Sessions, wer auf dich wartet zuerst, am längsten Wartende obe
 - **Gelb:** Der Turn ist fertig, du bist dran.
 - **Blau:** Claude arbeitet; **hellblau:** fertig, aber Subagents oder Hintergrund-Shells laufen noch.
 
-Oben in der Titelleiste:
+Oben stehen Angeheftete (★), darunter „Braucht dich“ und „Arbeitet“. Alles, was gerade nicht
+nach dir ruft, liegt in **zugeklappten Abschnitten am Listenende**, jeweils mit Zahl; ein Klick
+(oder ⌘K) klappt einen auf:
 
-- **Ansichten:** Status, Projekte (`G`) und Heute (`D`, was jede Session heute erledigt hat;
-  `⌘C` kopiert das als Markdown).
-- **Kontofilter:** umschalten mit `⇥`.
-- **„◌ N im Hintergrund“ (`B`)** blendet Claudes Hintergrund-Sessions ein.
-- **„⚙ N automatisch“ (`U`)** blendet Sessions ein, die Programme gestartet haben, etwa
-  Security-Reviews nach Commits oder `claude -p`-Skripte. Standardmäßig ausgeblendet.
+- **Ruht seit über 2 h**
+- **Pausiert und ausgeblendet** (`S`, `⌫` `⌫`)
+- **Ruhig im Hintergrund:** Claudes Hintergrund-Sessions ohne Aktivität seit einem Tag
+- **Automatisch gestartet:** Security-Reviews nach Commits, `claude -p`-Skripte und Ähnliches
+- **Beendet:** die des letzten Tages; ältere findet die Suche
 
-Weitere Gruppen: Angeheftete (★), Ruhende (`H` klappt sie auf), Beendete (`E`).
+Die aus den drei mittleren melden sich nie per Mitteilung. So verschwindet keine Session spurlos.
 
 - **Suchen:** `/` durchsucht die Liste nach Name, Ordner, Konto und Überschrift.
+- **Nach Projekt gruppieren:** `G` oder „Projekte“ neben dem Suchfeld.
+- **Heute:** `D` (oder ⌘K) zeigt, was jede Session heute erledigt hat; `⌘C` kopiert das als
+  Markdown, `esc` schließt.
+- **Kontofilter:** in der Titelleiste, umschalten mit `⇥`.
 - **Rechtsklick** auf eine Session zeigt alle passenden Aktionen mit ihren Kürzeln.
+- **Fußleiste:** zeigt die Tasten, die für die gewählte Session gerade passen; `?` zeigt alle.
 
 ## Eine Session ansehen
 
@@ -43,18 +49,19 @@ Rechts steht die ausgewählte Session.
 
 - **Kopfzeile:** Name (Klick zum Umbenennen), Konto, Markierungen wie ★ angeheftet,
   „● klingelt“ (Bell) oder der Titel, den Claude Code gesetzt hat.
-- **Infos:** Ordner, Modell, Kosten, PR mit Checks und die **Context-Anzeige**: ein Balken, ab
-  80 % gelb mit Knopf **/compact**, ab 90 % rot.
+- **Darunter eine Zeile:** Ordner, Modell, die **Context-Anzeige** (ab 80 % gelb mit Knopf
+  **/compact**, ab 90 % rot), ein abweichender Freigabe-Modus und der PR mit Checks. Kosten,
+  pid und Startzeit zeigt sie beim Überfahren.
+- **Wartekarte:** worauf die Session wartet, mit **Antworten** (`T`) bzw. **Erlauben**/**Ablehnen**
+  (`Y`/`N`) als Hauptknopf.
 
 Die Tabs (`←` `→`):
 
 | Tab | Inhalt |
 |---|---|
-| **Nachrichten** | Die letzten Nachrichten im Terminal-Look. `⌘F` sucht in der ganzen Session, „Deine Prompts“ listet alles, was du gefragt hast. „Antwort kopieren“ (`⌘⇧C`), „Als Markdown“ öffnet das Gespräch in YAMV. |
-| **Verlauf** | Jedes Ereignis der Session: Start, Prompts, Freigaben, Turn-Enden, Meldungen. |
-| **Änderungen** | Branch und geänderte Dateien. Klick auf eine Datei zeigt den Diff. „Änderung verwerfen“ (zweimal) legt die jetzige Fassung in den Papierkorb und holt die aus HEAD zurück. |
-| **Dateien** | Jede Datei, die die Session geschrieben, geändert, gelesen oder bekommen hat, neueste zuerst. So findest du z. B. erzeugte Markdown-Dateien. Klick öffnet sie. |
-| **Fragen** | Jede Rückfrage von Claude mit deiner Antwort; offene sind markiert. |
+| **Nachrichten** | Die letzten Nachrichten im Terminal-Look. `⌘F` öffnet darüber die Suchleiste für die ganze Session, mit den Ansichten **Gespräch**, **Deine Prompts** (alles, was du gefragt hast), **Fragen** (jede Rückfrage von Claude mit deiner Antwort; offene sind markiert) und **Ereignisse** (Start, Prompts, Freigaben, Turn-Enden, Meldungen). `esc` schließt sie. `⌘⇧C` kopiert die letzte Antwort, ⌘K → „Gespräch als Markdown öffnen“ öffnet es in YAMV. |
+| **Dateien** | Jede Datei, die die Session geschrieben, geändert, gelesen oder bekommen hat, neueste zuerst. So findest du z. B. erzeugte Markdown-Dateien. Klick öffnet sie. Der letzte Abschnitt, **Git-Änderungen**, zeigt Branch und geänderte Dateien; ein Klick zeigt den Diff, „Änderung verwerfen“ (zweimal) legt die jetzige Fassung in den Papierkorb und holt die aus HEAD zurück. |
+| **Konsil** | Nur bei Sessions, die ein Konsil gehalten haben: die Beratung als Bühne, Runde für Runde. |
 | **Terminal** | Die Session selbst, in Brains Terminal (siehe unten). Bei einer beendeten Session steht hier vorher ein **Steckbrief**: Anfang, letzte Frage, letzte Antwort, offene Rückfrage, geänderte Dateien. |
 
 ## Sessions in Brain laufen lassen
@@ -64,8 +71,8 @@ Die Tabs (`←` `→`):
   Brain beendet wird.
 - **Öffnen:** `⏎` oder Doppelklick. Läuft die Session in Brain, öffnet sie sich hier; eine beendete
   wird hier fortgesetzt. `⌥⏎` öffnet sie stattdessen in iTerm.
-- **Aus iTerm holen:** `I` `I` holt eine Session aus ihrem iTerm-Tab nach Brain, ohne dass das
-  Gespräch verloren geht.
+- **Aus iTerm holen:** `I` (dann `⏎`) holt eine Session aus ihrem iTerm-Tab nach Brain, ohne
+  dass das Gespräch verloren geht.
 
 **Tastatur im Terminal:**
 
@@ -86,15 +93,16 @@ Die Tabs (`←` `→`):
 
 **Mehr Platz:**
 
-- **Teilen:** `⌘D`, oder Rechtsklick → „Daneben öffnen“. Zwei ganze Sessions nebeneinander; ein
-  Klick in die linke macht sie zur aktiven.
+- **Teilen:** `⌘D` im Terminal-Tab, oder Rechtsklick → „Daneben öffnen“. Zwei ganze Sessions
+  nebeneinander; ein Klick in die linke macht sie zur aktiven.
 - **Übersicht:** `⌘⇧A` zeigt alle Terminals als Live-Vorschau, ein Klick öffnet eine.
 - **Shell:** `⌘T` öffnet eine Shell im Ordner der Session, unter ihrem Terminal.
 
 ## Antworten und steuern
 
 - **Freigaben:** `Y` erlaubt, `N` lehnt ab.
-- **Kurz antworten:** `T`, dann tippen oder `1`–`9` für eine Schnellantwort.
+- **Kurz antworten:** `T`, dann tippen, oder `1`–`9` übernimmt eine Schnellantwort; `⏎` schickt
+  ab. Eine Ziffer allein schickt nie etwas (Claudes nummerierte Fragen).
 - **Composer:** `⌘E`. Ein großes Feld für längere Prompts, mit Diktat, Vorlagen und
   eingefügten Screenshots. `⌘⏎` sendet.
 - **Befehlspalette:** `⌘K`. Alle Aktionen; Slash-Befehle wie `/compact`, `/context`, `/model`
@@ -113,17 +121,34 @@ Die Tabs (`←` `→`):
 | Taste | Wirkung |
 |---|---|
 | `P` | anheften; bei einer beendeten Session: zum Fortsetzen merken |
-| `M` | keine Benachrichtigungen mehr für diese Session |
-| `S` | pausieren: 15 Min → 1 Std → bis morgen 9 Uhr → aus |
-| `R` | umbenennen |
+| `S` | pausieren: 15 Min → 1 Std → bis morgen 9 Uhr → bis sich in der Session etwas tut → wieder da |
+| `⌫` `⌫` | gleich „bis sich etwas tut“ (nochmal: wieder einblenden) |
+| Rechtsklick → *Stummschalten* | keine Benachrichtigungen mehr für diese Session (auch in ⌘K) |
+| `R` | umbenennen, solange die Session auf dich wartet |
 | `X` `X` | beenden (bleibt fortsetzbar) |
-| `⌫` `⌫` | ausblenden, bis sich in der Session wieder etwas tut |
 | `⌘⌫` `⌘⌫` | beendete Session in den Papierkorb |
 | `C` | aufräumen: alles, was seit N Tagen ruht, ausblenden oder in den Papierkorb |
-| `A` `A` | im anderen Konto fortsetzen, z. B. wenn ein Limit voll ist |
+| `A` | **weiterführen …**: ein Dialog für Konto (`1`, `2`, … – mit dem Verbrauch jedes Kontos), ob das Original weiterläuft (`⇥`), und Flags. Er sagt, was `⏎` tut: anderes Konto → *umziehen* (z. B. wenn ein Limit voll ist); Original läuft weiter → *forken*; eigenes Konto mit Flags (`--chrome`, `--model opus`) → *neu starten*, wo sie lief; eigenes Konto ohne Flags → aus iTerm *nach Brain holen* |
+| `F` / `I` / Rechtsklick → *Neu starten mit …* | derselbe Dialog, vorbelegt zum Forken / Holen / mit Flags |
 
 Tasten, die zweimal gedrückt werden wollen, fragen im Rechtsklick-Menü nicht nach: Der Klick
 zählt als Bestätigung.
+
+**Der Gärtner** (⌘K → „Gärtner“, oder „✂ N kaputt“ in der Titelleiste, oder `brain garden`)
+findet Sessions, die Brain listet, aber nicht mehr steuern kann, und beendet sie endgültig:
+
+- **läuft doppelt:** ein umgezogenes Gespräch, dessen Original weiterlief;
+- **nicht erreichbar:** ihr Terminal ging gleich nach dem Anhängen wieder zu;
+- **hängt vermutlich:** „arbeitet“ seit 3 Stunden ohne Lebenszeichen (nur ein Verdacht, darum
+  nicht vorausgewählt).
+
+Beenden heißt: `claude stop`, sonst SIGTERM, zuletzt SIGKILL, und nur bei einem Prozess, der noch
+Claude Code ist. Das Gespräch bleibt fortsetzbar. Für eine einzelne Session, die sich nicht
+beenden lässt: Rechtsklick → **Hart beenden**.
+
+**Das Log** hält fest, was Brain in seiner Statuszeile gesagt hat, was fehlschlug, was das
+Terminal einer Session zuletzt zeigte, als es zuging, und was Gärtner und Konten-Abgleich getan
+haben: `~/.claude-brain/logs/<Datum>.log`, zwei Wochen lang (⌘K → „Log öffnen“).
 
 ## Brain auf dem iPhone (Brain Link)
 
@@ -145,6 +170,32 @@ Die App erreicht Brain, solange iPhone und Mac im selben WLAN sind. Wechseln bei
 sie Brain nach wenigen Sekunden wieder; eine neue Adresse des Macs übernimmt sie von selbst. Im
 Kopplungsdialog: **„Alle Handys abmelden“** (neuer Schlüssel, alte Kopplungen
 gelten nicht mehr) und **„Brain Link ausschalten“**.
+
+## Ein neues Claude-Konto einrichten
+
+⌘K → **„Neues Claude-Konto einrichten“** (oder `brain account new <name>`) legt `~/.claude-<name>`
+an und übernimmt aus allen Konten Einstellungen, CLAUDE.md, Skills, Agents, Commands, Plugins,
+MCP-Server und das Gedächtnis pro Projekt. Die Vorschau zeigt vorher, was woher kommt und wo sich
+die Konten unterscheiden: Dann gewinnt main, bei Gedächtnis-Notizen die neuere. Die Anmeldung und
+die Gespräche kommen nicht mit – melde dich in der ersten Session des neuen Kontos mit `/login` an;
+Brain öffnet dafür gleich „Neue Session“ mit dem neuen Konto. Plugins werden auf APFS geklont und
+belegen kaum Platz.
+
+## Konten abgleichen
+
+⌘K → **„Konten abgleichen“** (oder `brain sync`, mit `--yes` schreibt es) hält Einstellungen,
+CLAUDE.md, Skills, Agents, Commands, MCP-Server und das Gedächtnis pro Projekt in allen Konten
+gleich. Brain merkt sich nach jedem Abgleich den gemeinsamen Stand; was ein Konto seitdem ändert
+oder löscht, bekommen die anderen. Haben zwei Konten dasselbe verschieden geändert, entscheidest du
+im Dialog: vorgeschlagen ist die neueste Änderung, `1`–`9` wählt eine andere, `K` lässt Konten mit
+anderer Version ihre behalten. Gedächtnis-Notizen warten nie: die neuere gewinnt.
+
+Der erste Abgleich führt die Konten zusammen. Danach gleicht **jeder Session-Start** mit ab, lässt
+aber Konflikte und alles, was Rechte gibt oder Code ausführen kann (Freigaben, Hooks, `env`,
+Plugins, MCP-Server, das Statusline-Skript, Skills, Commands, Agents; im Dialog mit ⚑), für den
+Dialog liegen – die Titelleiste zählt sie („⇄ 2 Konto-Konflikte“). Einfache Einstellungen,
+CLAUDE.md und das Gedächtnis gleicht er selbst ab. Was ersetzt oder gelöscht wird, liegt 30 Tage in
+`~/.claude-brain/sync/backup/`.
 
 ## Nutzung und Limits
 
@@ -172,34 +223,38 @@ Alles optional, in `~/.claude-brain/config.json`:
 
 ## Alle Tastenkürzel
 
+`?` zeigt sie auch in Brain.
+
 | Taste | Wirkung |
 |---|---|
 | `↑` `↓`, `j` `k` | Session wählen |
 | `1`–`9` | n-te Session öffnen |
-| `⏎`, Doppelklick | öffnen (in Brain, sonst im Terminal-Programm) |
+| `⏎`, Doppelklick | öffnen (in Brain, sonst im Terminal-Programm; eine beendete: fortsetzen) |
 | `⌥⏎` | in iTerm öffnen |
-| `⌘2` / `⌘1` | ins Terminal / zurück zur Liste |
-| `⌘N` | neue Session |
-| `⌘K` | Befehlspalette |
-| `⌘E` | Composer |
-| `⌘F` | in der ganzen Session suchen |
+| `⌘2` `⌘J` / `⌘1` `⌘[` | ins Terminal / zurück zur Liste |
 | `/` | Liste durchsuchen |
+| `⇥` / `⇧⇥` | Kontofilter |
+| `G` / `D` | nach Projekten / Heute |
+| `C` | aufräumen |
+| `⌘N` | neue Session |
+| `T` | antworten (`1`–`9` übernimmt eine Schnellantwort, `⏎` schickt ab) |
+| `Y` / `N` | Freigabe erlauben / ablehnen |
+| `R` | umbenennen (solange die Session wartet) |
+| `P` / `S` | anheften / pausieren |
+| `⌫` `⌫` | ausblenden, bis sich etwas tut |
+| `A` | weiterführen: Konto, Fork, Flags |
+| `F` / `I` | forken / aus iTerm nach Brain holen (derselbe Dialog) |
+| `X` `X`, `⌘⌫` `⌘⌫` | beenden, in den Papierkorb |
+| `⌘F` | in der ganzen Session suchen (Ansichten: Prompts, Fragen, Ereignisse) |
 | `⌘⇧C` | letzte Antwort kopieren |
-| `⌘D` | Terminal teilen |
-| `⌘⇧A` | alle Terminals im Überblick |
+| `⌘E` | Composer |
 | `⌘T` | Shell im Projektordner |
-| deine `quick_terminal`-Taste | Quick Terminal, aus jeder App |
+| `⌘D` | Terminal teilen (im Terminal-Tab) |
+| `⌘⇧A` | alle Terminals im Überblick |
 | `⌘`-Klick | Pfad oder Link aus der Ausgabe öffnen |
 | `⌘V` | Screenshot ins Terminal einfügen |
-| `I` `I` | Session aus iTerm nach Brain holen |
-| `Y` / `N` | Freigabe erlauben / ablehnen |
-| `T` | antworten |
-| `P` `M` `S` `R` | anheften, stumm, pausieren, umbenennen |
-| `X` `X`, `⌫` `⌫`, `⌘⌫` `⌘⌫` | beenden, ausblenden, in den Papierkorb |
-| `A` `A` | ins andere Konto |
-| `C` | aufräumen |
-| `G` / `D` | nach Projekten / Heute |
-| `B` / `U` / `E` / `H` | Hintergrund / automatische / beendete / ruhende Sessions |
-| `⇥` | Kontofilter |
 | `←` `→` | Tabs wechseln |
-| `esc` | Dialog oder Ansicht schließen, Suche leeren |
+| `⌘K` | Befehlspalette: alles, auch was keine Taste hat (stumm, Abschnitte aufklappen, Konten abgleichen …) |
+| `?` | alle Tasten |
+| `esc` | Dialog, Suchleiste oder Heute schließen, Suche leeren |
+| deine `quick_terminal`-Taste | Quick Terminal, aus jeder App |
