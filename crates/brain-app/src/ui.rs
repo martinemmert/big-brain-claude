@@ -2633,6 +2633,7 @@ fn keys_sheet(_brain: &Brain) -> Element<'_, Message> {
                 ("⇥", t("Konto-Filter", "account filter")),
                 ("E  B  U", t("beendete · Hintergrund- · automatische Sessions auf-/zuklappen", "fold ended · background · automated sessions")),
                 ("C", t("aufräumen", "clean up")),
+                ("L", t("für später: Aufgaben aus /later", "for later: tasks from /later")),
                 ("⌘N", t("neue Session", "new session")),
             ],
         ),
