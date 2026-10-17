@@ -270,6 +270,14 @@ impl Brain {
         let in_background = session.agent.as_ref().is_some_and(|a| a.is_active()) || self.in_team(&key);
         match command {
             Command::Reply { text, .. } => {
+                // A question dialog is open too while the status file says waiting.
+                if self.questions.get(&key).is_some_and(|(_, q)| q.is_some()) {
+                    self.refuse(tr!(
+                        "„{name}“ wartet auf die Antwort auf seine Frage – beantworte zuerst die Frage.",
+                        "“{name}” waits for the answer to its question – answer the question first."
+                    ));
+                    return Task::none();
+                }
                 if permission_open {
                     self.refuse(tr!(
                         "Vom Handy: „{name}“ wartet auf eine Freigabe – Antwort nicht gesendet.",
@@ -558,8 +566,8 @@ mod tests {
         OpenQuestion {
             call: "toolu_1".into(),
             items: vec![
-                QuestionItem { question: "Variante?".into(), options: vec!["Bereich".into(), "Monat".into()], multi_select: false },
-                QuestionItem { question: "Ansichten?".into(), options: vec!["Tag".into(), "Woche".into(), "Monat".into()], multi_select: true },
+                QuestionItem { question: "Variante?".into(), options: vec!["Bereich".into(), "Monat".into()], multi_select: false, previews: false },
+                QuestionItem { question: "Ansichten?".into(), options: vec!["Tag".into(), "Woche".into(), "Monat".into()], multi_select: true, previews: false },
             ],
             multi_select: true,
         }

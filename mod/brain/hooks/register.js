@@ -249,6 +249,8 @@ export function register(on) {
         question: q.question ?? '',
         options: (q.options ?? []).map((o) => o.label ?? ''),
         multi_select: q.multiSelect === true,
+        // Options with a preview: the dialog picks one with Return, not with its number alone.
+        previews: (q.options ?? []).some((o) => o.preview != null),
       })),
       multi_select: questions.some((q) => q.multiSelect === true),
     }

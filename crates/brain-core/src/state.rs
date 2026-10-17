@@ -756,7 +756,7 @@ mod tests {
     fn the_question_the_mod_reported_lasts_until_the_turn_goes_on() {
         let ask = crate::qa::OpenQuestion {
             call: "toolu_1".into(),
-            items: vec![crate::qa::QuestionItem { question: "Color?".into(), options: vec!["Red".into(), "Blue".into()], multi_select: false }],
+            items: vec![crate::qa::QuestionItem { question: "Color?".into(), options: vec!["Red".into(), "Blue".into()], multi_select: false, previews: false }],
             multi_select: false,
         };
         let mut board = Board::default();

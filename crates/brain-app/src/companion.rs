@@ -1579,8 +1579,8 @@ mod tests {
                 question: Some(brain_core::qa::OpenQuestion {
                     call: "toolu_demo".into(),
                     items: vec![
-                        brain_core::qa::QuestionItem { question: "Welche Variante soll der Datepicker zuerst bekommen?".into(), options: vec!["Bereich".into(), "Monat".into(), "Woche".into()], multi_select: false },
-                        brain_core::qa::QuestionItem { question: "Welche Ansichten brauchst du?".into(), options: vec!["Tag".into(), "Woche".into(), "Monat".into()], multi_select: true },
+                        brain_core::qa::QuestionItem { question: "Welche Variante soll der Datepicker zuerst bekommen?".into(), options: vec!["Bereich".into(), "Monat".into(), "Woche".into()], multi_select: false, previews: false },
+                        brain_core::qa::QuestionItem { question: "Welche Ansichten brauchst du?".into(), options: vec!["Tag".into(), "Woche".into(), "Monat".into()], multi_select: true, previews: false },
                     ],
                     multi_select: true,
                 }),

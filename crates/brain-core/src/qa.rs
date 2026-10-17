@@ -140,6 +140,10 @@ pub struct QuestionItem {
     /// This question takes several picks. (Brain's mod first sent it for the whole call only.)
     #[serde(default)]
     pub multi_select: bool,
+    /// Its options come with a preview: the dialog then moves to an option on its number and
+    /// picks it only with Return.
+    #[serde(default)]
+    pub previews: bool,
 }
 
 /// The transcript's last megabyte: an open question and its answer land at the end.
@@ -190,9 +194,11 @@ pub fn open_question(transcript: &Path) -> Option<OpenQuestion> {
                         .flatten()
                         .map(|q| {
                             let multi = q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false);
+                        let previews = q.get("options").and_then(Value::as_array).into_iter().flatten().any(|o| o.get("preview").is_some_and(|p| !p.is_null()));
                             multi_select |= multi;
                             QuestionItem {
                                 multi_select: multi,
+                                previews,
                                 question: q.get("question").and_then(Value::as_str).unwrap_or_default().to_string(),
                                 options: q
                                     .get("options")
@@ -222,7 +228,8 @@ pub fn open_question(transcript: &Path) -> Option<OpenQuestion> {
 
 /// The keys that answer an open question in Claude Code's dialog, as tested by hand: each
 /// question's option number in turn, and with several questions `1` on the review page that
-/// follows ("Submit answers"). Each key goes on its own: the dialog ignores several at once.
+/// follows ("Submit answers"). An option with a preview is only moved to by its number: Return
+/// picks it. Each key goes on its own: the dialog ignores several at once.
 /// `None` when a pick doesn't fit the question.
 pub fn answer_keys(question: &OpenQuestion, picks: &[usize]) -> Option<String> {
     if question.multi_select || picks.len() != question.items.len() {
@@ -234,6 +241,9 @@ pub fn answer_keys(question: &OpenQuestion, picks: &[usize]) -> Option<String> {
             return None;
         }
         keys.push(char::from(b'1' + pick as u8));
+        if item.previews {
+            keys.push('\r');
+        }
     }
     if question.items.len() > 1 {
         keys.push('1');
@@ -255,19 +265,23 @@ mod tests {
     fn finds_the_open_question_and_the_keys_that_answer_it() {
         let ask = serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "tool_use", "id": "toolu_1", "name": "AskUserQuestion", "input": { "questions": [
             { "question": "Color?", "options": [{ "label": "Red" }, { "label": "Blue" }] },
-            { "question": "Size?", "options": [{ "label": "Small" }, { "label": "Large" }] }
+            { "question": "Size?", "options": [{ "label": "Small", "preview": "S" }, { "label": "Large", "preview": "L" }] }
         ] } }] } });
         let file = transcript(&[ask.clone()]);
         let open = open_question(file.path()).unwrap();
         assert_eq!((open.call.as_str(), open.items.len(), open.items[1].options[1].as_str()), ("toolu_1", 2, "Large"));
-        // Blue, Small, then "Submit answers" — what the dialog took in the test by hand.
-        assert_eq!(answer_keys(&open, &[1, 0]).as_deref(), Some("211"));
+        // Blue, Small (shown with previews: Return picks it), then "Submit answers".
+        assert_eq!((open.items[0].previews, open.items[1].previews), (false, true));
+        assert_eq!(answer_keys(&open, &[1, 0]).as_deref(), Some("21\r1"));
         assert_eq!(answer_keys(&open, &[2, 0]), None);
         assert_eq!(answer_keys(&open, &[1]), None);
         let single = OpenQuestion { items: vec![open.items[0].clone()], ..open.clone() };
         assert_eq!(answer_keys(&single, &[1]).as_deref(), Some("2"));
-        let multi = OpenQuestion { multi_select: true, ..single };
+        let multi = OpenQuestion { multi_select: true, ..single.clone() };
         assert_eq!(answer_keys(&multi, &[1]), None);
+        // Options with a preview: the number only moves there, Return picks (Claude Code 2.1.302).
+        let previewed = OpenQuestion { items: vec![QuestionItem { previews: true, ..single.items[0].clone() }], ..single };
+        assert_eq!(answer_keys(&previewed, &[1]).as_deref(), Some("2\r"));
 
         let answered = serde_json::json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "toolu_1", "content": "ok" }] } });
         let file = transcript(&[ask, answered]);
