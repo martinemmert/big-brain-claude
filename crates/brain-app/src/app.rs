@@ -255,6 +255,8 @@ pub enum Message {
     Rename(String),
     RenameSubmit,
     NewInput(String),
+    /// "Choose folder …": the native folder dialog.
+    NewChooseFolder,
     NewSubmit,
     NewAccount(usize),
     NewPick(usize),
@@ -457,29 +459,34 @@ pub struct ChangesCache {
 }
 
 /// Where a running session stands in the list.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Place {
     Decide(Ask),
     Read,
     Quiet,
 }
 
-/// A session Martin has open counts as seen, also after a new turn end: it never moves to
-/// "Zum Lesen" and a mere "Frage?" doesn't keep it in "Zu entscheiden". Real questions stay.
-fn place(session: &Session, selected: bool, open_question: bool, prefs: &Prefs, now: i64) -> Place {
+/// Where a session belongs. `held`: the place it had when the user selected it. A selected
+/// session counts as seen, but stays there until the selection moves on, so ↓ reaches every
+/// report and nothing jumps away under the cursor. It never moves into "Zum Lesen" by a turn that
+/// ends while it is open. A real ask (permission, question) shows at once, a mere "Frage?" only
+/// while it was one when selected and "Nur Bericht" wasn't chosen.
+fn place(session: &Session, held: Option<Place>, open_question: bool, prefs: &Prefs, now: i64) -> Place {
     let since = session.phase_since_ms();
-    let seen = selected || prefs.is_seen(&session.key, since);
     let snoozed = prefs.snoozed_until(&session.key, now).is_some();
-    let ask = session
-        .ask(open_question)
-        .filter(|_| !snoozed)
-        .filter(|ask| *ask != Ask::Maybe || !(seen || prefs.is_report(&session.key, since)));
-    if let Some(ask) = ask {
-        Place::Decide(ask)
-    } else if session.phase() == Phase::YourTurn && !snoozed && !seen {
-        Place::Read
-    } else {
-        Place::Quiet
+    let ask = session.ask(open_question).filter(|_| !snoozed);
+    if let Some(ask) = ask.filter(|ask| *ask != Ask::Maybe) {
+        return Place::Decide(ask);
+    }
+    let maybe = ask == Some(Ask::Maybe) && !prefs.is_report(&session.key, since);
+    let reading = session.phase() == Phase::YourTurn && !snoozed;
+    match held {
+        Some(Place::Decide(_)) if maybe => Place::Decide(Ask::Maybe),
+        Some(Place::Read) if reading => Place::Read,
+        Some(_) => Place::Quiet,
+        None if maybe && !prefs.is_seen(&session.key, since) => Place::Decide(Ask::Maybe),
+        None if reading && !prefs.is_seen(&session.key, since) => Place::Read,
+        None => Place::Quiet,
     }
 }
 
@@ -779,6 +786,10 @@ pub struct Brain {
     /// Per session that waits: what it was read at, and the question it asks.
     /// Reminders sent per waiting session: (when its wait began, how many).
     reminders: HashMap<SessionKey, (i64, u32)>,
+    /// The selected session and where it stood in the list before it was selected.
+    held: Option<(SessionKey, Place)>,
+    /// The sessions that asked for a decision at the last refresh (none before the first one).
+    asking: Option<HashSet<SessionKey>>,
     pub(crate) questions: HashMap<SessionKey, (link::QuestionReadAt, Option<brain_core::qa::OpenQuestion>)>,
     /// Session ids whose mod takes Brain's requests (replies, commands, interrupts) itself.
     request_takers: HashSet<String>,
@@ -910,6 +921,8 @@ impl Brain {
             questions: HashMap::new(),
             request_takers: HashSet::new(),
             reminders: HashMap::new(),
+            held: None,
+            asking: None,
             sync: sync::SyncDialog::default(),
             garden: garden::GardenDialog::default(),
             garden_count: 0,
@@ -1059,6 +1072,7 @@ impl Brain {
                 self.new_session.pick = 0;
                 Task::none()
             }
+            Message::NewChooseFolder => self.choose_folder(),
             Message::NewSubmit => self.confirm_new_session(),
             Message::NewAccount(index) => {
                 self.new_session.account = index;
@@ -1625,17 +1639,39 @@ impl Brain {
         if !self.model.is_demo() {
             self.request_takers = brain_core::requests::takers(&brain_core::requests::dir(&brain_core::account::home_dir()));
         }
+        let entered: HashSet<SessionKey> = refreshed.iter().map(|item| item.key.clone()).collect();
+        // A question reported after the stop (the phase stays) calls too: announce each session
+        // when it starts to ask, unless its phase change just did.
+        let asking: HashSet<SessionKey> = self.model.board.keys().filter(|key| self.real_ask(key).is_some()).cloned().collect();
+        let newly_asking: Vec<SessionKey> = match &self.asking {
+            Some(before) => asking.difference(before).filter(|key| !entered.contains(*key)).cloned().collect(),
+            None => Vec::new(),
+        };
+        self.asking = Some(asking);
+        for key in newly_asking {
+            if self.prefs.snoozed_until(&key, now).is_some() || self.prefs.is_muted(&key) || self.is_quiet(&key) {
+                continue;
+            }
+            let Some(session) = self.model.board.get(&key) else { continue };
+            let account = key.account.clone();
+            let subtitle = tr!("{account} · braucht dich", "{account} · needs you");
+            let body = plain(&session.headline().unwrap_or_default());
+            self.notifier.post(&key, &session.display_name(), &subtitle, &body, true);
+        }
         for item in refreshed {
             if self.prefs.snoozed_until(&item.key, now).is_some() || self.prefs.is_muted(&item.key) || self.is_quiet(&item.key) {
                 continue;
             }
             let account = item.key.account.clone();
-            let subtitle = match item.phase {
-                Phase::NeedsYou => tr!("{account} · braucht dich", "{account} · needs you"),
-                _ => tr!("{account} · fertig, du bist dran", "{account} · done, your turn"),
+            // Whatever asks for a decision calls, also a `--waiting` question of an idle session.
+            let calling = self.real_ask(&item.key).is_some();
+            let subtitle = if calling {
+                tr!("{account} · braucht dich", "{account} · needs you")
+            } else {
+                tr!("{account} · fertig, du bist dran", "{account} · done, your turn")
             };
             let body = plain(item.headline.as_deref().unwrap_or(""));
-            self.notifier.post(&item.key, &item.name, &subtitle, &body, item.phase == Phase::NeedsYou);
+            self.notifier.post(&item.key, &item.name, &subtitle, &body, calling);
         }
 
         let mut tasks = Vec::new();
@@ -1693,6 +1729,14 @@ impl Brain {
         let visible: Vec<SessionKey> = self.groups(now).navigable(self.include_ended()).iter().map(|s| s.key.clone()).collect();
         if self.selected.as_ref().is_none_or(|k| !visible.contains(k)) {
             self.selected = visible.first().cloned();
+        }
+        // Where the newly selected session stood, before looking at it makes it seen.
+        if self.held.as_ref().map(|(key, _)| key) != self.selected.as_ref() {
+            self.held = self.selected.clone().and_then(|key| {
+                let session = self.model.board.get(&key)?;
+                let open_question = self.questions.get(&key).is_some_and(|(_, q)| q.is_some());
+                Some((key, place(session, None, open_question, &self.prefs, now)))
+            });
         }
         if let Some(key) = &self.selected {
             self.bells.remove(key);
@@ -1831,15 +1875,18 @@ impl Brain {
     fn remind(&mut self, now: i64) {
         const MAX_REMINDERS: u32 = 3;
         let Some(interval) = config::remind_after_ms() else { return };
-        let waiting: Vec<(SessionKey, i64, Phase, String, Option<String>)> = self
-            .groups(now)
-            .decide
-            .iter()
-            .filter(|(_, ask)| *ask != Ask::Maybe)
-            .map(|(s, _)| (s.key.clone(), s.phase_since_ms(), s.phase(), s.display_name(), s.headline()))
+        // Straight from the board: neither the search nor the account filter hides a session
+        // that waits for a decision.
+        let waiting: Vec<(SessionKey, i64, String, Option<String>)> = self
+            .model
+            .board
+            .keys()
+            .filter(|key| self.real_ask(key).is_some())
+            .filter_map(|key| self.model.board.get(key))
+            .map(|s| (s.key.clone(), s.phase_since_ms(), s.display_name(), s.headline()))
             .collect();
         self.reminders.retain(|key, _| waiting.iter().any(|(k, ..)| k == key));
-        for (key, since, phase, name, headline) in waiting {
+        for (key, since, name, headline) in waiting {
             if self.prefs.is_muted(&key) || self.prefs.snoozed_until(&key, now).is_some() || self.is_quiet(&key) {
                 continue;
             }
@@ -1856,7 +1903,7 @@ impl Brain {
             let account = key.account.clone();
             let subtitle = tr!("{account} · wartet seit {waited}", "{account} · waiting for {waited}");
             let body = plain(headline.as_deref().unwrap_or(""));
-            self.notifier.post(&key, &name, &subtitle, &body, phase == Phase::NeedsYou);
+            self.notifier.post(&key, &name, &subtitle, &body, true);
         }
     }
 
@@ -2792,9 +2839,9 @@ impl Brain {
                 groups.paused.push(session);
                 continue;
             }
-            let selected = self.selected.as_ref() == Some(&session.key);
+            let held = self.held.as_ref().filter(|(key, _)| *key == session.key).map(|(_, place)| *place);
             let open_question = self.questions.get(&session.key).is_some_and(|(_, q)| q.is_some());
-            match place(session, selected, open_question, &self.prefs, now) {
+            match place(session, held, open_question, &self.prefs, now) {
                 Place::Decide(ask) => groups.decide.push((session, ask)),
                 Place::Read => groups.read.push(session),
                 Place::Quiet => quiet.push(session),
@@ -2946,6 +2993,12 @@ impl Brain {
             top += item.height() + LIST_GAP;
         }
         Task::none()
+    }
+
+    /// What the session asks of the user, a guess at a question left out.
+    fn real_ask(&self, key: &SessionKey) -> Option<Ask> {
+        let open_question = self.questions.get(key).is_some_and(|(_, q)| q.is_some());
+        self.model.board.get(key)?.ask(open_question).filter(|ask| *ask != Ask::Maybe)
     }
 
     /// A background session without activity for a day, or one a program started: listed in
@@ -4201,6 +4254,9 @@ impl Brain {
             }
             return Task::none();
         }
+        if cmd && character == Some("o") {
+            return self.choose_folder();
+        }
         if cmd && character == Some("i") {
             self.new_session.in_iterm = !self.new_session.in_iterm;
             return Task::none();
@@ -4236,6 +4292,19 @@ impl Brain {
             _ => return operation::focus(NEW_SESSION),
         }
         Task::none()
+    }
+
+    /// Opens the native folder dialog; the folder lands in the dialog's field, where ⏎ starts a
+    /// session in it. Not while a template asks for a value: the field holds that value then.
+    fn choose_folder(&mut self) -> Task<Message> {
+        if self.pending_placeholder().is_some() {
+            return Task::none();
+        }
+        let Some(path) = crate::folder_picker::choose_folder() else { return Task::none() };
+        self.new_session.folder = path.display().to_string();
+        self.new_session.pick = 0;
+        // The dialog took the keyboard from the field: ⏎ goes to it again.
+        operation::focus(NEW_SESSION)
     }
 
     /// The output styles of the dialog's account (built-in and its own).
@@ -4606,33 +4675,59 @@ mod tests {
     }
 
     #[test]
-    fn a_selected_session_is_never_in_the_reading_zone() {
+    fn a_selected_report_stays_in_the_reading_zone_until_the_selection_moves_on() {
         let session = finished_session();
         let mut prefs = Prefs::default();
         let now = 1_790_001_000_000;
-        assert_eq!(place(&session, false, false, &prefs, now), Place::Read);
-        assert_eq!(place(&session, true, false, &prefs, now), Place::Quiet);
+        let before = place(&session, None, false, &prefs, now);
+        assert_eq!(before, Place::Read);
+        // Looking at it makes it seen, but while selected it stays.
         prefs.see(&session.key, now, session.phase_since_ms());
-        assert_eq!(place(&session, false, false, &prefs, now), Place::Quiet);
-        assert_eq!(place(&session, true, false, &prefs, now), Place::Quiet);
+        assert_eq!(place(&session, Some(before), false, &prefs, now), Place::Read);
+        assert_eq!(place(&session, None, false, &prefs, now), Place::Quiet, "gone once deselected");
     }
 
     #[test]
-    fn a_selected_session_with_a_maybe_question_leaves_the_decide_zone() {
-        let mut session = finished_session();
-        session.insight.asks = true;
-        let prefs = Prefs::default();
+    fn a_seen_session_does_not_jump_into_the_reading_zone_when_selected() {
+        let session = finished_session();
+        let mut prefs = Prefs::default();
         let now = 1_790_001_000_000;
-        assert_eq!(place(&session, false, false, &prefs, now), Place::Decide(Ask::Maybe));
-        assert_eq!(place(&session, true, false, &prefs, now), Place::Quiet);
+        prefs.see(&session.key, now, session.phase_since_ms());
+        let before = place(&session, None, false, &prefs, now);
+        assert_eq!(before, Place::Quiet);
+        assert_eq!(place(&session, Some(before), false, &prefs, now), Place::Quiet);
     }
 
     #[test]
-    fn a_selected_session_with_a_real_question_stays_in_the_decide_zone() {
+    fn a_turn_that_ends_while_the_session_is_open_does_not_move_it_to_the_reading_zone() {
         let session = finished_session();
         let prefs = Prefs::default();
         let now = 1_790_001_000_000;
-        assert_eq!(place(&session, true, true, &prefs, now), Place::Decide(Ask::Options));
+        // It was quiet (working) when selected; now its turn has ended and nobody saw it.
+        assert_eq!(place(&session, Some(Place::Quiet), false, &prefs, now), Place::Quiet);
+    }
+
+    #[test]
+    fn a_selected_maybe_question_stays_until_the_selection_moves_on_or_only_a_report_is_chosen() {
+        let mut session = finished_session();
+        session.insight.asks = true;
+        let mut prefs = Prefs::default();
+        let now = 1_790_001_000_000;
+        let before = place(&session, None, false, &prefs, now);
+        assert_eq!(before, Place::Decide(Ask::Maybe));
+        prefs.see(&session.key, now, session.phase_since_ms());
+        assert_eq!(place(&session, Some(before), false, &prefs, now), Place::Decide(Ask::Maybe));
+        assert_eq!(place(&session, None, false, &prefs, now), Place::Quiet);
+        prefs.mark_report(&session.key, now);
+        assert_eq!(place(&session, Some(before), false, &prefs, now), Place::Quiet);
+    }
+
+    #[test]
+    fn a_real_question_shows_at_once_also_in_a_selected_session() {
+        let session = finished_session();
+        let prefs = Prefs::default();
+        let now = 1_790_001_000_000;
+        assert_eq!(place(&session, Some(Place::Quiet), true, &prefs, now), Place::Decide(Ask::Options));
     }
 
     #[test]

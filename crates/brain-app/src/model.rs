@@ -39,7 +39,6 @@ type AgentLists = Vec<(String, Option<Vec<BackgroundAgent>>)>;
 pub struct Attention {
     pub key: SessionKey,
     pub name: String,
-    pub phase: Phase,
     pub headline: Option<String>,
 }
 
@@ -238,7 +237,6 @@ impl Model {
                 attention.push(Attention {
                     key: session.key.clone(),
                     name: session.display_name(),
-                    phase,
                     headline: session.headline(),
                 });
             }
