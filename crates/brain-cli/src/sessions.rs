@@ -140,6 +140,7 @@ mod tests {
             updated_at: Some(1_790_000_000_000),
             status_updated_at: Some(1_790_000_000_000),
             spare: false,
+            parked_job_id: None,
         };
         board.apply_session_file("second", &file, true);
         let event = brain_core::event::Event {

@@ -196,7 +196,8 @@ impl Model {
                     claimed.push((account.id.clone(), file.pid));
                     continue;
                 }
-                let alive = pid_alive(file.pid);
+                // Parked into a background job, the session runs in that job, not in this process.
+                let alive = file.parked_job_id.is_none() && pid_alive(file.pid);
                 seen.push(self.board.apply_session_file(&account.id, &file, alive));
                 claimed.push((account.id.clone(), file.pid));
             }

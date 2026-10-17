@@ -19,6 +19,10 @@ pub struct SessionFile {
     /// A process Claude Code keeps warm for the next background session: not a session yet.
     #[serde(default)]
     pub spare: bool,
+    /// The session went on in the background as this job (`claude agents` lists it); the
+    /// process stays, attached to whatever session it shows now. Claude Code's own list no
+    /// longer counts the file's session as running here.
+    pub parked_job_id: Option<String>,
 }
 
 pub fn read_session_files(account: &Account) -> Vec<SessionFile> {

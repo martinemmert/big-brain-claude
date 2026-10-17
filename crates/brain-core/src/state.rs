@@ -610,6 +610,7 @@ mod tests {
             updated_at: Some((1_790_000_000 + secs) * 1000),
             status_updated_at: Some((1_790_000_000 + secs) * 1000),
             spare: false,
+            parked_job_id: None,
         }
     }
 

@@ -162,6 +162,7 @@ pub fn build() -> Demo {
                 updated_at: Some(ms(spec.minutes_ago)),
                 status_updated_at: Some(ms(spec.minutes_ago)),
                 spare: false,
+                parked_job_id: None,
             },
             true,
         );
