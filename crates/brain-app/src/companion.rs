@@ -106,6 +106,8 @@ pub enum Command {
     Start { account: String, folder: String, prompt: Option<String>, style: Option<String>, team: bool },
     /// `since_ms`: when the dialog the user answered opened ([`View::permission_since_ms`]).
     Permission { key: SessionKey, allow: bool, since_ms: i64 },
+    /// Continue the session in another account, as `A` in Brain.
+    Move { key: SessionKey, account: String },
     /// Esc for a working session: Claude stops what it does.
     Interrupt { key: SessionKey },
     /// An ended session goes on in the background.
@@ -116,8 +118,6 @@ pub enum Command {
     End { key: SessionKey },
     /// The session goes on as an agent team (true) or without one: a restart, as with flags.
     Team { key: SessionKey, on: bool },
-    /// Goes on in another account, as `A` in Brain does.
-    Move { key: SessionKey, account: String },
 }
 
 /// The answer to one question: the options picked (one, or several where the question takes
@@ -648,8 +648,10 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                     Some(name) => Command::Reply { key, text: format!("/output-style {name}") },
                     None => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "name" }))),
                 },
-                Some("restart") => match crate::app::restart::parse_flags(body.get("flags").and_then(|f| f.as_str()).unwrap_or_default()) {
-                    Ok(flags) => Command::Restart { key, flags },
+                // A restart from the phone always names its flags; Brain's own are refused.
+                Some("restart") => match crate::app::relaunch::parse_flags(body.get("flags").and_then(|f| f.as_str()).unwrap_or_default()) {
+                    Ok(flags) if !flags.is_empty() => Command::Restart { key, flags },
+                    Ok(_) => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "flags" }))),
                     Err(error) => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": error }))),
                 },
                 _ => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "action" }))),
@@ -719,7 +721,7 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, &serde_json::json!({ "error": "not saved" })),
             }
         }
-        (Method::POST, ["v1", "sessions", account, id, action @ ("reply" | "permission" | "answer")]) => {
+        (Method::POST, ["v1", "sessions", account, id, action @ ("reply" | "permission" | "answer" | "move")]) => {
             let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
             let action = action.to_string();
             let Some(body) = read_json(req).await else {
@@ -734,6 +736,12 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                         _ => None,
                     }
                 }
+                // Another known account than the session's own.
+                "move" => body
+                    .get("account")
+                    .and_then(|a| a.as_str())
+                    .filter(|target| *target != key.account && state.accounts.iter().any(|a| a.id == *target))
+                    .map(|target| Command::Move { account: target.to_string(), key }),
                 _ => match (body.get("allow").and_then(|a| a.as_bool()), body.get("since_ms").and_then(|s| s.as_i64())) {
                     (Some(allow), Some(since_ms)) => Some(Command::Permission { key, allow, since_ms }),
                     _ => None,
@@ -1218,6 +1226,10 @@ mod tests {
         assert!(curl(&["-H", &bearer, "-d", "{\"allow\":true,\"since_ms\":7}", "BASE/v1/sessions/main/0331-ab/permission"]).ends_with("202"));
         assert!(curl(&["-H", &bearer, "-d", "{\"call\":\"toolu_1\"}", "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("400"));
         assert!(curl(&["-H", &bearer, "-d", "{\"call\":\"toolu_1\",\"picks\":[1,0]}", "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("202"));
+        // A move goes to another known account only.
+        assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\"}", "BASE/v1/sessions/main/0331-ab/move"]).ends_with("400"));
+        assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"third\"}", "BASE/v1/sessions/main/0331-ab/move"]).ends_with("400"));
+        assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"second\"}", "BASE/v1/sessions/main/0331-ab/move"]).ends_with("202"));
         // Several picks and own words; a question answered with nothing is refused.
         let answers = "{\"call\":\"toolu_2\",\"answers\":[{\"picks\":[0,2]},{\"picks\":[],\"other\":\" lieber so \"}]}";
         assert!(curl(&["-H", &bearer, "-d", answers, "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("202"));
@@ -1232,6 +1244,7 @@ mod tests {
         }
         // Brain's own flags and unknown actions are refused.
         assert!(control("{\"action\":\"restart\",\"flags\":\"--resume x\"}").ends_with("400"));
+        assert!(control("{\"action\":\"restart\",\"flags\":\" \"}").ends_with("400"));
         assert!(control("{\"action\":\"reboot\"}").ends_with("400"));
         // Only another account Brain knows.
         assert!(control("{\"action\":\"move\",\"account\":\"main\"}").ends_with("400"));
@@ -1252,6 +1265,7 @@ mod tests {
                     call: "toolu_1".into(),
                     answers: vec![Picked { picks: vec![1], other: None }, Picked { picks: vec![0], other: None }],
                 },
+                Command::Move { key: key.clone(), account: "second".into() },
                 Command::Answer {
                     key: key.clone(),
                     call: "toolu_2".into(),

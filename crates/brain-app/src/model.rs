@@ -145,6 +145,12 @@ impl Model {
     }
 
     /// Days until Claude Code deletes an ended session's transcript.
+    /// The accounts whose folder holds a transcript of the conversation `session_id` (a moved
+    /// one is in two).
+    pub fn accounts_holding(&self, session_id: &str) -> Vec<String> {
+        self.kept.iter().filter(|(_, ids)| ids.contains_key(session_id)).map(|(account, _)| account.clone()).collect()
+    }
+
     pub fn days_left(&self, session: &Session, now_ms: i64) -> Option<i64> {
         let days = self.account(&session.key.account)?.transcript_days() as i64;
         let left_ms = session.last_activity_ms + days * 86_400_000 - now_ms;

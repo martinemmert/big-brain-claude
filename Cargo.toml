@@ -10,5 +10,6 @@ version = "0.10.3"
 brain-core = { path = "crates/brain-core" }
 brain-terminal = { path = "crates/brain-terminal" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# Keeps the order of keys in the settings Brain rewrites (sync, install).
+serde_json = { version = "1", features = ["preserve_order"] }
 chrono = { version = "0.4", features = ["serde"] }

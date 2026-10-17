@@ -9,7 +9,7 @@ use brain_terminal::{self as terminal, Key};
 use iced::widget::image;
 use iced::Task;
 
-use super::{off_thread, Brain, Message, Mode};
+use super::{movable, off_thread, Brain, Message, Mode};
 use crate::companion::{self, Command, LimitView, Link, Pairing, Picked, Places, UsageView, View};
 use brain_core::qa::OpenQuestion;
 use crate::format::plain;
@@ -213,7 +213,7 @@ impl Brain {
             team_questions: self.teams.get(&s.key).map(|t| t.open_questions().cloned().collect()).unwrap_or_default(),
             team_active: self.teams.get(&s.key).filter(|t| !t.members.is_empty()).map(|t| t.active().count()),
             in_team: self.in_team(&s.key),
-            movable: super::movable(s),
+            movable: self.model.accounts.len() > 1 && movable(s) && s.session_id.is_some() && s.cwd.is_some(),
         }
     }
 
@@ -231,9 +231,9 @@ impl Brain {
             | Command::Resume { key }
             | Command::Restart { key, .. }
             | Command::End { key }
-            | Command::Team { key, .. }
-            | Command::Move { key, .. } => key.clone(),
+            | Command::Team { key, .. } => key.clone(),
             Command::Start { account, folder, prompt, style, team } => return self.link_start(account, folder, prompt.clone(), style.clone(), *team),
+            Command::Move { key, account } => return self.link_move(key.clone(), account),
         };
         let Some(session) = self.model.board.get(&key) else { return Task::none() };
         let name = session.display_name();
@@ -262,8 +262,8 @@ impl Brain {
                 self.set_status(tr!("Vom Handy: „{name}“ nimmt gerade keine Eingabe an.", "From the phone: “{name}” doesn't take input right now."));
                 Task::none()
             }
-            // Started before a session was looked up (it has none yet).
-            Command::Start { .. } => Task::none(),
+            // Handled before a session was looked up.
+            Command::Start { .. } | Command::Move { .. } => Task::none(),
             Command::Answer { call, answers, .. } => {
                 // Only the question the phone showed, if it is still open right now.
                 let open = self.open_question(&key).filter(|q| q.call == call);
@@ -361,11 +361,6 @@ impl Brain {
                 // Any other session ends itself, once it waits for a prompt.
                 self.run_link_command(Command::Reply { key, text: "/exit".into() }, first_try)
             }
-            // As `A` in Brain, and confirmed: the phone asked for it itself.
-            Command::Move { account, .. } => match self.model.accounts.iter().position(|a| a.id == account) {
-                Some(index) => self.move_session(key, index, true),
-                None => Task::none(),
-            },
             Command::Restart { flags, .. } => match self.restart_session(key, flags, true) {
                 Ok(task) => task,
                 Err(err) => {
@@ -426,6 +421,13 @@ impl Brain {
         }
         let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), &options));
         Task::perform(started, Message::LinkStarted)
+    }
+
+    /// A move from the phone: as `A` in Brain, the phone's choice of account being the
+    /// confirmation.
+    fn link_move(&mut self, key: SessionKey, account: &str) -> Task<Message> {
+        let Some(index) = self.model.accounts.iter().position(|a| a.id == account) else { return Task::none() };
+        self.move_session(key, index, Vec::new())
     }
 }
 

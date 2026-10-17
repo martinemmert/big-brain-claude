@@ -13,13 +13,15 @@ use iced::{window, Subscription, Task};
 use crate::config;
 
 mod account;
-pub(crate) mod restart;
-pub use restart::RESTART_FLAGS;
+pub(crate) mod relaunch;
+pub use relaunch::{Relaunch, RELAUNCH_FLAGS};
+mod sync;
+mod garden;
 mod link;
 
 pub use account::ACCOUNT_NAME;
 use crate::conversation::Conversation;
-use crate::format::{clock, now_ms, plain, shell_quote};
+use crate::format::{ago, clock, now_ms, plain, shell_quote};
 use crate::i18n::t;
 use crate::menubar::MenuBar;
 use crate::model::Model;
@@ -69,10 +71,14 @@ pub enum Mode {
     Pairing,
     /// A new Claude account made from the existing ones.
     AccountSetup,
-    /// Which account the selected session moves to (`A` with three accounts or more).
-    MoveTarget,
-    /// The flags the selected session restarts with.
-    RestartFlags,
+    /// Where and how the selected session goes on: account, fork, flags (`A`, `F`, `I`).
+    Relaunch,
+    /// What syncing the accounts would do, and the user's choice where they conflict.
+    Sync,
+    /// `?`: every key.
+    Keys,
+    /// The gardener: broken sessions to end for good.
+    Garden,
 }
 
 /// What a line of the command palette does.
@@ -102,6 +108,14 @@ pub enum PaletteCommand {
     PairPhone,
     /// Set up a new Claude account from the existing ones.
     SetUpAccount,
+    /// Bring the accounts' setup and memory in step.
+    SyncAccounts,
+    /// The gardener: sessions Brain can't steer any more.
+    Garden,
+    /// Today's log in the editor.
+    OpenLog,
+    /// Show every key.
+    Keys,
 }
 
 /// Slash commands the palette offers for the selected session.
@@ -113,6 +127,16 @@ const SLASH_COMMANDS: [(&str, &str, &str); 6] = [
     ("/review", "Änderungen reviewen", "review the changes"),
     ("/clear", "Gespräch leeren", "clear the conversation"),
 ];
+
+/// What the Messages tab shows: the conversation, only your prompts, Claude's questions with
+/// the answers, or the session's events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lens {
+    Conversation,
+    Prompts,
+    Questions,
+    Events,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetailTab {
@@ -194,11 +218,17 @@ pub enum Action {
     Export,
     /// Continue the selected session in this account (its index among the accounts).
     MoveTo(usize),
-    /// End the session and go on with extra flags (`--chrome`).
+    /// Fork the selected session into this account; the original goes on.
+    ForkTo(usize),
+    /// The "Go on …" dialog, opened for a move (`A`), a fork (`F`) or a restart with flags.
+    Relaunch,
+    Fork,
     RestartWith,
     End,
     Hide,
     Trash,
+    /// End a session that won't end, by force (the gardener's way).
+    ForceEnd,
 }
 
 #[derive(Debug, Clone)]
@@ -235,6 +265,7 @@ pub enum Message {
     Filter(Option<String>),
     ToggleBackground,
     ToggleAutomated,
+    ToggleSnoozed,
     ToggleEnded,
     /// A card's button: the same command the phone sends.
     Steer(crate::companion::Command),
@@ -278,12 +309,13 @@ pub enum Message {
     TerminalKeys(SessionKey, Vec<u8>),
     /// The find field in the Messages tab.
     Find(String),
-    PromptsOnly(bool),
     HistoryLoaded(SessionKey, u64, Vec<brain_core::transcript::Message>),
     /// A search hit or a prompt clicked open (its index in the history), or closed again.
     Expand(Option<usize>),
     CopyText(String),
     Exported(Result<std::path::PathBuf, String>),
+    /// A lens of the Messages tab, from the find bar.
+    Lens(Lens),
     FileFilter(FileFilter),
     /// A file from the Files tab: Markdown opens in YAMV, the rest in the reader.
     OpenFile(String),
@@ -347,9 +379,24 @@ pub enum Message {
     AccountSetupPlanned(u64, brain_core::account_setup::Plan),
     AccountSetupCreate,
     AccountSetupDone(Result<String, String>),
-    /// The restart dialog: the flags typed, and ⏎.
-    RestartFlagsChanged(String),
-    RestartSubmit,
+    /// The sync dialog: open it, its plan, a version picked or kept for a row, apply, and the outcome.
+    OpenSync,
+    /// The gardener: open it, a finding (un)chosen, end the chosen, and how each went.
+    OpenGarden,
+    GardenToggle(usize),
+    GardenEnd,
+    GardenDone(Vec<(SessionKey, Result<String, String>)>),
+    SyncPlanned(brain_core::sync::Plan),
+    SyncPick(usize, String),
+    SyncKeep(usize),
+    SyncApply,
+    SyncDone(Result<brain_core::sync::Outcome, String>),
+    /// The "Go on …" dialog: the account picked, whether the original keeps running, the flags
+    /// typed, and ⏎.
+    RelaunchTarget(usize),
+    RelaunchKeep(bool),
+    RelaunchFlags(String),
+    RelaunchSubmit,
     SidebarDrag,
     SidebarTo(f32),
     SidebarDone,
@@ -420,23 +467,36 @@ pub struct Groups<'a> {
     pub read: Vec<&'a Session>,
     /// Everything else that lives, by project.
     pub quiet: Vec<(String, Vec<&'a Session>)>,
+    /// Snoozed while waiting, or hidden with ⌫ until something happens: folded at the end.
+    pub paused: Vec<&'a Session>,
+    /// Background sessions without activity for a day.
+    pub background: Vec<&'a Session>,
+    /// Sessions programs started (SDK reviews, `claude -p`).
+    pub automated: Vec<&'a Session>,
     pub ended: Vec<&'a Session>,
     /// Ended over a day ago, shown only while searching.
     pub older_ended: usize,
-    /// Hidden with ⌫, shown only while searching.
-    pub hidden: usize,
-    /// Background sessions left out while the filter is off.
-    pub background: usize,
-    /// Sessions programs started (SDK reviews, `claude -p`), left out while the filter is off.
-    pub automated: usize,
+    /// Which of the folded lists at the end are open (a search opens all; ended: `include_ended`).
+    pub paused_open: bool,
+    pub background_open: bool,
+    pub automated_open: bool,
 }
 
 impl<'a> Groups<'a> {
+    /// The sessions ↑↓ reach, in drawing order: what the list shows, folded lists only while open.
     pub fn navigable(&self, include_ended: bool) -> Vec<&'a Session> {
         let mut all: Vec<&Session> = self.saved.clone();
         all.extend(self.live());
-        if include_ended {
-            all.extend(&self.ended);
+        let folded: [(bool, &Vec<&'a Session>); 4] = [
+            (self.paused_open, &self.paused),
+            (self.background_open, &self.background),
+            (self.automated_open, &self.automated),
+            (include_ended, &self.ended),
+        ];
+        for (open, sessions) in folded {
+            if open {
+                all.extend(sessions);
+            }
         }
         all
     }
@@ -520,6 +580,8 @@ pub struct Brain {
     pub selected: Option<SessionKey>,
     pub hovered: Option<SessionKey>,
     pub show_ended: bool,
+    /// Whether the snoozed-and-hidden section is open.
+    pub show_snoozed: bool,
     /// The clean-up dialog's age choice (index into CLEANUP_DAYS).
     pub cleanup_age: usize,
     /// Each session's agents and their messages, as its mod reported them, and when each
@@ -579,6 +641,8 @@ pub struct Brain {
     pub find: String,
     /// The Messages tab lists only the user's prompts, all of them.
     pub prompts_only: bool,
+    /// The find bar over the conversation is open (⌘F, or a lens other than the conversation).
+    pub find_open: bool,
     /// The whole conversation, loaded for finding and the prompt list.
     pub history: Option<HistoryCache>,
     history_loading: bool,
@@ -671,12 +735,23 @@ pub struct Brain {
     focus_on_select: bool,
     /// The new-account dialog.
     pub account_setup: account::AccountSetup,
+    /// The sync dialog, and the conflicts the last sync left open.
+    pub sync: sync::SyncDialog,
+    /// The gardener's dialog, and how many sessions it is sure are broken (for the title bar).
+    pub garden: garden::GardenDialog,
+    pub garden_count: usize,
+    /// Sessions whose terminal closed right after attaching, with its last lines.
+    unreachable: HashMap<SessionKey, Vec<String>>,
+    /// When each session terminal started.
+    terminal_started: HashMap<SessionKey, Instant>,
     /// The restart dialog, a session asked to end for a restart, and the flags a terminal about
     /// to start resumes with.
-    pub restart: restart::RestartDialog,
-    pending_restart: Option<restart::PendingRestart>,
+    pub relaunch: relaunch::RelaunchDialog,
+    pending_restart: Option<relaunch::PendingRestart>,
     restart_flags: HashMap<SessionKey, Vec<String>>,
     /// Per session that waits: what it was read at, and the question it asks.
+    /// Reminders sent per waiting session: (when its wait began, how many).
+    reminders: HashMap<SessionKey, (i64, u32)>,
     pub(crate) questions: HashMap<SessionKey, (link::QuestionReadAt, Option<brain_core::qa::OpenQuestion>)>,
     /// Brain Link, the companion app's server, while it runs.
     link: Option<crate::companion::Link>,
@@ -711,6 +786,7 @@ impl Brain {
             selected: None,
             hovered: None,
             show_ended: false,
+            show_snoozed: false,
             cleanup_age: 1,
             teams: HashMap::new(),
             team_panes: HashMap::new(),
@@ -763,6 +839,7 @@ impl Brain {
             palette_index: 0,
             palette_styles: Vec::new(),
             prompts_only: false,
+            find_open: false,
             history: None,
             history_loading: false,
             expanded: None,
@@ -801,7 +878,13 @@ impl Brain {
             focus_on_select: false,
             account_setup: account::AccountSetup::default(),
             questions: HashMap::new(),
-            restart: restart::RestartDialog::default(),
+            reminders: HashMap::new(),
+            sync: sync::SyncDialog::default(),
+            garden: garden::GardenDialog::default(),
+            garden_count: 0,
+            unreachable: HashMap::new(),
+            terminal_started: HashMap::new(),
+            relaunch: relaunch::RelaunchDialog::default(),
             pending_restart: None,
             restart_flags: HashMap::new(),
             link: None,
@@ -927,15 +1010,10 @@ impl Brain {
                 Task::none()
             }
             Message::Reply(text) => {
-                // A digit typed into the empty reply field picks that quick reply.
+                // A digit typed into the empty reply field fills in that quick reply; ⏎ sends it.
+                // Sending right away would answer "4" to Claude's numbered question with a commit.
                 let quick = self.reply.is_empty() && text.len() == 1 && text.chars().all(|c| ('1'..='9').contains(&c));
-                match quick.then(|| config::quick_replies().get(text.parse::<usize>().unwrap_or(1) - 1).cloned()).flatten() {
-                    Some(reply) => {
-                        self.reply = reply;
-                        return self.submit_reply();
-                    }
-                    None => self.reply = text,
-                }
+                self.reply = quick.then(|| config::quick_replies().get(text.parse::<usize>().unwrap_or(1) - 1).cloned()).flatten().unwrap_or(text);
                 Task::none()
             }
             Message::ReplySubmit => self.submit_reply(),
@@ -984,6 +1062,10 @@ impl Brain {
             Message::OnlyReport(key) => {
                 self.prefs.mark_report(&key, now_ms());
                 self.prefs.save();
+                Task::none()
+            }
+            Message::ToggleSnoozed => {
+                self.show_snoozed = !self.show_snoozed;
                 Task::none()
             }
             Message::ToggleEnded => {
@@ -1063,9 +1145,15 @@ impl Brain {
                 self.expanded = None;
                 self.load_history()
             }
-            Message::PromptsOnly(on) => {
-                self.prompts_only = on;
+            Message::Lens(lens) => {
+                self.find_open = true;
+                self.prompts_only = lens == Lens::Prompts;
                 self.expanded = None;
+                self.tab = match lens {
+                    Lens::Questions => DetailTab::Questions,
+                    Lens::Events => DetailTab::Timeline,
+                    Lens::Conversation | Lens::Prompts => DetailTab::Messages,
+                };
                 self.load_history()
             }
             Message::HistoryLoaded(key, len, messages) => {
@@ -1125,6 +1213,7 @@ impl Brain {
             }
             Message::FileFilter(filter) => {
                 self.file_filter = filter;
+                self.tab = DetailTab::Files;
                 Task::none()
             }
             Message::OpenFile(path) => {
@@ -1198,8 +1287,9 @@ impl Brain {
                     let command = iced_term::Command::ProxyToBackend(command);
                     match self.terminals.get_mut(&key).map(|term| if shown { term.handle(command) } else { term.handle_quiet(command) }) {
                         Some(iced_term::actions::Action::Shutdown) => {
-                            self.terminals.remove(&key);
+                            let lines = self.terminals.remove(&key).map(|term| term.text()).unwrap_or_default();
                             self.terminal_titles.remove(&key);
+                            self.session_terminal_closed(&key, lines);
                         }
                         Some(iced_term::actions::Action::OpenLink(link)) => task = self.open_link(&key, &link),
                         Some(iced_term::actions::Action::ChangeTitle(title)) => {
@@ -1350,12 +1440,50 @@ impl Brain {
                 Task::none()
             }
             Message::AccountSetupCreate => self.account_setup_create(),
-            Message::RestartFlagsChanged(flags) => {
-                self.restart.flags = flags;
-                self.restart.error = None;
+            Message::RelaunchTarget(index) => {
+                self.relaunch.target = index;
+                self.relaunch.error = None;
                 Task::none()
             }
-            Message::RestartSubmit => self.submit_restart(),
+            Message::RelaunchKeep(keep) => {
+                self.relaunch.keep = keep;
+                self.relaunch.error = None;
+                Task::none()
+            }
+            Message::RelaunchFlags(flags) => {
+                self.relaunch.flags = flags;
+                self.relaunch.error = None;
+                Task::none()
+            }
+            Message::RelaunchSubmit => self.submit_relaunch(),
+            Message::OpenSync => self.open_sync(),
+            Message::OpenGarden => self.open_garden(),
+            Message::GardenToggle(index) => {
+                self.garden_toggle(index);
+                Task::none()
+            }
+            Message::GardenEnd => self.garden_end(),
+            Message::GardenDone(results) => {
+                self.garden_done(results);
+                Task::none()
+            }
+            Message::SyncPlanned(plan) => {
+                self.sync_planned(plan);
+                Task::none()
+            }
+            Message::SyncPick(row, account) => {
+                self.sync_pick(row, account);
+                Task::none()
+            }
+            Message::SyncKeep(row) => {
+                self.sync_keep(row);
+                Task::none()
+            }
+            Message::SyncApply => self.sync_apply(),
+            Message::SyncDone(result) => {
+                self.sync_done(result);
+                Task::none()
+            }
             Message::AccountSetupDone(result) => {
                 self.mode = Mode::Normal;
                 self.account_setup_done(result)
@@ -1464,7 +1592,7 @@ impl Brain {
         let refreshed = self.model.refresh();
         self.refresh_questions();
         for item in refreshed {
-            if self.prefs.snoozed_until(&item.key, now).is_some() || self.prefs.is_muted(&item.key) || self.filtered_background(&item.key) {
+            if self.prefs.snoozed_until(&item.key, now).is_some() || self.prefs.is_muted(&item.key) || self.is_quiet(&item.key) {
                 continue;
             }
             let account = item.key.account.clone();
@@ -1493,6 +1621,9 @@ impl Brain {
         }
         self.refresh_teams(now);
         tasks.push(self.serve_link(now));
+        self.refresh_sync_conflicts();
+        self.garden_count = self.garden_findings().iter().filter(|f| f.sure).count();
+        self.remind(now);
         tasks.push(self.load_changes());
         let linked: Vec<SessionKey> = crate::links::take_sessions()
             .into_iter()
@@ -1657,6 +1788,41 @@ impl Brain {
             let name = self.model.board.get(&key).map(|s| s.display_name()).unwrap_or_default();
             let from = question.from.clone();
             self.notifier.post(&key, &name, &tr!("Frage von {from}", "Question from {from}"), &plain(&question.text), true);
+        }
+    }
+
+    /// Reminds again about sessions that still ask for a decision: every `remind_after_minutes`,
+    /// at most three times per waiting period, never for muted or snoozed ones, and never for a
+    /// guess at a question or a report.
+    fn remind(&mut self, now: i64) {
+        const MAX_REMINDERS: u32 = 3;
+        let Some(interval) = config::remind_after_ms() else { return };
+        let waiting: Vec<(SessionKey, i64, Phase, String, Option<String>)> = self
+            .groups(now)
+            .decide
+            .iter()
+            .filter(|(_, ask)| *ask != Ask::Maybe)
+            .map(|(s, _)| (s.key.clone(), s.phase_since_ms(), s.phase(), s.display_name(), s.headline()))
+            .collect();
+        self.reminders.retain(|key, _| waiting.iter().any(|(k, ..)| k == key));
+        for (key, since, phase, name, headline) in waiting {
+            if self.prefs.is_muted(&key) || self.prefs.snoozed_until(&key, now).is_some() || self.is_quiet(&key) {
+                continue;
+            }
+            let entry = self.reminders.entry(key.clone()).or_insert((since, 0));
+            if entry.0 != since {
+                *entry = (since, 0);
+            }
+            let due = since + interval * (entry.1 as i64 + 1);
+            if entry.1 >= MAX_REMINDERS || now < due {
+                continue;
+            }
+            entry.1 += 1;
+            let waited = ago(since, now);
+            let account = key.account.clone();
+            let subtitle = tr!("{account} · wartet seit {waited}", "{account} · waiting for {waited}");
+            let body = plain(headline.as_deref().unwrap_or(""));
+            self.notifier.post(&key, &name, &subtitle, &body, phase == Phase::NeedsYou);
         }
     }
 
@@ -1935,17 +2101,24 @@ impl Brain {
             all.push((t("In der Session suchen", "Find in the session").to_string(), "⌘F", PaletteCommand::Find));
             all.push((t("Dateien der Session", "The session's files").to_string(), "", PaletteCommand::Tab(DetailTab::Files)));
             all.push((t("Änderungen (git)", "Changes (git)").to_string(), "", PaletteCommand::Tab(DetailTab::Changes)));
+            all.push((t("Claudes Fragen und deine Antworten", "Claude's questions and your answers").to_string(), "", PaletteCommand::Tab(DetailTab::Questions)));
+            all.push((t("Ereignisse der Session (Verlauf)", "The session's events (timeline)").to_string(), "", PaletteCommand::Tab(DetailTab::Timeline)));
             if self.has_konsil() {
                 all.push((t("Konsil: die Beratungen der Session", "Konsil: the session's councils").to_string(), "", PaletteCommand::Tab(DetailTab::Konsil)));
             }
             all.push((t("Umbenennen", "Rename").to_string(), "R", PaletteCommand::Act(Action::StartRename)));
             all.push((t("Anheften / lösen", "Pin / unpin").to_string(), "P", PaletteCommand::Act(Action::Pin)));
-            all.push((t("Stumm / laut", "Mute / unmute").to_string(), "M", PaletteCommand::Act(Action::Mute)));
+            all.push((t("Stumm / laut", "Mute / unmute").to_string(), "", PaletteCommand::Act(Action::Mute)));
             all.push((t("Pausieren", "Snooze").to_string(), "S", PaletteCommand::Act(Action::Snooze)));
             for index in self.move_targets() {
                 let id = self.model.accounts[index].id.clone();
                 all.push((tr!("In {id} fortsetzen", "Continue in {id}"), "", PaletteCommand::Act(Action::MoveTo(index))));
             }
+            for index in self.fork_targets() {
+                let id = self.model.accounts[index].id.clone();
+                all.push((tr!("In {id} forken", "Fork into {id}"), "", PaletteCommand::Act(Action::ForkTo(index))));
+            }
+            all.push((t("Weiterführen … (Konto, Fork, Flags)", "Go on … (account, fork, flags)").to_string(), "A", PaletteCommand::Act(Action::Relaunch)));
             all.push((t("Neu starten mit … (z. B. --chrome)", "Restart with … (e.g. --chrome)").to_string(), "", PaletteCommand::Act(Action::RestartWith)));
             if self.in_team(&session.key) {
                 all.push((t("Ohne Team fortsetzen", "Go on without the team").to_string(), "", PaletteCommand::Team(false)));
@@ -1963,9 +2136,13 @@ impl Brain {
         all.push((t("Für später", "For later").to_string(), "L", PaletteCommand::Later));
         all.push((t("iPhone koppeln (Brain Link)", "Pair a phone (Brain Link)").to_string(), "", PaletteCommand::PairPhone));
         all.push((t("Neues Claude-Konto einrichten", "Set up a new Claude account").to_string(), "", PaletteCommand::SetUpAccount));
-        all.push((t("Beendete Sessions zeigen / verbergen", "Show / hide ended sessions").to_string(), "E", PaletteCommand::ToggleEnded));
-        all.push((t("Hintergrund-Sessions zeigen / verbergen", "Show / hide background sessions").to_string(), "B", PaletteCommand::ToggleBackground));
-        all.push((t("Automatische Sessions (Reviews, Skripte) zeigen / verbergen", "Show / hide automated sessions (reviews, scripts)").to_string(), "U", PaletteCommand::ToggleAutomated));
+        all.push((t("Konten abgleichen (Einstellungen, Skills, Gedächtnis)", "Sync accounts (settings, skills, memory)").to_string(), "", PaletteCommand::SyncAccounts));
+        all.push((t("Alle Tasten", "All keys").to_string(), "?", PaletteCommand::Keys));
+        all.push((t("Gärtner: kaputte Sessions finden und beenden", "Gardener: find and end broken sessions").to_string(), "", PaletteCommand::Garden));
+        all.push((t("Log öffnen (Meldungen und Fehler)", "Open the log (messages and errors)").to_string(), "", PaletteCommand::OpenLog));
+        all.push((t("Beendete Sessions auf- / zuklappen", "Open / fold ended sessions").to_string(), "E", PaletteCommand::ToggleEnded));
+        all.push((t("Ruhige Hintergrund-Sessions auf- / zuklappen", "Open / fold quiet background sessions").to_string(), "B", PaletteCommand::ToggleBackground));
+        all.push((t("Automatisch gestartete Sessions (Reviews, Skripte) auf- / zuklappen", "Open / fold sessions started by programs (reviews, scripts)").to_string(), "U", PaletteCommand::ToggleAutomated));
 
         let query = self.palette.trim().to_lowercase();
         let words: Vec<&str> = query.split_whitespace().collect();
@@ -2030,6 +2207,16 @@ impl Brain {
                 }
             }
             PaletteCommand::SetUpAccount => self.open_account_setup(),
+            PaletteCommand::SyncAccounts => self.open_sync(),
+            PaletteCommand::Garden => self.open_garden(),
+            PaletteCommand::OpenLog => {
+                self.open_log();
+                Task::none()
+            }
+            PaletteCommand::Keys => {
+                self.mode = Mode::Keys;
+                Task::none()
+            }
             PaletteCommand::PairPhone => {
                 self.pair_phone();
                 Task::none()
@@ -2096,7 +2283,10 @@ impl Brain {
 
     /// ⌘F: find in the selected session's conversation.
     fn start_find(&mut self) -> Task<Message> {
-        self.tab = DetailTab::Messages;
+        self.find_open = true;
+        if !matches!(self.tab, DetailTab::Messages | DetailTab::Timeline | DetailTab::Questions) {
+            self.tab = DetailTab::Messages;
+        }
         Task::batch([operation::focus(FIND), self.load_history()])
     }
 
@@ -2413,6 +2603,7 @@ impl Brain {
                 Ok(term) => {
                     self.next_terminal += 1;
                     self.terminals.insert(key.clone(), term);
+                    self.note_terminal_started(key);
                     true
                 }
                 Err(err) => {
@@ -2489,11 +2680,14 @@ impl Brain {
             decide: vec![],
             read: vec![],
             quiet: vec![],
+            paused: vec![],
+            background: vec![],
+            automated: vec![],
             ended: vec![],
             older_ended: 0,
-            hidden: 0,
-            background: 0,
-            automated: 0,
+            paused_open: self.show_snoozed || searching,
+            background_open: self.prefs.show_background || searching,
+            automated_open: self.prefs.show_automated || searching,
         };
         let mut quiet: Vec<&Session> = Vec::new();
         let visible = self
@@ -2509,19 +2703,19 @@ impl Brain {
                 continue;
             }
             // Background sessions with something happening show; stale ones (a day without
-            // activity) only with the filter on.
-            if session.agent.is_some() && !self.prefs.show_background && now - session.last_activity_ms > ENDED_RECENT_MS {
-                groups.background += 1;
+            // activity) go to their own folded list.
+            if session.agent.is_some() && now - session.last_activity_ms > ENDED_RECENT_MS {
+                groups.background.push(session);
                 continue;
             }
             // Sessions a program started (a security review after each commit, scripts with
-            // `claude -p`) only with their filter on, or when pinned.
-            if session.insight.is_automated() && !self.prefs.show_automated && !self.prefs.is_pinned(&session.key) {
-                groups.automated += 1;
+            // `claude -p`) too, unless pinned.
+            if session.insight.is_automated() && !self.prefs.is_pinned(&session.key) {
+                groups.automated.push(session);
                 continue;
             }
             if self.prefs.is_hidden(&session.key, session.last_activity_ms) && !searching {
-                groups.hidden += 1;
+                groups.paused.push(session);
                 continue;
             }
             if ended {
@@ -2535,19 +2729,19 @@ impl Brain {
                 continue;
             }
             let since = session.phase_since_ms();
+            if matches!(session.phase(), Phase::NeedsYou | Phase::YourTurn) && !self.prefs.is_pinned(&session.key) && self.prefs.snoozed_until(&session.key, now).is_some() {
+                groups.paused.push(session);
+                continue;
+            }
             // The selected session stays where it is while it's selected, so nothing jumps away
             // under the cursor when it counts as seen.
             let selected = self.selected.as_ref() == Some(&session.key);
             let seen = !selected && self.prefs.is_seen(&session.key, since);
-            let snoozed = self.prefs.snoozed_until(&session.key, now).is_some();
             let open_question = self.questions.get(&session.key).is_some_and(|(_, q)| q.is_some());
-            let ask = session
-                .ask(open_question)
-                .filter(|_| !snoozed)
-                .filter(|ask| *ask != Ask::Maybe || !(seen || self.prefs.is_report(&session.key, since)));
+            let ask = session.ask(open_question).filter(|ask| *ask != Ask::Maybe || !(seen || self.prefs.is_report(&session.key, since)));
             if let Some(ask) = ask {
                 groups.decide.push((session, ask));
-            } else if session.phase() == Phase::YourTurn && !snoozed && !seen {
+            } else if session.phase() == Phase::YourTurn && !seen {
                 groups.read.push(session);
             } else {
                 quiet.push(session);
@@ -2614,25 +2808,36 @@ impl Brain {
                 push(&mut items, s);
             }
         }
-        let mut notes: Vec<String> = Vec::new();
         if groups.older_ended > 0 {
             let n = groups.older_ended;
-            notes.push(tr!("{n} älter als ein Tag", "{n} older than a day"));
+            items.push(Item::Hint(tr!("{n} älter als ein Tag – / sucht darin, C räumt auf.", "{n} older than a day – / searches them, C cleans up.")));
         }
-        if groups.hidden > 0 {
-            let n = groups.hidden;
-            notes.push(tr!("{n} ausgeblendet", "{n} hidden"));
-        }
-        if !notes.is_empty() {
-            let notes = notes.join(" · ");
-            items.push(Item::Hint(tr!("{notes} – / sucht darin, C räumt auf.", "{notes} – / searches them, C cleans up.")));
-        }
-        if !groups.ended.is_empty() || groups.background > 0 || groups.automated > 0 || self.prefs.show_background || self.prefs.show_automated {
+        if !groups.ended.is_empty() || !groups.background.is_empty() || !groups.automated.is_empty() {
             items.push(Item::Footer);
         }
-        if self.include_ended() {
-            for s in &groups.ended {
-                push(&mut items, s);
+        // Folded away at the end, one click (or ⌘K) opens each: nothing leaves the list without
+        // a trace.
+        if !groups.paused.is_empty() {
+            let action = if groups.paused_open { t("zuklappen", "fold") } else { t("aufklappen", "open") };
+            let action = Box::new((action.to_string(), Message::ToggleSnoozed));
+            items.push(Item::Section { title: t("Pausiert und ausgeblendet", "Snoozed and hidden").into(), count: groups.paused.len(), alert: false, action: Some(action) });
+            if groups.paused_open {
+                for s in &groups.paused {
+                    push(&mut items, s);
+                }
+            }
+        }
+        let lists: [(&str, &Vec<&'a Session>, bool); 3] = [
+            (t("Ruhig im Hintergrund", "Quiet in the background"), &groups.background, groups.background_open),
+            (t("Automatisch gestartet", "Started by programs"), &groups.automated, groups.automated_open),
+            (t("Beendet", "Ended"), &groups.ended, self.include_ended()),
+        ];
+        for (title, sessions, open) in lists {
+            if open && !sessions.is_empty() {
+                items.push(Item::Project(title.into()));
+                for s in sessions {
+                    push(&mut items, s);
+                }
             }
         }
         items
@@ -2690,32 +2895,24 @@ impl Brain {
         Task::none()
     }
 
-    /// A background or automated session while its filter is off: not listed, not announced.
-    fn filtered_background(&self, key: &SessionKey) -> bool {
+    /// A background session without activity for a day, or one a program started: listed in
+    /// its folded section, never announced.
+    fn is_quiet(&self, key: &SessionKey) -> bool {
         let Some(s) = self.model.board.get(key) else { return false };
-        let background = !self.prefs.show_background && s.agent.is_some() && now_ms() - s.last_activity_ms > ENDED_RECENT_MS;
-        let automated = !self.prefs.show_automated && s.insight.is_automated() && !self.prefs.is_pinned(key);
+        let background = s.agent.is_some() && now_ms() - s.last_activity_ms > ENDED_RECENT_MS;
+        let automated = s.insight.is_automated() && !self.prefs.is_pinned(key);
         background || automated
     }
 
+    /// The folded sections remember whether they are open.
     fn toggle_automated(&mut self) {
         self.prefs.show_automated = !self.prefs.show_automated;
         self.prefs.save();
-        self.set_status(if self.prefs.show_automated {
-            t("Automatische Sessions (Reviews, Skripte) werden angezeigt.", "Showing automated sessions (reviews, scripts).")
-        } else {
-            t("Automatische Sessions ausgeblendet.", "Automated sessions hidden.")
-        });
     }
 
     fn toggle_background(&mut self) {
         self.prefs.show_background = !self.prefs.show_background;
         self.prefs.save();
-        self.set_status(if self.prefs.show_background {
-            t("Hintergrund-Sessions werden angezeigt.", "Showing background sessions.")
-        } else {
-            t("Hintergrund-Sessions ausgeblendet.", "Background sessions hidden.")
-        });
     }
 
     fn toggle_ended(&mut self) {
@@ -2889,15 +3086,28 @@ impl Brain {
             }
             Mode::Later => return self.on_later_key(named, cmd),
             Mode::Pairing | Mode::AccountSetup => return Task::none(),
-            Mode::RestartFlags => return Task::none(),
-            Mode::MoveTarget => {
-                // 1, 2, … pick the account in the order the dialog lists them.
-                let digit = character.as_deref().and_then(|c| c.parse::<usize>().ok()).filter(|d| *d >= 1);
-                let target = digit.and_then(|d| self.move_targets().get(d - 1).copied());
-                return match target {
-                    Some(index) => self.perform(Action::MoveTo(index), true),
-                    None => Task::none(),
-                };
+            Mode::Sync => return self.on_sync_key(named, character.as_deref()),
+            Mode::Garden => return self.on_garden_key(named),
+            Mode::Keys => {
+                if text.as_deref() == Some("?") {
+                    self.mode = Mode::Normal;
+                }
+                return Task::none();
+            }
+            Mode::Relaunch => {
+                match named {
+                    Some(Named::Enter) => return self.submit_relaunch(),
+                    Some(Named::Tab) => self.relaunch.keep = !self.relaunch.keep,
+                    _ => {
+                        // 1, 2, … pick the account in the order the dialog lists them.
+                        let digit = character.as_deref().and_then(|c| c.parse::<usize>().ok()).filter(|d| *d >= 1);
+                        if let Some(index) = digit.map(|d| d - 1).filter(|i| *i < self.model.accounts.len()) {
+                            self.relaunch.target = index;
+                        }
+                    }
+                }
+                self.relaunch.error = None;
+                return Task::none();
             }
             Mode::NewSession => return self.on_new_session_key(named, character.as_deref(), cmd, modifiers.shift()),
             Mode::Reply | Mode::Rename => {
@@ -2950,30 +3160,24 @@ impl Brain {
             }
             Some(Named::ArrowRight) => {
                 self.tab = match self.tab {
-                    DetailTab::Messages => DetailTab::Timeline,
-                    DetailTab::Timeline => DetailTab::Changes,
-                    DetailTab::Changes => DetailTab::Files,
-                    DetailTab::Files => DetailTab::Questions,
-                    DetailTab::Questions if self.has_team() => DetailTab::Team,
-                    DetailTab::Questions | DetailTab::Team if self.has_konsil() => DetailTab::Konsil,
-                    DetailTab::Questions | DetailTab::Team | DetailTab::Konsil => DetailTab::Terminal,
+                    DetailTab::Messages | DetailTab::Timeline | DetailTab::Questions => DetailTab::Files,
+                    DetailTab::Files | DetailTab::Changes if self.has_team() => DetailTab::Team,
+                    DetailTab::Files | DetailTab::Changes | DetailTab::Team if self.has_konsil() => DetailTab::Konsil,
+                    DetailTab::Files | DetailTab::Changes | DetailTab::Team | DetailTab::Konsil => DetailTab::Terminal,
                     DetailTab::Terminal => DetailTab::Messages,
                 };
                 return Task::batch([self.load_changes(), self.load_files()]);
             }
             Some(Named::ArrowLeft) => {
                 self.tab = match self.tab {
-                    DetailTab::Messages => DetailTab::Terminal,
-                    DetailTab::Timeline => DetailTab::Messages,
-                    DetailTab::Changes => DetailTab::Timeline,
-                    DetailTab::Files => DetailTab::Changes,
-                    DetailTab::Questions => DetailTab::Files,
-                    DetailTab::Team => DetailTab::Questions,
+                    DetailTab::Messages | DetailTab::Timeline | DetailTab::Questions => DetailTab::Terminal,
+                    DetailTab::Files | DetailTab::Changes => DetailTab::Messages,
+                    DetailTab::Team => DetailTab::Files,
                     DetailTab::Konsil if self.has_team() => DetailTab::Team,
-                    DetailTab::Konsil => DetailTab::Questions,
+                    DetailTab::Konsil => DetailTab::Files,
                     DetailTab::Terminal if self.has_konsil() => DetailTab::Konsil,
                     DetailTab::Terminal if self.has_team() => DetailTab::Team,
-                    DetailTab::Terminal => DetailTab::Questions,
+                    DetailTab::Terminal => DetailTab::Files,
                 };
                 return Task::batch([self.load_changes(), self.load_files()]);
             }
@@ -2982,19 +3186,22 @@ impl Brain {
         if text.as_deref() == Some("/") {
             return self.start_search();
         }
+        if text.as_deref() == Some("?") {
+            self.mode = Mode::Keys;
+            return Task::none();
+        }
         let Some(character) = character else { return Task::none() };
         match character.as_str() {
             "j" => return self.select_index(&list, next),
             "k" => return self.select_index(&list, previous),
-            "e" => self.toggle_ended(),
             "r" => return self.start_rename(),
             "t" => return self.start_reply(),
             "y" => self.answer_permission(true),
             "n" => self.answer_permission(false),
             "p" => self.toggle_pin(),
-            "m" => self.toggle_mute(),
             "s" => self.cycle_snooze(),
-            "a" => return self.move_to_other_account(false),
+            "a" => return self.act(Action::Relaunch),
+            "f" => return self.act(Action::Fork),
             "x" => return self.end_selected(false),
             "c" => {
                 self.armed = None;
@@ -3019,10 +3226,16 @@ impl Brain {
             self.overview = false;
             return Task::none();
         }
-        if self.mode == Mode::Normal && (!self.find.is_empty() || self.prompts_only) {
+        // The find bar and its lenses close back to the conversation.
+        let lens = matches!(self.tab, DetailTab::Timeline | DetailTab::Questions);
+        if self.mode == Mode::Normal && (!self.find.is_empty() || self.prompts_only || self.find_open || lens) {
             self.find.clear();
             self.prompts_only = false;
+            self.find_open = false;
             self.expanded = None;
+            if lens {
+                self.tab = DetailTab::Messages;
+            }
             return unfocus();
         }
         if self.mode == Mode::Normal && self.reader.is_some() {
@@ -3035,7 +3248,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::MoveTarget | Mode::RestartFlags => {
+            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden => {
                 self.mode = Mode::Normal;
                 unfocus()
             }
@@ -3078,7 +3291,11 @@ impl Brain {
     }
 
     pub fn set_status(&mut self, message: impl Into<String>) {
-        self.status = Some((message.into(), Instant::now()));
+        let message = message.into();
+        if !self.model.is_demo() {
+            brain_core::log::write(&brain_core::account::home_dir(), "status", &message);
+        }
+        self.status = Some((message, Instant::now()));
     }
 
     /// Demo pids are made up and may belong to unrelated processes: nothing is ever sent.
@@ -3160,7 +3377,7 @@ impl Brain {
             }
             Action::Open => self.open_selected(),
             Action::OpenInITerm => self.open_selected(),
-            Action::TakeOver => self.take_over(confirmed),
+            Action::TakeOver => return self.open_relaunch(relaunch::Preset::TakeOver),
             Action::Pin => self.toggle_pin(),
             Action::OpenBeside => {
                 // The terminal that was on screen stays on the left, this one opens beside it.
@@ -3187,16 +3404,15 @@ impl Brain {
             Action::Export => return self.export_selected(),
             Action::Mute => self.toggle_mute(),
             Action::Snooze => self.cycle_snooze(),
-            Action::RestartWith => return self.open_restart_dialog(),
-            Action::MoveTo(index) => {
-                if self.mode == Mode::MoveTarget {
-                    self.mode = Mode::Normal;
-                }
-                return self.move_selected(index, confirmed);
-            }
+            Action::Relaunch => return self.open_relaunch(relaunch::Preset::Move),
+            Action::Fork => return self.open_relaunch(relaunch::Preset::Fork),
+            Action::RestartWith => return self.open_relaunch(relaunch::Preset::Restart),
+            Action::MoveTo(index) => return self.move_selected(index, Vec::new()),
+            Action::ForkTo(index) => return self.fork_selected(index, Vec::new()),
             Action::End => return self.end_selected(confirmed),
             Action::Hide => self.hide_selected(confirmed),
             Action::Trash => self.trash_selected(confirmed),
+            Action::ForceEnd => return self.force_end_selected(),
             Action::Resume => self.resume_selected(),
             Action::Allow => self.answer_permission(true),
             Action::Deny => self.answer_permission(false),
@@ -3259,7 +3475,7 @@ impl Brain {
 
     fn start_rename(&mut self) -> Task<Message> {
         let Some(session) = self.selected_session() else { return Task::none() };
-        if !session.accepts_input() {
+        if !session.waits_for_input() {
             self.set_status(t(
                 "Umbenennen geht nur, wenn die Session fertig ist und auf dich wartet.",
                 "Renaming works only while the session has finished and waits for you.",
@@ -3267,7 +3483,7 @@ impl Brain {
             return Task::none();
         }
         if !self.can_type_into_selected() {
-            self.set_status(t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal."));
+            self.set_status(self.why_brain_cant_type());
             return Task::none();
         }
         self.rename = session.display_name();
@@ -3287,7 +3503,7 @@ impl Brain {
 
     fn start_reply(&mut self) -> Task<Message> {
         let Some(session) = self.selected_session() else { return Task::none() };
-        if !session.accepts_input() {
+        if !session.waits_for_input() {
             self.set_status(t(
                 "Antworten geht, sobald die Session fertig ist und auf dich wartet.",
                 "You can reply once the session has finished and waits for you.",
@@ -3295,7 +3511,7 @@ impl Brain {
             return Task::none();
         }
         if !self.can_type_into_selected() {
-            self.set_status(t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal."));
+            self.set_status(self.why_brain_cant_type());
             return Task::none();
         }
         // What the session's mod reported, else the built-in commands Brain knows.
@@ -3347,7 +3563,7 @@ impl Brain {
     /// [`type_into_selected`] for any session.
     fn type_into(&mut self, key: &SessionKey, text: &str, done: String) -> Task<Message> {
         let key = key.clone();
-        if !self.model.board.get(&key).is_some_and(|s| s.accepts_input()) {
+        if !self.model.board.get(&key).is_some_and(|s| s.waits_for_input()) {
             self.set_status(t("Die Session arbeitet inzwischen wieder – nichts geschickt.", "The session is working again – nothing sent."));
             return Task::none();
         }
@@ -3371,9 +3587,23 @@ impl Brain {
     }
 
     /// Whether Brain can type into the selected session: its terminal in Brain, or a terminal
-    /// app that takes typed text.
+    /// app that takes typed text. A background session has no terminal app: only its terminal
+    /// in Brain takes text.
     fn can_type_into_selected(&self) -> bool {
-        self.selected.as_ref().is_some_and(|k| self.terminals.contains_key(k)) || self.capabilities().type_text
+        let Some(key) = self.selected.as_ref() else { return false };
+        if self.terminals.contains_key(key) {
+            return true;
+        }
+        self.model.board.get(key).is_some_and(|s| s.agent.is_none()) && self.capabilities().type_text
+    }
+
+    /// Why typing into the selected session doesn't work, for the status line.
+    fn why_brain_cant_type(&self) -> &'static str {
+        if self.selected_session().is_some_and(|s| s.agent.is_some()) {
+            t("Öffne die Session zuerst in Brain (⏎), dann tippt Brain in ihr Terminal.", "Open the session in Brain first (⏎), then Brain types into its terminal.")
+        } else {
+            t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal.")
+        }
     }
 
     /// Y / N on an open permission dialog: Return picks its default "Yes", Esc declines.
@@ -3420,9 +3650,17 @@ impl Brain {
         });
     }
 
-    /// `S`: not snoozed → 15 min → 1 h → until tomorrow 9:00 → not snoozed.
+    /// `S`: not snoozed → 15 min → 1 h → until tomorrow 9:00 → until something happens in it
+    /// (hidden, as `⌫ ⌫`) → back.
     fn cycle_snooze(&mut self) {
-        let Some(key) = self.selected.clone() else { return };
+        let Some(session) = self.selected_session() else { return };
+        let key = session.key.clone();
+        if self.prefs.is_hidden(&key, session.last_activity_ms) {
+            self.prefs.unhide(&key);
+            self.prefs.save();
+            self.set_status(t("Wieder da.", "Back."));
+            return;
+        }
         let now = now_ms();
         let tomorrow = (chrono::Local::now() + chrono::Duration::days(1))
             .date_naive()
@@ -3436,7 +3674,13 @@ impl Brain {
             None => Some(quarter),
             Some(until) if until <= quarter + 60_000 => Some(hour),
             Some(until) if until <= hour + 60_000 => tomorrow,
-            Some(_) => None,
+            Some(_) => {
+                self.prefs.snooze(&key, None);
+                self.prefs.hide(&key, now);
+                self.prefs.save();
+                self.set_status(t("Pausiert, bis sich in der Session etwas tut.", "Snoozed until something happens in the session."));
+                return;
+            }
         };
         self.prefs.snooze(&key, next);
         self.prefs.save();
@@ -3475,7 +3719,7 @@ impl Brain {
                     self.model.relist_transcripts();
                     self.set_status(t("Hintergrund-Session gestoppt.", "Stopped the background session."));
                 }
-                Err(err) => self.set_status(tr!("Stoppen fehlgeschlagen: {err}", "Stopping failed: {err}")),
+                Err(err) => self.set_status(tr!("Stoppen fehlgeschlagen: {err} – Rechtsklick → Hart beenden hilft.", "Stopping failed: {err} – right-click → End by force helps.")),
             }
             return Task::none();
         }
@@ -3484,7 +3728,7 @@ impl Brain {
             return Task::none();
         }
         if !session.accepts_input() {
-            self.set_status(t("Beenden geht, sobald die Session fertig ist und auf dich wartet.", "Ending works once the session has finished and waits for you."));
+            self.set_status(t("Beenden geht, sobald die Session fertig ist und auf dich wartet. Hängt sie: Rechtsklick → Hart beenden.", "Ending works once the session has finished and waits for you. If it hangs: right-click → End by force."));
             return Task::none();
         }
         if !confirmed && !self.arm('x', &key) {
@@ -3507,29 +3751,56 @@ impl Brain {
         (0..self.model.accounts.len()).filter(|&i| self.model.accounts[i].id != session.key.account).collect()
     }
 
-    /// `A`: with one other account, `A A` moves there; with more, `A` asks which.
-    fn move_to_other_account(&mut self, confirmed: bool) -> Task<Message> {
-        match self.move_targets().as_slice() {
-            [] => {
-                self.set_status(t("Es gibt kein zweites Konto.", "There is no other account."));
-                Task::none()
-            }
-            [only] => self.move_selected(*only, confirmed),
-            _ => {
-                self.armed = None;
-                self.mode = Mode::MoveTarget;
-                Task::none()
-            }
+    /// The accounts the selected session can be forked into: all of them, its own too.
+    pub fn fork_targets(&self) -> Vec<usize> {
+        if self.selected_session().is_none() {
+            return Vec::new();
         }
+        (0..self.model.accounts.len()).collect()
     }
 
-    fn move_selected(&mut self, target_index: usize, confirmed: bool) -> Task<Message> {
+    /// `F`: the conversation so far goes on as a new background session in the account at
+    /// `target_index`, attached in Brain; the original keeps running. Into another account the
+    /// transcript is copied first, as for a move.
+    pub(super) fn fork_selected(&mut self, target_index: usize, flags: Vec<String>) -> Task<Message> {
+        let Some(session) = self.selected_session() else { return Task::none() };
+        let (Some(session_id), Some(cwd)) = (session.session_id.clone(), session.cwd.clone()) else {
+            self.set_status(t("Zu dieser Session fehlt die ID oder der Ordner.", "This session has no id or folder."));
+            return Task::none();
+        };
+        let name = session.name.as_ref().map(|n| format!("{n} (fork)"));
+        let (Some(source), Some(target)) = (self.model.account(&session.key.account).cloned(), self.model.accounts.get(target_index).cloned()) else { return Task::none() };
+        if self.blocked_in_demo() {
+            return Task::none();
+        }
+        let transcript = if source.id == target.id {
+            None
+        } else {
+            let _ = brain_core::account_setup::carry_trust(&source, &target, &brain_core::account::home_dir(), &cwd);
+            let Some(found) = brain_core::transcript::find_transcript(&source, &session_id) else {
+                self.set_status(t("Transkript nicht gefunden.", "Transcript not found."));
+                return Task::none();
+            };
+            Some(found)
+        };
+        let target_id = target.id.clone();
+        self.set_status(tr!("Forke die Session in {target_id} …", "Forking the session into {target_id} …"));
+        let forked = off_thread(move || {
+            if let Some(transcript) = transcript {
+                brain_core::transcript::copy_to_account(&transcript, &target).map_err(|e| e.to_string())?;
+            }
+            brain_core::agents::fork(&target, std::path::Path::new(&cwd), &session_id, name.as_deref(), &flags)
+        });
+        Task::perform(forked, move |result| Message::Started(target_id.clone(), result))
+    }
+
+    pub(super) fn move_selected(&mut self, target_index: usize, flags: Vec<String>) -> Task<Message> {
         let Some(key) = self.selected.clone() else { return Task::none() };
-        self.move_session(key, target_index, confirmed)
+        self.move_session(key, target_index, flags)
     }
 
-    /// Continues the session in the account at `target_index`.
-    pub(super) fn move_session(&mut self, key: SessionKey, target_index: usize, confirmed: bool) -> Task<Message> {
+    /// Continues the session in the account at `target_index`, with `flags` for its new start.
+    pub(super) fn move_session(&mut self, key: SessionKey, target_index: usize, flags: Vec<String>) -> Task<Message> {
         let Some(session) = self.model.board.get(&key) else { return Task::none() };
         let Some(target) = self.model.accounts.get(target_index).cloned().filter(|t| t.id != key.account) else {
             self.set_status(t("Es gibt kein zweites Konto.", "There is no other account."));
@@ -3546,19 +3817,6 @@ impl Brain {
         let (session_id, cwd, pid, name) = (session.session_id.clone(), session.cwd.clone(), session.pid, session.name.clone());
         let running_agent = session.agent.clone().filter(|a| a.is_active());
         let in_brain = session.agent.is_some();
-        // A phone's move (confirmed) takes the Mac's pending `A` for this session with it.
-        if confirmed && self.armed.as_ref().is_some_and(|(_, k, _)| *k == key) {
-            self.armed = None;
-        }
-        if !confirmed && !self.arm('a', &key) {
-            let target = target.id.clone();
-            self.set_status(if ended {
-                tr!("Nochmal A setzt die Session in {target} fort.", "Press A again to resume the session in {target}.")
-            } else {
-                tr!("Nochmal A zieht die Session nach {target} um.", "Press A again to move the session to {target}.")
-            });
-            return Task::none();
-        }
         let (Some(session_id), Some(cwd)) = (session_id, cwd) else {
             self.set_status(t("Zu dieser Session fehlt die ID oder der Ordner.", "This session has no id or folder."));
             return Task::none();
@@ -3586,7 +3844,7 @@ impl Brain {
                     brain_core::agents::stop(&source, &agent.id)?;
                 }
                 brain_core::transcript::copy_to_account(&transcript, &target).map_err(|e| e.to_string())?;
-                brain_core::agents::fork(&target, std::path::Path::new(&cwd), &session_id, name.as_deref())
+                brain_core::agents::fork(&target, std::path::Path::new(&cwd), &session_id, name.as_deref(), &flags)
             });
             return Task::perform(moved, move |result| Message::Started(target_id.clone(), result));
         }
@@ -3595,7 +3853,8 @@ impl Brain {
             return Task::none();
         }
         let config_dir = (target.id != "main").then(|| target.config_dir.display().to_string());
-        let outcome = terminal::open_new(&cwd, config_dir.as_deref(), &format!("claude --resume {session_id} --fork-session"));
+        let extra: String = flags.iter().map(|f| format!(" {}", crate::format::shell_quote(f))).collect();
+        let outcome = terminal::open_new(&cwd, config_dir.as_deref(), &format!("claude --resume {session_id} --fork-session{extra}"));
         if !matches!(outcome, Outcome::Done) {
             self.report(outcome, None);
             return Task::none();
@@ -3702,7 +3961,6 @@ impl Brain {
             .into_iter()
             .filter(|s| self.filter.as_ref().is_none_or(|f| *f == s.key.account))
             .filter(|s| !self.prefs.is_pinned(&s.key))
-            .filter(|s| s.agent.is_none() || self.prefs.show_background)
             .filter(|s| s.phase() == Phase::Ended || s.agent.is_some())
             .filter(|s| s.last_activity_ms < cutoff)
             .filter(|s| s.phase() != Phase::Ended || (self.model.resumable(s) && !s.is_empty()))
@@ -4059,7 +4317,7 @@ impl Brain {
 
     /// `I` twice: moves a session running in an iTerm tab into Brain. Brain sends it `/exit`,
     /// waits until it ended, and continues it in the background under the same id.
-    fn take_over(&mut self, confirmed: bool) {
+    pub(super) fn take_over(&mut self) {
         let Some(session) = self.selected_session() else { return };
         let key = session.key.clone();
         if session.agent.is_some() || self.terminals.contains_key(&key) {
@@ -4069,10 +4327,6 @@ impl Brain {
         let ended = session.phase() == Phase::Ended;
         if !ended && !session.accepts_input() {
             self.set_status(t("Übernehmen geht, sobald die Session auf dich wartet.", "Taking over works once the session waits for you."));
-            return;
-        }
-        if !confirmed && !self.arm('i', &key) {
-            self.set_status(t("Nochmal I holt die Session nach Brain (das iTerm-Tab wird beendet).", "Press I again to move the session into Brain (its iTerm tab ends)."));
             return;
         }
         if self.blocked_in_demo() {
