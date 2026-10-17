@@ -2,7 +2,7 @@
 # Builds and installs Brain:
 #   - `brain` CLI into ~/.cargo/bin
 #   - Brain.app into ~/Applications
-#   - hooks + protocol section into every ~/.claude* account (with backups)
+#   - Brain's mod + protocol section into every ~/.claude* account (with backups)
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -32,5 +32,5 @@ ditto dist/Brain.app "$app"
 # Make Finder and the Dock pick up a changed icon.
 touch "$app"
 
-echo "→ Hooks & Protokoll"
+echo "→ Mod & Protokoll"
 "$HOME/.cargo/bin/brain" install

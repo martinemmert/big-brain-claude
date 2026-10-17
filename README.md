@@ -184,6 +184,12 @@ they change. `brain install` writes it to `~/.claude-brain/mod/brain` and lists 
 Brain no longer adds settings hooks or wraps the status line: `brain install` takes out what an
 earlier version put there and gives your status line command back.
 
+The mod also carries out what Brain asks of the session, so nothing is typed into a terminal: a
+reply (from Brain, a notification or the phone) goes in as your own words once the session is
+idle, a `/command` runs as that command, an interrupt ends the running turn. Brain leaves them in
+`~/.claude-brain/requests/<session id>.json`. Question dialogs and permissions are still answered
+with keys, and a session whose mod is older than this is typed into as before.
+
 ## A new Claude account
 
 `brain account new <name>` (or ⌘K → *Set up a new Claude account*) makes `~/.claude-<name>` from
