@@ -24,11 +24,13 @@ Links stehen die Sessions in drei Zonen:
   gefragt. Die Reihenfolge ist Freigabe, Optionen, Frage, darin die am längsten Wartende zuerst.
   Wartet nichts, steht dort „Nichts wartet auf dich.“
   - **Frage?** (gelber Streifen, kein Zähler): Der Turn endete ohne Meldung, der letzte Satz endet
-    mit „?“. Die Karte verschwindet, sobald du die Session öffnest und weiterklickst, oder mit
-    **Nur Bericht**.
+    mit „?“. Die Karte bleibt, solange du die Session ausgewählt hast, und verschwindet beim
+    Weiterklicken (mit ↓ gehst du so durch alle) oder sofort mit **Nur Bericht**.
 - **Zum Lesen:** fertige Sessions, die du noch nicht angesehen hast, neueste zuerst, mit dem
-  letzten Satz der Antwort. Als gesehen zählt eine Session, wenn du sie in Brains vorderem Fenster
-  auswählst und dann weiterklickst; **alle gesehen** macht das für die ganze Zone.
+  letzten Satz der Antwort. Als gesehen zählt eine Session, sobald du sie in Brains vorderem Fenster
+  auswählst. Sie bleibt in der Zone, solange sie ausgewählt ist, und geht beim Weiterklicken.
+  Eine Session, die schon gesehen ist oder deren Turn endet, während sie offen ist, landet nicht
+  in „Zum Lesen“. **alle gesehen** macht das für die ganze Zone.
 - **Projekte:** alles andere, was läuft, nach Projekt gruppiert: blau arbeitet, hellblau
   Subagents oder Hintergrund-Shells laufen noch, grau ruht.
 
