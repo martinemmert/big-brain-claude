@@ -46,6 +46,31 @@ enum Command {
         /// One line of text.
         text: Vec<String>,
     },
+    /// Note a task for later, with this session's folder; Brain lists it and starts it as a new
+    /// session or checks it off. Without text: the open tasks.
+    Later {
+        /// The task, one line.
+        text: Vec<String>,
+        /// The task JSON (`session_id`, `cwd`, `text`) in a file of `~/.claude-brain/inbox/`
+        /// instead (Brain's mod, for `/later`); the file is deleted after reading.
+        #[arg(long)]
+        json_file: Option<std::path::PathBuf>,
+    },
+    /// Called by Brain's mod: the session's slash commands, for completing `/…` in Brain and on
+    /// the phone.
+    Commands {
+        /// `{session_id, commands: [{name, description, source}]}` in a file of
+        /// `~/.claude-brain/inbox/`; the file is deleted after reading.
+        #[arg(long)]
+        json_file: std::path::PathBuf,
+    },
+    /// Called by Brain's mod: the session's agents and their messages, for Brain's Team tab.
+    Team {
+        /// `{session_id, members, messages}` in a file of `~/.claude-brain/inbox/`; the file is
+        /// deleted after reading.
+        #[arg(long)]
+        json_file: std::path::PathBuf,
+    },
     /// Mark a council of the konsil skill; Brain reads its course from the transcript and shows
     /// it in the Konsil tab.
     Konsil {
@@ -189,6 +214,26 @@ fn main() -> ExitCode {
             };
             run_report(&store, &accounts, kind, &text.join(" "))
         }
+        Command::Later { text, json_file } => run_later(&accounts, &text.join(" "), json_file.and_then(|f| take_inbox_file(&f))),
+        Command::Team { json_file } => {
+            // Like a hook: never disturbs the session, no output, always success.
+            if let Some(payload) = take_inbox_file(&json_file).and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok()) {
+                let id = payload.get("session_id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                if let Ok(team) = serde_json::from_value::<brain_core::teams::Team>(payload) {
+                    let _ = brain_core::teams::save(&home, &id, &team);
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Command::Commands { json_file } => {
+            // Like a hook: never disturbs the session, no output, always success.
+            if let Some(payload) = take_inbox_file(&json_file).and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok()) {
+                let id = payload.get("session_id").and_then(|v| v.as_str()).unwrap_or_default();
+                let list: Vec<brain_core::commands::SlashCommand> = payload.get("commands").cloned().and_then(|c| serde_json::from_value(c).ok()).unwrap_or_default();
+                let _ = brain_core::commands::save(&home, id, &list);
+            }
+            ExitCode::SUCCESS
+        }
         // The marks themselves are read from the transcript; start and end also report, so the
         // timeline and Today show the council.
         Command::Konsil { step } => match step {
@@ -240,6 +285,7 @@ fn run_hook(store: &Store, accounts: &[Account], input: &str, source: Source) ->
             text: payload.text(),
             tasks: (kind == Kind::Stop).then(|| payload.background_tasks.clone().unwrap_or_default()),
             name,
+            ask: payload.ask.clone().filter(|_| kind == Kind::Permission),
         })
         .ok()
 }
@@ -255,6 +301,46 @@ fn capture_raw_hook(input: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(file) {
         use std::io::Write;
         let _ = writeln!(f, "{}", input.trim());
+    }
+}
+
+/// `brain later`: notes the task with the session it comes from (Brain's mod names it in the
+/// JSON, else the Claude Code process this runs in), or lists the open ones without text.
+fn run_later(accounts: &[Account], text: &str, json: Option<String>) -> ExitCode {
+    let file = brain_core::later::file(&home_dir());
+    let payload: Option<serde_json::Value> = json.as_deref().and_then(|j| serde_json::from_str(j).ok());
+    let field = |name: &str| payload.as_ref().and_then(|p| p.get(name)?.as_str().map(str::to_string));
+    let text = field("text").unwrap_or_else(|| text.to_string());
+    if text.trim().is_empty() {
+        for task in brain_core::later::open(&file) {
+            let place = task.cwd.as_deref().map(|c| format!("  ({c})")).unwrap_or_default();
+            println!("- {}{place}", task.text);
+        }
+        return ExitCode::SUCCESS;
+    }
+    let found = match field("session_id") {
+        Some(id) => find_by_session_id(accounts, &id),
+        None => find_claude_session(&ProcessTable::snapshot(), std::process::id(), accounts, None),
+    };
+    let session = found.as_ref().and_then(|(account, pid)| read_session_files(account).into_iter().find(|f| f.pid == *pid));
+    let task = brain_core::later::Item {
+        id: String::new(),
+        ts: Utc::now(),
+        text: one_line(&text, 2000),
+        cwd: field("cwd").or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned())),
+        account: found.as_ref().map(|(account, _)| account.id.clone()),
+        session_id: field("session_id").or_else(|| session.as_ref().and_then(|s| s.session_id.clone())),
+        session_name: session.and_then(|s| s.name),
+    };
+    match brain_core::later::add(&file, task) {
+        Ok(task) => {
+            println!("brain: noted for later: {}", task.text);
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("brain later: {err}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -302,6 +388,7 @@ fn run_report(store: &Store, accounts: &[Account], kind: Kind, text: &str) -> Ex
         text: Some(text),
         tasks: None,
         name: session.as_ref().and_then(|s| s.name.clone()),
+        ask: None,
     };
     match store.append(&event) {
         Ok(()) => {

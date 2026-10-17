@@ -64,7 +64,8 @@ pub struct View {
     pub name: String,
     /// `needs_you`, `your_turn`, `working`, `background` or `ended`.
     pub phase: &'static str,
-    /// The list section, as Brain's: `pinned`, `attention`, `working`, `resting` or `ended`.
+    /// The list section, as Brain's: `attention` (decide now), `read` (reports and guesses at a
+    /// question), `quiet` (everything else that lives) or `ended`.
     pub group: &'static str,
     pub headline: Option<String>,
     /// When the current phase began (epoch ms).
@@ -80,8 +81,17 @@ pub struct View {
     pub question: Option<brain_core::qa::OpenQuestion>,
     /// Brain can deliver a reply (its terminal, an iTerm tab, or a background session).
     pub can_reply: bool,
-    /// The session can move to another account now (as `A` in Brain).
-    pub can_move: bool,
+    /// Questions of the session's team members to the person, not answered yet; the phone
+    /// answers with a reply "Antwort an <from>: …", which the lead passes on.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub team_questions: Vec<brain_core::teams::TeamMessage>,
+    /// How many of its agents still work or wait (none: no agents).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_active: Option<usize>,
+    /// It runs as an agent team Brain started (in tmux): the phone offers to go on without.
+    pub in_team: bool,
+    /// It can move to another account now (as `A` in Brain): ended, or not in the middle of a turn.
+    pub movable: bool,
 }
 
 /// What the phone asked Brain to do.
@@ -91,8 +101,9 @@ pub enum Command {
     /// Answers to an open question, one per question; `call` names the question the phone
     /// showed.
     Answer { key: SessionKey, call: String, answers: Vec<Picked> },
-    /// A new background session in one of the offered folders, with an optional first prompt.
-    Start { account: String, folder: String, prompt: Option<String> },
+    /// A new background session in one of the offered folders, with an optional first prompt and
+    /// output style.
+    Start { account: String, folder: String, prompt: Option<String>, style: Option<String>, team: bool },
     /// `since_ms`: when the dialog the user answered opened ([`View::permission_since_ms`]).
     Permission { key: SessionKey, allow: bool, since_ms: i64 },
     /// Continue the session in another account, as `A` in Brain.
@@ -103,6 +114,10 @@ pub enum Command {
     Resume { key: SessionKey },
     /// The session goes on with these flags (`--model opus`, `--chrome`).
     Restart { key: SessionKey, flags: Vec<String> },
+    /// A background session stops (its conversation stays), any other gets `/exit`.
+    End { key: SessionKey },
+    /// The session goes on as an agent team (true) or without one: a restart, as with flags.
+    Team { key: SessionKey, on: bool },
 }
 
 /// The answer to one question: the options picked (one, or several where the question takes
@@ -114,7 +129,7 @@ pub struct Picked {
 }
 
 /// What this Brain Link offers beyond the first version, for the phone to show only what works.
-const FEATURES: [&str; 6] = ["files", "attachments", "wait", "control", "answers", "history"];
+const FEATURES: [&str; 13] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands", "team", "move"];
 /// How long a read with `wait` waits for something new before it answers anyway.
 const WAIT: Duration = Duration::from_secs(25);
 /// How often a waiting read looks again.
@@ -138,11 +153,23 @@ pub struct UsageView {
     pub seven_day: Option<LimitView>,
 }
 
+/// The folders in one folder inside the home folder, for choosing where a session starts.
+#[derive(Debug, Clone, Serialize)]
+struct FolderList {
+    path: String,
+    /// The folder above, while that is still inside the home folder.
+    parent: Option<String>,
+    /// Full paths, by name.
+    folders: Vec<String>,
+}
+
 /// Where the phone may start a session: the accounts, and the folders sessions ran in lately.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Places {
     pub accounts: Vec<String>,
     pub folders: Vec<String>,
+    /// The output styles a session can start with: built-in and the accounts' own.
+    pub styles: Vec<brain_core::styles::Style>,
 }
 
 /// What the pairing QR code carries.
@@ -187,6 +214,7 @@ impl Link {
             version: AtomicU64::new(1),
             usage: RwLock::new(Vec::new()),
             places: RwLock::new(Places::default()),
+            folders: RwLock::new(Default::default()),
             commands: Mutex::new(sender),
         });
         let listener = std::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port))).map_err(|e| e.to_string())?;
@@ -218,6 +246,13 @@ impl Link {
         }
         if let Ok(mut current) = self.state.places.write() {
             *current = places;
+        }
+    }
+
+    /// Each session's folder by its id: where its team's state file is looked for.
+    pub fn publish_folders(&self, folders: std::collections::HashMap<String, PathBuf>) {
+        if let Ok(mut current) = self.state.folders.write() {
+            *current = folders;
         }
     }
 
@@ -447,6 +482,8 @@ struct State {
     version: AtomicU64,
     usage: RwLock<Vec<UsageView>>,
     places: RwLock<Places>,
+    /// Each session's folder by its id, for the team's state file.
+    folders: RwLock<std::collections::HashMap<String, PathBuf>>,
     commands: Mutex<Sender<Command>>,
 }
 
@@ -503,6 +540,15 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
         }
         (Method::GET, ["v1", "usage"]) => reply(StatusCode::OK, &state.usage.read().map(|u| u.clone()).unwrap_or_default()),
         (Method::GET, ["v1", "places"]) => reply(StatusCode::OK, &state.places.read().map(|p| p.clone()).unwrap_or_default()),
+        // `path=<folder>`, the home folder without one; nothing outside it.
+        (Method::GET, ["v1", "folders"]) => {
+            let asked = query_param(req.uri().query(), "path");
+            off_thread(state.clone(), move |_| match folder_list(&home_dir(), asked.as_deref()) {
+                Some(list) => reply(StatusCode::OK, &list),
+                None => not_found(),
+            })
+            .await
+        }
         (Method::POST, ["v1", "sessions"]) => {
             let Some(body) = read_json(req).await else {
                 return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "bad body" })));
@@ -511,13 +557,22 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
             let (Some(account), Some(folder)) = (field("account"), field("folder")) else {
                 return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "account and folder" })));
             };
-            // Only what Brain offered: a known account, a folder sessions ran in.
+            // Only what Brain offered: a known account, a folder sessions ran in or one inside the
+            // home folder.
             let places = state.places.read().map(|p| p.clone()).unwrap_or_default();
-            if !places.accounts.contains(&account) || !places.folders.contains(&folder) {
+            let folder = match places.folders.contains(&folder) {
+                true => Some(folder),
+                false => brain_core::folders::inside(&home_dir(), Path::new(&folder)).map(|p| p.display().to_string()),
+            };
+            let Some(folder) = folder.filter(|_| places.accounts.contains(&account)) else {
                 return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "unknown account or folder" })));
-            }
+            };
             let prompt = field("prompt").filter(|p| !p.trim().is_empty());
-            let sent = state.commands.lock().map(|s| s.send(Command::Start { account, folder, prompt }).is_ok()).unwrap_or(false);
+            // Brain checks the style against the account's when it starts the session.
+            let style = field("output_style").filter(|s| !s.trim().is_empty());
+            // As an agent team (`claude-team`), led by the configured agent.
+            let team = body.get("team").and_then(|t| t.as_bool()).unwrap_or(false);
+            let sent = state.commands.lock().map(|s| s.send(Command::Start { account, folder, prompt, style, team }).is_ok()).unwrap_or(false);
             if sent {
                 reply(StatusCode::ACCEPTED, &serde_json::json!({ "ok": true }))
             } else {
@@ -579,6 +634,20 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 // What Brain types for it: the session's own command.
                 Some("compact") => Command::Reply { key, text: "/compact".into() },
                 Some("resume") => Command::Resume { key },
+                Some("rename") => match body.get("name").and_then(|n| n.as_str()).and_then(session_name) {
+                    Some(name) => Command::Reply { key, text: format!("/rename {name}") },
+                    None => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "name" }))),
+                },
+                Some("end") => Command::End { key },
+                Some("move") => match body.get("account").and_then(|a| a.as_str()).filter(|a| *a != key.account && state.accounts.iter().any(|known| known.id == *a)) {
+                    Some(account) => Command::Move { account: account.to_string(), key },
+                    None => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "account" }))),
+                },
+                Some("team") => Command::Team { key, on: body.get("on").and_then(|o| o.as_bool()).unwrap_or(true) },
+                Some("style") => match body.get("name").and_then(|n| n.as_str()).and_then(session_name) {
+                    Some(name) => Command::Reply { key, text: format!("/output-style {name}") },
+                    None => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "name" }))),
+                },
                 // A restart from the phone always names its flags; Brain's own are refused.
                 Some("restart") => match crate::app::relaunch::parse_flags(body.get("flags").and_then(|f| f.as_str()).unwrap_or_default()) {
                     Ok(flags) if !flags.is_empty() => Command::Restart { key, flags },
@@ -588,6 +657,35 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 _ => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "action" }))),
             };
             send_command(&state, command)
+        }
+        // The session's agents and their messages, as its mod reported them.
+        (Method::GET, ["v1", "sessions", account, id, "team"]) => {
+            let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
+            off_thread(state.clone(), move |state| {
+                let team = brain_core::teams::load(&home_dir(), &key.id).unwrap_or_default();
+                // Tokens per agent, from their transcripts beside the session's.
+                let usage = transcript_of(state, &key).map(|t| brain_core::teams::usage(&t)).unwrap_or_default();
+                // The task's state as the team's lead wrote it (Markdown), when there is one.
+                let folder = state.folders.read().ok().and_then(|f| f.get(&key.id).cloned());
+                let task = folder.and_then(|f| brain_core::teams::state_file(&crate::config::team_state_dir(), &f)).and_then(|f| std::fs::read_to_string(f).ok());
+                reply(StatusCode::OK, &serde_json::json!({ "members": team.members, "messages": team.messages, "usage": usage, "state": task }))
+            })
+            .await
+        }
+        // What `/…` completes to (as the session's mod reported it) and the styles it can switch to.
+        (Method::GET, ["v1", "sessions", account, id, "commands"]) => {
+            let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
+            off_thread(state.clone(), move |state| {
+                let config_dir = state.accounts.iter().find(|a| a.id == key.account).map(|a| a.config_dir.clone()).unwrap_or_default();
+                reply(
+                    StatusCode::OK,
+                    &serde_json::json!({
+                        "commands": brain_core::commands::load(&home_dir(), &key.id),
+                        "styles": brain_core::styles::available(&config_dir, None),
+                    }),
+                )
+            })
+            .await
         }
         // Git and the files themselves are read off the server's only thread.
         (Method::GET, ["v1", "sessions", account, id, "files"]) => match session_key(&state, account, id) {
@@ -970,6 +1068,26 @@ fn clip_bytes(text: &str, max: usize) -> String {
 }
 
 /// A query parameter, percent-decoded (`+` stays a plus).
+/// A session name from the phone as `/rename` takes it: one line without control characters,
+/// at most 80 characters. `None` when nothing is left.
+fn session_name(name: &str) -> Option<String> {
+    let line: String = name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let name: String = line.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect();
+    (!name.is_empty()).then_some(name)
+}
+
+/// The folders in `path` (the home folder without one), or `None` when it is no folder inside
+/// the home folder.
+fn folder_list(home: &Path, path: Option<&str>) -> Option<FolderList> {
+    let dir = brain_core::folders::inside(home, path.map_or(home, Path::new))?;
+    let parent = dir.parent().and_then(|p| brain_core::folders::inside(home, p)).filter(|_| Some(dir.as_path()) != home.canonicalize().ok().as_deref());
+    Some(FolderList {
+        path: dir.display().to_string(),
+        parent: parent.map(|p| p.display().to_string()),
+        folders: brain_core::folders::subfolders(&dir).iter().map(|p| p.display().to_string()).collect(),
+    })
+}
+
 fn query_param(query: Option<&str>, name: &str) -> Option<String> {
     query?
         .split('&')
@@ -1076,7 +1194,10 @@ mod tests {
             permission_since_ms: None,
             question: None,
             can_reply: true,
-            can_move: true,
+            team_questions: Vec::new(),
+            team_active: None,
+            in_team: false,
+            movable: true,
         }]);
         let token = std::fs::read_to_string(dir.join("token")).unwrap();
         let curl = |args: &[&str]| {
@@ -1113,18 +1234,26 @@ mod tests {
         let answers = "{\"call\":\"toolu_2\",\"answers\":[{\"picks\":[0,2]},{\"picks\":[],\"other\":\" lieber so \"}]}";
         assert!(curl(&["-H", &bearer, "-d", answers, "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("202"));
         assert!(curl(&["-H", &bearer, "-d", "{\"call\":\"t\",\"answers\":[{\"picks\":[]}]}", "BASE/v1/sessions/main/0331-ab/answer"]).ends_with("400"));
-        link.publish_more(Vec::new(), Places { accounts: vec!["main".into()], folders: vec!["/w/fin".into()] });
+        link.publish_more(Vec::new(), Places { accounts: vec!["main".into()], folders: vec!["/w/fin".into()], styles: Vec::new() });
         assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\",\"folder\":\"/etc\"}", "BASE/v1/sessions"]).ends_with("400"));
         assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\",\"folder\":\"/w/fin\",\"prompt\":\"los\"}", "BASE/v1/sessions"]).ends_with("202"));
-        // Steering: interrupt, compact (typed as the session's command), resume, restart with flags.
+        // Steering: interrupt, compact and rename (typed as the session's commands), resume, restart with flags, end.
         let control = |body: &str| curl(&["-H", &bearer, "-d", body, "BASE/v1/sessions/main/0331-ab/control"]);
-        for body in ["{\"action\":\"interrupt\"}", "{\"action\":\"compact\"}", "{\"action\":\"resume\"}", "{\"action\":\"restart\",\"flags\":\"--model opus\"}"] {
+        for body in ["{\"action\":\"interrupt\"}", "{\"action\":\"compact\"}", "{\"action\":\"resume\"}", "{\"action\":\"restart\",\"flags\":\"--model opus\"}", "{\"action\":\"rename\",\"name\":\"Neue\\nAusgabe\"}", "{\"action\":\"end\"}", "{\"action\":\"style\",\"name\":\"Concise\"}", "{\"action\":\"team\",\"on\":true}", "{\"action\":\"move\",\"account\":\"second\"}"] {
             assert!(control(body).ends_with("202"), "{body}");
         }
         // Brain's own flags and unknown actions are refused.
         assert!(control("{\"action\":\"restart\",\"flags\":\"--resume x\"}").ends_with("400"));
         assert!(control("{\"action\":\"restart\",\"flags\":\" \"}").ends_with("400"));
         assert!(control("{\"action\":\"reboot\"}").ends_with("400"));
+        // Only another account Brain knows.
+        assert!(control("{\"action\":\"move\",\"account\":\"main\"}").ends_with("400"));
+        assert!(control("{\"action\":\"move\",\"account\":\"nope\"}").ends_with("400"));
+        assert!(control("{\"action\":\"move\"}").ends_with("400"));
+        assert!(control("{\"action\":\"rename\",\"name\":\" \"}").ends_with("400"), "a name is needed");
+        // The session's commands (none reported here) and the styles it can switch to.
+        let listed = curl(&["-H", &bearer, "BASE/v1/sessions/main/0331-ab/commands"]);
+        assert!(listed.contains("\"commands\":[]") && listed.contains("Explanatory") && listed.ends_with("200"), "{listed}");
         let key = SessionKey { account: "main".into(), id: "0331-ab".into() };
         assert_eq!(
             link.take_commands(),
@@ -1142,11 +1271,16 @@ mod tests {
                     call: "toolu_2".into(),
                     answers: vec![Picked { picks: vec![0, 2], other: None }, Picked { picks: vec![], other: Some("lieber so".into()) }],
                 },
-                Command::Start { account: "main".into(), folder: "/w/fin".into(), prompt: Some("los".into()) },
+                Command::Start { account: "main".into(), folder: "/w/fin".into(), prompt: Some("los".into()), style: None, team: false },
                 Command::Interrupt { key: key.clone() },
                 Command::Reply { key: key.clone(), text: "/compact".into() },
                 Command::Resume { key: key.clone() },
-                Command::Restart { key, flags: vec!["--model".into(), "opus".into()] },
+                Command::Restart { key: key.clone(), flags: vec!["--model".into(), "opus".into()] },
+                Command::Reply { key: key.clone(), text: "/rename Neue Ausgabe".into() },
+                Command::End { key: key.clone() },
+                Command::Reply { key: key.clone(), text: "/output-style Concise".into() },
+                Command::Team { key: key.clone(), on: true },
+                Command::Move { key, account: "second".into() },
             ]
         );
 
@@ -1186,6 +1320,16 @@ mod tests {
 
     #[test]
     fn reads_percent_encoded_query_parameters() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("home/Work/app")).unwrap();
+        let home = root.path().join("home").canonicalize().unwrap();
+        let top = folder_list(&home, None).unwrap();
+        assert_eq!((top.parent, top.folders.len()), (None, 1));
+        let work = folder_list(&home, Some(&top.folders[0])).unwrap();
+        assert_eq!(work.parent.as_deref(), Some(top.path.as_str()));
+        assert!(work.folders[0].ends_with("/Work/app"));
+        assert!(folder_list(&home, Some(root.path().to_str().unwrap())).is_none(), "nothing outside the home folder");
+
         assert_eq!(query_param(Some("path=%2Fw%2Fa%20b%2B.txt&x=1"), "path").as_deref(), Some("/w/a b+.txt"));
         assert_eq!(query_param(Some("path=%zz"), "path"), None);
         assert_eq!(query_param(Some("path="), "path"), None);
@@ -1384,7 +1528,10 @@ mod tests {
             permission_since_ms: (phase == "needs_you").then_some(now - minutes * 60_000),
             question: None,
             can_reply: phase != "ended",
-            can_move: phase != "working",
+            team_questions: Vec::new(),
+            team_active: None,
+            in_team: false,
+            movable: true,
         };
         link.publish(vec![
             view("9a1527b8-0000-0000-0000-000000000001", "Phoenix", "needs_you", "attention", "Bash: composer test --filter BookingExport", 2),
@@ -1413,7 +1560,7 @@ mod tests {
                 UsageView { account: "main".into(), five_hour: Some(limit(42.0, 3, None)), seven_day: Some(limit(67.0, 96, Some(40))) },
                 UsageView { account: "second".into(), five_hour: Some(limit(8.0, 4, None)), seven_day: Some(limit(23.0, 120, None)) },
             ],
-            Places { accounts: vec!["main".into(), "second".into()], folders: vec!["/Users/demo/Work/fin".into(), "/Users/demo/Work/phoenix".into(), "/Users/demo/Work/fux".into()] },
+            Places { accounts: vec!["main".into(), "second".into()], folders: vec!["/Users/demo/Work/fin".into(), "/Users/demo/Work/phoenix".into(), "/Users/demo/Work/fux".into()], styles: Vec::new() },
         );
         let fingerprint: String = ring::digest::digest(&ring::digest::SHA256, &std::fs::read(dir.join("link/cert.der")).unwrap())
             .as_ref()

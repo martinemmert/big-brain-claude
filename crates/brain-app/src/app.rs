@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use brain_core::state::{Phase, Session, SessionKey};
+use brain_core::state::{Ask, Phase, Session, SessionKey};
 use brain_terminal::{self as terminal, Capabilities, Key, Outcome};
 use iced::keyboard::{self, key::Named};
 use iced::widget::{operation, scrollable};
@@ -26,11 +26,9 @@ use crate::i18n::t;
 use crate::menubar::MenuBar;
 use crate::model::Model;
 use crate::notify::{self, Notifier};
-use crate::prefs::{Layout, Prefs};
+use crate::prefs::Prefs;
 use crate::tr;
 
-/// Sessions on "your turn" for longer than this move to the "resting" section.
-pub const RESTING_AFTER_MS: i64 = 2 * 60 * 60 * 1000;
 /// Ended sessions show in the list for a day; older ones through the search.
 pub const ENDED_RECENT_MS: i64 = 24 * 60 * 60 * 1000;
 const SNOOZE_MS: i64 = 15 * 60 * 1000;
@@ -63,6 +61,8 @@ pub enum Mode {
     Reply,
     NewSession,
     Cleanup,
+    /// Tasks noted for later (`/later`, `brain later`).
+    Later,
     /// The command palette (⌘K).
     Palette,
     /// The composer (⌘E): a longer prompt for the selected session.
@@ -93,9 +93,10 @@ pub enum PaletteCommand {
     NewSession,
     Find,
     Cleanup,
+    Later,
+    /// The selected session goes on as an agent team (true) or without one.
+    Team(bool),
     ToggleEnded,
-    ToggleProjects,
-    ToggleToday,
     ToggleBackground,
     /// Show or hide sessions programs started (SDK reviews, `claude -p`).
     ToggleAutomated,
@@ -146,6 +147,9 @@ pub enum DetailTab {
     Files,
     /// Claude's questions and the answers given.
     Questions,
+    /// The session's agents (an agent team, subagents), their messages and questions to the
+    /// person, and the team's guide (shown once the session has agents).
+    Team,
     /// The councils of the konsil skill (shown once the session has one).
     Konsil,
     /// A real terminal running the session inside Brain (`claude attach` / `claude --resume`).
@@ -200,7 +204,6 @@ pub enum Action {
     Deny,
     StartReply,
     StartRename,
-    CopyDigest,
     StartTerminal,
     OpenInITerm,
     TakeOver,
@@ -246,6 +249,8 @@ pub enum Message {
     Search(String),
     SearchSubmit,
     Reply(String),
+    /// A completion picked under the reply field: `/name `.
+    ReplyComplete(String),
     ReplySubmit,
     Rename(String),
     RenameSubmit,
@@ -253,13 +258,21 @@ pub enum Message {
     NewSubmit,
     NewAccount(usize),
     NewPick(usize),
-    Layout(Layout),
+    /// A click on a task for later picks it.
+    LaterPick(usize),
+    /// Answer a team member's question to the person (its name).
+    TeamAnswer(String),
     Filter(Option<String>),
     ToggleBackground,
     ToggleAutomated,
-    ToggleResting,
     ToggleSnoozed,
     ToggleEnded,
+    /// A card's button: the same command the phone sends.
+    Steer(crate::companion::Command),
+    /// "alle gesehen": every report in the reading zone counts as read.
+    SeeAll,
+    /// "Nur Bericht" on a maybe-question: it counts as a report, not as a question.
+    OnlyReport(SessionKey),
     Tab(DetailTab),
     Do(Action),
     CleanupAge(usize),
@@ -313,6 +326,8 @@ pub enum Message {
     Term(iced_term::Event),
     /// A background session Brain started or took over: its account and short id, or why not.
     Started(String, Result<String, String>),
+    /// An agent team started in tmux (its tmux session), or why not.
+    TeamStarted(Result<String, String>),
     /// A Markdown file was handed to YAMV (`true`), or to the text editor because YAMV is missing.
     MarkdownOpened(String, bool),
     MousePressed,
@@ -355,6 +370,10 @@ pub enum Message {
     CloseReader,
     ReaderToEditor,
     NewPlace(bool),
+    /// The new session's output style; none keeps the account's.
+    NewStyle(Option<String>),
+    /// The new session as an agent team or not.
+    NewTeam(bool),
     /// The new-account dialog: the name typed, its preview, create, and the outcome.
     AccountSetupName(String),
     AccountSetupPlanned(u64, brain_core::account_setup::Plan),
@@ -412,6 +431,10 @@ pub struct NewSession {
     pub chosen: Option<Chosen>,
     /// ⌥⏎ starts it in an iTerm tab instead of in Brain.
     pub in_iterm: bool,
+    /// ⇧⇥: the output style it starts with; none keeps what the account's settings say.
+    pub style: Option<String>,
+    /// ⌘T: as an agent team, led by the configured agent (`claude-team`).
+    pub team: bool,
 }
 
 pub struct Chosen {
@@ -433,80 +456,125 @@ pub struct ChangesCache {
     pub changes: Option<brain_core::changes::Changes>,
 }
 
+/// Where a running session stands in the list.
+#[derive(Debug, PartialEq)]
+enum Place {
+    Decide(Ask),
+    Read,
+    Quiet,
+}
+
+/// A session Martin has open counts as seen, also after a new turn end: it never moves to
+/// "Zum Lesen" and a mere "Frage?" doesn't keep it in "Zu entscheiden". Real questions stay.
+fn place(session: &Session, selected: bool, open_question: bool, prefs: &Prefs, now: i64) -> Place {
+    let since = session.phase_since_ms();
+    let seen = selected || prefs.is_seen(&session.key, since);
+    let snoozed = prefs.snoozed_until(&session.key, now).is_some();
+    let ask = session
+        .ask(open_question)
+        .filter(|_| !snoozed)
+        .filter(|ask| *ask != Ask::Maybe || !(seen || prefs.is_report(&session.key, since)));
+    if let Some(ask) = ask {
+        Place::Decide(ask)
+    } else if session.phase() == Phase::YourTurn && !snoozed && !seen {
+        Place::Read
+    } else {
+        Place::Quiet
+    }
+}
+
 /// The left column, already filtered and sorted.
 pub struct Groups<'a> {
     /// Ended sessions the user marked with `P` to resume later.
     pub saved: Vec<&'a Session>,
-    pub pinned: Vec<&'a Session>,
-    pub attention: Vec<&'a Session>,
-    pub working: Vec<&'a Session>,
-    pub resting: Vec<&'a Session>,
-    pub snoozed: Vec<&'a Session>,
-    pub ended: Vec<&'a Session>,
-    /// Hidden with ⌫ until something happens: listed with the snoozed ones.
-    pub hidden: Vec<&'a Session>,
+    /// Sessions that ask something of the user, by kind and then longest waiting first. A
+    /// question that is only a guess ([`Ask::Maybe`]) comes last.
+    pub decide: Vec<(&'a Session, Ask)>,
+    /// Finished and not yet looked at, newest first.
+    pub read: Vec<&'a Session>,
+    /// Everything else that lives, by project.
+    pub quiet: Vec<(String, Vec<&'a Session>)>,
+    /// Snoozed while waiting, or hidden with ⌫ until something happens: folded at the end.
+    pub paused: Vec<&'a Session>,
     /// Background sessions without activity for a day.
     pub background: Vec<&'a Session>,
     /// Sessions programs started (SDK reviews, `claude -p`).
     pub automated: Vec<&'a Session>,
+    pub ended: Vec<&'a Session>,
     /// Ended over a day ago, shown only while searching.
     pub older_ended: usize,
-    /// Which of the folded sections at the end are open (a search opens all).
-    pub resting_open: bool,
-    pub snoozed_open: bool,
+    /// Which of the folded lists at the end are open (a search opens all; ended: `include_ended`).
+    pub paused_open: bool,
     pub background_open: bool,
     pub automated_open: bool,
 }
 
 impl<'a> Groups<'a> {
-    /// The sessions ↑↓ and the digits reach: what the list shows, folded sections left out.
+    /// The sessions ↑↓ reach, in drawing order: what the list shows, folded lists only while open.
     pub fn navigable(&self, include_ended: bool) -> Vec<&'a Session> {
         let mut all: Vec<&Session> = self.saved.clone();
-        all.extend(&self.pinned);
-        all.extend(&self.attention);
-        all.extend(&self.working);
-        let folded: [(bool, &Vec<&'a Session>); 5] = [
-            (self.resting_open, &self.resting),
-            (self.snoozed_open, &self.snoozed),
-            (self.snoozed_open, &self.hidden),
+        all.extend(self.live());
+        let folded: [(bool, &Vec<&'a Session>); 4] = [
+            (self.paused_open, &self.paused),
             (self.background_open, &self.background),
             (self.automated_open, &self.automated),
+            (include_ended, &self.ended),
         ];
         for (open, sessions) in folded {
             if open {
                 all.extend(sessions);
             }
         }
-        if include_ended {
-            all.extend(&self.ended);
-        }
         all
     }
 
+    /// The running sessions in drawing order.
     pub fn live(&self) -> Vec<&'a Session> {
-        let mut all: Vec<&Session> = Vec::new();
-        all.extend(&self.pinned);
-        all.extend(&self.attention);
-        all.extend(&self.working);
-        all.extend(&self.resting);
-        all.extend(&self.snoozed);
+        let mut all: Vec<&Session> = self.decide.iter().map(|(s, _)| *s).collect();
+        all.extend(&self.read);
+        all.extend(self.quiet.iter().flat_map(|(_, sessions)| sessions.iter().copied()));
         all
+    }
+
+    /// How many sessions wait for a decision. A guess ([`Ask::Maybe`]) doesn't count.
+    pub fn deciding(&self) -> usize {
+        self.decide.iter().filter(|(_, ask)| *ask != Ask::Maybe).count()
     }
 }
 
 /// One entry of the session list, in drawing order. The list's height is known from these, so
 /// keyboard navigation can keep the selection in view.
 pub enum Item<'a> {
-    Section { title: String, count: usize, alert: bool, toggle: Option<Message> },
+    /// `action`: a link at the section's right edge and what it sends.
+    Section { title: String, count: usize, alert: bool, action: Option<Box<(String, Message)>> },
     Hint(String),
-    Card(&'a Session, usize),
+    /// A session that asks something. `options`: how many option buttons the card has (for a
+    /// permission: 1 when it shows the command).
+    Decide { s: &'a Session, nav: usize, ask: Ask, options: usize },
+    /// A finished session to read.
+    Report(&'a Session, usize),
     Row(&'a Session, usize),
+    /// The project's name above its sessions in the quiet zone.
+    Project(String),
+    /// Under the projects: the toggles for ended, background and automated sessions.
+    Footer,
 }
 
 pub const SECTION_H: f32 = 34.0;
 pub const HINT_H: f32 = 36.0;
 pub const ROW_H: f32 = 36.0;
-pub const CARD_H: f32 = 76.0;
+pub const CARD_H: f32 = 88.0;
+/// The button row of a permission or maybe-question card.
+pub const BUTTONS_H: f32 = 34.0;
+/// One option button of an AskUserQuestion card.
+pub const OPTION_H: f32 = 32.0;
+/// The line with the tool and command a permission card asks about.
+pub const CMD_H: f32 = 31.0;
+pub const REPORT_H: f32 = 72.0;
+/// The line under a maybe-question that says why it is listed.
+pub const WHY_H: f32 = 18.0;
+pub const PROJECT_H: f32 = 26.0;
+pub const FOOTER_H: f32 = 40.0;
 pub const LIST_GAP: f32 = 6.0;
 pub const LIST_TOP: f32 = 4.0;
 
@@ -515,8 +583,16 @@ impl Item<'_> {
         match self {
             Item::Section { .. } => SECTION_H,
             Item::Hint(_) => HINT_H,
-            Item::Card(..) => CARD_H,
+            Item::Decide { ask, options, .. } => match ask {
+                Ask::Permission => CARD_H + *options as f32 * CMD_H + BUTTONS_H,
+                Ask::Maybe => CARD_H + WHY_H + BUTTONS_H,
+                Ask::Options => CARD_H + *options as f32 * OPTION_H,
+                Ask::Question => CARD_H,
+            },
+            Item::Report(..) => REPORT_H,
             Item::Row(..) => ROW_H,
+            Item::Project(_) => PROJECT_H,
+            Item::Footer => FOOTER_H,
         }
     }
 }
@@ -531,12 +607,31 @@ pub struct Brain {
     pub selected: Option<SessionKey>,
     pub hovered: Option<SessionKey>,
     pub show_ended: bool,
-    /// The "resting for over 2 h" group is open.
-    pub show_resting: bool,
     /// Whether the snoozed-and-hidden section is open.
     pub show_snoozed: bool,
     /// The clean-up dialog's age choice (index into CLEANUP_DAYS).
     pub cleanup_age: usize,
+    /// Each session's agents and their messages, as its mod reported them, and when each
+    /// session's file was read.
+    pub teams: HashMap<SessionKey, brain_core::teams::Team>,
+    /// The tmux panes of agent teams Brain started (Claude's pid → tmux session), read every
+    /// few seconds, and when.
+    team_panes: HashMap<u32, String>,
+    team_panes_read: Option<Instant>,
+    teams_read: HashMap<String, std::time::SystemTime>,
+    /// Questions to the person already notified about; the first read only sets the baseline.
+    team_notified: Option<HashSet<String>>,
+    /// The team guide while the Team tab shows.
+    pub team_guide: Option<String>,
+    /// What each of the selected session's agents used, while the Team tab shows.
+    pub team_usage: Vec<brain_core::teams::MemberUsage>,
+    /// The state of the selected session's task as its team's lead wrote it, while the Team tab
+    /// shows, and for which session and when it was read.
+    pub team_state: Option<String>,
+    team_state_read: Option<(SessionKey, Instant)>,
+    /// The tasks for later while their dialog is open, and the picked one.
+    pub later: Vec<brain_core::later::Item>,
+    pub later_pick: usize,
     pub status: Option<(String, Instant)>,
     pub tab: DetailTab,
     pub conversation: Option<Conversation>,
@@ -567,6 +662,8 @@ pub struct Brain {
     pub composer_images: Vec<std::path::PathBuf>,
     pub composer_templates: Vec<brain_core::templates::Template>,
     pub palette_index: usize,
+    /// The selected session's output styles, read when the palette opens.
+    palette_styles: Vec<String>,
     /// Text to find in the selected session's whole conversation (⌘F).
     pub find: String,
     /// The Messages tab lists only the user's prompts, all of them.
@@ -583,8 +680,8 @@ pub struct Brain {
     pub search: String,
     pub rename: String,
     pub reply: String,
-    /// Reminders sent while a session keeps waiting: since when it waits, and how many.
-    reminders: HashMap<SessionKey, (i64, u32)>,
+    /// The selected session's slash commands while its reply field is open, for completing `/…`.
+    reply_commands: Vec<brain_core::commands::SlashCommand>,
     /// The terminal hosting the selected session and what Brain can do with it.
     host: Option<(SessionKey, Capabilities)>,
     /// Project name and worktree per session.
@@ -605,14 +702,15 @@ pub struct Brain {
     pub overview: bool,
     /// Sessions whose terminal rang the bell while another session was selected.
     pub bells: HashSet<SessionKey>,
-    /// Pairs already notified about shared files.
-    conflicts_notified: HashSet<(SessionKey, SessionKey)>,
     pub changes: Option<ChangesCache>,
     changes_loading: bool,
     pub new_session: NewSession,
     /// `A`, `X`, `⌫` or `⌘⌫` was pressed once on this session: a second press within 5 s acts.
     armed: Option<(char, SessionKey, Instant)>,
     armed_path: Option<(String, SessionKey, Instant)>,
+    /// Sessions a move just started for: until the board lists them as moved, a second move
+    /// (a double tap on the phone) would fork them into the target twice.
+    moving: HashMap<SessionKey, Instant>,
     /// The session whose context menu is open, and where it opens.
     pub context_menu: Option<(SessionKey, iced::Point)>,
     /// The session selected before a right click selected another one: "open beside" keeps it.
@@ -659,7 +757,7 @@ pub struct Brain {
     titlebar_ready: bool,
     /// What the detail pane showed last; when it changes, the message list is built anew and
     /// starts at its newest message again.
-    detail_shape: (Layout, Mode, DetailTab),
+    detail_shape: (Mode, DetailTab),
     /// A click selected a session: once its terminal shows, it gets the keys.
     focus_on_select: bool,
     /// The new-account dialog.
@@ -678,8 +776,10 @@ pub struct Brain {
     pub relaunch: relaunch::RelaunchDialog,
     pending_restart: Option<relaunch::PendingRestart>,
     restart_flags: HashMap<SessionKey, Vec<String>>,
-    /// Per session that waits: its transcript's length when read, and the question it asks.
-    link_questions: HashMap<SessionKey, (u64, Option<brain_core::qa::OpenQuestion>)>,
+    /// Per session that waits: what it was read at, and the question it asks.
+    /// Reminders sent per waiting session: (when its wait began, how many).
+    reminders: HashMap<SessionKey, (i64, u32)>,
+    pub(crate) questions: HashMap<SessionKey, (link::QuestionReadAt, Option<brain_core::qa::OpenQuestion>)>,
     /// Brain Link, the companion app's server, while it runs.
     link: Option<crate::companion::Link>,
     /// The pairing code as an image.
@@ -695,6 +795,14 @@ impl Brain {
             prefs.save();
         }
         let demo = model.is_demo();
+        if !demo {
+            let now = now_ms();
+            let finished: Vec<(SessionKey, i64)> =
+                model.board.sorted().into_iter().filter(|s| s.phase() == Phase::YourTurn).map(|s| (s.key.clone(), s.phase_since_ms())).collect();
+            if prefs.start_seen(finished, now) {
+                prefs.save();
+            }
+        }
         restore_saved(&mut model, &prefs);
         let mut brain = Self {
             model,
@@ -705,9 +813,19 @@ impl Brain {
             selected: None,
             hovered: None,
             show_ended: false,
-            show_resting: false,
             show_snoozed: false,
             cleanup_age: 1,
+            teams: HashMap::new(),
+            team_panes: HashMap::new(),
+            team_panes_read: None,
+            teams_read: HashMap::new(),
+            team_notified: None,
+            team_guide: None,
+            team_usage: Vec::new(),
+            team_state: None,
+            team_state_read: None,
+            later: Vec::new(),
+            later_pick: 0,
             status: None,
             tab: DetailTab::Messages,
             conversation: None,
@@ -715,7 +833,7 @@ impl Brain {
             search: String::new(),
             rename: String::new(),
             reply: String::new(),
-            reminders: HashMap::new(),
+            reply_commands: Vec::new(),
             host: None,
             projects: HashMap::new(),
             checkouts: HashMap::new(),
@@ -746,6 +864,7 @@ impl Brain {
             composer_images: Vec::new(),
             composer_templates: Vec::new(),
             palette_index: 0,
+            palette_styles: Vec::new(),
             prompts_only: false,
             find_open: false,
             history: None,
@@ -754,12 +873,12 @@ impl Brain {
             files_loading: false,
             file_filter: FileFilter::All,
             bells: HashSet::new(),
-            conflicts_notified: HashSet::new(),
             changes: None,
             changes_loading: false,
             new_session: NewSession::default(),
             armed: None,
             armed_path: None,
+            moving: HashMap::new(),
             context_menu: None,
             before_menu: None,
             pointer: iced::Point::ORIGIN,
@@ -782,15 +901,16 @@ impl Brain {
             synced_selection: None,
             dragging_sidebar: false,
             titlebar_ready: false,
-            detail_shape: (Layout::Status, Mode::Normal, DetailTab::Messages),
+            detail_shape: (Mode::Normal, DetailTab::Messages),
             focus_on_select: false,
             account_setup: account::AccountSetup::default(),
+            questions: HashMap::new(),
+            reminders: HashMap::new(),
             sync: sync::SyncDialog::default(),
             garden: garden::GardenDialog::default(),
             garden_count: 0,
             unreachable: HashMap::new(),
             terminal_started: HashMap::new(),
-            link_questions: HashMap::new(),
             relaunch: relaunch::RelaunchDialog::default(),
             pending_restart: None,
             restart_flags: HashMap::new(),
@@ -821,7 +941,7 @@ impl Brain {
     }
 
     pub fn title(&self) -> String {
-        let waiting = self.waiting_counts().0;
+        let waiting = self.deciding();
         if waiting > 0 { tr!("Brain – {waiting} warten", "Brain – {waiting} waiting") } else { "Brain".into() }
     }
 
@@ -860,13 +980,9 @@ impl Brain {
         Subscription::batch(subscriptions)
     }
 
-    /// Sessions waiting for the user (in the attention and pinned groups), and how many call.
-    pub fn waiting_counts(&self) -> (usize, usize) {
-        let groups = self.groups(now_ms());
-        let waiting: Vec<&Session> =
-            groups.attention.iter().chain(&groups.pinned).copied().filter(|s| matches!(s.phase(), Phase::NeedsYou | Phase::YourTurn)).collect();
-        let calling = waiting.iter().filter(|s| s.phase() == Phase::NeedsYou).count();
-        (waiting.len(), calling)
+    /// How many sessions wait for a decision (not counting a question that is only a guess).
+    pub fn deciding(&self) -> usize {
+        self.groups(now_ms()).deciding()
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -928,6 +1044,7 @@ impl Brain {
                 Task::none()
             }
             Message::ReplySubmit => self.submit_reply(),
+            Message::ReplyComplete(name) => self.complete_reply(&name),
             Message::Rename(text) => {
                 self.rename = text;
                 Task::none()
@@ -947,11 +1064,11 @@ impl Brain {
                 self.new_session.pick = index;
                 self.confirm_new_session()
             }
-            Message::Layout(layout) => {
-                self.prefs.layout = layout;
-                self.prefs.save();
+            Message::LaterPick(index) => {
+                self.later_pick = index;
                 Task::none()
             }
+            Message::TeamAnswer(from) => self.answer_team_question(&from),
             Message::Filter(filter) => {
                 self.filter = filter;
                 Task::none()
@@ -964,8 +1081,14 @@ impl Brain {
                 self.toggle_automated();
                 Task::none()
             }
-            Message::ToggleResting => {
-                self.show_resting = !self.show_resting;
+            Message::Steer(command) => self.run_link_command(command, true),
+            Message::SeeAll => {
+                self.see_all();
+                Task::none()
+            }
+            Message::OnlyReport(key) => {
+                self.prefs.mark_report(&key, now_ms());
+                self.prefs.save();
                 Task::none()
             }
             Message::ToggleSnoozed => {
@@ -1238,6 +1361,17 @@ impl Brain {
                     Task::none()
                 }
             },
+            Message::TeamStarted(result) => {
+                match result {
+                    Ok(tmux) => {
+                        self.team_panes_read = None;
+                        self.model.relist_transcripts();
+                        self.set_status(tr!("Team läuft in tmux ({tmux}) – es erscheint gleich.", "The team runs in tmux ({tmux}) – it shows up in a moment."));
+                    }
+                    Err(why) => self.set_status(tr!("Konnte das Team nicht starten: {why}", "Couldn't start the team: {why}")),
+                }
+                Task::none()
+            }
             Message::MousePressed => {
                 // Clicks move the keyboard in or out of a terminal; ask each shown one.
                 let mut asks: Vec<Task<Message>> = self
@@ -1451,6 +1585,14 @@ impl Brain {
                 self.prefs.save();
                 Task::none()
             }
+            Message::NewStyle(style) => {
+                self.new_session.style = style;
+                Task::none()
+            }
+            Message::NewTeam(team) => {
+                self.new_session.team = team;
+                Task::none()
+            }
             Message::NewPlace(in_iterm) => {
                 self.new_session.in_iterm = in_iterm;
                 Task::none()
@@ -1474,7 +1616,9 @@ impl Brain {
         }
         self.watch_screenshots();
         let now = now_ms();
-        for item in self.model.refresh() {
+        let refreshed = self.model.refresh();
+        self.refresh_questions();
+        for item in refreshed {
             if self.prefs.snoozed_until(&item.key, now).is_some() || self.prefs.is_muted(&item.key) || self.is_quiet(&item.key) {
                 continue;
             }
@@ -1502,11 +1646,11 @@ impl Brain {
                 notify::Response::Reply(key, text) => tasks.push(self.reply_from_notification(key, text)),
             }
         }
+        self.refresh_teams(now);
         tasks.push(self.serve_link(now));
         self.refresh_sync_conflicts();
         self.garden_count = self.garden_findings().iter().filter(|f| f.sure).count();
         self.remind(now);
-        self.notify_conflicts();
         tasks.push(self.load_changes());
         let linked: Vec<SessionKey> = crate::links::take_sessions()
             .into_iter()
@@ -1545,11 +1689,19 @@ impl Brain {
         }
         if let Some(key) = &self.selected {
             self.bells.remove(key);
+            // Looking at a session in the front window is what makes its report read.
+            if app_is_active() {
+                if let Some(since) = self.model.board.get(key).map(|s| s.phase_since_ms()) {
+                    if self.prefs.see(key, now, since) {
+                        self.prefs.save();
+                    }
+                }
+            }
         }
         let mut scroll = self.sync_conversation();
         let attach = self.sync_terminal();
         self.sync_shown_terminal();
-        let shape = (self.prefs.layout, if matches!(self.mode, Mode::NewSession | Mode::Cleanup) { self.mode } else { Mode::Normal }, self.tab);
+        let shape = (if matches!(self.mode, Mode::NewSession | Mode::Cleanup | Mode::Later) { self.mode } else { Mode::Normal }, self.tab);
         if shape != self.detail_shape {
             self.detail_shape = shape;
             self.messages_at_bottom = true;
@@ -1558,9 +1710,9 @@ impl Brain {
         self.sync_host();
         self.sync_projects();
         self.conflicts = self.compute_conflicts();
-        let (waiting, calling) = self.waiting_counts();
+        let deciding = self.deciding();
         if let Some(menubar) = self.menubar.as_mut() {
-            menubar.show(waiting, calling);
+            menubar.show(deciding, deciding);
         }
         // The Files tab and the find results follow the transcript as it grows.
         let files = self.load_files();
@@ -1609,18 +1761,75 @@ impl Brain {
         Task::none()
     }
 
-    /// Reminds again about sessions that keep waiting: every `remind_after_minutes`, at most
-    /// three times per waiting period, never for muted or snoozed ones.
+    /// Reads the teams the sessions' mods reported, only files that changed, and notifies each
+    /// new question to the person once (not for muted or snoozed sessions).
+    fn refresh_teams(&mut self, now: i64) {
+        if self.team_panes_read.is_none_or(|at| at.elapsed() > Duration::from_secs(5)) {
+            self.team_panes = brain_core::agents::team_panes();
+            self.team_panes_read = Some(Instant::now());
+        }
+        let home = brain_core::account::home_dir();
+        let by_id: HashMap<String, SessionKey> = self.model.board.keys().map(|k| (k.id.clone(), k.clone())).collect();
+        for entry in std::fs::read_dir(home.join(".claude-brain/teams")).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let Some(id) = path.file_stem().and_then(|s| s.to_str()).filter(|_| path.extension().is_some_and(|e| e == "json")) else { continue };
+            let Some(key) = by_id.get(id) else { continue };
+            let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else { continue };
+            if self.teams_read.get(id) == Some(&modified) {
+                continue;
+            }
+            if let Some(team) = brain_core::teams::load(&home, id) {
+                self.teams.insert(key.clone(), team);
+                self.teams_read.insert(id.to_string(), modified);
+            }
+        }
+        self.teams.retain(|k, _| by_id.contains_key(&k.id));
+        if self.tab == DetailTab::Team {
+            self.team_guide = std::fs::read_to_string(config::team_guide()).ok();
+            self.team_usage = self.selected.as_ref().and_then(|k| self.model.transcript_path(k)).map(|t| brain_core::teams::usage(&t)).unwrap_or_default();
+            // Finding the state file asks for the branch: every few seconds, not on every tick.
+            let fresh = self.team_state_read.as_ref().is_some_and(|(k, at)| Some(k) == self.selected.as_ref() && at.elapsed() < Duration::from_secs(3));
+            if let (false, Some(key)) = (fresh, self.selected.clone()) {
+                let cwd = self.model.board.get(&key).and_then(|s| s.cwd.clone());
+                self.team_state = cwd.and_then(|c| brain_core::teams::state_file(&config::team_state_dir(), std::path::Path::new(&c))).and_then(|f| std::fs::read_to_string(f).ok());
+                self.team_state_read = Some((key, Instant::now()));
+            }
+        }
+
+        let open: Vec<(SessionKey, brain_core::teams::TeamMessage)> =
+            self.teams.iter().flat_map(|(key, team)| team.open_questions().map(move |q| (key.clone(), q.clone()))).collect();
+        let Some(notified) = self.team_notified.as_mut() else {
+            self.team_notified = Some(open.into_iter().map(|(_, q)| q.id).collect());
+            return;
+        };
+        let mut posts = Vec::new();
+        for (key, question) in open {
+            if notified.insert(question.id.clone()) {
+                posts.push((key, question));
+            }
+        }
+        for (key, question) in posts {
+            if self.prefs.is_muted(&key) || self.prefs.snoozed_until(&key, now).is_some() {
+                continue;
+            }
+            let name = self.model.board.get(&key).map(|s| s.display_name()).unwrap_or_default();
+            let from = question.from.clone();
+            self.notifier.post(&key, &name, &tr!("Frage von {from}", "Question from {from}"), &plain(&question.text), true);
+        }
+    }
+
+    /// Reminds again about sessions that still ask for a decision: every `remind_after_minutes`,
+    /// at most three times per waiting period, never for muted or snoozed ones, and never for a
+    /// guess at a question or a report.
     fn remind(&mut self, now: i64) {
         const MAX_REMINDERS: u32 = 3;
         let Some(interval) = config::remind_after_ms() else { return };
         let waiting: Vec<(SessionKey, i64, Phase, String, Option<String>)> = self
-            .model
-            .board
-            .sorted()
-            .into_iter()
-            .filter(|s| matches!(s.phase(), Phase::NeedsYou | Phase::YourTurn))
-            .map(|s| (s.key.clone(), s.phase_since_ms(), s.phase(), s.display_name(), s.headline()))
+            .groups(now)
+            .decide
+            .iter()
+            .filter(|(_, ask)| *ask != Ask::Maybe)
+            .map(|(s, _)| (s.key.clone(), s.phase_since_ms(), s.phase(), s.display_name(), s.headline()))
             .collect();
         self.reminders.retain(|key, _| waiting.iter().any(|(k, ..)| k == key));
         for (key, since, phase, name, headline) in waiting {
@@ -1642,6 +1851,22 @@ impl Brain {
             let body = plain(headline.as_deref().unwrap_or(""));
             self.notifier.post(&key, &name, &subtitle, &body, phase == Phase::NeedsYou);
         }
+    }
+
+    /// Whether the selected session has agents or team messages, so the Team tab shows.
+    pub fn has_team(&self) -> bool {
+        self.selected.as_ref().is_some_and(|k| self.in_team(k) || self.teams.get(k).is_some_and(|t| !t.members.is_empty() || !t.messages.is_empty()))
+    }
+
+    /// "Answer" on a question to the person in the Team tab: the reply field, addressed to the
+    /// member who asked; the lead (the session itself) passes it on.
+    fn answer_team_question(&mut self, from: &str) -> Task<Message> {
+        let task = self.start_reply();
+        if self.mode != Mode::Reply {
+            return task;
+        }
+        self.reply = tr!("Antwort an {from}: ", "Answer to {from}: ");
+        Task::batch([task, operation::move_cursor_to_end(REPLY)])
     }
 
     /// Live sessions with a folder, for the background PR lookup.
@@ -1667,27 +1892,6 @@ impl Brain {
             .map(|s| brain_core::conflicts::Work { key: s.key.clone(), checkout: self.checkouts.get(&s.key).cloned(), edited: &s.insight.edited })
             .collect();
         brain_core::conflicts::conflicts(&work)
-    }
-
-    /// One notification per pair of sessions that start editing the same files.
-    fn notify_conflicts(&mut self) {
-        let found = self.compute_conflicts();
-        let mut posts = Vec::new();
-        for (key, conflict) in &found {
-            for (other, files) in &conflict.shared_files {
-                let pair = if key < other { (key.clone(), other.clone()) } else { (other.clone(), key.clone()) };
-                if self.conflicts_notified.insert(pair) {
-                    posts.push((key.clone(), other.clone(), files.clone()));
-                }
-            }
-        }
-        for (key, other, files) in posts {
-            let name = self.model.board.get(&key).map(|s| s.display_name()).unwrap_or_default();
-            let other_name = self.model.board.get(&other).map(|s| s.display_name()).unwrap_or_default();
-            let list = files.iter().map(|f| f.rsplit('/').next().unwrap_or(f)).collect::<Vec<_>>().join(", ");
-            let subtitle = tr!("bearbeitet dieselben Dateien wie {other_name}", "edits the same files as {other_name}");
-            self.notifier.post(&key, &name, &subtitle, &list, false);
-        }
     }
 
     /// While the Changes tab is open: reloads the selected session's git changes every 5 s.
@@ -1777,12 +1981,7 @@ impl Brain {
             return self.selected.clone();
         }
         let groups = self.groups(now_ms());
-        groups
-            .attention
-            .iter()
-            .chain(&groups.pinned)
-            .find(|s| self.terminals.contains_key(&s.key))
-            .map(|s| s.key.clone())
+        groups.live().into_iter().find(|s| self.terminals.contains_key(&s.key)).map(|s| s.key.clone())
     }
 
     /// A reply typed into a notification: straight into the session when Brain can type into it
@@ -1894,6 +2093,7 @@ impl Brain {
     fn open_palette(&mut self) -> Task<Message> {
         self.mode = Mode::Palette;
         self.palette.clear();
+        self.palette_styles = self.selected_styles().into_iter().map(|s| s.name).collect();
         self.palette_index = 0;
         self.focused_terminal = None;
         operation::focus(PALETTE)
@@ -1915,6 +2115,10 @@ impl Brain {
                 for (command, de, en) in SLASH_COMMANDS {
                     let what = t(de, en);
                     all.push((tr!("{command} an „{name}“ – {what}", "{command} to “{name}” – {what}"), "", PaletteCommand::Send(command.to_string())));
+                }
+                // `/output-style`: how the session answers, from its next message on.
+                for style in &self.palette_styles {
+                    all.push((tr!("Antwort-Profil von „{name}“: {style}", "Answer style of “{name}”: {style}"), "", PaletteCommand::Send(format!("/output-style {style}"))));
                 }
             }
             all.push((tr!("Längeren Prompt an „{name}“ schreiben", "Write a longer prompt for “{name}”"), "⌘E", PaletteCommand::Composer));
@@ -1943,6 +2147,11 @@ impl Brain {
             }
             all.push((t("Weiterführen … (Konto, Fork, Flags)", "Go on … (account, fork, flags)").to_string(), "A", PaletteCommand::Act(Action::Relaunch)));
             all.push((t("Neu starten mit … (z. B. --chrome)", "Restart with … (e.g. --chrome)").to_string(), "", PaletteCommand::Act(Action::RestartWith)));
+            if self.in_team(&session.key) {
+                all.push((t("Ohne Team fortsetzen", "Go on without the team").to_string(), "", PaletteCommand::Team(false)));
+            } else {
+                all.push((t("Als Agenten-Team fortsetzen", "Go on as an agent team").to_string(), "", PaletteCommand::Team(true)));
+            }
             all.push((t("Beenden / Hintergrund-Session stoppen", "End / stop the background session").to_string(), "X", PaletteCommand::Act(Action::End)));
             all.push((t("Ausblenden", "Hide").to_string(), "⌫", PaletteCommand::Act(Action::Hide)));
             all.push((t("In den Papierkorb", "Move to Trash").to_string(), "⌘⌫", PaletteCommand::Act(Action::Trash)));
@@ -1951,17 +2160,16 @@ impl Brain {
         all.push((t("Alle Terminals im Überblick", "All terminals at a glance").to_string(), "⌘⇧A", PaletteCommand::Overview));
         all.push((t("Neue Session", "New session").to_string(), "⌘N", PaletteCommand::NewSession));
         all.push((t("Aufräumen", "Clean up").to_string(), "C", PaletteCommand::Cleanup));
+        all.push((t("Für später", "For later").to_string(), "L", PaletteCommand::Later));
         all.push((t("iPhone koppeln (Brain Link)", "Pair a phone (Brain Link)").to_string(), "", PaletteCommand::PairPhone));
         all.push((t("Neues Claude-Konto einrichten", "Set up a new Claude account").to_string(), "", PaletteCommand::SetUpAccount));
         all.push((t("Konten abgleichen (Einstellungen, Skills, Gedächtnis)", "Sync accounts (settings, skills, memory)").to_string(), "", PaletteCommand::SyncAccounts));
         all.push((t("Alle Tasten", "All keys").to_string(), "?", PaletteCommand::Keys));
         all.push((t("Gärtner: kaputte Sessions finden und beenden", "Gardener: find and end broken sessions").to_string(), "", PaletteCommand::Garden));
         all.push((t("Log öffnen (Meldungen und Fehler)", "Open the log (messages and errors)").to_string(), "", PaletteCommand::OpenLog));
-        all.push((t("Beendete Sessions auf- / zuklappen", "Open / fold ended sessions").to_string(), "", PaletteCommand::ToggleEnded));
-        all.push((t("Nach Projekten gruppieren", "Group by project").to_string(), "G", PaletteCommand::ToggleProjects));
-        all.push((t("Heute", "Today").to_string(), "D", PaletteCommand::ToggleToday));
-        all.push((t("Ruhige Hintergrund-Sessions auf- / zuklappen", "Open / fold quiet background sessions").to_string(), "", PaletteCommand::ToggleBackground));
-        all.push((t("Automatisch gestartete Sessions (Reviews, Skripte) auf- / zuklappen", "Open / fold sessions started by programs (reviews, scripts)").to_string(), "", PaletteCommand::ToggleAutomated));
+        all.push((t("Beendete Sessions auf- / zuklappen", "Open / fold ended sessions").to_string(), "E", PaletteCommand::ToggleEnded));
+        all.push((t("Ruhige Hintergrund-Sessions auf- / zuklappen", "Open / fold quiet background sessions").to_string(), "B", PaletteCommand::ToggleBackground));
+        all.push((t("Automatisch gestartete Sessions (Reviews, Skripte) auf- / zuklappen", "Open / fold sessions started by programs (reviews, scripts)").to_string(), "U", PaletteCommand::ToggleAutomated));
 
         let query = self.palette.trim().to_lowercase();
         let words: Vec<&str> = query.split_whitespace().collect();
@@ -2008,6 +2216,23 @@ impl Brain {
                 self.mode = Mode::Cleanup;
                 Task::none()
             }
+            PaletteCommand::Later => {
+                self.open_later();
+                Task::none()
+            }
+            PaletteCommand::Team(on) => {
+                let Some(key) = self.selected.clone() else { return Task::none() };
+                if self.blocked_in_demo() {
+                    return Task::none();
+                }
+                match self.switch_team(key, on) {
+                    Ok(task) => task,
+                    Err(err) => {
+                        self.set_status(err);
+                        Task::none()
+                    }
+                }
+            }
             PaletteCommand::SetUpAccount => self.open_account_setup(),
             PaletteCommand::SyncAccounts => self.open_sync(),
             PaletteCommand::Garden => self.open_garden(),
@@ -2025,16 +2250,6 @@ impl Brain {
             }
             PaletteCommand::ToggleEnded => {
                 self.toggle_ended();
-                Task::none()
-            }
-            PaletteCommand::ToggleProjects => {
-                self.prefs.layout = if self.prefs.layout == Layout::Projects { Layout::Status } else { Layout::Projects };
-                self.prefs.save();
-                Task::none()
-            }
-            PaletteCommand::ToggleToday => {
-                self.prefs.layout = if self.prefs.layout == Layout::Today { Layout::Status } else { Layout::Today };
-                self.prefs.save();
                 Task::none()
             }
             PaletteCommand::ToggleBackground => {
@@ -2066,9 +2281,8 @@ impl Brain {
     fn broadcast_targets(&self) -> Vec<SessionKey> {
         let groups = self.groups(now_ms());
         groups
-            .attention
-            .iter()
-            .chain(&groups.pinned)
+            .live()
+            .into_iter()
             .filter(|s| s.phase() == Phase::YourTurn && !s.awaiting_permission() && self.can_send(&s.key))
             .map(|s| s.key.clone())
             .collect()
@@ -2236,20 +2450,24 @@ impl Brain {
     /// What the Terminal tab would run for the selected session: `claude attach` for a
     /// background session, `claude --resume` for an ended one. Sessions running in an iTerm tab
     /// can't be joined from outside, so they get none.
-    pub fn terminal_command(&self) -> Option<(Vec<String>, String)> {
+    pub fn terminal_command(&self) -> Option<(&'static str, Vec<String>, String)> {
         self.terminal_command_for(self.selected_session()?)
     }
 
-    fn terminal_command_for(&self, session: &Session) -> Option<(Vec<String>, String)> {
+    fn terminal_command_for(&self, session: &Session) -> Option<(&'static str, Vec<String>, String)> {
         let cwd = session.cwd.clone().unwrap_or_else(|| brain_core::account::home_dir().display().to_string());
         if let Some(agent) = &session.agent {
-            return Some((vec!["attach".into(), agent.id.clone()], cwd));
+            return Some(("claude", vec!["attach".into(), agent.id.clone()], cwd));
+        }
+        // An agent team Brain started runs in tmux: its terminal joins that.
+        if let Some(tmux) = self.team_panes.get(&session.pid).filter(|_| session.phase() != Phase::Ended) {
+            return Some(("tmux", vec!["attach".into(), "-t".into(), tmux.clone()], cwd));
         }
         if session.phase() == Phase::Ended {
             // A restart's flags come after the resume.
             let mut args = vec!["--resume".into(), session.session_id.clone()?];
             args.extend(self.restart_flags.get(&session.key).cloned().unwrap_or_default());
-            return Some((args, cwd));
+            return Some(("claude", args, cwd));
         }
         None
     }
@@ -2258,8 +2476,7 @@ impl Brain {
     fn selection_state(&self) -> Option<(SessionKey, bool)> {
         let attachable = self
             .selected_session()
-            .and_then(|s| s.agent.as_ref())
-            .is_some_and(|a| !matches!(a.state.as_str(), "failed" | "stopped"));
+            .is_some_and(|s| s.agent.as_ref().is_some_and(|a| !matches!(a.state.as_str(), "failed" | "stopped")) || (self.team_panes.contains_key(&s.pid) && s.phase() != Phase::Ended));
         self.selected.clone().map(|k| (k, attachable))
     }
 
@@ -2390,7 +2607,7 @@ impl Brain {
     /// Starts a session's terminal in Brain (`claude attach` or `claude --resume`), shown or
     /// not. False when the session has none or it didn't start.
     fn spawn_terminal(&mut self, key: &SessionKey) -> bool {
-        let Some((args, cwd)) = self.model.board.get(key).and_then(|s| self.terminal_command_for(s)) else { return false };
+        let Some((program, args, cwd)) = self.model.board.get(key).and_then(|s| self.terminal_command_for(s)) else { return false };
         {
             let mut env = HashMap::new();
             if let Some(account) = self.model.account(&key.account).filter(|a| a.id != "main") {
@@ -2403,7 +2620,7 @@ impl Brain {
                 font: iced_term::settings::FontSettings { size: font.size, font_type: font.regular, scale_factor: 1.4 },
                 theme: iced_term::settings::ThemeSettings::new(Box::new(crate::style::terminal_palette())),
                 backend: iced_term::settings::BackendSettings {
-                    program: "claude".into(),
+                    program: program.into(),
                     args,
                     env,
                     working_directory: Some(std::path::PathBuf::from(cwd)),
@@ -2487,21 +2704,19 @@ impl Brain {
         let searching = !self.search.is_empty();
         let mut groups = Groups {
             saved: vec![],
-            pinned: vec![],
-            attention: vec![],
-            working: vec![],
-            resting: vec![],
-            snoozed: vec![],
-            ended: vec![],
-            hidden: vec![],
+            decide: vec![],
+            read: vec![],
+            quiet: vec![],
+            paused: vec![],
             background: vec![],
             automated: vec![],
+            ended: vec![],
             older_ended: 0,
-            resting_open: self.show_resting || searching,
-            snoozed_open: self.show_snoozed || searching,
+            paused_open: self.show_snoozed || searching,
             background_open: self.prefs.show_background || searching,
             automated_open: self.prefs.show_automated || searching,
         };
+        let mut quiet: Vec<&Session> = Vec::new();
         let visible = self
             .model
             .board
@@ -2515,7 +2730,7 @@ impl Brain {
                 continue;
             }
             // Background sessions with something happening show; stale ones (a day without
-            // activity) go to their own folded section.
+            // activity) go to their own folded list.
             if session.agent.is_some() && now - session.last_activity_ms > ENDED_RECENT_MS {
                 groups.background.push(session);
                 continue;
@@ -2527,148 +2742,147 @@ impl Brain {
                 continue;
             }
             if self.prefs.is_hidden(&session.key, session.last_activity_ms) && !searching {
-                groups.hidden.push(session);
+                groups.paused.push(session);
                 continue;
             }
-            if self.prefs.is_pinned(&session.key) {
-                if ended {
+            if ended {
+                if self.prefs.is_pinned(&session.key) {
                     groups.saved.push(session);
+                } else if searching || now - session.last_activity_ms < ENDED_RECENT_MS {
+                    groups.ended.push(session);
                 } else {
-                    groups.pinned.push(session);
+                    groups.older_ended += 1;
                 }
                 continue;
             }
-            let waiting = matches!(session.phase(), Phase::NeedsYou | Phase::YourTurn);
-            if waiting && self.prefs.snoozed_until(&session.key, now).is_some() {
-                groups.snoozed.push(session);
+            if matches!(session.phase(), Phase::NeedsYou | Phase::YourTurn) && !self.prefs.is_pinned(&session.key) && self.prefs.snoozed_until(&session.key, now).is_some() {
+                groups.paused.push(session);
                 continue;
             }
-            match session.phase() {
-                Phase::NeedsYou => groups.attention.push(session),
-                Phase::YourTurn if now - session.phase_since_ms() > RESTING_AFTER_MS => groups.resting.push(session),
-                Phase::YourTurn => groups.attention.push(session),
-                Phase::Working | Phase::Background => groups.working.push(session),
-                Phase::Ended if searching || now - session.last_activity_ms < ENDED_RECENT_MS => groups.ended.push(session),
-                Phase::Ended => groups.older_ended += 1,
+            let selected = self.selected.as_ref() == Some(&session.key);
+            let open_question = self.questions.get(&session.key).is_some_and(|(_, q)| q.is_some());
+            match place(session, selected, open_question, &self.prefs, now) {
+                Place::Decide(ask) => groups.decide.push((session, ask)),
+                Place::Read => groups.read.push(session),
+                Place::Quiet => quiet.push(session),
             }
         }
-        // Resting: most recently finished first.
-        groups.resting.reverse();
+        groups.decide.sort_by_key(|(s, ask)| (*ask, s.phase_since_ms()));
+        groups.read.sort_by_key(|s| std::cmp::Reverse(s.phase_since_ms()));
+        for session in quiet {
+            let name = self.projects.get(&session.key).map(|(n, _)| n.clone()).unwrap_or_else(|| session.display_name());
+            match groups.quiet.iter_mut().find(|(n, _)| *n == name) {
+                Some((_, list)) => list.push(session),
+                None => groups.quiet.push((name, vec![session])),
+            }
+        }
         groups
     }
 
     /// The list in drawing order: sections, hints and sessions.
-    pub fn items<'a>(&'a self, groups: &Groups<'a>, now: i64) -> Vec<Item<'a>> {
+    pub fn items<'a>(&'a self, groups: &Groups<'a>, _now: i64) -> Vec<Item<'a>> {
         let searching = !self.search.is_empty();
         let mut items = Vec::new();
-        let mut nav = 0usize;
-        let mut push = |items: &mut Vec<Item<'a>>, s: &'a Session| {
-            let snoozed = self.prefs.snoozed_until(&s.key, now).is_some();
-            let waiting = matches!(s.phase(), Phase::NeedsYou | Phase::YourTurn) && !snoozed;
-            let recent = now - s.phase_since_ms() <= RESTING_AFTER_MS || s.phase() == Phase::NeedsYou;
-            items.push(if waiting && recent { Item::Card(s, nav) } else { Item::Row(s, nav) });
-            nav += 1;
+        let position = std::cell::Cell::new(0usize);
+        let next = || {
+            let n = position.get();
+            position.set(n + 1);
+            n
         };
+        let push = |items: &mut Vec<Item<'a>>, s: &'a Session| items.push(Item::Row(s, next()));
         if searching && groups.navigable(true).is_empty() {
             let query = self.search.clone();
             items.push(Item::Hint(tr!("Keine Session passt zu „{query}“. Esc leert die Suche.", "No session matches “{query}”. Esc clears the search.")));
         }
         if !groups.saved.is_empty() {
-            items.push(Item::Section { title: t("Zum Fortsetzen gemerkt", "Saved to resume").into(), count: groups.saved.len(), alert: false, toggle: None });
+            items.push(Item::Section { title: t("Zum Fortsetzen gemerkt", "Saved to resume").into(), count: groups.saved.len(), alert: false, action: None });
             for s in &groups.saved {
                 push(&mut items, s);
             }
         }
-        if self.prefs.layout != Layout::Status {
-            let mut live = groups.live();
-            live.sort_by_key(|s| s.phase());
-            let mut projects: Vec<(String, Vec<&Session>)> = Vec::new();
-            for session in live {
-                let name = self.projects.get(&session.key).map(|(n, _)| n.clone()).unwrap_or_else(|| session.display_name());
-                match projects.iter_mut().find(|(n, _)| *n == name) {
-                    Some((_, list)) => list.push(session),
-                    None => projects.push((name, vec![session])),
-                }
+        items.push(Item::Section { title: t("Zu entscheiden", "To decide").into(), count: groups.deciding(), alert: true, action: None });
+        if groups.decide.is_empty() && !searching {
+            items.push(Item::Hint(t("Nichts wartet auf dich.", "Nothing is waiting for you.").into()));
+        }
+        for (s, ask) in &groups.decide {
+            let options = match ask {
+                Ask::Options => self.question_buttons(&s.key),
+                Ask::Permission => usize::from(s.insight.tool.is_some()),
+                _ => 0,
+            };
+            items.push(Item::Decide { s, nav: next(), ask: *ask, options });
+        }
+        if !groups.read.is_empty() {
+            let action = (t("alle gesehen", "all seen").to_string(), Message::SeeAll);
+            items.push(Item::Section { title: t("Zum Lesen", "To read").into(), count: groups.read.len(), alert: false, action: Some(Box::new(action)) });
+            for s in &groups.read {
+                items.push(Item::Report(s, next()));
             }
-            if projects.is_empty() && !searching {
-                items.push(Item::Hint(t("Keine laufenden Sessions.", "No running sessions.").into()));
-            }
-            for (name, sessions) in projects {
-                let alert = sessions.iter().any(|s| s.phase() == Phase::NeedsYou);
-                items.push(Item::Section { title: name, count: sessions.len(), alert, toggle: None });
-                for s in sessions {
-                    push(&mut items, s);
-                }
-            }
-        } else {
-            if !groups.pinned.is_empty() {
-                items.push(Item::Section { title: t("Angeheftet", "Pinned").into(), count: groups.pinned.len(), alert: false, toggle: None });
-                for s in &groups.pinned {
-                    push(&mut items, s);
-                }
-            }
-            items.push(Item::Section { title: t("Braucht dich", "Needs you").into(), count: groups.attention.len(), alert: true, toggle: None });
-            if groups.attention.is_empty() && !searching {
-                items.push(Item::Hint(t("Gerade wartet keine Session auf dich.", "No session is waiting for you right now.").into()));
-            }
-            for s in &groups.attention {
+        }
+        if !groups.quiet.is_empty() {
+            items.push(Item::Section { title: t("Projekte", "Projects").into(), count: groups.quiet.iter().map(|(_, l)| l.len()).sum(), alert: false, action: None });
+        }
+        for (name, sessions) in &groups.quiet {
+            items.push(Item::Project(name.clone()));
+            for s in sessions {
                 push(&mut items, s);
-            }
-            if !groups.working.is_empty() {
-                items.push(Item::Section { title: t("Arbeitet", "Working").into(), count: groups.working.len(), alert: false, toggle: None });
-                for s in &groups.working {
-                    push(&mut items, s);
-                }
-            }
-            if !groups.resting.is_empty() {
-                let open = groups.resting_open;
-                let title = format!("{} {}", t("Ruht seit über 2 h", "Resting for over 2 h"), if open { "▾" } else { "▸" });
-                items.push(Item::Section { title, count: groups.resting.len(), alert: false, toggle: Some(Message::ToggleResting) });
-                if open {
-                    for s in &groups.resting {
-                        push(&mut items, s);
-                    }
-                }
-            }
-        }
-        // Everything that isn't asking for attention: folded sections at the end, each with its
-        // count, one click (or ⌘K) opens it. Nothing leaves the list without a trace.
-        let mut quiet: Vec<&'a Session> = groups.snoozed.clone();
-        quiet.extend(&groups.hidden);
-        // In the project layout the snoozed ones are in their projects already.
-        let paused = if self.prefs.layout == Layout::Status { quiet } else { groups.hidden.clone() };
-        let folded: [(&str, &Vec<&'a Session>, bool, Message); 3] = [
-            (t("Pausiert und ausgeblendet", "Snoozed and hidden"), &paused, groups.snoozed_open, Message::ToggleSnoozed),
-            (t("Ruhig im Hintergrund", "Quiet in the background"), &groups.background, groups.background_open, Message::ToggleBackground),
-            (t("Automatisch gestartet", "Started by programs"), &groups.automated, groups.automated_open, Message::ToggleAutomated),
-        ];
-        for (title, sessions, open, toggle) in folded {
-            if sessions.is_empty() {
-                continue;
-            }
-            let title = format!("{title} {}", if open { "▾" } else { "▸" });
-            items.push(Item::Section { title, count: sessions.len(), alert: false, toggle: Some(toggle) });
-            if open {
-                for s in sessions {
-                    push(&mut items, s);
-                }
-            }
-        }
-        if !groups.ended.is_empty() {
-            let open = self.include_ended();
-            let title = format!("{} {}", t("Beendet", "Ended"), if open { "▾" } else { "▸" });
-            items.push(Item::Section { title, count: groups.ended.len(), alert: false, toggle: Some(Message::ToggleEnded) });
-            if open {
-                for s in &groups.ended {
-                    push(&mut items, s);
-                }
             }
         }
         if groups.older_ended > 0 {
             let n = groups.older_ended;
             items.push(Item::Hint(tr!("{n} älter als ein Tag – / sucht darin, C räumt auf.", "{n} older than a day – / searches them, C cleans up.")));
         }
+        if !groups.ended.is_empty() || !groups.background.is_empty() || !groups.automated.is_empty() {
+            items.push(Item::Footer);
+        }
+        // Folded away at the end, one click (or ⌘K) opens each: nothing leaves the list without
+        // a trace.
+        if !groups.paused.is_empty() {
+            let action = if groups.paused_open { t("zuklappen", "fold") } else { t("aufklappen", "open") };
+            let action = Box::new((action.to_string(), Message::ToggleSnoozed));
+            items.push(Item::Section { title: t("Pausiert und ausgeblendet", "Snoozed and hidden").into(), count: groups.paused.len(), alert: false, action: Some(action) });
+            if groups.paused_open {
+                for s in &groups.paused {
+                    push(&mut items, s);
+                }
+            }
+        }
+        let lists: [(&str, &Vec<&'a Session>, bool); 3] = [
+            (t("Ruhig im Hintergrund", "Quiet in the background"), &groups.background, groups.background_open),
+            (t("Automatisch gestartet", "Started by programs"), &groups.automated, groups.automated_open),
+            (t("Beendet", "Ended"), &groups.ended, self.include_ended()),
+        ];
+        for (title, sessions, open) in lists {
+            if open && !sessions.is_empty() {
+                items.push(Item::Project(title.into()));
+                for s in sessions {
+                    push(&mut items, s);
+                }
+            }
+        }
         items
+    }
+
+    /// How many option buttons the open question of the session gets: only a single question
+    /// without multiple choice can be answered with a click.
+    pub fn question_buttons(&self, key: &SessionKey) -> usize {
+        match self.questions.get(key).and_then(|(_, q)| q.as_ref()) {
+            Some(q) if q.items.len() == 1 && !q.items[0].multi_select => q.items[0].options.len(),
+            _ => 0,
+        }
+    }
+
+    /// "alle gesehen": the reports in the reading zone count as read.
+    fn see_all(&mut self) {
+        let now = now_ms();
+        let unread: Vec<(SessionKey, i64)> = self.groups(now).read.iter().map(|s| (s.key.clone(), s.phase_since_ms())).collect();
+        let mut changed = false;
+        for (key, since) in unread {
+            changed |= self.prefs.see(&key, now, since);
+        }
+        if changed {
+            self.prefs.save();
+        }
     }
 
     /// Scrolls the list so the selected session is visible (the first one: to the very top).
@@ -2679,7 +2893,7 @@ impl Brain {
         let mut top = LIST_TOP;
         for item in self.items(&groups, now) {
             let found = match &item {
-                Item::Card(s, nav) | Item::Row(s, nav) if s.key == key => Some(*nav),
+                Item::Decide { s, nav, .. } | Item::Report(s, nav) | Item::Row(s, nav) if s.key == key => Some(*nav),
                 _ => None,
             };
             if let Some(nav) = found {
@@ -2856,6 +3070,18 @@ impl Brain {
             }
             return Task::none();
         }
+        // ⇥ in the reply field takes the first completion of `/…`.
+        if self.mode == Mode::Reply && named == Some(Named::Tab) {
+            if let Some(name) = self.reply_completions().first().map(|c| c.name.clone()) {
+                return self.complete_reply(&name);
+            }
+        }
+        // The dialog's field takes → for its cursor; in a typed path it goes into a folder.
+        if self.mode == Mode::NewSession && named == Some(Named::ArrowRight) {
+            if let Some(task) = self.enter_picked_folder() {
+                return task;
+            }
+        }
         if cmd && matches!(character.as_deref(), Some("1") | Some("[")) {
             self.focused_terminal = None;
             self.focused_shell = None;
@@ -2878,6 +3104,7 @@ impl Brain {
                 self.on_cleanup_key(named, character.as_deref(), cmd);
                 return Task::none();
             }
+            Mode::Later => return self.on_later_key(named, cmd),
             Mode::Pairing | Mode::AccountSetup => return Task::none(),
             Mode::Sync => return self.on_sync_key(named, character.as_deref()),
             Mode::Garden => return self.on_garden_key(named),
@@ -2927,9 +3154,6 @@ impl Brain {
             self.trash_selected(false);
             return Task::none();
         }
-        if cmd && character.as_deref() == Some("c") && self.prefs.layout == Layout::Today {
-            return self.act(Action::CopyDigest);
-        }
         if cmd || modifiers.control() {
             return Task::none();
         }
@@ -2957,8 +3181,9 @@ impl Brain {
             Some(Named::ArrowRight) => {
                 self.tab = match self.tab {
                     DetailTab::Messages | DetailTab::Timeline | DetailTab::Questions => DetailTab::Files,
-                    DetailTab::Files | DetailTab::Changes if self.has_konsil() => DetailTab::Konsil,
-                    DetailTab::Files | DetailTab::Changes | DetailTab::Konsil => DetailTab::Terminal,
+                    DetailTab::Files | DetailTab::Changes if self.has_team() => DetailTab::Team,
+                    DetailTab::Files | DetailTab::Changes | DetailTab::Team if self.has_konsil() => DetailTab::Konsil,
+                    DetailTab::Files | DetailTab::Changes | DetailTab::Team | DetailTab::Konsil => DetailTab::Terminal,
                     DetailTab::Terminal => DetailTab::Messages,
                 };
                 return Task::batch([self.load_changes(), self.load_files()]);
@@ -2967,8 +3192,11 @@ impl Brain {
                 self.tab = match self.tab {
                     DetailTab::Messages | DetailTab::Timeline | DetailTab::Questions => DetailTab::Terminal,
                     DetailTab::Files | DetailTab::Changes => DetailTab::Messages,
+                    DetailTab::Team => DetailTab::Files,
+                    DetailTab::Konsil if self.has_team() => DetailTab::Team,
                     DetailTab::Konsil => DetailTab::Files,
                     DetailTab::Terminal if self.has_konsil() => DetailTab::Konsil,
+                    DetailTab::Terminal if self.has_team() => DetailTab::Team,
                     DetailTab::Terminal => DetailTab::Files,
                 };
                 return Task::batch([self.load_changes(), self.load_files()]);
@@ -2999,23 +3227,10 @@ impl Brain {
                 self.armed = None;
                 self.mode = Mode::Cleanup;
             }
+            "l" => self.open_later(),
             "i" => return self.act(Action::TakeOver),
-            "g" => {
-                self.prefs.layout = if self.prefs.layout == Layout::Projects { Layout::Status } else { Layout::Projects };
-                self.prefs.save();
-            }
-            "d" => {
-                self.prefs.layout = if self.prefs.layout == Layout::Today { Layout::Status } else { Layout::Today };
-                self.prefs.save();
-            }
-            digit if digit.len() == 1 && ('1'..='9').contains(&digit.chars().next().unwrap()) => {
-                let index = digit.parse::<usize>().unwrap() - 1;
-                if index < list.len() {
-                    let scroll = self.select_index(&list, index);
-                    self.open_selected();
-                    return scroll;
-                }
-            }
+            "b" => self.toggle_background(),
+            "u" => self.toggle_automated(),
             _ => {}
         }
         Task::none()
@@ -3047,19 +3262,13 @@ impl Brain {
             self.reader = None;
             return Task::none();
         }
-        // Today replaces the detail pane; esc goes back to it.
-        if self.mode == Mode::Normal && self.prefs.layout == Layout::Today {
-            self.prefs.layout = Layout::Status;
-            self.prefs.save();
-            return Task::none();
-        }
         match self.mode {
             Mode::Search => {
                 self.search.clear();
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden => {
+            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden => {
                 self.mode = Mode::Normal;
                 unfocus()
             }
@@ -3146,9 +3355,8 @@ impl Brain {
         app.unhide(None);
         let groups = self.groups(now_ms());
         let waiting = groups
-            .attention
-            .iter()
-            .chain(&groups.pinned)
+            .live()
+            .into_iter()
             .filter(|s| matches!(s.phase(), Phase::NeedsYou | Phase::YourTurn))
             .find(|s| self.terminals.contains_key(&s.key) || s.agent.is_some())
             .map(|s| s.key.clone());
@@ -3231,12 +3439,6 @@ impl Brain {
             Action::StartReply => return self.start_reply(),
             Action::StartRename => return self.start_rename(),
             Action::StartTerminal => return self.open_terminal(true),
-            Action::CopyDigest => {
-                let date = chrono::Local::now().format("%d.%m.%Y").to_string();
-                let markdown = brain_core::digest::markdown(&tr!("Heute, {date}", "Today, {date}"), &self.today_digest());
-                self.set_status(t("Tagesübersicht kopiert.", "Copied the day's digest."));
-                return iced::clipboard::write(markdown);
-            }
         }
         Task::none()
     }
@@ -3332,9 +3534,32 @@ impl Brain {
             self.set_status(self.why_brain_cant_type());
             return Task::none();
         }
+        // What the session's mod reported, else the built-in commands Brain knows.
+        let mut commands = brain_core::commands::load(&brain_core::account::home_dir(), &session.key.id);
+        if commands.is_empty() {
+            commands = SLASH_COMMANDS
+                .iter()
+                .map(|(command, de, en)| brain_core::commands::SlashCommand { name: command.trim_start_matches('/').to_string(), description: t(de, en).to_string(), source: "builtin".into() })
+                .collect();
+        }
+        self.reply_commands = commands;
         self.reply.clear();
         self.mode = Mode::Reply;
         operation::focus(REPLY)
+    }
+
+    /// What `/…` in the reply field completes to (at most six), while no space was typed.
+    pub fn reply_completions(&self) -> Vec<&brain_core::commands::SlashCommand> {
+        if !self.reply.starts_with('/') || self.reply.contains(char::is_whitespace) {
+            return Vec::new();
+        }
+        brain_core::commands::completions(&self.reply_commands, &self.reply).into_iter().take(6).collect()
+    }
+
+    /// Puts a completion into the reply field, the cursor after it.
+    fn complete_reply(&mut self, name: &str) -> Task<Message> {
+        self.reply = format!("/{name} ");
+        Task::batch([operation::focus(REPLY), operation::move_cursor_to_end(REPLY)])
     }
 
     fn submit_reply(&mut self) -> Task<Message> {
@@ -3368,6 +3593,14 @@ impl Brain {
             return task;
         }
         let Some(pid) = self.model.board.get(&key).map(|s| s.pid) else { return Task::none() };
+        // A team Brain started runs in tmux, where no terminal app shows it.
+        if let Some(tmux) = self.team_panes.get(&pid).cloned() {
+            match brain_core::agents::type_into_team(&tmux, text) {
+                Ok(()) => self.set_status(done),
+                Err(err) => self.set_status(tr!("tmux: {err}", "tmux: {err}")),
+            }
+            return Task::none();
+        }
         let outcome = terminal::type_text(pid, text);
         self.report(outcome, Some(done));
         Task::none()
@@ -3594,6 +3827,9 @@ impl Brain {
             return Task::none();
         };
         let ended = session.phase() == Phase::Ended;
+        if self.moving.get(&key).is_some_and(|at| at.elapsed() < MOVE_SETTLE) {
+            return Task::none();
+        }
         if !movable(session) {
             self.set_status(t("Umziehen geht, sobald die Session fertig ist und auf dich wartet.", "Moving works once the session has finished and waits for you."));
             return Task::none();
@@ -3609,6 +3845,7 @@ impl Brain {
             return Task::none();
         }
         let Some(source) = self.model.account(&key.account).cloned() else { return Task::none() };
+        self.moving.insert(key.clone(), Instant::now());
         // A folder trusted there is trusted here: the moved session doesn't stop at the question.
         let _ = brain_core::account_setup::carry_trust(&source, &target, &brain_core::account::home_dir(), &cwd);
         let Some(transcript) = brain_core::transcript::find_transcript(&source, &session_id) else {
@@ -3750,6 +3987,62 @@ impl Brain {
             .collect()
     }
 
+    /// `L`: the tasks noted for later, read again each time the dialog opens.
+    fn open_later(&mut self) {
+        self.armed = None;
+        self.later = brain_core::later::open(&brain_core::later::file(&brain_core::account::home_dir()));
+        self.later_pick = self.later_pick.min(self.later.len().saturating_sub(1));
+        self.mode = Mode::Later;
+    }
+
+    /// In the dialog for later: ↑↓ pick, ⏎ starts the task as a new session where it was noted,
+    /// ⌫ checks it off.
+    fn on_later_key(&mut self, named: Option<Named>, cmd: bool) -> Task<Message> {
+        let count = self.later.len();
+        match named {
+            Some(Named::ArrowDown) => self.later_pick = (self.later_pick + 1).min(count.saturating_sub(1)),
+            Some(Named::ArrowUp) => self.later_pick = self.later_pick.saturating_sub(1),
+            Some(Named::Enter) => return self.start_later(),
+            Some(Named::Backspace | Named::Delete) if !cmd => {
+                let Some(task) = self.later.get(self.later_pick).cloned() else { return Task::none() };
+                if self.blocked_in_demo() {
+                    return Task::none();
+                }
+                match brain_core::later::done(&brain_core::later::file(&brain_core::account::home_dir()), &task.id) {
+                    Ok(()) => {
+                        let text = brain_core::hook::one_line(&task.text, 60);
+                        self.set_status(tr!("Abgehakt: {text}", "Checked off: {text}"));
+                    }
+                    Err(err) => self.set_status(err.to_string()),
+                }
+                self.open_later();
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+
+    /// The picked task as a new background session in its folder and account, the task as its
+    /// first prompt; it is checked off once started.
+    fn start_later(&mut self) -> Task<Message> {
+        let Some(task) = self.later.get(self.later_pick).cloned() else { return Task::none() };
+        let Some(folder) = task.cwd.clone().filter(|f| std::path::Path::new(f).is_dir()) else {
+            self.set_status(t("Der Ordner dieser Aufgabe fehlt – ⌘N startet sie woanders.", "This task's folder is missing – ⌘N starts it elsewhere."));
+            return Task::none();
+        };
+        let account = task.account.as_deref().and_then(|id| self.model.account(id)).or_else(|| self.model.accounts.first()).cloned();
+        let Some(account) = account else { return Task::none() };
+        if self.blocked_in_demo() {
+            return Task::none();
+        }
+        let _ = brain_core::later::done(&brain_core::later::file(&brain_core::account::home_dir()), &task.id);
+        self.mode = Mode::Normal;
+        self.set_status(t("Starte die Aufgabe als neue Session …", "Starting the task as a new session …"));
+        let id = account.id.clone();
+        let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), &brain_core::agents::Start { prompt: Some(task.text.clone()), ..Default::default() }));
+        Task::perform(started, move |result| Message::Started(id.clone(), result))
+    }
+
     fn on_cleanup_key(&mut self, named: Option<Named>, character: Option<&str>, cmd: bool) {
         if cmd && named == Some(Named::Backspace) {
             let keys: Vec<SessionKey> = self.cleanup_candidates().iter().map(|s| s.key.clone()).collect();
@@ -3810,8 +4103,22 @@ impl Brain {
         sessions.sort_by_key(|s| std::cmp::Reverse(s.last_activity_ms));
         let mut folders: Vec<String> = Vec::new();
         if query.starts_with('/') || query.starts_with('~') {
-            let home = brain_core::account::home_dir().display().to_string();
-            folders.push(query.replacen('~', &home, 1));
+            let home = brain_core::account::home_dir();
+            let typed = query.replacen('~', &home.display().to_string(), 1);
+            let first = if typed.len() > 1 { typed.trim_end_matches('/').to_string() } else { typed.clone() };
+            folders.push(first.clone());
+            // A path lists the folders it leads to (inside the home folder): `~/Work/` all of
+            // Work's, `~/Work/ap` those that start with "ap". → goes into the picked one.
+            let (dir, start) = match typed.rsplit_once('/') {
+                Some((dir, start)) => (if dir.is_empty() { "/" } else { dir }, start.to_lowercase()),
+                None => (typed.as_str(), String::new()),
+            };
+            if let Some(dir) = brain_core::folders::inside(&home, std::path::Path::new(dir)) {
+                let found = brain_core::folders::subfolders(&dir).into_iter().map(|p| p.display().to_string());
+                let matching = found.filter(|p| p.rsplit('/').next().is_some_and(|name| name.to_lowercase().starts_with(&start)));
+                folders.extend(matching.filter(|p| *p != first).take(30));
+            }
+            return folders;
         }
         let terms: Vec<String> = query.to_lowercase().split_whitespace().map(str::to_string).collect();
         for cwd in sessions.iter().filter_map(|s| s.cwd.clone()) {
@@ -3862,6 +4169,10 @@ impl Brain {
             self.new_session.in_iterm = !self.new_session.in_iterm;
             return Task::none();
         }
+        if cmd && character == Some("t") {
+            self.new_session.team = !self.new_session.team;
+            return Task::none();
+        }
         if cmd && shift && character == Some("n") {
             let dir = brain_core::templates::templates_dir(&brain_core::account::home_dir());
             let prompt = t(
@@ -3883,11 +4194,46 @@ impl Brain {
         match named {
             Some(Named::ArrowDown) => self.new_session.pick = (self.new_session.pick + 1).min(count.saturating_sub(1)),
             Some(Named::ArrowUp) => self.new_session.pick = self.new_session.pick.saturating_sub(1),
+            Some(Named::Tab) if shift => self.new_session.style = self.next_style(self.new_session.style.as_deref()),
             Some(Named::Tab) => self.new_session.account = (self.new_session.account + 1) % self.model.accounts.len().max(1),
             // Every other key goes to the field (it lost its focus to a click).
             _ => return operation::focus(NEW_SESSION),
         }
         Task::none()
+    }
+
+    /// The output styles of the dialog's account (built-in and its own).
+    pub fn new_session_styles(&self) -> Vec<brain_core::styles::Style> {
+        let config_dir = self.model.accounts.get(self.new_session.account).map(|a| a.config_dir.clone()).unwrap_or_default();
+        brain_core::styles::available(&config_dir, None)
+    }
+
+    /// The output styles the selected session can switch to (its account's and project's).
+    fn selected_styles(&self) -> Vec<brain_core::styles::Style> {
+        let Some(session) = self.selected_session() else { return Vec::new() };
+        let Some(account) = self.model.account(&session.key.account) else { return Vec::new() };
+        brain_core::styles::available(&account.config_dir, session.cwd.as_deref().map(std::path::Path::new))
+    }
+
+    /// ⇧⇥: as the account's settings say → each style in turn → as the settings say.
+    fn next_style(&self, current: Option<&str>) -> Option<String> {
+        let names: Vec<String> = self.new_session_styles().into_iter().map(|s| s.name).collect();
+        match current.and_then(|c| names.iter().position(|n| n == c)) {
+            None => names.first().cloned(),
+            Some(i) => names.get(i + 1).cloned(),
+        }
+    }
+
+    /// → in the dialog while it holds a typed path: goes into the picked folder and lists its
+    /// folders. `None` when there is no path or no folder to go into.
+    fn enter_picked_folder(&mut self) -> Option<Task<Message>> {
+        if !self.new_session.folder.starts_with(['/', '~']) || self.pending_placeholder().is_some() {
+            return None;
+        }
+        let Some(Choice::Folder(folder)) = self.new_session_choices().get(self.new_session.pick).cloned() else { return None };
+        self.new_session.folder = format!("{}/", crate::format::tilde(&folder).trim_end_matches('/'));
+        self.new_session.pick = 0;
+        Some(Task::batch([operation::focus(NEW_SESSION), operation::move_cursor_to_end(NEW_SESSION)]))
     }
 
     /// ⏎ in the dialog: pick a template or folder, take a placeholder value, or start.
@@ -3947,6 +4293,8 @@ impl Brain {
         let prompt = chosen.map(|c| c.template.fill(&c.values)).filter(|p| !p.is_empty());
         let name = chosen.map(|c| c.template.name.clone());
         let in_iterm = self.new_session.in_iterm;
+        let style = self.new_session.style.clone();
+        let team = self.new_session.team.then(config::team_start);
         self.mode = Mode::Normal;
         let Some(account) = self.model.accounts.get(self.new_session.account).cloned() else { return unfocus() };
         if self.blocked_in_demo() {
@@ -3954,22 +4302,36 @@ impl Brain {
         }
         if in_iterm {
             let mut command = String::from("claude");
+            if let Some(team) = &team {
+                command = format!("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 ENABLE_STOP_REVIEW=0 claude --agent {}", shell_quote(&team.lead));
+                if let Some(dir) = &team.plugin_dir {
+                    command.push_str(&format!(" --plugin-dir {}", shell_quote(&dir.display().to_string())));
+                }
+            }
             if let Some(model) = &model {
                 command.push_str(&format!(" --model {}", shell_quote(model)));
             }
+            if let Some(style) = &style {
+                command.push_str(&format!(" --settings {}", shell_quote(&brain_core::styles::settings(style))));
+            }
             if let Some(prompt) = &prompt {
-                command.push_str(&format!(" {}", shell_quote(prompt)));
+                command.push_str(&format!(" -- {}", shell_quote(prompt)));
             }
             let config_dir = (account.id != "main").then(|| account.config_dir.display().to_string());
             let outcome = terminal::open_new(&folder, config_dir.as_deref(), &command);
             self.report(outcome, Some(t("Neue Session in iTerm gestartet.", "Started a new session in iTerm.").into()));
             return unfocus();
         }
+        let options = brain_core::agents::Start { model, name, style, prompt, team, resume: None };
+        // A team needs an interactive session: in tmux, which Brain's terminal joins.
+        if options.team.is_some() {
+            self.set_status(t("Starte das Team in tmux …", "Starting the team in tmux …"));
+            let started = off_thread(move || brain_core::agents::start_team(&account, std::path::Path::new(&folder), &options));
+            return Task::batch([unfocus(), Task::perform(started, Message::TeamStarted)]);
+        }
         self.set_status(t("Starte die Session in Brain …", "Starting the session in Brain …"));
         let id = account.id.clone();
-        let started = off_thread(move || {
-            brain_core::agents::start(&account, std::path::Path::new(&folder), model.as_deref(), name.as_deref(), prompt.as_deref())
-        });
+        let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), &options));
         Task::batch([unfocus(), Task::perform(started, move |result| Message::Started(id.clone(), result))])
     }
 
@@ -4018,24 +4380,6 @@ impl Brain {
         let resumed = off_thread(move || brain_core::agents::resume(&account, std::path::Path::new(&cwd), &session_id, name.as_deref()));
         Task::perform(resumed, move |result| Message::Started(id.clone(), result))
     }
-
-    // ---- today ------------------------------------------------------------------
-
-    /// The day's digest: what each session reported as done, per project.
-    pub fn today_digest(&self) -> Vec<brain_core::digest::ProjectDay> {
-        let sessions = self
-            .model
-            .board
-            .keys()
-            .filter(|k| self.filter.as_ref().is_none_or(|f| *f == k.account))
-            .filter_map(|k| {
-                let session = self.model.board.get(k)?;
-                let project = self.projects.get(k).map(|(name, _)| name.clone()).unwrap_or_else(|| session.display_name());
-                Some((project, session))
-            })
-            .collect::<Vec<_>>();
-        brain_core::digest::day(sessions, chrono::Local::now().date_naive())
-    }
 }
 
 /// Saved sessions Brain has no events for (they ended before its hooks, or the hooks never
@@ -4057,6 +4401,9 @@ fn restore_saved(model: &mut Model, prefs: &Prefs) {
         model.board.add_ended(key, cwd, insight, modified);
     }
 }
+
+/// How long a session just moved counts as moving, until the board has caught up.
+const MOVE_SETTLE: Duration = Duration::from_secs(30);
 
 /// Whether the session can move to another account now. One that runs in Brain is stopped, so
 /// it only must not be mid-turn; one in iTerm gets `/exit` typed, so its prompt box must be
@@ -4197,6 +4544,60 @@ fn read_file(path: std::path::PathBuf) -> Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brain_core::event::{Event, Kind, Source};
+    use chrono::TimeZone;
+
+    fn finished_session() -> Session {
+        let ev = |secs: i64, kind: Kind, text: &str| Event {
+            v: 1,
+            ts: chrono::Utc.timestamp_opt(1_790_000_000 + secs, 0).unwrap(),
+            account: "second".into(),
+            pid: 40461,
+            session_id: Some("s1".into()),
+            cwd: Some("/w/checkout-app".into()),
+            source: Source::Hook,
+            kind,
+            text: Some(text.into()),
+            tasks: None,
+            name: None,
+            ask: None,
+        };
+        let mut board = brain_core::state::Board::default();
+        board.apply_event(&ev(0, Kind::Prompt, "Baue es"));
+        board.apply_event(&ev(5, Kind::Stop, "Fertig."));
+        let key = SessionKey { account: "second".into(), id: "s1".into() };
+        board.get(&key).unwrap().clone()
+    }
+
+    #[test]
+    fn a_selected_session_is_never_in_the_reading_zone() {
+        let session = finished_session();
+        let mut prefs = Prefs::default();
+        let now = 1_790_001_000_000;
+        assert_eq!(place(&session, false, false, &prefs, now), Place::Read);
+        assert_eq!(place(&session, true, false, &prefs, now), Place::Quiet);
+        prefs.see(&session.key, now, session.phase_since_ms());
+        assert_eq!(place(&session, false, false, &prefs, now), Place::Quiet);
+        assert_eq!(place(&session, true, false, &prefs, now), Place::Quiet);
+    }
+
+    #[test]
+    fn a_selected_session_with_a_maybe_question_leaves_the_decide_zone() {
+        let mut session = finished_session();
+        session.insight.asks = true;
+        let prefs = Prefs::default();
+        let now = 1_790_001_000_000;
+        assert_eq!(place(&session, false, false, &prefs, now), Place::Decide(Ask::Maybe));
+        assert_eq!(place(&session, true, false, &prefs, now), Place::Quiet);
+    }
+
+    #[test]
+    fn a_selected_session_with_a_real_question_stays_in_the_decide_zone() {
+        let session = finished_session();
+        let prefs = Prefs::default();
+        let now = 1_790_001_000_000;
+        assert_eq!(place(&session, true, true, &prefs, now), Place::Decide(Ask::Options));
+    }
 
     #[test]
     fn dropped_paths_are_escaped_like_iterm_does() {

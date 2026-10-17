@@ -64,6 +64,54 @@ function statusline(sessionId, usage) {
   }
 }
 
+// The slash commands the person can run in this session (built-in, skills, plugins, MCP), for
+// completing `/…` in Brain and on the phone.
+async function reportCommands($) {
+  try {
+    const commands = (await $.command.list()).map((c) => ({ name: c.name, description: c.description ?? '', source: c.source }))
+    await handOver($, 'commands', { session_id: await $.session.id(), commands })
+  } catch {}
+}
+
+// Agents of this session (an agent team's members, subagents) and what they write each other,
+// for Brain's Team tab. Messages asking the person ("Frage an Martin: …") are questions there.
+const LEAD = 'lead'
+const QUESTION = /frage an martin/i
+let teamMessages = []
+
+async function reportTeam($) {
+  try {
+    const members = (await $.agent.list()).map((a) => ({
+      id: String(a.id),
+      name: a.name ?? a.description ?? String(a.id).slice(0, 8),
+      type: a.type ?? '',
+      status: a.status ?? '',
+      teammate: a.teammateId ?? null,
+    }))
+    if (members.length === 0 && teamMessages.length === 0) return
+    await handOver($, 'team', { session_id: await $.session.id(), members, messages: teamMessages })
+  } catch {}
+}
+
+async function nameOfLoop($, agentId) {
+  if (agentId === undefined) return LEAD
+  const agent = (await $.agent.list()).find((one) => one.id === agentId)
+  return agent?.name ?? agent?.description ?? String(agentId).slice(0, 8)
+}
+
+// In an agent team the lead is `team-lead`: the same as the main conversation here.
+const member = (name) => (name === 'team-lead' ? LEAD : name)
+
+async function recordMessage($, sender, recipient, text) {
+  const from = member(sender)
+  const to = member(recipient)
+  const at = await $.clock.now()
+  // A message from the lead to someone answers that someone's open questions.
+  if (from === LEAD) teamMessages = teamMessages.map((m) => (m.question && m.from === to ? { ...m, answered: true } : m))
+  teamMessages = [...teamMessages, { id: `${at}-${from}-${to}`, from, to, text: text.trim().slice(0, 2000), at, question: QUESTION.test(text), answered: false }].slice(-200)
+  await reportTeam($)
+}
+
 // A hook that fails passes the event on unchanged, so reporting never holds up the session.
 // After a failed hook had called next, next(e) returns that result without running it again.
 const passOn = async ($, e, next) => next(e)
@@ -71,7 +119,24 @@ const passOn = async ($, e, next) => next(e)
 export function register(on) {
   on('session.start', async ($, e, next) => {
     await hook($, 'SessionStart', { source: 'startup' })
+    try {
+      await $.command.register({
+        name: 'later',
+        description: 'Note a task for later in Brain (with this folder)',
+        argumentHint: '[task]',
+        immediate: true,
+      })
+    } catch {}
+    await reportCommands($)
     return next(e)
+  })
+
+  // `/later <task>`: Brain keeps it with this session's folder, at once and without the model.
+  on('command.run', { command: 'later' }, async ($, e) => {
+    const text = (e.args ?? '').trim()
+    if (!text) return { text: 'Usage: /later <task> – Brain lists it, starts it as a new session or checks it off.' }
+    await handOver($, 'later', { session_id: await $.session.id(), cwd: await $.session.cwd(), text })
+    return { text: 'Noted for later in Brain: ' + text }
   })
 
   on('prompt.submit', async ($, e, next) => {
@@ -80,10 +145,21 @@ export function register(on) {
     return next(e)
   }).catch(passOn)
 
-  // Claude asks the user something: the session needs them.
+  // Claude asks the user something: the session needs them. The question goes along with its
+  // options, for the phone: Claude Code writes the call to the transcript only with its answer.
   on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
-    const question = e.questions?.[0]?.question
-    await hook($, 'Notification', { message: question ? 'Claude asks: ' + question : 'Claude has a question for you' })
+    const questions = e.questions ?? []
+    const question = questions[0]?.question
+    const ask = {
+      call: e.tool_use_id,
+      items: questions.map((q) => ({
+        question: q.question ?? '',
+        options: (q.options ?? []).map((o) => o.label ?? ''),
+        multi_select: q.multiSelect === true,
+      })),
+      multi_select: questions.some((q) => q.multiSelect === true),
+    }
+    await hook($, 'Notification', { message: question ? 'Claude asks: ' + question : 'Claude has a question for you', ask })
     return next(e)
   }).catch(passOn)
 
@@ -99,8 +175,27 @@ export function register(on) {
     if (!e.agentId) {
       await hook($, 'Stop', { last_assistant_message: e.answer ?? '', background_tasks: await runningAgents($) })
     }
+    // Who works and who waits now, the lead's turn and each member's.
+    await reportTeam($)
     return next(e)
   })
+
+  // What the session's agents write each other (the lead is the main conversation).
+  on('session.send', async ($, e, next) => {
+    const result = await next(e)
+    if (result.isDelivered) await recordMessage($, await nameOfLoop($, e.agentId), String(e.to).split('@')[0], e.text ?? '')
+    return result
+  }).catch(passOn)
+
+  // A teammate in a pane of its own sends from its own process: only its delivery shows here.
+  on('session.receive', async ($, e, next) => {
+    const result = await next(e)
+    const origin = e.origin ?? {}
+    if ('teammate' in origin && !origin.isVerified && result.consumed === undefined) {
+      await recordMessage($, String(origin.teammate).split('@')[0], await nameOfLoop($, e.agentId), e.text ?? '')
+    }
+    return result
+  }).catch(passOn)
 
   on('session.measure', async ($, e, next) => {
     await handOver($, 'statusline', statusline(await $.session.id(), e))

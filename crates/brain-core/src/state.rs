@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::agents::BackgroundAgent;
 use crate::event::{BackgroundTask, Event, Kind, Source};
+use crate::qa::OpenQuestion;
 use crate::sessions::SessionFile;
 use crate::transcript::{Insight, Turn};
 
@@ -17,6 +18,20 @@ pub enum Phase {
     /// will wake the session up again.
     Background,
     Ended,
+}
+
+/// What a session asks of the user. The order of the variants is the order on the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Ask {
+    /// A permission dialog is open.
+    Permission,
+    /// An AskUserQuestion with options waits for its answer.
+    Options,
+    /// Claude reported `brain report --waiting`, or something waits that Brain can't say more
+    /// about.
+    Question,
+    /// The turn ended with a question mark. Only a guess: quiet, no count.
+    Maybe,
 }
 
 /// Turn state as observed by a hook or by Claude Code's own session file.
@@ -87,6 +102,9 @@ pub struct Session {
     permission: Option<String>,
     done: Option<String>,
     reply: Option<String>,
+    /// The AskUserQuestion Brain's mod reported in this turn, open until its answer is in the
+    /// transcript.
+    asked: Option<OpenQuestion>,
 
     /// Model, context, cost, permission mode and title from the transcript.
     pub insight: Insight,
@@ -125,6 +143,7 @@ impl Session {
             permission: None,
             done: None,
             reply: None,
+            asked: None,
             insight: Insight::default(),
             background: Vec::new(),
             agent: None,
@@ -155,8 +174,10 @@ impl Session {
     fn current_signal(&self) -> Option<(Signal, i64)> {
         // After a stop hook (and no new prompt) the file's `waiting` can only be
         // Claude Code's idle reminder, not a permission prompt.
+        // The reminder keeps the time the turn ended: a later one must not make a report that
+        // was read look new again.
         let file = self.file_signal.map(|(signal, ts)| match signal {
-            Signal::Waiting if self.turn_open == Some(false) => (Signal::Idle, ts),
+            Signal::Waiting if self.turn_open == Some(false) => (Signal::Idle, self.hook_signal.map_or(ts, |(_, hook)| hook.min(ts))),
             _ => (signal, ts),
         });
         // The newest of the three wins; on a tie the hook, then the file.
@@ -174,6 +195,31 @@ impl Session {
             && matches!(self.file_signal, Some((Signal::Waiting, _)))
     }
 
+    /// The AskUserQuestion Brain's mod reported last in this turn, answered or not: whether it
+    /// still waits only the transcript tells ([`crate::qa::answered`]).
+    pub fn asked(&self) -> Option<&OpenQuestion> {
+        self.asked.as_ref()
+    }
+
+    /// What the session asks of the user, if anything. `open_question` says whether its
+    /// AskUserQuestion is still unanswered; only the transcript tells ([`crate::qa::answered`]).
+    pub fn ask(&self, open_question: bool) -> Option<Ask> {
+        let phase = self.phase();
+        if open_question {
+            Some(Ask::Options)
+        } else if self.awaiting_permission() {
+            Some(Ask::Permission)
+        } else if phase == Phase::NeedsYou || (phase == Phase::YourTurn && self.question.is_some()) {
+            // Also a permission only a hook reported so far, and a question of a background
+            // session whose agent says idle: no buttons, but it waits for the user.
+            Some(Ask::Question)
+        } else if phase == Phase::YourTurn && self.insight.asks {
+            Some(Ask::Maybe)
+        } else {
+            None
+        }
+    }
+
     pub fn phase(&self) -> Phase {
         // A background session's state comes from `claude agents`, which knows it best.
         if let Some(agent) = &self.agent {
@@ -181,7 +227,6 @@ impl Session {
             // when the turn ended, so an idle process falls through to the usual rules.
             let process_idle = matches!(self.current_signal(), Some((Signal::Idle | Signal::Waiting, _)));
             match agent.state.as_str() {
-                "blocked" => return Phase::NeedsYou,
                 "idle" => return Phase::YourTurn,
                 "starting" | "running" | "working" if !process_idle => return Phase::Working,
                 // With its process still there it waits for the next prompt: the usual rules
@@ -218,8 +263,8 @@ impl Session {
     /// through its terminal in Brain rather than a terminal app.
     pub fn waits_for_input(&self) -> bool {
         match &self.agent {
-            // "Needs you" may be a dialog, which typed text would answer.
-            Some(_) => matches!(self.phase(), Phase::YourTurn | Phase::Background),
+            // "Needs you" and a blocked agent may be a dialog, which typed text would answer.
+            Some(agent) => agent.state != "blocked" && matches!(self.phase(), Phase::YourTurn | Phase::Background),
             None => self.accepts_input(),
         }
     }
@@ -266,6 +311,12 @@ impl Session {
             Phase::Working => pick(&[&self.doing, &self.prompt]),
             Phase::Background => pick(&[&self.doing, &self.reply, &self.prompt]),
         }
+    }
+
+    /// What a finished session says last: its own report, else the last sentence of its reply
+    /// (a request stands there), else the headline.
+    pub fn closing_line(&self) -> Option<String> {
+        self.done.clone().or_else(|| self.insight.closing.clone()).or_else(|| self.headline())
     }
 
     /// Subagents, shells, monitors … the last turn left running.
@@ -320,11 +371,16 @@ impl Session {
                 self.permission = None;
                 self.done = None;
                 self.reply = None;
+                self.asked = None;
             }
-            Kind::Permission => self.permission = text,
+            Kind::Permission => {
+                self.permission = text;
+                self.asked = event.ask.clone();
+            }
             Kind::Stop => {
                 self.reply = text;
                 self.permission = None;
+                self.asked = None;
                 self.background = event.tasks.clone().unwrap_or_default();
             }
             Kind::Doing => self.doing = text,
@@ -547,6 +603,7 @@ mod tests {
             text: text.map(str::to_string),
             tasks: None,
             name: None,
+            ask: None,
         }
     }
 
@@ -682,6 +739,24 @@ mod tests {
         assert!(!s.awaiting_permission());
     }
 
+    #[test]
+    fn the_question_the_mod_reported_lasts_until_the_turn_goes_on() {
+        let ask = crate::qa::OpenQuestion {
+            call: "toolu_1".into(),
+            items: vec![crate::qa::QuestionItem { question: "Color?".into(), options: vec!["Red".into(), "Blue".into()], multi_select: false }],
+            multi_select: false,
+        };
+        let mut board = Board::default();
+        board.apply_event(&ev(0, Source::Mod, Kind::Prompt, Some("pick a color")));
+        board.apply_event(&Event { ask: Some(ask.clone()), ..ev(5, Source::Mod, Kind::Permission, Some("Claude asks: Color?")) });
+        assert_eq!(board.get(&key()).unwrap().asked(), Some(&ask));
+        // Its event line survives the store's round trip.
+        let line = serde_json::to_string(&Event { ask: Some(ask.clone()), ..ev(5, Source::Mod, Kind::Permission, None) }).unwrap();
+        assert_eq!(serde_json::from_str::<Event>(&line).unwrap().ask, Some(ask));
+        board.apply_event(&ev(9, Source::Mod, Kind::Stop, Some("Red it is.")));
+        assert_eq!(board.get(&key()).unwrap().asked(), None);
+    }
+
     fn stop_with(secs: i64, tasks: &[(&str, &str)]) -> Event {
         let tasks = tasks
             .iter()
@@ -754,7 +829,7 @@ mod tests {
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::YourTurn, "an idle process beats a late 'working'");
         board.apply_session_file("second", &file("busy", 20), true);
                 board.set_agents("second", &[agent("blocked")]);
-        assert_eq!(board.get(&key()).unwrap().phase(), Phase::NeedsYou);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::Working);
         assert!(!board.get(&key()).unwrap().accepts_input());
         board.set_agents("second", &[agent("failed")]);
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::Ended);
@@ -803,6 +878,83 @@ mod tests {
         let session = board.get(&key()).unwrap();
         assert_eq!(session.waits_for_input(), session.accepts_input());
         assert!(session.waits_for_input());
+    }
+
+    #[test]
+    fn a_blocked_background_session_is_only_as_urgent_as_its_status_file_says() {
+        let agent = BackgroundAgent {
+            id: "s1".into(),
+            session_id: "s1".into(),
+            name: None,
+            cwd: None,
+            state: "blocked".into(),
+            started_ms: Some(0),
+            pid: None,
+        };
+        let mut board = Board::default();
+        board.apply_session_file("second", &file("idle", 0), true);
+        board.set_agents("second", &[agent.clone()]);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::YourTurn);
+        board.apply_session_file("second", &file("waiting", 5), true);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::NeedsYou);
+    }
+
+    #[test]
+    fn an_idle_background_session_with_a_waiting_report_asks_a_question() {
+        let mut board = Board::default();
+        board.apply_session_file("second", &file("idle", 0), true);
+        board.set_agents(
+            "second",
+            &[BackgroundAgent { id: "s1".into(), session_id: "s1".into(), name: None, cwd: None, state: "idle".into(), started_ms: Some(0), pid: None }],
+        );
+        board.apply_event(&ev(5, Source::Report, Kind::Waiting, Some("Postgres?")));
+        let s = board.get(&key()).unwrap();
+        assert_eq!(s.phase(), Phase::YourTurn);
+        assert_eq!(s.ask(false), Some(Ask::Question));
+    }
+
+    #[test]
+    fn a_permission_only_the_hook_reported_still_asks() {
+        let mut board = Board::default();
+        board.apply_event(&ev(0, Source::Hook, Kind::Prompt, None));
+        board.apply_event(&ev(5, Source::Hook, Kind::Permission, Some("Bash?")));
+        let s = board.get(&key()).unwrap();
+        assert!(!s.awaiting_permission());
+        assert_eq!(s.ask(false), Some(Ask::Question));
+    }
+
+    #[test]
+    fn a_late_idle_reminder_does_not_move_the_end_of_the_turn() {
+        let mut board = Board::default();
+        board.apply_event(&ev(0, Source::Hook, Kind::Prompt, None));
+        board.apply_event(&ev(5, Source::Hook, Kind::Stop, Some("Fertig")));
+        board.apply_session_file("second", &file("waiting", 65), true);
+        let s = board.get(&key()).unwrap();
+        assert_eq!(s.phase(), Phase::YourTurn);
+        assert_eq!(s.phase_since_ms(), (1_790_000_000 + 5) * 1000);
+    }
+
+    #[test]
+    fn each_signal_makes_its_own_kind_of_ask() {
+        let mut board = Board::default();
+        board.apply_event(&ev(0, Source::Hook, Kind::Prompt, None));
+        board.apply_event(&ev(5, Source::Hook, Kind::Stop, Some("Fertig. Weiter?")));
+        board.apply_insight(&key(), Insight { asks: true, ..Insight::default() });
+        assert_eq!(board.get(&key()).unwrap().ask(false), Some(Ask::Maybe));
+        assert_eq!(board.get(&key()).unwrap().ask(true), Some(Ask::Options));
+
+        board.apply_event(&ev(10, Source::Hook, Kind::Prompt, None));
+        board.apply_event(&ev(11, Source::Hook, Kind::Permission, Some("Bash?")));
+        board.apply_session_file("second", &file("waiting", 11), true);
+        assert_eq!(board.get(&key()).unwrap().ask(false), Some(Ask::Permission));
+
+        board.apply_event(&ev(20, Source::Hook, Kind::Prompt, None));
+        board.apply_event(&ev(21, Source::Report, Kind::Waiting, Some("Postgres?")));
+        board.apply_event(&ev(22, Source::Hook, Kind::Stop, None));
+        board.apply_session_file("second", &file("idle", 22), true);
+        // The question mark of the reply is only a guess next to an explicit report.
+        assert_eq!(board.get(&key()).unwrap().ask(false), Some(Ask::Question));
+        assert!(Ask::Permission < Ask::Options && Ask::Options < Ask::Question && Ask::Question < Ask::Maybe);
     }
 
     #[test]

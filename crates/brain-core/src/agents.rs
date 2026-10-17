@@ -104,20 +104,131 @@ pub fn started_id(output: &str) -> Option<String> {
     (!id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric())).then(|| id.to_string())
 }
 
-/// Starts a background session in `cwd` (`claude --bg`), with an optional model, name and first
-/// prompt; returns its short id, or what `claude` said (e.g. an untrusted folder).
-pub fn start(account: &Account, cwd: &Path, model: Option<&str>, name: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
-    let mut args = vec!["--bg"];
-    if let Some(model) = model {
-        args.extend(["--model", model]);
+/// What a new background session starts with, each optional.
+#[derive(Debug, Clone, Default)]
+pub struct Start {
+    pub model: Option<String>,
+    pub name: Option<String>,
+    /// Its output style (`--settings {"outputStyle": …}`).
+    pub style: Option<String>,
+    pub prompt: Option<String>,
+    /// As an agent team, led by this agent.
+    pub team: Option<TeamStart>,
+    /// The conversation it continues (`--resume <session id>`).
+    pub resume: Option<String>,
+}
+
+/// An agent team (experimental in Claude Code): the lead agent and a plugin folder to load with
+/// it (a team chat), as `claude --agent <lead>` with agent teams turned on.
+#[derive(Debug, Clone)]
+pub struct TeamStart {
+    pub lead: String,
+    pub plugin_dir: Option<std::path::PathBuf>,
+}
+
+/// Starts a background session in `cwd` (`claude --bg`); returns its short id, or what `claude`
+/// said (e.g. an untrusted folder). An agent team needs an interactive session: see
+/// [`start_team`].
+pub fn start(account: &Account, cwd: &Path, options: &Start) -> Result<String, String> {
+    let mut args: Vec<String> = vec!["--bg".into()];
+    args.extend(start_args(options));
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut command = claude(account, &args);
+    if options.team.is_some() {
+        command.envs(TEAM_ENV);
     }
-    if let Some(name) = name {
-        args.extend(["-n", name]);
+    started(command.current_dir(cwd))
+}
+
+/// What `claude-team` sets: agent teams on, the security plugin's stop review off.
+const TEAM_ENV: [(&str, &str); 2] = [("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1"), ("ENABLE_STOP_REVIEW", "0")];
+
+/// tmux sessions Brain starts an agent team in are named `brain-team-<when>`.
+pub const TEAM_TMUX_PREFIX: &str = "brain-team-";
+
+/// Starts an agent team: Claude Code makes teammates only in an interactive session, so it
+/// runs in a detached tmux session (`brain-team-…`), Claude itself as the pane's program, and
+/// goes on when Brain quits. Returns the tmux session's name.
+pub fn start_team(account: &Account, cwd: &Path, options: &Start) -> Result<String, String> {
+    let name = format!("{TEAM_TMUX_PREFIX}{}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+    let mut command = Command::new("tmux");
+    command.args(["new-session", "-d", "-s", &name, "-x", "200", "-y", "50", "-c"]).arg(cwd);
+    if account.id != "main" {
+        command.arg("-e").arg(format!("CLAUDE_CONFIG_DIR={}", account.config_dir.display()));
     }
-    if let Some(prompt) = prompt.filter(|p| !p.trim().is_empty()) {
-        args.push(prompt);
+    for (key, value) in TEAM_ENV {
+        command.arg("-e").arg(format!("{key}={value}"));
     }
-    started(claude(account, &args).current_dir(cwd))
+    // Several arguments: tmux runs them as they are, no shell in between.
+    command.arg("claude").args(start_args(options));
+    let out = command.output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        // The largest client sizes the window: Brain's terminal joins it hidden too (for a reply
+        // from the phone), and a hidden one is tiny.
+        let _ = Command::new("tmux").args(["set-window-option", "-t", &name, "window-size", "largest"]).output();
+        Ok(name)
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+/// The panes of Brain's team sessions in tmux: the pid of the program each runs (Claude) and
+/// the tmux session's name. Empty without tmux or without such sessions.
+pub fn team_panes() -> std::collections::HashMap<u32, String> {
+    // A space between them: without a UTF-8 locale tmux writes a tab as `_`. Brain's names have
+    // no space.
+    let Ok(out) = Command::new("tmux").args(["list-panes", "-a", "-F", "#{session_name} #{pane_pid}"]).output() else {
+        return Default::default();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (session, pid) = line.rsplit_once(' ')?;
+            session.starts_with(TEAM_TMUX_PREFIX).then(|| Some((pid.trim().parse().ok()?, session.to_string()))).flatten()
+        })
+        .collect()
+}
+
+/// Types `text` into a team's tmux session, then Enter as a key of its own (not part of a
+/// paste): for a team no terminal shows.
+pub fn type_into_team(tmux: &str, text: &str) -> Result<(), String> {
+    let run = |args: &[&str]| -> Result<(), String> {
+        let out = Command::new("tmux").env("LC_CTYPE", "C.UTF-8").args(args).output().map_err(|e| e.to_string())?;
+        out.status.success().then_some(()).ok_or_else(|| String::from_utf8_lossy(&out.stderr).trim().to_string())
+    };
+    run(&["send-keys", "-t", tmux, "-l", "--", text])?;
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    run(&["send-keys", "-t", tmux, "Enter"])
+}
+
+/// The arguments for a new session's options, after `--bg` or as an interactive one.
+fn start_args(options: &Start) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    if let Some(session_id) = &options.resume {
+        args.extend(["--resume".into(), session_id.clone()]);
+    }
+    if let Some(model) = &options.model {
+        args.extend(["--model".into(), model.clone()]);
+    }
+    if let Some(name) = &options.name {
+        args.extend(["-n".into(), name.clone()]);
+    }
+    if let Some(style) = &options.style {
+        args.extend(["--settings".into(), crate::styles::settings(style)]);
+    }
+    if let Some(team) = &options.team {
+        args.extend(["--agent".into(), team.lead.clone()]);
+        // A flag, not CLAUDE_CODE_PLUGIN_DIRS: the settings' value of that (Brain's mod) wins.
+        if let Some(dir) = &team.plugin_dir {
+            args.extend(["--plugin-dir".into(), dir.display().to_string()]);
+        }
+    }
+    // After `--` the prompt is never an option, even one that starts with `-` (a task for later,
+    // a prompt from the phone).
+    if let Some(prompt) = options.prompt.as_deref().filter(|p| !p.trim().is_empty()) {
+        args.extend(["--".into(), prompt.to_string()]);
+    }
+    args
 }
 
 /// Continues an existing session in the background under its id (`claude --bg --resume`),
@@ -166,6 +277,7 @@ pub fn remove(account: &Account, id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
 
     #[test]
     fn reads_the_id_from_the_background_start_message() {

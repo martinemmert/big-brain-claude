@@ -207,6 +207,14 @@ pub struct Insight {
     /// How the session was started: `cli` (a terminal), `claude-desktop`, or `sdk-py`,
     /// `sdk-ts`, `sdk-cli` for sessions a program started (reviews, `claude -p` scripts).
     pub entrypoint: Option<String>,
+    /// The last reply of the turn ends with a question mark.
+    pub asks: bool,
+    /// The last sentence of that reply: a request or a question stands there, not in its start.
+    pub closing: Option<String>,
+    /// The one tool call that has no result yet, tool and argument in one line: what a
+    /// permission dialog would allow. `None` when none or several are open (parallel calls),
+    /// since then it isn't known which one the dialog is about.
+    pub tool: Option<String>,
 }
 
 impl Insight {
@@ -256,6 +264,8 @@ pub fn title_of(transcript: &Path) -> Option<String> {
 pub fn insight(transcript: &Path) -> Insight {
     let len = std::fs::metadata(transcript).map(|m| m.len()).unwrap_or(0);
     let mut out = Insight::default();
+    // Tool calls (id, line) of the main conversation that no result answered yet.
+    let mut open_calls: Vec<(String, String)> = Vec::new();
     for entry in tail_entries(transcript, len, 512 * 1024) {
         if entry.get("isSidechain").and_then(Value::as_bool).unwrap_or(false) {
             continue;
@@ -283,12 +293,27 @@ pub fn insight(transcript: &Path) -> Insight {
                     Turn::Working
                 };
                 out.turn = Some((state, ts));
+                if user_texts(&entry).next().is_some() {
+                    out.asks = false;
+                }
+                if user_texts(&entry).next().is_some() {
+                    open_calls.clear();
+                }
+                let answered = entry.get("message").and_then(|m| m.get("content")).and_then(Value::as_array).into_iter().flatten();
+                for id in answered.filter_map(|b| b.get("tool_use_id").and_then(Value::as_str)) {
+                    open_calls.retain(|(call, _)| call != id);
+                }
             }
             "assistant" => {
                 if let Some(ts) = ts {
                     out.turn = Some((Turn::Working, ts));
                 }
                 let message = entry.get("message");
+                open_calls.extend(tool_calls(message));
+                if let Some(text) = last_text(message) {
+                    out.asks = ends_with_question(text);
+                    out.closing = last_sentence(text);
+                }
                 if let Some(model) = message.and_then(|m| m.get("model")).and_then(Value::as_str) {
                     out.model = Some(model.to_string());
                 }
@@ -307,7 +332,61 @@ pub fn insight(transcript: &Path) -> Insight {
             _ => {}
         }
     }
+    // A subagent's call isn't what a dialog would allow: that is a command of the subagent.
+    if let [(_, line)] = open_calls.as_slice() {
+        if !line.starts_with("Agent: ") && !line.starts_with("Task: ") && line != "Agent" && line != "Task" {
+            out.tool = Some(line.clone());
+        }
+    }
     out
+}
+
+/// The tool calls of an assistant message as (id, "Tool: argument").
+fn tool_calls(message: Option<&Value>) -> Vec<(String, String)> {
+    let blocks = message.and_then(|m| m.get("content")).and_then(Value::as_array);
+    blocks
+        .into_iter()
+        .flatten()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .filter_map(|b| {
+            let name = b.get("name")?.as_str()?;
+            let summary = tool_summary(name, b.get("input").unwrap_or(&Value::Null));
+            Some((b.get("id")?.as_str()?.to_string(), if summary.is_empty() { name.to_string() } else { format!("{name}: {summary}") }))
+        })
+        .collect()
+}
+
+/// The last text block of an assistant message.
+fn last_text(message: Option<&Value>) -> Option<&str> {
+    let blocks = message.and_then(|m| m.get("content")).and_then(Value::as_array)?;
+    blocks
+        .iter()
+        .rev()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+        .find_map(|b| b.get("text").and_then(Value::as_str).filter(|t| !t.trim().is_empty()))
+}
+
+/// The last sentence of a reply's last line, at most 300 characters.
+fn last_sentence(text: &str) -> Option<String> {
+    let line = text.lines().rev().map(str::trim).find(|l| !l.is_empty())?;
+    let chars: Vec<(usize, char)> = line.char_indices().collect();
+    let start = chars
+        .windows(3)
+        .rev()
+        .find(|w| matches!(w[0].1, '.' | '!' | '?') && w[1].1 == ' ' && !w[2].1.is_whitespace())
+        .map_or(0, |w| w[2].0);
+    let sentence = &line[start..];
+    let mut sentence: String = sentence.chars().take(300).collect();
+    if sentence.len() < line[start..].len() {
+        sentence.push('…');
+    }
+    Some(sentence)
+}
+
+/// Whether a reply ends with `?`, ignoring trailing whitespace, emphasis marks, brackets and quotes.
+fn ends_with_question(text: &str) -> bool {
+    text.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '*' | '_' | '`' | ')' | '"' | '”' | '»'))
+        .ends_with('?')
 }
 
 /// File paths of the editing tool calls in an assistant message.
@@ -475,6 +554,61 @@ mod tests {
         let path = dir.path().join("s.jsonl");
         std::fs::write(&path, lines.join("\n")).unwrap();
         (dir, path)
+    }
+
+    #[test]
+    fn a_reply_ending_in_a_question_mark_asks_until_the_next_prompt() {
+        let reply = |text: &str| {
+            format!(
+                r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"{text}"}}]}},"timestamp":"2026-10-02T14:00:05Z"}}"#
+            )
+        };
+        let prompt = r#"{"type":"user","message":{"role":"user","content":"Ja"},"timestamp":"2026-10-02T14:01:00Z"}"#;
+        let (_dir, path) = transcript(&[&reply("Fertig. **Soll ich weitermachen?**")]);
+        assert!(insight(&path).asks);
+        let (_dir, path) = transcript(&[&reply("Soll ich weitermachen?"), prompt]);
+        assert!(!insight(&path).asks);
+        let (_dir, path) = transcript(&[&reply("Fertig.")]);
+        assert!(!insight(&path).asks);
+    }
+
+    #[test]
+    fn a_tool_call_stays_until_its_result_comes() {
+        let call = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"git push\n  --force-with-lease"}}]},"timestamp":"2026-10-02T14:00:05Z"}"#;
+        let result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]},"timestamp":"2026-10-02T14:00:09Z"}"#;
+        let (_dir, path) = transcript(&[call]);
+        assert_eq!(insight(&path).tool.as_deref(), Some("Bash: git push --force-with-lease"));
+        let (_dir, path) = transcript(&[call, result]);
+        assert_eq!(insight(&path).tool, None);
+    }
+
+    #[test]
+    fn a_subagent_call_shows_no_command() {
+        let call = |name: &str| format!(r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"t1","name":"{name}","input":{{"description":"Review it"}}}}]}},"timestamp":"2026-10-02T14:00:05Z"}}"#);
+        for name in ["Agent", "Task"] {
+            let (_dir, path) = transcript(&[&call(name)]);
+            assert_eq!(insight(&path).tool, None);
+        }
+        let (_dir, path) = transcript(&[&call("Skill")]);
+        assert_eq!(insight(&path).tool.as_deref(), Some("Skill: Review it"));
+    }
+
+    #[test]
+    fn two_parallel_calls_show_no_command_until_one_is_left() {
+        let calls = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"rm -rf x"}}]},"timestamp":"2026-10-02T14:00:05Z"}"#;
+        let first = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]},"timestamp":"2026-10-02T14:00:06Z"}"#;
+        let sidechain = r#"{"type":"assistant","isSidechain":true,"message":{"role":"assistant","content":[{"type":"tool_use","id":"s1","name":"Bash","input":{"command":"other"}}]}}"#;
+        let (_dir, path) = transcript(&[calls]);
+        assert_eq!(insight(&path).tool, None);
+        let (_dir, path) = transcript(&[calls, first, sidechain]);
+        assert_eq!(insight(&path).tool.as_deref(), Some("Bash: rm -rf x"));
+    }
+
+    #[test]
+    fn the_closing_sentence_is_the_last_one_of_the_last_line() {
+        assert_eq!(last_sentence("Alles gebaut.\n\nSag mir, welche passen. Danach baue ich sie.").as_deref(), Some("Danach baue ich sie."));
+        assert_eq!(last_sentence("Ich warte auf deinen Neustart von Docker.\n").as_deref(), Some("Ich warte auf deinen Neustart von Docker."));
+        assert_eq!(last_sentence("   "), None);
     }
 
     #[test]

@@ -124,7 +124,7 @@ pub fn exchanges(transcript: &Path) -> Vec<Exchange> {
 }
 
 /// An AskUserQuestion call still waiting for its answer.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OpenQuestion {
     /// The tool call's id: an answer names it, so it can only ever reach this question.
     pub call: String,
@@ -133,17 +133,17 @@ pub struct OpenQuestion {
     pub multi_select: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct QuestionItem {
     pub question: String,
     pub options: Vec<String>,
-    /// This question takes several picks.
+    /// This question takes several picks. (Brain's mod first sent it for the whole call only.)
+    #[serde(default)]
     pub multi_select: bool,
 }
 
-/// The AskUserQuestion call the session waits on, if any: the last one in the transcript that
-/// has no result yet. Reads only the transcript's end (the question is the last thing in it).
-pub fn open_question(transcript: &Path) -> Option<OpenQuestion> {
+/// The transcript's last megabyte: an open question and its answer land at the end.
+fn tail(transcript: &Path) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
     const TAIL: u64 = 1024 * 1024;
     let mut file = std::fs::File::open(transcript).ok()?;
@@ -151,6 +151,27 @@ pub fn open_question(transcript: &Path) -> Option<OpenQuestion> {
     file.seek(SeekFrom::Start(len.saturating_sub(TAIL))).ok()?;
     let mut text = String::new();
     file.read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+/// Whether the transcript holds the result of tool call `call`. Claude Code writes an
+/// AskUserQuestion call to the transcript only together with its answer, so a question Brain's
+/// mod reported stays open until then.
+pub fn answered(transcript: &Path, call: &str) -> bool {
+    let Some(text) = tail(transcript) else { return false };
+    text.lines().filter(|line| line.contains(call)).any(|line| {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else { return false };
+        let blocks = entry.get("message").and_then(|m| m.get("content")).and_then(Value::as_array);
+        blocks.into_iter().flatten().any(|b| {
+            b.get("type").and_then(Value::as_str) == Some("tool_result") && b.get("tool_use_id").and_then(Value::as_str) == Some(call)
+        })
+    })
+}
+
+/// The AskUserQuestion call the session waits on, if any: the last one in the transcript that
+/// has no result yet. Reads only the transcript's end (the question is the last thing in it).
+pub fn open_question(transcript: &Path) -> Option<OpenQuestion> {
+    let text = tail(transcript)?;
     let mut open: Option<OpenQuestion> = None;
     // The first line may be cut off by the seek; it doesn't parse and is skipped.
     for line in text.lines() {
@@ -201,7 +222,8 @@ pub fn open_question(transcript: &Path) -> Option<OpenQuestion> {
 
 /// The keys that answer an open question in Claude Code's dialog, as tested by hand: each
 /// question's option number in turn, and with several questions `1` on the review page that
-/// follows ("Submit answers"). `None` when a pick doesn't fit the question.
+/// follows ("Submit answers"). Each key goes on its own: the dialog ignores several at once.
+/// `None` when a pick doesn't fit the question.
 pub fn answer_keys(question: &OpenQuestion, picks: &[usize]) -> Option<String> {
     if question.multi_select || picks.len() != question.items.len() {
         return None;
@@ -250,6 +272,15 @@ mod tests {
         let answered = serde_json::json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "toolu_1", "content": "ok" }] } });
         let file = transcript(&[ask, answered]);
         assert_eq!(open_question(file.path()), None);
+    }
+
+    #[test]
+    fn a_reported_question_is_answered_once_its_result_is_in_the_transcript() {
+        let result = |id: &str| serde_json::json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": id, "content": "ok" }] } });
+        let file = transcript(&[result("toolu_0")]);
+        assert!(!answered(file.path(), "toolu_1"));
+        let file = transcript(&[result("toolu_0"), result("toolu_1")]);
+        assert!(answered(file.path(), "toolu_1"));
     }
 
     fn transcript(lines: &[serde_json::Value]) -> tempfile::NamedTempFile {

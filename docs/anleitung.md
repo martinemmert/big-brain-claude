@@ -17,28 +17,38 @@ Terminal laufen und hilft, die Liste kurz zu halten.
 
 ## Die Liste
 
-Links stehen die Sessions, wer auf dich wartet zuerst, am längsten Wartende oben:
+Links stehen die Sessions in drei Zonen:
 
-- **Rot:** Claude fragt etwas oder braucht eine Freigabe.
-- **Gelb:** Der Turn ist fertig, du bist dran.
-- **Blau:** Claude arbeitet; **hellblau:** fertig, aber Subagents oder Hintergrund-Shells laufen noch.
+- **Zu entscheiden** (rot, mit Zahl): Claude braucht eine Freigabe (**Erlauben** / **Ablehnen**), stellt
+  eine Frage mit Optionen (ein Klick auf die Option antwortet) oder hat mit `brain report --waiting`
+  gefragt. Die Reihenfolge ist Freigabe, Optionen, Frage, darin die am längsten Wartende zuerst.
+  Wartet nichts, steht dort „Nichts wartet auf dich.“
+  - **Frage?** (gelber Streifen, kein Zähler): Der Turn endete ohne Meldung, der letzte Satz endet
+    mit „?“. Die Karte verschwindet, sobald du die Session öffnest und weiterklickst, oder mit
+    **Nur Bericht**.
+- **Zum Lesen:** fertige Sessions, die du noch nicht angesehen hast, neueste zuerst, mit dem
+  letzten Satz der Antwort. Als gesehen zählt eine Session, wenn du sie in Brains vorderem Fenster
+  auswählst und dann weiterklickst; **alle gesehen** macht das für die ganze Zone.
+- **Projekte:** alles andere, was läuft, nach Projekt gruppiert: blau arbeitet, hellblau
+  Subagents oder Hintergrund-Shells laufen noch, grau ruht.
 
-Oben stehen Angeheftete (★), darunter „Braucht dich“ und „Arbeitet“. Alles, was gerade nicht
-nach dir ruft, liegt in **zugeklappten Abschnitten am Listenende**, jeweils mit Zahl; ein Klick
-(oder ⌘K) klappt einen auf:
+Angeheftete Sessions (★) stehen in ihrer Zone; beendete angeheftete unter „Zum Fortsetzen gemerkt“.
+Alles, was gerade nicht nach dir ruft, liegt am Listenende: in der Fußzeile und in einem
+zugeklappten Abschnitt, jeweils mit Zahl; ein Klick (oder ⌘K) klappt auf:
 
-- **Ruht seit über 2 h**
-- **Pausiert und ausgeblendet** (`S`, `⌫` `⌫`)
-- **Ruhig im Hintergrund:** Claudes Hintergrund-Sessions ohne Aktivität seit einem Tag
-- **Automatisch gestartet:** Security-Reviews nach Commits, `claude -p`-Skripte und Ähnliches
-- **Beendet:** die des letzten Tages; ältere findet die Suche
+- **▸ N beendet** (`E`): die des letzten Tages; ältere findet die Suche.
+- **▸ N im Hintergrund** (`B`): Claudes Hintergrund-Sessions ohne Aktivität seit einem Tag.
+- **▸ automatisch** (`U`): Sessions, die Programme gestartet haben, etwa Security-Reviews nach
+  Commits oder `claude -p`-Skripte.
+- **Pausiert und ausgeblendet** (`S`, `⌫` `⌫`): als eigener Abschnitt darunter.
 
-Die aus den drei mittleren melden sich nie per Mitteilung. So verschwindet keine Session spurlos.
+Die Sessions aus Hintergrund, automatisch und pausiert melden sich nie per Mitteilung. So
+verschwindet keine Session spurlos.
+
+Oben in der Titelleiste steht die Zahl der Wartenden und der Kontofilter (umschalten mit `⇥`).
+Tastenkürzel stehen nur auf der gewählten Karte.
 
 - **Suchen:** `/` durchsucht die Liste nach Name, Ordner, Konto und Überschrift.
-- **Nach Projekt gruppieren:** `G` oder „Projekte“ neben dem Suchfeld.
-- **Heute:** `D` (oder ⌘K) zeigt, was jede Session heute erledigt hat; `⌘C` kopiert das als
-  Markdown, `esc` schließt.
 - **Kontofilter:** in der Titelleiste, umschalten mit `⇥`.
 - **Rechtsklick** auf eine Session zeigt alle passenden Aktionen mit ihren Kürzeln.
 - **Fußleiste:** zeigt die Tasten, die für die gewählte Session gerade passen; `?` zeigt alle.
@@ -67,8 +77,24 @@ Die Tabs (`←` `→`):
 ## Sessions in Brain laufen lassen
 
 - **Neue Session:** `⌘N`. Ordner, Konto, Modell und erster Prompt, auf Wunsch aus einer
-  Vorlage. Sie läuft als Claude-Code-Hintergrund-Session in Brains Terminal weiter, auch wenn
-  Brain beendet wird.
+  Vorlage. Zuletzt benutzte Ordner stehen oben; tippst du einen Pfad (`~/`), listet Brain die
+  Ordner darin, `→` geht in den gewählten hinein. `⇧⇥` wählt das Antwort-Profil (Output-Style),
+  sonst gilt, was in den Einstellungen des Kontos steht. Sie läuft als Claude-Code-Hintergrund-Session
+  in Brains Terminal weiter, auch wenn Brain beendet wird.
+- **Antwort-Profil wechseln:** `⌘K` → „Antwort-Profil von …“ tippt `/output-style <Name>` in die
+  Session; es gilt ab der nächsten Nachricht.
+- **Agenten-Team:** `⌘T` im Neue-Session-Dialog startet die Session als Team wie `claude-team`
+  (Agent `team_agent`, Standard `dirigent`; Plugin-Ordner `team_plugin_dir`, Standard
+  `~/.claude-mods/team-chat`). Ein Team braucht eine interaktive Session: Brain startet es in einer
+  unsichtbaren tmux-Session (`brain-team-…`), sein Terminal-Tab hängt sich daran, und es läuft weiter,
+  wenn Brain beendet wird. `⌘K` → „Als Agenten-Team fortsetzen“ / „Ohne Team fortsetzen“ schaltet eine
+  laufende Session um (sie startet dafür neu, das Gespräch bleibt). Hat eine Session Agenten, zeigt der Tab **Team** ihre Fragen an dich
+  („Frage an Martin: …“, mit Mitteilung; „Antworten“ schreibt dem Lead, der gibt es weiter), wer
+  arbeitet und wer wartet, was jeder verbraucht hat (Tokens rein/raus, aus den Transkripten der
+  Mitglieder), den Stand der Aufgabe (die Datei des Leads unter `team_state_dir`, Standard
+  `~/.claude-mods/team-state/<repo>/<branch>.md`), ihre Nachrichten mit Typ (`[BLOCKER]`, `[EINWAND]`
+  rot) und die Anleitung (`team_guide`, Standard
+  `~/.claude-mods/agenten-team-anleitung.md`).
 - **Öffnen:** `⏎` oder Doppelklick. Läuft die Session in Brain, öffnet sie sich hier; eine beendete
   wird hier fortgesetzt. `⌥⏎` öffnet sie stattdessen in iTerm.
 - **Aus iTerm holen:** `I` (dann `⏎`) holt eine Session aus ihrem iTerm-Tab nach Brain, ohne
@@ -107,7 +133,10 @@ Die Tabs (`←` `→`):
   eingefügten Screenshots. `⌘⏎` sendet.
 - **Befehlspalette:** `⌘K`. Alle Aktionen; Slash-Befehle wie `/compact`, `/context`, `/model`
   für die Session. Freier Text geht an die Session oder an alle, die auf dich warten.
-- **Benachrichtigungen:** Wartet eine Session, meldet macOS das. Direkt in der Mitteilung kannst du
+- **Benachrichtigungen:** Nur wenn eine Session fertig ist oder dich etwas fragt (eine Frage oder
+  eine Freigabe). Wartet eine Session weiter auf eine Entscheidung, erinnert Brain nach
+  `remind_after_minutes` (Standard 10, 0 schaltet aus), höchstens dreimal; nie bei „Frage?“
+  und nie bei Berichten. Direkt in der Mitteilung kannst du
   antworten (nur am entsperrten Mac), öffnen oder 15 Minuten pausieren.
 - **Quick Terminal:** Eine Taste deiner Wahl holt Brain aus jeder App mit dem Terminal der
   wartenden Session nach vorn; nochmal drücken blendet Brain aus. Ist aus, bis du sie in der
@@ -128,6 +157,7 @@ Die Tabs (`←` `→`):
 | `X` `X` | beenden (bleibt fortsetzbar) |
 | `⌘⌫` `⌘⌫` | beendete Session in den Papierkorb |
 | `C` | aufräumen: alles, was seit N Tagen ruht, ausblenden oder in den Papierkorb |
+| `L` | für später: Aufgaben aus `/later`, `⏎` startet eine als neue Session, `⌫` hakt ab |
 | `A` | **weiterführen …**: ein Dialog für Konto (`1`, `2`, … – mit dem Verbrauch jedes Kontos), ob das Original weiterläuft (`⇥`), und Flags. Er sagt, was `⏎` tut: anderes Konto → *umziehen* (z. B. wenn ein Limit voll ist); Original läuft weiter → *forken*; eigenes Konto mit Flags (`--chrome`, `--model opus`) → *neu starten*, wo sie lief; eigenes Konto ohne Flags → aus iTerm *nach Brain holen* |
 | `F` / `I` / Rechtsklick → *Neu starten mit …* | derselbe Dialog, vorbelegt zum Forken / Holen / mit Flags |
 
@@ -213,7 +243,6 @@ Alles optional, in `~/.claude-brain/config.json`:
 |---|---|
 | `language` | `"de"` oder `"en"` |
 | `chat_font`, `chat_font_size` | Schrift des Gesprächs, sonst die von iTerm |
-| `remind_after_minutes` | nach wie vielen Minuten Warten Brain erneut erinnert (`0` = nie) |
 | `quick_replies` | eigene Schnellantworten für `T` `1`–`9` |
 | `quick_terminal` | Tastenkürzel des Quick Terminals, z. B. `"cmd+shift+b"`; ohne Eintrag aus |
 | `screenshot_folder` | Ordner, den der Screenshot-Wächter beobachtet; `"off"` schaltet ihn ab |
@@ -228,13 +257,12 @@ Alles optional, in `~/.claude-brain/config.json`:
 | Taste | Wirkung |
 |---|---|
 | `↑` `↓`, `j` `k` | Session wählen |
-| `1`–`9` | n-te Session öffnen |
 | `⏎`, Doppelklick | öffnen (in Brain, sonst im Terminal-Programm; eine beendete: fortsetzen) |
 | `⌥⏎` | in iTerm öffnen |
 | `⌘2` `⌘J` / `⌘1` `⌘[` | ins Terminal / zurück zur Liste |
 | `/` | Liste durchsuchen |
 | `⇥` / `⇧⇥` | Kontofilter |
-| `G` / `D` | nach Projekten / Heute |
+| `E` `B` `U` | beendete / Hintergrund- / automatische Sessions auflisten |
 | `C` | aufräumen |
 | `⌘N` | neue Session |
 | `T` | antworten (`1`–`9` übernimmt eine Schnellantwort, `⏎` schickt ab) |
@@ -256,5 +284,5 @@ Alles optional, in `~/.claude-brain/config.json`:
 | `←` `→` | Tabs wechseln |
 | `⌘K` | Befehlspalette: alles, auch was keine Taste hat (stumm, Abschnitte aufklappen, Konten abgleichen …) |
 | `?` | alle Tasten |
-| `esc` | Dialog, Suchleiste oder Heute schließen, Suche leeren |
+| `esc` | Dialog oder Suchleiste schließen, Suche leeren |
 | deine `quick_terminal`-Taste | Quick Terminal, aus jeder App |

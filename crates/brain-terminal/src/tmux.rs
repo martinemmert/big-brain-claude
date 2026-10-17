@@ -71,7 +71,9 @@ fn command_line(pid: u32) -> Option<String> {
 }
 
 fn run(socket: &[String], args: &[&str]) -> Result<String, String> {
-    let out = Command::new("tmux").args(socket).args(args).output().map_err(|err| format!("tmux: {err}"))?;
+    // Without a UTF-8 locale (an app started from the Finder may have none) tmux writes the
+    // formats' tabs as `_`, and nothing here would parse.
+    let out = Command::new("tmux").env("LC_CTYPE", "C.UTF-8").args(socket).args(args).output().map_err(|err| format!("tmux: {err}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {

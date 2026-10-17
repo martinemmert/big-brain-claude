@@ -86,18 +86,27 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   status line (Brain wraps your status line command and passes its output through unchanged).
 - **Pull requests.** The PR of each session's branch with its checks (`#12 ✓`, `#12 ✗`, `#12 …`),
   via the GitHub CLI (`gh`, logged in); click it to open the PR.
-- **Conflicts.** A warning (and one notification) when two sessions edit the same files, read
+- **Conflicts.** A warning when two sessions edit the same files, read
   from their transcripts, and a softer hint when they change files in the same checkout.
-- **Today** (`D` or ⌘K; `esc` leaves). What every session reported as done today, per project;
-  `⌘C` copies it as Markdown.
+- **Agent teams.** `⌘T` in New session starts one like `claude-team`; the **Team** tab shows the
+  members (working or waiting), their messages, their questions for you (answered through the lead,
+  with a notification) and the team's guide. From Brain's mod (`$.agent.list()`,
+  `session.send`/`receive`); on the phone too.
+- **For later.** `/later <task>` in any session (or `brain later "<task>"`, which Claude uses too) notes a
+  task with its folder; `L` lists them, `⏎` starts one as a new session there, `⌫` checks it off.
+- **Timeline.** Every hook event and report of a session.
 - **The conversation reads like the terminal:** your prompts as `> …`, Claude's replies and tool
   calls with `●`, in your terminal's font (iTerm2's default profile, e.g. JetBrains Mono 13).
   `"chat_font"` and `"chat_font_size"` in `~/.claude-brain/config.json` pick another one.
-- **Keep the list short, lose nothing.** Sessions that never got a prompt don't show up.
-  Everything that isn't asking for you is a folded section at the end of the list, each with its
-  count: *Resting for over 2 h*, *Snoozed and hidden*, *Quiet in the background*, *Started by
-  programs* (security reviews, SDK scripts, `claude -p`) and *Ended* (the last day; older ones
-  through the search). A click, or ⌘K, opens one. `⌘⌫` twice moves an ended session's transcript
+- **Three zones, nothing lost.** Sessions that never got a prompt don't show up. *To decide* (red,
+  with a count) holds what asks you something: a permission (Allow / Deny on the card), a question
+  with options (one click answers) or a `brain report --waiting`; a reply that only ends with “?”
+  is a yellow *Question?* that doesn't count and goes away when you open the session or choose
+  *Only a report*. *To read* holds finished sessions you haven't looked at, each with the last
+  sentence of its reply (*all seen* clears it). *Projects* holds everything else that lives.
+  At the end: a footer with *Ended* (the last day; older ones through the search), *Quiet in the
+  background* and *Started by programs* (security reviews, SDK scripts, `claude -p`), and the
+  folded section *Snoozed and hidden*. A click, or ⌘K, opens one. `⌘⌫` twice moves an ended session's transcript
   to the **Trash**. `C` opens *Clean up*: everything ended (or in the background) and quiet for
   1, 3, 7 or 14 days, to hide or trash at once. Pinned and saved sessions always stay.
 - **Claude Code's background sessions** (`claude --bg`, listed by `claude agents`) show with
@@ -111,14 +120,14 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   left. `P` saves one under "Saved to resume" at the top; `⏎` resumes it in a new tab.
 - **Open the terminal.** iTerm2, Terminal.app and tmux (in any terminal) jump to the exact
   pane; VS Code and Cursor bring the project window forward.
-- **Search** by name, path, account or last message; **group by project** (`G`, or *Projects*
-  next to the search field; git worktrees count as their main repository); **pin** and **mute**
+- **Search** by name, path, account or last message; **pin** and **mute**
   (right-click or ⌘K) sessions. The title bar keeps the account filter (`⇥`) and alerts.
 - **Rename** a waiting session; Brain types `/rename <name>` into its terminal.
-- **Menu bar count** and native **notifications** with *Open* and *Snooze 15 min*, sound only
-  when a session calls you; reminders while a session keeps waiting (`remind_after_minutes`
-  in `config.json`, 10 by default, 0 turns them off). `S` snoozes a session: 15 min → 1 h →
-  tomorrow 9:00 → until something happens in it → back (`⌫` twice jumps to the last).
+- **Menu bar count** and native **notifications** with *Open* and *Snooze 15 min*, only when a
+  session is done or asks you something (a question or a permission), sound only for the
+  latter; reminders only while a session still waits for a decision (`remind_after_minutes` in
+  `config.json`, 10 by default, 0 turns them off, at most three). `S` snoozes a session: 15 min →
+  1 h → tomorrow 9:00 → until something happens in it → back (`⌫` twice jumps to the last).
 - **New sessions** in a recent folder and any account (`⌘N`), or from a **template**: a
   Markdown file with folder, account, model and a first prompt with placeholders (below).
 - **Go on … (`A`)**: one dialog for where and how a session goes on. Pick the account (`1`,
@@ -286,7 +295,7 @@ This
 - builds `dist/Brain.app` and `dist/brain` with `scripts/bundle.sh`,
 - installs the `brain` CLI to `~/.cargo/bin`,
 - installs `~/Applications/Brain.app` (open it via Spotlight),
-- runs `brain install`, which adds Brain's hooks, a `Bash(brain report:*)` permission and a
+- runs `brain install`, which adds Brain's hooks, `Bash(brain report:*)` and `Bash(brain later:*)` permissions and a
   short protocol section to the `settings.json` and `CLAUDE.md` of every `~/.claude*`
   account. Existing files are backed up as `*.brain-backup-<timestamp>`; running it again
   is safe.
@@ -311,7 +320,7 @@ Sessions are listed in Brain's order: needs you, your turn, working.
 brain uninstall
 ```
 
-This removes Brain's hooks, the `Bash(brain report:*)` rule and the protocol section from
+This removes Brain's hooks, the `Bash(brain report:*)` and `Bash(brain later:*)` rules and the protocol section from
 the `settings.json` and `CLAUDE.md` of every `~/.claude*` account, with backups as above.
 Then delete `Brain.app`, the `brain` binary (`~/.cargo/bin/brain` or wherever you put it)
 and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` removes all three.
@@ -321,13 +330,12 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | Key | Action |
 |---|---|
 | `↑` `↓` / `j` `k` | select |
-| `1`–`9` | open the n-th session |
 | `⏎`, double-click | open the session: in Brain's terminal if it runs in Brain, else its terminal app (an ended one resumes) |
 | `⌥⏎` | open it in iTerm instead |
 | `⌘J` `⌘2` / `⌘[` `⌘1` | keyboard into the terminal / back to the list |
 | `/` | search the session list (`esc` clears) |
 | `⇥` / `⇧⇥` | cycle the account filter |
-| `G` / `D` | group by project / today's digest (`⌘C` copies it, `esc` leaves) |
+| `E` / `B` / `U` | fold ended / background / automated sessions in the footer |
 | `C` | clean up: hide or trash everything quiet for N days |
 | `⌘N` | start a new session (in Brain; `⌘I` in the dialog: in iTerm) |
 | `T` | reply to a session that waits for you (`1`–`9` fills in a quick reply, `⏎` sends) |
@@ -352,7 +360,7 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `←` `→` | switch tabs: messages, files, (Konsil,) terminal |
 | `⌘K` | command palette: everything, also what has no key (mute, open/fold sections, sync accounts …) |
 | `?` | every key |
-| `esc` | close a dialog, the find bar or Today; clear the search |
+| `esc` | close a dialog or the find bar; clear the search |
 | your `quick_terminal` key | from any app: Brain with the waiting session's terminal (again: hide) |
 | right-click | a session's actions |
 
