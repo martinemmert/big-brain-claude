@@ -20,14 +20,6 @@ pub fn focus(tty: &str) -> Outcome {
 /// Types `text` and presses Return without bringing iTerm2 to the front.
 /// Text and Return are sent separately so Claude Code does not take the
 /// Return as part of a paste.
-pub fn type_text(tty: &str, text: &str) -> Outcome {
-    let action = format!(
-        "tell theSession to write text {} newline no\n          delay 0.15\n          tell theSession to write text (ASCII character 13) newline no",
-        applescript_string(text)
-    );
-    run_on_session(tty, &action)
-}
-
 pub fn send_key(tty: &str, key: Key) -> Outcome {
     let code = match key {
         Key::Return => 13,

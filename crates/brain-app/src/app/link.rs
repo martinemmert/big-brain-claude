@@ -257,14 +257,10 @@ impl Brain {
                     ));
                     return Task::none();
                 }
-                if self.can_send(&key) {
+                // Through the session's mod: no terminal needs to be attached first.
+                if self.send_text(&key, &text) {
                     self.set_status(tr!("Antwort vom Handy an „{name}“ gesendet.", "Reply from the phone sent to “{name}”."));
-                    return self.send_text(&key, &text);
                 }
-                if in_background && first_try && self.spawn_terminal(&key) {
-                    return later(Command::Reply { key, text });
-                }
-                self.set_status(tr!("Vom Handy: „{name}“ nimmt gerade keine Eingabe an.", "From the phone: “{name}” doesn't take input right now."));
                 Task::none()
             }
             // Handled before a session was looked up.
@@ -448,12 +444,9 @@ impl Brain {
     /// through the terminal app the session runs in. Not checked for "accepts input" first: the
     /// dialog just closed, Brain's state may not know yet.
     pub(super) fn type_after_dialog(&mut self, key: &SessionKey, text: &str) -> Task<Message> {
-        if self.request_taker(key).is_some() || self.terminals.contains_key(key) {
-            return self.send_text(key, text);
+        if self.send_text(key, text) {
+            self.set_status(t("Antwort vom Handy gegeben.", "Answered from the phone."));
         }
-        let Some(pid) = self.model.board.get(key).map(|s| s.pid) else { return Task::none() };
-        let outcome = terminal::type_text(pid, text);
-        self.report(outcome, Some(t("Antwort vom Handy gegeben.", "Answered from the phone.").into()));
         Task::none()
     }
 }

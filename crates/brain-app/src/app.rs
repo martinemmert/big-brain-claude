@@ -1156,7 +1156,10 @@ impl Brain {
                 let task = self.run_palette(command);
                 Task::batch([unfocus(), task])
             }
-            Message::SendTo(key, text) => self.send_text(&key, &text),
+            Message::SendTo(key, text) => {
+                self.send_text(&key, &text);
+                Task::none()
+            }
             Message::ComposerEdit(action) => {
                 self.composer.perform(action);
                 Task::none()
@@ -2038,16 +2041,17 @@ impl Brain {
         groups.live().into_iter().find(|s| self.terminals.contains_key(&s.key)).map(|s| s.key.clone())
     }
 
-    /// A reply typed into a notification: straight into the session when Brain can type into it
-    /// and no permission dialog is open; otherwise Brain comes forward with the text in the
-    /// composer, so nothing typed is lost.
+    /// A reply typed into a notification: straight to the session when its mod takes it and no
+    /// permission dialog is open; otherwise Brain comes forward with the text in the composer, so
+    /// nothing typed is lost.
     fn reply_from_notification(&mut self, key: SessionKey, text: String) -> Task<Message> {
         let permission_open = self.model.board.get(&key).is_some_and(|s| s.awaiting_permission());
         if self.can_send(&key) && !permission_open {
             let name = self.model.board.get(&key).map(|s| s.display_name()).unwrap_or_default();
-            let task = self.send_text(&key, &text);
-            self.set_status(tr!("Antwort an „{name}“ gesendet.", "Reply sent to “{name}”."));
-            return task;
+            if self.send_text(&key, &text) {
+                self.set_status(tr!("Antwort an „{name}“ gesendet.", "Reply sent to “{name}”."));
+                return Task::none();
+            }
         }
         self.selected = Some(key);
         self.composer = iced::widget::text_editor::Content::with_text(&text);
@@ -2109,9 +2113,8 @@ impl Brain {
         operation::focus(COMPOSER)
     }
 
-    /// ⌘⏎ in the composer: the text and the screenshots' paths into the session. Into Brain's
-    /// terminal as one paste (line breaks stay inside the prompt), then Return; into an iTerm tab
-    /// as one line, where a line break would send it early.
+    /// ⌘⏎ in the composer: the text and the screenshots' paths to the session, line breaks and
+    /// all.
     fn send_composer(&mut self) -> Task<Message> {
         let Some(key) = self.selected.clone() else { return Task::none() };
         let mut text = self.composer.text().trim_end().to_string();
@@ -2125,25 +2128,15 @@ impl Brain {
         if self.blocked_in_demo() {
             return Task::none();
         }
-        // Through the session's mod the text goes as written, line breaks and all.
-        let task = if self.request_taker(&key).is_some() {
-            self.send_text(&key, &text)
-        } else if let Some(term) = self.terminals.get_mut(&key) {
-            term.paste(&text);
-            let enter_key = key.clone();
-            Task::perform(off_thread(|| std::thread::sleep(Duration::from_millis(150))), move |_| Message::TerminalKeys(enter_key.clone(), b"\r".to_vec()))
-        } else if self.model.board.get(&key).is_some_and(|s| s.accepts_input()) {
-            let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-            self.send_text(&key, &line)
-        } else {
-            self.set_status(t("Die Session nimmt gerade keine Eingabe an – der Text bleibt im Composer.", "The session doesn't take input right now – the text stays in the composer."));
+        // The text stays in the composer when it didn't go.
+        if !self.send_text(&key, &text) {
             return Task::none();
-        };
+        }
         self.composer = iced::widget::text_editor::Content::new();
         self.composer_images.clear();
         self.mode = Mode::Normal;
         self.set_status(t("Gesendet.", "Sent."));
-        Task::batch([task, self.focus_terminal()])
+        self.focus_terminal()
     }
 
     /// ⌘K.
@@ -2255,16 +2248,19 @@ impl Brain {
                 self.tab = tab;
                 Task::batch([self.load_changes(), self.load_files()])
             }
-            PaletteCommand::Send(text) => match self.selected.clone() {
-                Some(key) => self.send_text(&key, &text),
-                None => Task::none(),
-            },
+            PaletteCommand::Send(text) => {
+                if let Some(key) = self.selected.clone() {
+                    if self.send_text(&key, &text) {
+                        self.set_status(t("Gesendet.", "Sent."));
+                    }
+                }
+                Task::none()
+            }
             PaletteCommand::Broadcast(text) => {
                 let targets = self.broadcast_targets();
-                let count = targets.len();
-                let tasks: Vec<Task<Message>> = targets.iter().map(|key| self.send_text(key, &text)).collect();
+                let count = targets.into_iter().filter(|key| self.send_text(key, &text)).count();
                 self.set_status(tr!("An {count} Sessions gesendet.", "Sent to {count} sessions."));
-                Task::batch(tasks)
+                Task::none()
             }
             PaletteCommand::NewSession => self.open_new_session_dialog(),
             PaletteCommand::Find => self.start_find(),
@@ -2327,16 +2323,19 @@ impl Brain {
         }
     }
 
-    /// Whether Brain can send the session text: its mod takes it, its terminal runs in Brain, or
-    /// it waits in an iTerm tab Brain can type into.
+    /// Whether Brain can send the session text: its mod takes it, wherever the session runs.
     pub fn can_send(&self, key: &SessionKey) -> bool {
-        self.request_taker(key).is_some() || self.terminals.contains_key(key) || self.model.board.get(key).is_some_and(|s| s.accepts_input())
+        self.request_taker(key).is_some()
     }
 
-    /// The session's id when its mod takes requests: a reply, a command or an interrupt then
-    /// goes to the mod, and nothing is typed. A mod from before requests types as before.
+    /// The session's id when its mod takes requests: a reply, a command or an interrupt goes to
+    /// the mod, and nothing is typed.
     pub(super) fn request_taker(&self, key: &SessionKey) -> Option<String> {
         let session = self.model.board.get(key).filter(|s| s.phase() != Phase::Ended)?;
+        // Demo sessions show the controls; what they would send is blocked elsewhere.
+        if self.model.is_demo() {
+            return Some(key.id.clone());
+        }
         session.session_id.clone().filter(|id| self.request_takers.contains(id))
     }
 
@@ -2363,29 +2362,25 @@ impl Brain {
             .collect()
     }
 
-    /// Sends `text` to a session: through its mod, which submits it once the session is idle;
-    /// else typed into Brain's terminal (Return a moment later, so Claude Code doesn't take it for
-    /// a pasted newline), or into its iTerm tab.
-    fn send_text(&mut self, key: &SessionKey, text: &str) -> Task<Message> {
+    /// Sends `text` to a session through its mod, which submits it once the session is idle (a
+    /// known `/command` runs as that command). Line breaks stay inside the prompt.
+    fn send_text(&mut self, key: &SessionKey, text: &str) -> bool {
         if self.blocked_in_demo() {
-            return Task::none();
+            return false;
         }
-        if let Some(id) = self.request_taker(key) {
-            self.send_request(&id, brain_core::requests::Request::Prompt { text: text.to_string() });
-            return Task::none();
-        }
-        if let Some(term) = self.terminals.get_mut(key) {
-            term.paste(text);
-            let key = key.clone();
-            return Task::perform(off_thread(|| std::thread::sleep(Duration::from_millis(150))), move |_| Message::TerminalKeys(key.clone(), b"\r".to_vec()));
-        }
-        let Some(session) = self.model.board.get(key).filter(|s| s.accepts_input()) else {
-            self.set_status(t("Die Session nimmt gerade keine Eingabe an.", "The session doesn't take input right now."));
-            return Task::none();
+        let Some(id) = self.request_taker(key) else {
+            self.set_status(self.why_brain_cant_send());
+            return false;
         };
-        let outcome = terminal::type_text(session.pid, text);
-        self.report(outcome, Some(t("Gesendet.", "Sent.").into()));
-        Task::none()
+        self.send_request(&id, brain_core::requests::Request::Prompt { text: text.to_string() })
+    }
+
+    /// Why a session takes no text from Brain, for the status line.
+    pub(super) fn why_brain_cant_send(&self) -> &'static str {
+        t(
+            "Die Session hat Brains Mod nicht geladen – „/reload-plugins“ in der Session holt ihn.",
+            "The session hasn't loaded Brain's mod – “/reload-plugins” in the session loads it.",
+        )
     }
 
     /// ⌘F: find in the selected session's conversation.
@@ -2756,7 +2751,7 @@ impl Brain {
             return;
         }
         let Some(pid) = self.model.board.get(&key).map(|s| s.pid) else { return };
-        let caps = terminal::host_of(pid).map(|host| terminal::capabilities(&host)).unwrap_or(Capabilities { focus: false, type_text: false, keys: false });
+        let caps = terminal::host_of(pid).map(|host| terminal::capabilities(&host)).unwrap_or(Capabilities { focus: false, keys: false });
         self.host = Some((key, caps));
     }
 
@@ -3044,11 +3039,11 @@ impl Brain {
     /// screenshots show the controls; their actions are blocked elsewhere.
     pub fn capabilities(&self) -> Capabilities {
         if self.model.is_demo() {
-            return Capabilities { focus: true, type_text: true, keys: true };
+            return Capabilities { focus: true, keys: true };
         }
         match &self.host {
             Some((key, caps)) if Some(key) == self.selected.as_ref() => *caps,
-            _ => Capabilities { focus: false, type_text: false, keys: false },
+            _ => Capabilities { focus: false, keys: false },
         }
     }
 
@@ -3589,7 +3584,7 @@ impl Brain {
             return Task::none();
         }
         if !self.can_type_into_selected() {
-            self.set_status(self.why_brain_cant_type());
+            self.set_status(self.why_brain_cant_send());
             return Task::none();
         }
         self.rename = session.display_name();
@@ -3617,18 +3612,11 @@ impl Brain {
             return Task::none();
         }
         if !self.can_type_into_selected() {
-            self.set_status(self.why_brain_cant_type());
+            self.set_status(self.why_brain_cant_send());
             return Task::none();
         }
-        // What the session's mod reported, else the built-in commands Brain knows.
-        let mut commands = brain_core::commands::load(&brain_core::account::home_dir(), &session.key.id);
-        if commands.is_empty() {
-            commands = SLASH_COMMANDS
-                .iter()
-                .map(|(command, de, en)| brain_core::commands::SlashCommand { name: command.trim_start_matches('/').to_string(), description: t(de, en).to_string(), source: "builtin".into() })
-                .collect();
-        }
-        self.reply_commands = commands;
+        // What `/…` completes to: the commands the session's mod listed from Claude Code.
+        self.reply_commands = brain_core::commands::load(&brain_core::account::home_dir(), &session.key.id);
         self.reply.clear();
         self.mode = Mode::Reply;
         operation::focus(REPLY)
@@ -3659,8 +3647,7 @@ impl Brain {
         Task::batch([typed, unfocus()])
     }
 
-    /// Types text plus Return, but only if the session still accepts input right now: into its
-    /// terminal in Brain when it runs there, else through the terminal app it runs in.
+    /// Sends text, but only if the session still waits for input right now.
     fn type_into_selected(&mut self, text: &str, done: String) -> Task<Message> {
         let Some(key) = self.selected.clone() else { return Task::none() };
         self.type_into(&key, text, done)
@@ -3673,43 +3660,15 @@ impl Brain {
             self.set_status(t("Die Session arbeitet inzwischen wieder – nichts geschickt.", "The session is working again – nothing sent."));
             return Task::none();
         }
-        if self.request_taker(&key).is_some() || self.terminals.contains_key(&key) {
-            let task = self.send_text(&key, text);
+        if self.send_text(&key, text) {
             self.set_status(done);
-            return task;
         }
-        let Some(pid) = self.model.board.get(&key).map(|s| s.pid) else { return Task::none() };
-        // A team Brain started runs in tmux, where no terminal app shows it.
-        if let Some(tmux) = self.team_panes.get(&pid).cloned() {
-            match brain_core::agents::type_into_team(&tmux, text) {
-                Ok(()) => self.set_status(done),
-                Err(err) => self.set_status(tr!("tmux: {err}", "tmux: {err}")),
-            }
-            return Task::none();
-        }
-        let outcome = terminal::type_text(pid, text);
-        self.report(outcome, Some(done));
         Task::none()
     }
 
-    /// Whether Brain can type into the selected session: its terminal in Brain, or a terminal
-    /// app that takes typed text. A background session has no terminal app: only its terminal
-    /// in Brain takes text.
+    /// Whether Brain can send the selected session text.
     fn can_type_into_selected(&self) -> bool {
-        let Some(key) = self.selected.as_ref() else { return false };
-        if self.terminals.contains_key(key) {
-            return true;
-        }
-        self.model.board.get(key).is_some_and(|s| s.agent.is_none()) && self.capabilities().type_text
-    }
-
-    /// Why typing into the selected session doesn't work, for the status line.
-    fn why_brain_cant_type(&self) -> &'static str {
-        if self.selected_session().is_some_and(|s| s.agent.is_some()) {
-            t("Öffne die Session zuerst in Brain (⏎), dann tippt Brain in ihr Terminal.", "Open the session in Brain first (⏎), then Brain types into its terminal.")
-        } else {
-            t("In dieses Terminal kann Brain nicht tippen.", "Brain can't type into this terminal.")
-        }
+        self.selected.as_ref().is_some_and(|key| self.can_send(key))
     }
 
     /// Y / N on an open permission dialog: Return picks its default "Yes", Esc declines.
@@ -3920,7 +3879,7 @@ impl Brain {
             self.set_status(t("Umziehen geht, sobald die Session fertig ist und auf dich wartet.", "Moving works once the session has finished and waits for you."));
             return Task::none();
         }
-        let (session_id, cwd, pid, name) = (session.session_id.clone(), session.cwd.clone(), session.pid, session.name.clone());
+        let (session_id, cwd, name) = (session.session_id.clone(), session.cwd.clone(), session.name.clone());
         let running_agent = session.agent.clone().filter(|a| a.is_active());
         let in_brain = session.agent.is_some();
         let (Some(session_id), Some(cwd)) = (session_id, cwd) else {
@@ -3974,10 +3933,7 @@ impl Brain {
             self.set_status(tr!("In {target} fortgesetzt.", "Resumed in {target}."));
             return Task::none();
         }
-        let closed = match self.request_taker(&key) {
-            Some(id) => self.send_request(&id, brain_core::requests::Request::Prompt { text: "/exit".into() }),
-            None => matches!(terminal::type_text(pid, "/exit"), Outcome::Done),
-        };
+        let closed = self.send_text(&key, "/exit");
         self.set_status(if closed {
             tr!("Nach {target} umgezogen, das Original ist geschlossen.", "Moved to {target}; the original is closed.")
         } else {

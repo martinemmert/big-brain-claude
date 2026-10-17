@@ -27,7 +27,7 @@ pub enum Host {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
     pub focus: bool,
-    pub type_text: bool,
+    /// Keys for a dialog (Return, Esc): text goes to a session through Brain's mod instead.
     pub keys: bool,
 }
 
@@ -72,35 +72,23 @@ pub fn host_of(pid: u32) -> Option<Host> {
 
 /// - iTerm2, tmux: everything.
 /// - Terminal.app: focus only. Its only way to send input, `do script … in tab`,
-///   delivers the text and the newline in one write, which Claude Code can take
-///   as a paste instead of a submit.
+///   can't send a key on its own.
 /// - VS Code, Cursor: `focus` brings the project window forward; the terminal
 ///   tab inside it is not reachable from outside, and neither is input.
 /// - Unknown: nothing.
 pub fn capabilities(host: &Host) -> Capabilities {
-    let (focus, type_text, keys) = match host {
-        Host::ITerm | Host::Tmux { .. } => (true, true, true),
-        Host::TerminalApp | Host::VsCode | Host::Cursor => (true, false, false),
-        Host::Unknown(_) => (false, false, false),
+    let (focus, keys) = match host {
+        Host::ITerm | Host::Tmux { .. } => (true, true),
+        Host::TerminalApp | Host::VsCode | Host::Cursor => (true, false),
+        Host::Unknown(_) => (false, false),
     };
-    Capabilities { focus, type_text, keys }
+    Capabilities { focus, keys }
 }
 
 /// Brings the session's pane to the front. `cwd` picks the project window in
 /// VS Code and Cursor.
 pub fn focus(pid: u32, cwd: Option<&str>) -> Outcome {
     focus_in(&Tree::snapshot(), pid, cwd, 0)
-}
-
-/// Types `text` and presses Return, without focusing.
-pub fn type_text(pid: u32, text: &str) -> Outcome {
-    let tree = Tree::snapshot();
-    let Some(located) = locate(&tree, pid) else { return Outcome::NoTerminal };
-    match located {
-        Located::ITerm => with_tty(&tree, pid, |tty| iterm::type_text(tty, text)),
-        Located::Tmux(pane) => pane.type_text(text),
-        other => unsupported(&other, "typing"),
-    }
 }
 
 /// Sends a single key, without focusing.

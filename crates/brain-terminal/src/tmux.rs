@@ -2,7 +2,6 @@
 //! by the process's tty, the terminal showing it through the attached client.
 
 use std::process::Command;
-use std::time::Duration;
 
 use super::{Key, Outcome};
 
@@ -45,14 +44,6 @@ impl Pane {
     }
 
     /// Literal text, then Enter as a separate key so it is not part of a paste.
-    pub fn type_text(&self, text: &str) -> Outcome {
-        if let Err(err) = run(&self.socket, &["send-keys", "-t", &self.target, "-l", "--", text]) {
-            return Outcome::Failed(err);
-        }
-        std::thread::sleep(Duration::from_millis(150));
-        self.send_key(Key::Return)
-    }
-
     pub fn send_key(&self, key: Key) -> Outcome {
         let name = match key {
             Key::Return => "Enter",

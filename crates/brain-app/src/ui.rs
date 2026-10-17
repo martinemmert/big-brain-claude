@@ -238,11 +238,11 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
     if s.awaiting_permission() && caps.keys {
         talk.push((t("Erlauben", "Allow").to_string(), "Y", Action::Allow, false));
         talk.push((t("Ablehnen", "Deny").to_string(), "N", Action::Deny, false));
-    } else if s.accepts_input() && caps.type_text {
+    } else if s.waits_for_input() && brain.can_send(&s.key) {
         talk.push((t("Antworten", "Reply").to_string(), "T", Action::StartReply, false));
     }
-    // Brain renames by typing `/rename`: only while the session waits.
-    if s.accepts_input() {
+    // Brain renames with `/rename` through the session's mod: only while the session waits.
+    if s.waits_for_input() && brain.can_send(&s.key) {
         talk.push((t("Umbenennen", "Rename").to_string(), "R", Action::StartRename, false));
     }
     groups.push(talk);
@@ -1163,8 +1163,8 @@ fn callout<'a>(brain: &'a Brain, s: &'a Session, now: i64, caps: brain_terminal:
     if s.awaiting_permission() {
         actions.push(action(t("Erlauben", "Allow"), "Y", true, caps.keys.then_some(Message::Do(Action::Allow))));
         actions.push(action(t("Ablehnen", "Deny"), "N", false, caps.keys.then_some(Message::Do(Action::Deny))));
-    } else if s.accepts_input() && brain.mode != Mode::Reply {
-        actions.push(action(t("Antworten", "Reply"), "T", true, caps.type_text.then_some(Message::Do(Action::StartReply))));
+    } else if s.waits_for_input() && brain.mode != Mode::Reply {
+        actions.push(action(t("Antworten", "Reply"), "T", true, brain.can_send(&s.key).then_some(Message::Do(Action::StartReply))));
     }
     if !actions.is_empty() {
         body = body.push(row(actions).spacing(8));

@@ -189,18 +189,6 @@ pub fn team_panes() -> std::collections::HashMap<u32, String> {
         .collect()
 }
 
-/// Types `text` into a team's tmux session, then Enter as a key of its own (not part of a
-/// paste): for a team no terminal shows.
-pub fn type_into_team(tmux: &str, text: &str) -> Result<(), String> {
-    let run = |args: &[&str]| -> Result<(), String> {
-        let out = Command::new("tmux").env("LC_CTYPE", "C.UTF-8").args(args).output().map_err(|e| e.to_string())?;
-        out.status.success().then_some(()).ok_or_else(|| String::from_utf8_lossy(&out.stderr).trim().to_string())
-    };
-    run(&["send-keys", "-t", tmux, "-l", "--", text])?;
-    std::thread::sleep(std::time::Duration::from_millis(150));
-    run(&["send-keys", "-t", tmux, "Enter"])
-}
-
 /// The arguments for a new session's options, after `--bg` or as an interactive one.
 fn start_args(options: &Start) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();

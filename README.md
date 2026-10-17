@@ -73,8 +73,9 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   Claude asks a question or needs a permission, amber when a turn finished, quiet blue when the
   turn ended but subagents or background shells still run (the mod's turn end lists them; Claude's own `brain report --waiting` still marks it red).
 - **Answer from Brain.** Allow or deny an open permission prompt (`Y` / `N`), or reply to a
-  session that waits for you (`T`; the Reply button is the waiting card's primary action). Brain
-  only types when the session's state is unambiguous.
+  session that waits for you (`T`; the Reply button is the waiting card's primary action), in any
+  terminal and in the background, through Brain's mod. Keys for a dialog go only when the
+  session's state is unambiguous.
 - **All accounts in one place.** `~/.claude`, `~/.claude-second` and any other
   `~/.claude-*` config dir (as used with `CLAUDE_CONFIG_DIR`) are picked up automatically.
 - **Latest messages.** Your prompts, Claude's replies rendered as Markdown, tool calls as
@@ -188,7 +189,8 @@ The mod also carries out what Brain asks of the session, so nothing is typed int
 reply (from Brain, a notification or the phone) goes in as your own words once the session is
 idle, a `/command` runs as that command, an interrupt ends the running turn. Brain leaves them in
 `~/.claude-brain/requests/<session id>.json`. Question dialogs and permissions are still answered
-with keys, and a session whose mod is older than this is typed into as before.
+with keys. A session that hasn't loaded the mod takes no text from Brain: `/reload-plugins` in it
+loads the mod.
 
 ## A new Claude account
 
