@@ -18,9 +18,12 @@ Terminal laufen und hilft, die Liste kurz zu halten.
 
 ## Die Liste
 
-Links stehen die Sessions in drei Zonen:
+Links stehen die Sessions nach **Projekt** gruppiert, unter „Projekte“ (die Zahl daneben, rot: wie
+viele auf eine Entscheidung warten). Oben steht das Projekt mit dem dringendsten Anliegen: erst eine
+Entscheidung, dann ein Bericht zum Lesen, dann der Rest. In jedem Projekt kommen die Sessions in
+dieser Reihenfolge, jede mit ihrer Karte:
 
-- **Zu entscheiden** (rot, mit Zahl): Claude braucht eine Freigabe (**Erlauben** / **Ablehnen**), stellt
+- **Zu entscheiden** (rot): Claude braucht eine Freigabe (**Erlauben** / **Ablehnen**), stellt
   eine Frage mit Optionen (ein Klick auf die Option antwortet) oder hat mit `brain report --waiting`
   gefragt. Die Reihenfolge ist Freigabe, Optionen, Frage, darin die am längsten Wartende zuerst.
   Wartet nichts, steht dort „Nichts wartet auf dich.“
@@ -31,11 +34,14 @@ Links stehen die Sessions in drei Zonen:
   letzten Satz der Antwort. Als gesehen zählt eine Session, sobald du sie in Brains vorderem Fenster
   auswählst. Sie bleibt in der Zone, solange sie ausgewählt ist, und geht beim Weiterklicken.
   Eine Session, die schon gesehen ist oder deren Turn endet, während sie offen ist, landet nicht
-  in „Zum Lesen“. **alle gesehen** macht das für die ganze Zone.
-- **Projekte:** alles andere, was läuft, nach Projekt gruppiert: blau arbeitet, hellblau
-  Subagents oder Hintergrund-Shells laufen noch, grau ruht.
+  in „Zum Lesen“. **alle gesehen** (oben bei „Projekte“) macht das für alle.
+- **Der Rest**, was läuft: blau arbeitet, hellblau Subagents oder Hintergrund-Shells laufen noch,
+  grau ruht; „schläft“ heißt, Claude hat den Prozess nach einer Stunde Ruhe beendet, eine
+  Nachricht weckt die Session wieder.
 
-Angeheftete Sessions (★) stehen in ihrer Zone; beendete angeheftete unter „Zum Fortsetzen gemerkt“.
+Auf dem Handy ist die Liste genauso gruppiert, mit einem Filter nach Projekt oder Konto.
+
+Angeheftete Sessions (★) stehen in ihrem Projekt; beendete angeheftete unter „Zum Fortsetzen gemerkt“.
 Alles, was gerade nicht nach dir ruft, liegt am Listenende: in der Fußzeile und in einem
 zugeklappten Abschnitt, jeweils mit Zahl; ein Klick (oder ⌘K) klappt auf:
 

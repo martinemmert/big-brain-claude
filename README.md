@@ -98,12 +98,14 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
 - **The conversation reads like the terminal:** your prompts as `> …`, Claude's replies and tool
   calls with `●`, in your terminal's font (iTerm2's default profile, e.g. JetBrains Mono 13).
   `"chat_font"` and `"chat_font_size"` in `~/.claude-brain/config.json` pick another one.
-- **Three zones, nothing lost.** Sessions that never got a prompt don't show up. *To decide* (red,
-  with a count) holds what asks you something: a permission (Allow / Deny on the card), a question
-  with options (one click answers) or a `brain report --waiting`; a reply that only ends with “?”
-  is a yellow *Question?* that doesn't count and goes away when you open the session or choose
-  *Only a report*. *To read* holds finished sessions you haven't looked at, each with the last
-  sentence of its reply (*all seen* clears it). *Projects* holds everything else that lives.
+- **By project, nothing lost.** Sessions that never got a prompt don't show up. Everything that
+  lives is grouped by project, the project with the most urgent session first, and the count next
+  to *Projects* is what waits for a decision. In a project, first what asks you something (red): a
+  permission (Allow / Deny on the card), a question with options (one click answers) or a
+  `brain report --waiting`; a reply that only ends with “?” is a yellow *Question?* that doesn't
+  count and goes away when you open the session or choose *Only a report*. Then finished sessions
+  you haven't looked at, each with the last sentence of its reply (*all seen* clears them), then
+  the rest. The phone groups the same way and filters by project or account.
   At the end: a footer with *Ended* (the last day; older ones through the search), *Quiet in the
   background* and *Started by programs* (security reviews, SDK scripts, `claude -p`), and the
   folded section *Snoozed and hidden*. A click, or ⌘K, opens one. `⌘⌫` twice moves an ended session's transcript

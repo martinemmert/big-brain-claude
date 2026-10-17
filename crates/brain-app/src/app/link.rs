@@ -9,7 +9,7 @@ use brain_terminal::{self as terminal, Key};
 use iced::widget::image;
 use iced::Task;
 
-use super::{movable, off_thread, Brain, Message, Mode};
+use super::{movable, off_thread, Brain, Entry, Message, Mode};
 use crate::companion::{self, Command, LimitView, Link, Outcome, Pairing, Picked, Places, UsageView, View};
 use brain_core::qa::OpenQuestion;
 use crate::format::plain;
@@ -194,18 +194,23 @@ impl Brain {
         Places { accounts: self.model.accounts.iter().map(|a| a.id.clone()).collect(), folders, styles }
     }
 
-    /// The sessions as Brain lists them, section by section.
+    /// The sessions as Brain lists them: the live ones by project, most urgent project first,
+    /// each with its zone (`attention`, `read`, `quiet`), then the ended ones.
     fn link_views(&self, now: i64) -> Vec<View> {
         let groups = self.groups(now);
-        let asking = |maybe: bool| groups.decide.iter().filter(move |(_, ask)| (*ask == Ask::Maybe) == maybe).map(|(s, _)| *s);
-        let quiet = groups.quiet.iter().flat_map(|(_, sessions)| sessions.iter().copied());
-        let sections: [(&'static str, Vec<&Session>); 4] = [
-            ("attention", asking(false).collect()),
-            ("read", asking(true).chain(groups.read.iter().copied()).collect()),
-            ("quiet", quiet.collect()),
-            ("ended", groups.ended.clone()),
-        ];
-        sections.iter().flat_map(|(group, sessions)| sessions.iter().map(move |s| self.link_view(s, group))).collect()
+        let mut views: Vec<View> = Vec::new();
+        for (_, entries) in &groups.projects {
+            for entry in entries {
+                let group = match entry {
+                    Entry::Decide(_, Ask::Maybe) | Entry::Read(_) => "read",
+                    Entry::Decide(..) => "attention",
+                    Entry::Quiet(_) => "quiet",
+                };
+                views.push(self.link_view(entry.session(), group));
+            }
+        }
+        views.extend(groups.ended.iter().map(|s| self.link_view(s, "ended")));
+        views
     }
 
     fn link_view(&self, s: &Session, group: &'static str) -> View {

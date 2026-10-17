@@ -515,8 +515,12 @@ pub struct Groups<'a> {
     pub decide: Vec<(&'a Session, Ask)>,
     /// Finished and not yet looked at, newest first.
     pub read: Vec<&'a Session>,
-    /// Everything else that lives, by project.
-    pub quiet: Vec<(String, Vec<&'a Session>)>,
+    /// Everything else that lives.
+    pub quiet: Vec<&'a Session>,
+    /// The live sessions by project, as the list draws them: the project with the most urgent
+    /// session first (a decision, then a report, then the rest); in a project its decisions, its
+    /// reports, then its quiet sessions.
+    pub projects: Vec<(String, Vec<Entry<'a>>)>,
     /// Snoozed while waiting, or hidden with ⌫ until something happens: folded at the end.
     pub paused: Vec<&'a Session>,
     /// Background sessions without activity for a day.
@@ -530,6 +534,22 @@ pub struct Groups<'a> {
     pub paused_open: bool,
     pub background_open: bool,
     pub automated_open: bool,
+}
+
+/// A live session in its project's block, with the card it gets.
+#[derive(Clone, Copy)]
+pub enum Entry<'a> {
+    Decide(&'a Session, Ask),
+    Read(&'a Session),
+    Quiet(&'a Session),
+}
+
+impl<'a> Entry<'a> {
+    pub fn session(&self) -> &'a Session {
+        match self {
+            Entry::Decide(s, _) | Entry::Read(s) | Entry::Quiet(s) => s,
+        }
+    }
 }
 
 impl<'a> Groups<'a> {
@@ -553,10 +573,7 @@ impl<'a> Groups<'a> {
 
     /// The running sessions in drawing order.
     pub fn live(&self) -> Vec<&'a Session> {
-        let mut all: Vec<&Session> = self.decide.iter().map(|(s, _)| *s).collect();
-        all.extend(&self.read);
-        all.extend(self.quiet.iter().flat_map(|(_, sessions)| sessions.iter().copied()));
-        all
+        self.projects.iter().flat_map(|(_, entries)| entries.iter().map(Entry::session)).collect()
     }
 
     /// How many sessions wait for a decision. A guess ([`Ask::Maybe`]) doesn't count.
@@ -577,7 +594,7 @@ pub enum Item<'a> {
     /// A finished session to read.
     Report(&'a Session, usize),
     Row(&'a Session, usize),
-    /// The project's name above its sessions in the quiet zone.
+    /// The project's name above its sessions.
     Project(String),
     /// Under the projects: the toggles for ended, background and automated sessions.
     Footer,
@@ -2884,6 +2901,7 @@ impl Brain {
             decide: vec![],
             read: vec![],
             quiet: vec![],
+            projects: vec![],
             paused: vec![],
             background: vec![],
             automated: vec![],
@@ -2893,7 +2911,6 @@ impl Brain {
             background_open: self.prefs.show_background || searching,
             automated_open: self.prefs.show_automated || searching,
         };
-        let mut quiet: Vec<&Session> = Vec::new();
         let visible = self
             .model
             .board
@@ -2941,18 +2958,28 @@ impl Brain {
             match place(session, held, open_question, &self.prefs, now) {
                 Place::Decide(ask) => groups.decide.push((session, ask)),
                 Place::Read => groups.read.push(session),
-                Place::Quiet => quiet.push(session),
+                Place::Quiet => groups.quiet.push(session),
             }
         }
         groups.decide.sort_by_key(|(s, ask)| (*ask, s.phase_since_ms()));
         groups.read.sort_by_key(|s| std::cmp::Reverse(s.phase_since_ms()));
-        for session in quiet {
+        // Most urgent first: a project takes its place from its most urgent session.
+        let entries = groups
+            .decide
+            .iter()
+            .map(|(s, ask)| Entry::Decide(s, *ask))
+            .chain(groups.read.iter().map(|s| Entry::Read(s)))
+            .chain(groups.quiet.iter().map(|s| Entry::Quiet(s)));
+        let mut projects: Vec<(String, Vec<Entry>)> = Vec::new();
+        for entry in entries {
+            let session = entry.session();
             let name = self.projects.get(&session.key).map(|(n, _)| n.clone()).unwrap_or_else(|| session.display_name());
-            match groups.quiet.iter_mut().find(|(n, _)| *n == name) {
-                Some((_, list)) => list.push(session),
-                None => groups.quiet.push((name, vec![session])),
+            match projects.iter_mut().find(|(n, _)| *n == name) {
+                Some((_, list)) => list.push(entry),
+                None => projects.push((name, vec![entry])),
             }
         }
+        groups.projects = projects;
         groups
     }
 
@@ -2977,32 +3004,27 @@ impl Brain {
                 push(&mut items, s);
             }
         }
-        items.push(Item::Section { title: t("Zu entscheiden", "To decide").into(), count: groups.deciding(), alert: true, action: None });
+        // Everything that lives, by project: the count is what waits for a decision.
+        let action = (!groups.read.is_empty()).then(|| Box::new((t("alle gesehen", "all seen").to_string(), Message::SeeAll)));
+        items.push(Item::Section { title: t("Projekte", "Projects").into(), count: groups.deciding(), alert: true, action });
         if groups.decide.is_empty() && !searching {
             items.push(Item::Hint(t("Nichts wartet auf dich.", "Nothing is waiting for you.").into()));
         }
-        for (s, ask) in &groups.decide {
-            let options = match ask {
-                Ask::Options => self.question_buttons(&s.key),
-                Ask::Permission => usize::from(s.insight.tool.is_some()),
-                _ => 0,
-            };
-            items.push(Item::Decide { s, nav: next(), ask: *ask, options });
-        }
-        if !groups.read.is_empty() {
-            let action = (t("alle gesehen", "all seen").to_string(), Message::SeeAll);
-            items.push(Item::Section { title: t("Zum Lesen", "To read").into(), count: groups.read.len(), alert: false, action: Some(Box::new(action)) });
-            for s in &groups.read {
-                items.push(Item::Report(s, next()));
-            }
-        }
-        if !groups.quiet.is_empty() {
-            items.push(Item::Section { title: t("Projekte", "Projects").into(), count: groups.quiet.iter().map(|(_, l)| l.len()).sum(), alert: false, action: None });
-        }
-        for (name, sessions) in &groups.quiet {
+        for (name, entries) in &groups.projects {
             items.push(Item::Project(name.clone()));
-            for s in sessions {
-                push(&mut items, s);
+            for entry in entries {
+                match *entry {
+                    Entry::Decide(s, ask) => {
+                        let options = match ask {
+                            Ask::Options => self.question_buttons(&s.key),
+                            Ask::Permission => usize::from(s.insight.tool.is_some()),
+                            _ => 0,
+                        };
+                        items.push(Item::Decide { s, nav: next(), ask, options });
+                    }
+                    Entry::Read(s) => items.push(Item::Report(s, next())),
+                    Entry::Quiet(s) => push(&mut items, s),
+                }
             }
         }
         if groups.older_ended > 0 {
