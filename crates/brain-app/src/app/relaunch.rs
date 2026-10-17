@@ -163,18 +163,24 @@ impl Brain {
         let name = session.name.clone();
         let accepts_input = session.accepts_input();
 
-        // A background session (running or stopped) goes on in the background.
+        // A background session (running or stopped) goes on in the background. Claude Code keeps
+        // its options: without new flags it wakes itself, with them Claude Code goes on in a copy
+        // under a new id, which takes the original's place in the list.
         if let Some(agent) = agent {
             let shown = flags.join(" ");
             self.set_status(tr!("Starte die Session neu mit {shown} …", "Restarting the session with {shown} …"));
             let id = account.id.clone();
+            if flags.is_empty() {
+                let respawned = off_thread(move || brain_core::agents::respawn(&account, &agent.id).map(|()| agent.id));
+                return Ok(Task::perform(respawned, move |result| Message::Started(id.clone(), result)));
+            }
             let restarted = off_thread(move || {
                 if agent.is_active() {
                     brain_core::agents::stop(&account, &agent.id)?;
                 }
                 brain_core::agents::resume_with(&account, std::path::Path::new(&cwd), &session_id, name.as_deref(), &flags)
             });
-            return Ok(Task::perform(restarted, move |result| Message::Started(id.clone(), result)));
+            return Ok(Task::perform(restarted, move |result| Message::Replaced(key.clone(), id.clone(), result)));
         }
         if ended {
             if from_phone {
@@ -249,10 +255,19 @@ impl Brain {
             return Task::none();
         };
         let name = session.name.clone();
+        let agent = session.agent.clone();
         self.set_status(t("Setze die Session im Hintergrund fort …", "Resuming the session in the background …"));
         let id = account.id.clone();
+        // One Claude Code still lists wakes itself under its id: `--bg --resume` would start a
+        // copy, and the phone would go on looking at the original.
+        let copies = agent.is_some();
+        if let Some(agent) = agent.filter(|_| flags.is_empty()) {
+            let respawned = off_thread(move || brain_core::agents::respawn(&account, &agent.id).map(|()| agent.id));
+            return Task::perform(respawned, move |result| Message::Started(id.clone(), result));
+        }
+        let original = key.clone();
         let resumed = off_thread(move || brain_core::agents::resume_with(&account, std::path::Path::new(&cwd), &session_id, name.as_deref(), &flags));
-        Task::perform(resumed, move |result| Message::Started(id.clone(), result))
+        Task::perform(resumed, move |result| if copies { Message::Replaced(original.clone(), id.clone(), result) } else { Message::Started(id.clone(), result) })
     }
 
     /// Once the session asked to end has ended: resume it with its flags.

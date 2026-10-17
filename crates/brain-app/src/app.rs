@@ -328,6 +328,9 @@ pub enum Message {
     Term(iced_term::Event),
     /// A background session Brain started or took over: its account and short id, or why not.
     Started(String, Result<String, String>),
+    /// A background session restarted with new flags goes on as Claude Code's copy under a new
+    /// id: the original, then the copy's account and short id, or why not.
+    Replaced(SessionKey, String, Result<String, String>),
     /// An agent team started in tmux (its tmux session), or why not.
     TeamStarted(Result<String, String>),
     /// A Markdown file was handed to YAMV (`true`), or to the text editor because YAMV is missing.
@@ -1382,6 +1385,14 @@ impl Brain {
                     Task::none()
                 }
             },
+            // The copy takes the original's place: one session in the list, not two.
+            Message::Replaced(original, account, result) => {
+                if result.is_ok() {
+                    self.prefs.hide(&original, now_ms());
+                    self.prefs.save();
+                }
+                self.update(Message::Started(account, result))
+            }
             Message::TeamStarted(result) => {
                 match result {
                     Ok(tmux) => {

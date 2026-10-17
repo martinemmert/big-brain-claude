@@ -225,6 +225,14 @@ pub fn resume(account: &Account, cwd: &Path, session_id: &str, name: Option<&str
     resume_with(account, cwd, session_id, name, &[])
 }
 
+/// Wakes a background session Claude Code still lists, under its own id and with the options it
+/// was started with (`claude respawn`). `claude --bg --resume` starts a copy instead: with any
+/// flag, a name too, and while Claude Code counts the session as running although its process
+/// is gone (Claude Code 2.1.302).
+pub fn respawn(account: &Account, id: &str) -> Result<(), String> {
+    run(account, &["respawn", id])
+}
+
 /// [`resume`] with extra flags for Claude (`--chrome`, `--model opus`), passed as arguments.
 pub fn resume_with(account: &Account, cwd: &Path, session_id: &str, name: Option<&str>, extra: &[String]) -> Result<String, String> {
     let mut args = vec!["--bg", "--resume", session_id];
