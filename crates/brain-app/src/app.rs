@@ -788,6 +788,8 @@ pub struct Brain {
     reminders: HashMap<SessionKey, (i64, u32)>,
     /// The selected session and where it stood in the list before it was selected.
     held: Option<(SessionKey, Place)>,
+    /// The sessions that asked for a decision at the last refresh (none before the first one).
+    asking: Option<HashSet<SessionKey>>,
     pub(crate) questions: HashMap<SessionKey, (link::QuestionReadAt, Option<brain_core::qa::OpenQuestion>)>,
     /// Brain Link, the companion app's server, while it runs.
     link: Option<crate::companion::Link>,
@@ -916,6 +918,7 @@ impl Brain {
             questions: HashMap::new(),
             reminders: HashMap::new(),
             held: None,
+            asking: None,
             sync: sync::SyncDialog::default(),
             garden: garden::GardenDialog::default(),
             garden_count: 0,
@@ -1065,10 +1068,7 @@ impl Brain {
                 self.new_session.pick = 0;
                 Task::none()
             }
-            Message::NewChooseFolder => {
-                self.choose_folder();
-                Task::none()
-            }
+            Message::NewChooseFolder => self.choose_folder(),
             Message::NewSubmit => self.confirm_new_session(),
             Message::NewAccount(index) => {
                 self.new_session.account = index;
@@ -1632,6 +1632,25 @@ impl Brain {
         let now = now_ms();
         let refreshed = self.model.refresh();
         self.refresh_questions();
+        let entered: HashSet<SessionKey> = refreshed.iter().map(|item| item.key.clone()).collect();
+        // A question reported after the stop (the phase stays) calls too: announce each session
+        // when it starts to ask, unless its phase change just did.
+        let asking: HashSet<SessionKey> = self.model.board.keys().filter(|key| self.real_ask(key).is_some()).cloned().collect();
+        let newly_asking: Vec<SessionKey> = match &self.asking {
+            Some(before) => asking.difference(before).filter(|key| !entered.contains(*key)).cloned().collect(),
+            None => Vec::new(),
+        };
+        self.asking = Some(asking);
+        for key in newly_asking {
+            if self.prefs.snoozed_until(&key, now).is_some() || self.prefs.is_muted(&key) || self.is_quiet(&key) {
+                continue;
+            }
+            let Some(session) = self.model.board.get(&key) else { continue };
+            let account = key.account.clone();
+            let subtitle = tr!("{account} · braucht dich", "{account} · needs you");
+            let body = plain(&session.headline().unwrap_or_default());
+            self.notifier.post(&key, &session.display_name(), &subtitle, &body, true);
+        }
         for item in refreshed {
             if self.prefs.snoozed_until(&item.key, now).is_some() || self.prefs.is_muted(&item.key) || self.is_quiet(&item.key) {
                 continue;
@@ -4200,8 +4219,7 @@ impl Brain {
             return Task::none();
         }
         if cmd && character == Some("o") {
-            self.choose_folder();
-            return Task::none();
+            return self.choose_folder();
         }
         if cmd && character == Some("i") {
             self.new_session.in_iterm = !self.new_session.in_iterm;
@@ -4242,14 +4260,15 @@ impl Brain {
 
     /// Opens the native folder dialog; the folder lands in the dialog's field, where ⏎ starts a
     /// session in it. Not while a template asks for a value: the field holds that value then.
-    fn choose_folder(&mut self) {
+    fn choose_folder(&mut self) -> Task<Message> {
         if self.pending_placeholder().is_some() {
-            return;
+            return Task::none();
         }
-        if let Some(path) = crate::folder_picker::choose_folder() {
-            self.new_session.folder = path.display().to_string();
-            self.new_session.pick = 0;
-        }
+        let Some(path) = crate::folder_picker::choose_folder() else { return Task::none() };
+        self.new_session.folder = path.display().to_string();
+        self.new_session.pick = 0;
+        // The dialog took the keyboard from the field: ⏎ goes to it again.
+        operation::focus(NEW_SESSION)
     }
 
     /// The output styles of the dialog's account (built-in and its own).
