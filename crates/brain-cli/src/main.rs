@@ -450,21 +450,13 @@ fn install_mod() -> std::io::Result<std::path::PathBuf> {
 }
 
 fn run_install(accounts: &[Account]) -> ExitCode {
-    let exe = match std::env::current_exe().and_then(|p| p.canonicalize()) {
-        Ok(exe) => exe,
-        Err(err) => {
-            eprintln!("brain install: cannot resolve own path: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let hook_command = format!("{} hook", shell_quote(&exe.to_string_lossy()));
     let mut failed = false;
-    // The mod reports from inside Claude Code; the hooks stay as a fallback for one release.
+    // The mod reports from inside Claude Code: without it Brain sees no session.
     let mod_dir = match install_mod() {
-        Ok(dir) => Some(dir.to_string_lossy().into_owned()),
+        Ok(dir) => dir.to_string_lossy().into_owned(),
         Err(err) => {
-            println!("mod ✗ not written, sessions report through hooks only: {err}");
-            None
+            eprintln!("brain install: the mod could not be written, nothing changed: {err}");
+            return ExitCode::FAILURE;
         }
     };
 
@@ -473,7 +465,7 @@ fn run_install(accounts: &[Account]) -> ExitCode {
 
         let settings = account.config_dir.join("settings.json");
         let settings_text = std::fs::read_to_string(&settings).unwrap_or_default();
-        match install::patch_settings_text(&settings_text, &hook_command, mod_dir.as_deref()) {
+        match install::patch_settings_text(&settings_text, &mod_dir) {
             Ok(patched) => report_change("settings.json", install::rewrite_file(&settings, |_| patched), UP_TO_DATE),
             Err(err) => {
                 failed = true;
@@ -489,10 +481,7 @@ fn run_install(accounts: &[Account]) -> ExitCode {
         eprintln!("brain install: no ~/.claude or ~/.claude-* directories found");
         return ExitCode::FAILURE;
     }
-    println!("\nHooks: {}", install::HOOK_EVENTS.join(", "));
-    if let Some(dir) = &mod_dir {
-        println!("Mod: {dir}");
-    }
+    println!("\nMod: {mod_dir}");
     println!("New Claude sessions pick this up on start.");
     if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
@@ -687,14 +676,6 @@ fn report_change(label: &str, result: std::io::Result<Change>, unchanged: &str) 
         Ok(Change::Updated { backup: Some(b) }) => println!("  {label:<14} ✓ updated (backup: {})", b.display()),
         Ok(Change::Updated { backup: None }) => println!("  {label:<14} ✓ created"),
         Err(err) => println!("  {label:<14} ✗ {err}"),
-    }
-}
-
-fn shell_quote(path: &str) -> String {
-    if path.chars().all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c)) {
-        path.to_string()
-    } else {
-        format!("'{}'", path.replace('\'', r"'\''"))
     }
 }
 

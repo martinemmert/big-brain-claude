@@ -71,8 +71,7 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
 
 - **Triage inbox.** Sessions that wait for you come first, longest wait on top: red when
   Claude asks a question or needs a permission, amber when a turn finished, quiet blue when the
-  turn ended but subagents or background shells still run (from the Stop hook's
-  `background_tasks`; Claude's own `brain report --waiting` still marks it red).
+  turn ended but subagents or background shells still run (the mod's turn end lists them; Claude's own `brain report --waiting` still marks it red).
 - **Answer from Brain.** Allow or deny an open permission prompt (`Y` / `N`), or reply to a
   session that waits for you (`T`; the Reply button is the waiting card's primary action). Brain
   only types when the session's state is unambiguous.
@@ -83,7 +82,7 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
 - **Session details.** One line under the name: folder, model, context fill, permission mode,
   days left to resume, the PR; Claude Code's cost total, pid and start time on hover.
 - **Plan usage.** Five-hour and weekly limits per account with their reset times, from the
-  status line (Brain wraps your status line command and passes its output through unchanged).
+  measure Claude Code hands Brain's mod (your status line stays as it is).
 - **Pull requests.** The PR of each session's branch with its checks (`#12 ✓`, `#12 ✗`, `#12 …`),
   via the GitHub CLI (`gh`, logged in); click it to open the PR.
 - **Conflicts.** A warning when two sessions edit the same files, read
@@ -167,12 +166,11 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
 Every session appends JSON lines to `~/.claude-brain/events/YYYY-MM-DD.jsonl`, from two
 sources:
 
-- **Hooks** (automatic): `SessionStart`, `UserPromptSubmit`, `Notification`, `Stop` and
-  `SessionEnd` call `brain hook`.
+- **Brain's mod** (automatic, below): start, prompts, questions, turn ends, the end.
 - **Reports** (written by Claude, instructed via `CLAUDE.md`):
   `brain report --doing|--waiting|--done "<one line>"`.
 
-Without hooks Brain still shows a coarse state from Claude Code's own
+Without the mod Brain still shows a coarse state from Claude Code's own
 `<config>/sessions/<pid>.json` files.
 
 ## The Brain mod
@@ -180,11 +178,11 @@ Without hooks Brain still shows a coarse state from Claude Code's own
 Claude Code [mods](https://code.claude.com/docs/en/plugins/mods/overview) run inside Claude
 Code (v2.1.287 or later). Brain's mod (`mod/brain`, built into the `brain` CLI) reports each
 session from there: start, prompts, questions (AskUserQuestion) and permission requests, turn ends
-with the subagents still running, the end, and after every turn the context fill and plan limits
-— what the status line wrapper recorded. `brain install` writes it to `~/.claude-brain/mod/brain`
-and lists that folder in `env.CLAUDE_CODE_PLUGIN_DIRS` of every account's `settings.json`;
-`brain uninstall` removes it. The settings hooks stay for now as a fallback: once a session
-reports through the mod, Brain leaves out its hook events.
+with the subagents still running, the end, and the context fill, plan limits and cost whenever
+they change. `brain install` writes it to `~/.claude-brain/mod/brain` and lists that folder in
+`env.CLAUDE_CODE_PLUGIN_DIRS` of every account's `settings.json`; `brain uninstall` removes it.
+Brain no longer adds settings hooks or wraps the status line: `brain install` takes out what an
+earlier version put there and gives your status line command back.
 
 ## A new Claude account
 
@@ -193,8 +191,8 @@ the existing accounts: `settings.json` merged (lists joined, main's values win),
 the status line script, skills, agents, commands, output styles, plugins and marketplaces (paths
 rewritten, files cloned on APFS), user MCP servers, and every project's memory notes (the newer
 note wins, `MEMORY.md` joined). Without `--yes` it only shows the plan and the differences. No
-login and no conversations come along: log in with `/login` in the first session. Brain's hooks
-are installed into it right away.
+login and no conversations come along: log in with `/login` in the first session. Brain's mod
+is installed into it right away.
 
 ## Keeping the accounts in step
 
@@ -211,7 +209,7 @@ conversations, the plugins' files, or `skills/synced` (claude.ai's own, per Clau
   another version keep theirs from now on (`~/.claude-brain/sync/keep.json`). Memory notes never
   wait: the newer one wins, `MEMORY.md` is joined line by line.
 - The first sync joins the accounts (nothing is known to be deleted yet). After it, **every
-  session start syncs** too (`brain hook` at `SessionStart`), but leaves conflicts and anything
+  session start syncs** too (the mod's session start), but leaves conflicts and anything
   that grants rights or can run code (permissions, hooks, `env`, the status line and its script,
   helpers, plugins, MCP servers, skills, commands, agents; marked ⚑) for the dialog; the title
   bar counts them (`⇄ 2 account conflicts`). Plain settings, `CLAUDE.md`, output styles and
@@ -258,7 +256,7 @@ brain install
 The cask installs `Brain.app` and links the `brain` CLI that ships inside it. The app is
 only ad-hoc signed, not notarized, so macOS blocks the first start: System Settings →
 Privacy & Security → Open Anyway, or `xattr -dr com.apple.quarantine /Applications/Brain.app`.
-`brain install` (once) adds the hooks, see [From source](#from-source).
+`brain install` (once) adds the mod, see [From source](#from-source).
 
 ### From a release
 
@@ -269,8 +267,8 @@ Download `Brain-<version>-macos-arm64.zip` and `brain-<version>-macos-arm64.tar.
    notarized, so macOS blocks the first start: right-click → Open (macOS 15: System
    Settings → Privacy & Security → Open Anyway), or run
    `xattr -dr com.apple.quarantine /Applications/Brain.app`.
-2. Put `brain` on your `PATH` and run `brain install`. The hooks call `brain` at the path it
-   was installed from, so move it first:
+2. Put `brain` on your `PATH` and run `brain install`. The mod calls `brain` on the `PATH`,
+   so move it there first:
 
    ```sh
    tar -xzf brain-*-macos-arm64.tar.gz
@@ -295,12 +293,12 @@ This
 - builds `dist/Brain.app` and `dist/brain` with `scripts/bundle.sh`,
 - installs the `brain` CLI to `~/.cargo/bin`,
 - installs `~/Applications/Brain.app` (open it via Spotlight),
-- runs `brain install`, which adds Brain's hooks, `Bash(brain report:*)` and `Bash(brain later:*)` permissions and a
+- runs `brain install`, which adds Brain's mod, `Bash(brain report:*)` and `Bash(brain later:*)` permissions and a
   short protocol section to the `settings.json` and `CLAUDE.md` of every `~/.claude*`
   account. Existing files are backed up as `*.brain-backup-<timestamp>`; running it again
   is safe.
 
-Running sessions pick up the hooks on their own.
+Running sessions load the mod with `/reload-plugins`, new ones on start.
 
 ### Alfred
 
@@ -320,7 +318,7 @@ Sessions are listed in Brain's order: needs you, your turn, working.
 brain uninstall
 ```
 
-This removes Brain's hooks, the `Bash(brain report:*)` and `Bash(brain later:*)` rules and the protocol section from
+This removes Brain's mod, the `Bash(brain report:*)` and `Bash(brain later:*)` rules and the protocol section from
 the `settings.json` and `CLAUDE.md` of every `~/.claude*` account, with backups as above.
 Then delete `Brain.app`, the `brain` binary (`~/.cargo/bin/brain` or wherever you put it)
 and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` removes all three.

@@ -9,8 +9,9 @@ Terminal laufen und hilft, die Liste kurz zu halten.
 - **Installieren:** `./scripts/install.sh` baut Brain, legt `Brain.app` nach `~/Applications`, den
   `brain`-Befehl nach `~/.cargo/bin` und richtet jedes Konto ein. Danach gilt alles für jede neue
   Claude-Session.
-- **Wie Sessions melden:** über den **Brain-Mod** (läuft in Claude Code selbst) und, als
-  Rückfallebene, über Hooks. Laufende Sessions laden den Mod mit `/reload-plugins`;
+- **Wie Sessions melden:** über den **Brain-Mod** (läuft in Claude Code selbst). Eigene Hooks
+  und einen Wrapper um die Statuszeile trägt Brain nicht mehr ein; `brain install` baut die einer
+  älteren Version wieder aus. Laufende Sessions laden den Mod mit `/reload-plugins`;
   `/plugin` zeigt „1 mod active · brain“.
 - **Berechtigungen:** Brain ist mit deiner Apple-Development-Identität signiert. macOS fragt jede
   Berechtigung einmal und merkt sich die Antwort auch über Updates.
