@@ -227,6 +227,7 @@ impl Brain {
             headline: s.headline().map(|h| plain(&h)),
             since_ms: s.phase_since_ms(),
             folder: s.cwd.as_deref().and_then(|c| c.rsplit('/').find(|p| !p.is_empty())).map(str::to_string),
+            project: self.projects.get(&s.key).map(|(name, _)| name.clone()),
             permission_open: s.awaiting_permission() && question.is_none(),
             permission_since_ms: (s.awaiting_permission() && question.is_none()).then(|| s.phase_since_ms()),
             question,

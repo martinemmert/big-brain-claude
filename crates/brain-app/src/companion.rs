@@ -71,6 +71,9 @@ pub struct View {
     /// When the current phase began (epoch ms).
     pub since_ms: i64,
     pub folder: Option<String>,
+    /// The project it belongs to, as Brain's list names it (the repository, for a worktree its
+    /// main checkout): the phone groups "Projects" by it and filters by it.
+    pub project: Option<String>,
     /// A permission dialog is open: the phone offers Allow and Deny.
     pub permission_open: bool,
     /// When that dialog opened (epoch ms): the phone sends it with its answer, so the answer
@@ -153,7 +156,7 @@ pub struct Picked {
 }
 
 /// What this Brain Link offers beyond the first version, for the phone to show only what works.
-const FEATURES: [&str; 14] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands", "team", "move", "outcome"];
+const FEATURES: [&str; 15] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands", "team", "move", "outcome", "projects"];
 /// How long a read with `wait` waits for something new before it answers anyway.
 const WAIT: Duration = Duration::from_secs(25);
 /// How often a waiting read looks again.
@@ -1214,6 +1217,7 @@ mod tests {
             headline: Some("Done".into()),
             since_ms: 1,
             folder: Some("fin".into()),
+            project: None,
             permission_open: false,
             permission_since_ms: None,
             question: None,
@@ -1563,6 +1567,7 @@ mod tests {
             headline: Some(headline.into()),
             since_ms: now - minutes * 60_000,
             folder: Some(name.to_lowercase()),
+            project: None,
             permission_open: phase == "needs_you" && id != "be75a6ae-0000-0000-0000-000000000003",
             permission_since_ms: (phase == "needs_you").then_some(now - minutes * 60_000),
             question: None,
