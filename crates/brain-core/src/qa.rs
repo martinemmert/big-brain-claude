@@ -222,7 +222,8 @@ pub fn open_question(transcript: &Path) -> Option<OpenQuestion> {
 
 /// The keys that answer an open question in Claude Code's dialog, as tested by hand: each
 /// question's option number in turn, and with several questions `1` on the review page that
-/// follows ("Submit answers"). `None` when a pick doesn't fit the question.
+/// follows ("Submit answers"). Each key goes on its own: the dialog ignores several at once.
+/// `None` when a pick doesn't fit the question.
 pub fn answer_keys(question: &OpenQuestion, picks: &[usize]) -> Option<String> {
     if question.multi_select || picks.len() != question.items.len() {
         return None;

@@ -20,6 +20,9 @@ use crate::tr;
 const ATTACH_WAIT: Duration = Duration::from_millis(2500);
 /// How long Esc takes to close a question dialog before the answers are typed.
 const DIALOG_CLOSE: Duration = Duration::from_millis(700);
+/// The gap between the keys that answer a question dialog. Claude Code takes several keys
+/// written at once as one input and ignores it: "221" picks nothing, "2", "2", "1" answer.
+const KEY_GAP: Duration = Duration::from_millis(120);
 /// Pixels per QR module, and the quiet zone around the code (in modules).
 const QR_SCALE: usize = 8;
 const QR_QUIET: usize = 4;
@@ -116,8 +119,9 @@ impl Brain {
         let waiting: Vec<_> = self.model.board.keys().filter(|k| self.model.board.get(k).is_some_and(|s| s.phase() == Phase::NeedsYou)).cloned().collect();
         self.questions.retain(|k, _| waiting.contains(k));
         for key in waiting {
-            let Some(path) = self.model.transcript_path(&key) else { continue };
-            let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            // A new session's transcript is listed only a minute later: its mod's question counts
+            // before that, and is read again once the transcript is known.
+            let len = self.model.transcript_path(&key).and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len());
             let asked = self.model.board.get(&key).and_then(|s| s.asked()).map(|q| q.call.clone());
             let seen = (len, asked);
             if self.questions.get(&key).is_some_and(|(at, _)| *at == seen) {
@@ -130,10 +134,11 @@ impl Brain {
 
     /// The AskUserQuestion a session waits on: the one its mod reported while the transcript
     /// has no answer to it (Claude Code writes the call there only with its answer), else an
-    /// unanswered one in the transcript.
+    /// unanswered one in the transcript. Without a transcript yet, the reported one.
     fn open_question(&self, key: &SessionKey) -> Option<brain_core::qa::OpenQuestion> {
-        let path = self.model.transcript_path(key)?;
-        let reported = self.model.board.get(key).and_then(|s| s.asked()).filter(|q| !brain_core::qa::answered(&path, &q.call));
+        let reported = self.model.board.get(key).and_then(|s| s.asked());
+        let Some(path) = self.model.transcript_path(key) else { return reported.cloned() };
+        let reported = reported.filter(|q| !brain_core::qa::answered(&path, &q.call));
         reported.cloned().or_else(|| brain_core::qa::open_question(&path))
     }
 
@@ -287,7 +292,7 @@ impl Brain {
                 if self.terminals.contains_key(&key) {
                     self.set_status(answered);
                     return match (keys, typed) {
-                        (Some(keys), _) => Task::done(Message::TerminalKeys(key, keys.into_bytes())),
+                        (Some(keys), _) => press_one_by_one(key, &keys),
                         (None, Some(text)) => Task::batch([Task::done(Message::TerminalKeys(key.clone(), b"\x1b".to_vec())), type_later(key, text)]),
                         (None, None) => Task::none(),
                     };
@@ -479,6 +484,15 @@ fn answer_line(question: &OpenQuestion, answers: &[Picked]) -> Option<String> {
 /// The command again, once a freshly started terminal had time to attach.
 fn later(command: Command) -> Task<Message> {
     Task::perform(off_thread(|| std::thread::sleep(ATTACH_WAIT)), move |_| Message::LinkRetry(command.clone()))
+}
+
+/// Each key on its own, [`KEY_GAP`] after the one before.
+fn press_one_by_one(key: SessionKey, keys: &str) -> Task<Message> {
+    Task::batch(keys.bytes().enumerate().map(|(i, byte)| {
+        let key = key.clone();
+        let wait = KEY_GAP * i as u32;
+        Task::perform(off_thread(move || std::thread::sleep(wait)), move |_| Message::TerminalKeys(key.clone(), vec![byte]))
+    }))
 }
 
 /// The text, once Esc had time to close the dialog.
