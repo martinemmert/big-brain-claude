@@ -750,6 +750,10 @@ fn list_row<'a>(brain: &'a Brain, s: &'a Session, now: i64) -> Element<'a, Messa
             let ago = ago(s.phase_since_ms(), now);
             tr!("fertig seit {ago}", "done for {ago}")
         }
+        Phase::Asleep => {
+            let ago = ago_phrase(s.last_activity_ms, now);
+            tr!("schläft · {ago} · wacht auf, wenn du schreibst", "asleep · {ago} · wakes when you write")
+        }
         Phase::Ended => {
             let ago = ago_phrase(s.last_activity_ms, now);
             match brain.model.days_left(s, now) {

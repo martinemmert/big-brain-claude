@@ -71,6 +71,8 @@ pub fn phase_color(phase: Phase) -> Color {
         Phase::YourTurn => TURN,
         Phase::Working => WORKING,
         Phase::Background => BACKGROUND,
+        // Quiet like an ended one, but it lives on.
+        Phase::Asleep => BACKGROUND,
         Phase::Ended => ENDED,
     }
 }

@@ -691,6 +691,7 @@ fn run_status(store: &Store, accounts: &[Account]) -> ExitCode {
             Phase::YourTurn => "🟡",
             Phase::Working => "🔵",
             Phase::Background => "🟣",
+            Phase::Asleep => "💤",
             Phase::Ended => "⚫",
         };
         println!(

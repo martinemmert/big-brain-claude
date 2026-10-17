@@ -17,6 +17,9 @@ pub enum Phase {
     /// The turn ended without a question, but subagents or background shells still run and
     /// will wake the session up again.
     Background,
+    /// A background session whose process Claude Code ended (after an hour without anything to
+    /// do, or a stop) while it still lists the session: a message wakes it (`claude respawn`).
+    Asleep,
     Ended,
 }
 
@@ -206,11 +209,12 @@ impl Session {
             Some(Ask::Options)
         } else if self.awaiting_permission() {
             Some(Ask::Permission)
-        } else if phase == Phase::NeedsYou || (phase == Phase::YourTurn && self.question.is_some()) {
+        } else if phase == Phase::NeedsYou || (matches!(phase, Phase::YourTurn | Phase::Asleep) && self.question.is_some()) {
             // Also a permission only a hook reported so far, and a question of a background
-            // session whose agent says idle: no buttons, but it waits for the user.
+            // session whose agent says idle or that fell asleep over it: no buttons, but it
+            // waits for the user.
             Some(Ask::Question)
-        } else if phase == Phase::YourTurn && self.insight.asks {
+        } else if matches!(phase, Phase::YourTurn | Phase::Asleep) && self.insight.asks {
             Some(Ask::Maybe)
         } else {
             None
@@ -226,9 +230,12 @@ impl Session {
             match agent.state.as_str() {
                 "idle" => return Phase::YourTurn,
                 "starting" | "running" | "working" if !process_idle => return Phase::Working,
+                // Claude Code still lists it, and its process is gone (the list may lag behind
+                // a new one): asleep, it wakes when written to. One that failed has ended.
+                "failed" if agent.pid.is_none() => return Phase::Ended,
+                _ if agent.pid.is_none() && !self.alive => return Phase::Asleep,
                 // With its process still there it waits for the next prompt: the usual rules
                 // (status file, hooks) tell which phase.
-                _ if agent.pid.is_none() && agent.has_exited_state() => return Phase::Ended,
                 _ => {}
             }
         }
@@ -261,7 +268,7 @@ impl Session {
     pub fn waits_for_input(&self) -> bool {
         match &self.agent {
             // "Needs you" may be a dialog, which typed text would answer.
-            Some(_) => matches!(self.phase(), Phase::YourTurn | Phase::Background),
+            Some(_) => matches!(self.phase(), Phase::YourTurn | Phase::Background | Phase::Asleep),
             None => self.accepts_input(),
         }
     }
@@ -305,6 +312,8 @@ impl Session {
                 _ => pick(&[&self.question, &self.permission]),
             },
             Phase::YourTurn | Phase::Ended => pick(&[&self.done, &self.reply, &self.doing, &self.prompt]),
+            // Asleep over a question it asked: the question still stands.
+            Phase::Asleep => pick(&[&self.question, &self.done, &self.reply, &self.doing, &self.prompt]),
             Phase::Working => pick(&[&self.doing, &self.prompt]),
             Phase::Background => pick(&[&self.doing, &self.reply, &self.prompt]),
         }
@@ -325,6 +334,7 @@ impl Session {
     pub fn headline_is_reported(&self) -> bool {
         match self.phase() {
             Phase::NeedsYou => self.question.is_some() && self.permission.is_none(),
+            Phase::Asleep => self.question.is_some() || self.done.is_some(),
             Phase::YourTurn | Phase::Ended => self.done.is_some(),
             Phase::Working | Phase::Background => self.doing.is_some(),
         }
@@ -552,7 +562,7 @@ impl Board {
             pa.cmp(&pb).then_with(|| match pa {
                 Phase::NeedsYou | Phase::YourTurn => a.phase_since_ms().cmp(&b.phase_since_ms()),
                 Phase::Working | Phase::Background => a.display_name().cmp(&b.display_name()),
-                Phase::Ended => b.last_activity_ms.cmp(&a.last_activity_ms),
+                Phase::Asleep | Phase::Ended => b.last_activity_ms.cmp(&a.last_activity_ms),
             })
         });
         list
@@ -840,7 +850,15 @@ mod tests {
         board.apply_session_file("second", &file("idle", 30), true);
         board.set_agents("second", &[BackgroundAgent { pid: Some(4200), ..agent("done") }]);
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::YourTurn);
+        // Listed without a process while its status file still says it runs: the list lags.
         board.set_agents("second", &[agent("done")]);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::YourTurn);
+        // Its process gone too (Claude Code retired it after an hour): asleep, not ended.
+        board.set_alive(&key(), false);
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::Asleep);
+        assert!(board.get(&key()).unwrap().waits_for_input());
+        // No longer listed at all: ended.
+        board.set_agents("second", &[]);
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::Ended);
     }
 

@@ -97,7 +97,11 @@ impl Brain {
         for (key, result) in &results {
             let name = self.model.board.get(key).map(|s| s.display_name()).unwrap_or_else(|| key.id.clone());
             match result {
-                Ok(how) => brain_core::log::write(&home, "garden", &format!("{name} ({}): ended – {how}", key.account)),
+                Ok(how) => {
+                    brain_core::log::write(&home, "garden", &format!("{name} ({}): ended – {how}", key.account));
+                    // A stopped background session would lie in the list asleep: it was ended on purpose.
+                    self.prefs.hide(key, now_ms());
+                }
                 Err(why) => {
                     failed += 1;
                     brain_core::log::write(&home, "garden", &format!("{name} ({}): NOT ended – {why}", key.account));
@@ -106,6 +110,7 @@ impl Brain {
             self.unreachable.remove(key);
             self.terminals.remove(key);
         }
+        self.prefs.save();
         self.model.relist_transcripts();
         let ended = results.len() - failed;
         self.set_status(if failed == 0 {

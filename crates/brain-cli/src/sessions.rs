@@ -98,6 +98,7 @@ fn phase_label(phase: Phase) -> &'static str {
         Phase::YourTurn => "Done, your turn",
         Phase::Working => "Working",
         Phase::Background => "Working in the background",
+        Phase::Asleep => "Asleep, wakes when written to",
         Phase::Ended => "Ended",
     }
 }
@@ -108,6 +109,7 @@ fn phase_id(phase: Phase) -> &'static str {
         Phase::YourTurn => "your_turn",
         Phase::Working => "working",
         Phase::Background => "background",
+        Phase::Asleep => "asleep",
         Phase::Ended => "ended",
     }
 }

@@ -493,6 +493,19 @@ fn place(session: &Session, held: Option<Place>, open_question: bool, prefs: &Pr
     }
 }
 
+/// How long a woken session gets for its mod to take requests again.
+const WAKE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// An asleep session Brain woke for a message.
+struct Waking {
+    session_id: String,
+    /// When the wake began: the mod's `.done` written since says it is up.
+    since: std::time::SystemTime,
+    started: Instant,
+    /// What goes in once it is awake, in order.
+    texts: Vec<String>,
+}
+
 /// The left column, already filtered and sorted.
 pub struct Groups<'a> {
     /// Ended sessions the user marked with `P` to resume later.
@@ -798,6 +811,10 @@ pub struct Brain {
     pub(crate) link_heard: Option<link::Heard>,
     /// Session ids whose mod takes Brain's requests (replies, commands, interrupts) itself.
     request_takers: HashSet<String>,
+    /// Asleep sessions Brain woke for a message, and what goes in once their mod is up.
+    waking: HashMap<SessionKey, Waking>,
+    /// How each wake went (`claude respawn`), from its thread.
+    wake_results: (std::sync::mpsc::Sender<(SessionKey, Result<(), String>)>, std::sync::mpsc::Receiver<(SessionKey, Result<(), String>)>),
     /// Brain Link, the companion app's server, while it runs.
     link: Option<crate::companion::Link>,
     /// The pairing code as an image.
@@ -926,6 +943,8 @@ impl Brain {
             questions: HashMap::new(),
             link_heard: None,
             request_takers: HashSet::new(),
+            waking: HashMap::new(),
+            wake_results: std::sync::mpsc::channel(),
             reminders: HashMap::new(),
             held: None,
             asking: None,
@@ -1655,6 +1674,7 @@ impl Brain {
         self.refresh_questions();
         if !self.model.is_demo() {
             self.request_takers = brain_core::requests::takers(&brain_core::requests::dir(&brain_core::account::home_dir()));
+            self.deliver_to_woken();
         }
         let entered: HashSet<SessionKey> = refreshed.iter().map(|item| item.key.clone()).collect();
         // A question reported after the stop (the phase stays) calls too: announce each session
@@ -2337,15 +2357,21 @@ impl Brain {
         }
     }
 
-    /// Whether Brain can send the session text: its mod takes it, wherever the session runs.
+    /// Whether Brain can send the session text: its mod takes it, wherever the session runs, or
+    /// it is asleep and wakes for it.
     pub fn can_send(&self, key: &SessionKey) -> bool {
-        self.request_taker(key).is_some()
+        self.request_taker(key).is_some() || self.wakeable(key)
+    }
+
+    /// An asleep background session Claude Code wakes again (`claude respawn`).
+    fn wakeable(&self, key: &SessionKey) -> bool {
+        self.model.board.get(key).is_some_and(|s| s.phase() == Phase::Asleep && s.agent.is_some() && s.session_id.is_some())
     }
 
     /// The session's id when its mod takes requests: a reply, a command or an interrupt goes to
-    /// the mod, and nothing is typed.
+    /// the mod, and nothing is typed. An asleep one has no mod running.
     pub(super) fn request_taker(&self, key: &SessionKey) -> Option<String> {
-        let session = self.model.board.get(key).filter(|s| s.phase() != Phase::Ended)?;
+        let session = self.model.board.get(key).filter(|s| !matches!(s.phase(), Phase::Ended | Phase::Asleep))?;
         // Demo sessions show the controls; what they would send is blocked elsewhere.
         if self.model.is_demo() {
             return Some(key.id.clone());
@@ -2377,16 +2403,73 @@ impl Brain {
     }
 
     /// Sends `text` to a session through its mod, which submits it once the session is idle (a
-    /// known `/command` runs as that command). Line breaks stay inside the prompt.
+    /// known `/command` runs as that command). Line breaks stay inside the prompt. An asleep
+    /// session is woken first, and the text goes in once its mod is up.
     fn send_text(&mut self, key: &SessionKey, text: &str) -> bool {
         if self.blocked_in_demo() {
             return false;
         }
-        let Some(id) = self.request_taker(key) else {
-            self.refuse(self.why_brain_cant_send());
+        if let Some(waking) = self.waking.get_mut(key) {
+            waking.texts.push(text.to_string());
+            return true;
+        }
+        if let Some(id) = self.request_taker(key) {
+            return self.send_request(&id, brain_core::requests::Request::Prompt { text: text.to_string() });
+        }
+        if self.wake(key, text) {
+            return true;
+        }
+        self.refuse(self.why_brain_cant_send());
+        false
+    }
+
+    /// Wakes an asleep session (`claude respawn`, off the UI thread), with `text` waiting for it.
+    fn wake(&mut self, key: &SessionKey, text: &str) -> bool {
+        if !self.wakeable(key) {
             return false;
-        };
-        self.send_request(&id, brain_core::requests::Request::Prompt { text: text.to_string() })
+        }
+        let Some(session) = self.model.board.get(key) else { return false };
+        let (Some(agent), Some(session_id), Some(account)) = (session.agent.clone(), session.session_id.clone(), self.model.account(&key.account).cloned()) else { return false };
+        let name = session.display_name();
+        self.waking.insert(key.clone(), Waking { session_id, since: std::time::SystemTime::now(), started: Instant::now(), texts: vec![text.to_string()] });
+        let (sender, woken) = (self.wake_results.0.clone(), key.clone());
+        std::thread::spawn(move || {
+            let _ = sender.send((woken, brain_core::agents::respawn(&account, &agent.id)));
+        });
+        self.set_status(tr!("„{name}“ wird geweckt – die Nachricht geht hinein, sobald sie wach ist.", "Waking “{name}” – the message goes in once it's awake."));
+        true
+    }
+
+    /// On every refresh: what waited for a woken session goes in once its mod takes requests
+    /// again; a wake that failed or took too long says so.
+    fn deliver_to_woken(&mut self) {
+        while let Ok((key, result)) = self.wake_results.1.try_recv() {
+            if let Err(err) = result {
+                if self.waking.remove(&key).is_some() {
+                    let name = self.model.board.get(&key).map(|s| s.display_name()).unwrap_or_default();
+                    self.set_status(tr!("„{name}“ ließ sich nicht wecken: {err}", "Couldn't wake “{name}”: {err}"));
+                }
+            }
+        }
+        let dir = brain_core::requests::dir(&brain_core::account::home_dir());
+        let keys: Vec<SessionKey> = self.waking.keys().cloned().collect();
+        for key in keys {
+            let Some(waking) = self.waking.get(&key) else { continue };
+            let ready = brain_core::requests::taken_since(&dir, &waking.session_id, waking.since);
+            if !ready && waking.started.elapsed() < WAKE_TIMEOUT {
+                continue;
+            }
+            let Some(waking) = self.waking.remove(&key) else { continue };
+            let name = self.model.board.get(&key).map(|s| s.display_name()).unwrap_or_default();
+            if !ready {
+                self.set_status(tr!("„{name}“ ist nicht aufgewacht – die Nachricht ging nicht hinein.", "“{name}” didn't wake up – the message didn't go in."));
+                continue;
+            }
+            let delivered = waking.texts.into_iter().all(|text| self.send_request(&waking.session_id, brain_core::requests::Request::Prompt { text }));
+            if delivered {
+                self.set_status(tr!("„{name}“ ist wach – die Nachricht ist drin.", "“{name}” is awake – the message is in."));
+            }
+        }
     }
 
     /// Why a session takes no text from Brain, for the status line.
@@ -3808,6 +3891,10 @@ impl Brain {
             match brain_core::agents::stop(&account, &agent.id) {
                 Ok(()) => {
                     self.model.relist_transcripts();
+                    // Stopped on purpose: out of the list, not lying there asleep. It comes back
+                    // when something happens in it.
+                    self.prefs.hide(&key, now_ms());
+                    self.prefs.save();
                     self.set_status(t("Hintergrund-Session gestoppt.", "Stopped the background session."));
                 }
                 Err(err) => self.set_status(tr!("Stoppen fehlgeschlagen: {err} – Rechtsklick → Hart beenden hilft.", "Stopping failed: {err} – right-click → End by force helps.")),

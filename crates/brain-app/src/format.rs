@@ -122,6 +122,7 @@ pub fn phase_label(phase: Phase) -> &'static str {
         Phase::YourTurn => t("Fertig, du bist dran", "Done, your turn"),
         Phase::Working => t("Arbeitet", "Working"),
         Phase::Background => t("Arbeitet im Hintergrund", "Working in the background"),
+        Phase::Asleep => t("Schläft – wacht auf, wenn du schreibst", "Asleep – wakes when you write"),
         Phase::Ended => t("Beendet", "Ended"),
     }
 }

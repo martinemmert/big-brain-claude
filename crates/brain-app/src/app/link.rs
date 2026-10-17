@@ -220,6 +220,7 @@ impl Brain {
                 Phase::YourTurn => "your_turn",
                 Phase::Working => "working",
                 Phase::Background => "background",
+                Phase::Asleep => "asleep",
                 Phase::Ended => "ended",
             },
             group,
@@ -359,7 +360,7 @@ impl Brain {
                 Task::none()
             }
             Command::Resume { .. } => {
-                if phase != Phase::Ended {
+                if !matches!(phase, Phase::Ended | Phase::Asleep) {
                     self.refuse(tr!("„{name}“ läuft schon.", "“{name}” is running already."));
                     return Task::none();
                 }
@@ -382,6 +383,10 @@ impl Brain {
                     match brain_core::agents::stop(&account, &agent.id) {
                         Ok(()) => {
                             self.model.relist_transcripts();
+                            // Stopped on purpose: out of the list, not lying there asleep. It
+                            // comes back when something happens in it.
+                            self.prefs.hide(&key, crate::format::now_ms());
+                            self.prefs.save();
                             self.set_status(tr!("„{name}“ vom Handy gestoppt.", "Stopped “{name}” from the phone."));
                         }
                         Err(err) => self.refuse(tr!("Vom Handy: Stoppen fehlgeschlagen – {err}", "From the phone: stopping failed – {err}")),

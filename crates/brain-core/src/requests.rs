@@ -49,6 +49,12 @@ pub fn takers(dir: &Path) -> std::collections::HashSet<String> {
     entries.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".done").map(str::to_string)).collect()
 }
 
+/// Whether the session's mod started taking requests at or after `since`: a session woken then
+/// is ready for what waited for it.
+pub fn taken_since(dir: &Path, session_id: &str, since: std::time::SystemTime) -> bool {
+    std::fs::metadata(done_file(dir, session_id)).and_then(|m| m.modified()).is_ok_and(|at| at >= since)
+}
+
 fn last_done(dir: &Path, session_id: &str) -> u64 {
     std::fs::read_to_string(done_file(dir, session_id)).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0)
 }

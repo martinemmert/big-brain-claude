@@ -24,7 +24,8 @@ pub struct BackgroundAgent {
 }
 
 impl BackgroundAgent {
-    /// Whether the agent still runs (as opposed to done, failed or stopped and exited).
+    /// Whether the agent may still run (as opposed to done, failed or stopped and exited): a
+    /// listed one without a process is asleep and counts, as Claude Code wakes it on demand.
     pub fn is_active(&self) -> bool {
         self.pid.is_some() || !self.has_exited_state()
     }

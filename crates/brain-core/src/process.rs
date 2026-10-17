@@ -28,6 +28,11 @@ pub fn session_by_id(accounts: &[Account], session_id: &str) -> Option<(Account,
 }
 
 pub fn pid_alive(pid: u32) -> bool {
+    // A session known only from `claude agents` has no pid (0): `kill(0, …)` would ask Brain's
+    // own process group.
+    if pid == 0 {
+        return false;
+    }
     // Signal 0 performs the permission/existence check without sending anything.
     let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
     result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
