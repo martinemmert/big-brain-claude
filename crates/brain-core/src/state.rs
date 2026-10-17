@@ -263,8 +263,8 @@ impl Session {
     /// through its terminal in Brain rather than a terminal app.
     pub fn waits_for_input(&self) -> bool {
         match &self.agent {
-            // "Needs you" and a blocked agent may be a dialog, which typed text would answer.
-            Some(agent) => agent.state != "blocked" && matches!(self.phase(), Phase::YourTurn | Phase::Background),
+            // "Needs you" may be a dialog, which typed text would answer.
+            Some(_) => matches!(self.phase(), Phase::YourTurn | Phase::Background),
             None => self.accepts_input(),
         }
     }
@@ -866,7 +866,10 @@ mod tests {
         assert!(session.waits_for_input());
         assert!(!session.accepts_input(), "no terminal app to type through");
 
+        // "blocked" says nothing by itself: the status file decides, here it is idle.
         board.set_agents("second", &[agent("blocked")]);
+        assert!(board.get(&key()).unwrap().waits_for_input());
+        board.apply_session_file("second", &file("waiting", 15), true);
         assert!(!board.get(&key()).unwrap().waits_for_input(), "a dialog is open: typed text would answer it");
         board.apply_session_file("second", &file("busy", 20), true);
         board.set_agents("second", &[agent("working")]);
@@ -893,7 +896,7 @@ mod tests {
         };
         let mut board = Board::default();
         board.apply_session_file("second", &file("idle", 0), true);
-        board.set_agents("second", &[agent.clone()]);
+        board.set_agents("second", std::slice::from_ref(&agent));
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::YourTurn);
         board.apply_session_file("second", &file("waiting", 5), true);
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::NeedsYou);
