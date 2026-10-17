@@ -6,6 +6,7 @@ mod chrome;
 mod config;
 mod conversation;
 mod demo;
+mod folder_picker;
 mod format;
 mod hotkey;
 mod i18n;

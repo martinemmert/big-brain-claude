@@ -266,7 +266,7 @@ Alles optional, in `~/.claude-brain/config.json`:
 | `⇥` / `⇧⇥` | Kontofilter |
 | `E` `B` `U` | beendete / Hintergrund- / automatische Sessions auflisten |
 | `C` | aufräumen |
-| `⌘N` | neue Session |
+| `⌘N` | neue Session (darin `⌘O`: Ordner im macOS-Dialog wählen) |
 | `T` | antworten (`1`–`9` übernimmt eine Schnellantwort, `⏎` schickt ab) |
 | `Y` / `N` | Freigabe erlauben / ablehnen |
 | `R` | umbenennen (solange die Session wartet) |

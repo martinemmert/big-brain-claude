@@ -255,6 +255,8 @@ pub enum Message {
     Rename(String),
     RenameSubmit,
     NewInput(String),
+    /// "Choose folder …": the native folder dialog.
+    NewChooseFolder,
     NewSubmit,
     NewAccount(usize),
     NewPick(usize),
@@ -1061,6 +1063,10 @@ impl Brain {
             Message::NewInput(text) => {
                 self.new_session.folder = text;
                 self.new_session.pick = 0;
+                Task::none()
+            }
+            Message::NewChooseFolder => {
+                self.choose_folder();
                 Task::none()
             }
             Message::NewSubmit => self.confirm_new_session(),
@@ -4193,6 +4199,10 @@ impl Brain {
             }
             return Task::none();
         }
+        if cmd && character == Some("o") {
+            self.choose_folder();
+            return Task::none();
+        }
         if cmd && character == Some("i") {
             self.new_session.in_iterm = !self.new_session.in_iterm;
             return Task::none();
@@ -4228,6 +4238,18 @@ impl Brain {
             _ => return operation::focus(NEW_SESSION),
         }
         Task::none()
+    }
+
+    /// Opens the native folder dialog; the folder lands in the dialog's field, where ⏎ starts a
+    /// session in it. Not while a template asks for a value: the field holds that value then.
+    fn choose_folder(&mut self) {
+        if self.pending_placeholder().is_some() {
+            return;
+        }
+        if let Some(path) = crate::folder_picker::choose_folder() {
+            self.new_session.folder = path.display().to_string();
+            self.new_session.pick = 0;
+        }
     }
 
     /// The output styles of the dialog's account (built-in and its own).

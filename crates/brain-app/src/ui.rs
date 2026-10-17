@@ -1965,16 +1965,21 @@ fn new_session(brain: &Brain) -> Element<'_, Message> {
         let prompt: String = c.template.fill(&c.values).lines().take(6).collect::<Vec<_>>().join("\n");
         content = content.push(container(text(prompt).size(12.5).color(TEXT).font(UI).line_height(1.5)).padding([9, 12]).width(Fill).style(|_| boxed(SURFACE, LINE, 8.0)));
     }
-    content = content.push(
-        text_input(&placeholder, &dialog.folder)
-            .id(app::NEW_SESSION)
-            .on_input(Message::NewInput)
-            .on_submit(Message::NewSubmit)
-            .size(13)
-            .font(UI)
-            .padding([9, 12])
-            .style(field_style),
-    );
+    let field = text_input(&placeholder, &dialog.folder)
+        .id(app::NEW_SESSION)
+        .on_input(Message::NewInput)
+        .on_submit(Message::NewSubmit)
+        .size(13)
+        .font(UI)
+        .padding([9, 12])
+        .style(field_style);
+    // Not while a template asks for a value: the field holds that value then.
+    content = content.push(if asking.is_none() {
+        row![field, action(t("Ordner wählen …", "Choose folder …"), "⌘O", false, Some(Message::NewChooseFolder))].spacing(8).align_y(iced::Center)
+    } else {
+        row![field]
+    });
+    content = content.push(text(t("Oder tippe ~/ und gehe mit → in die Ordner darin.", "Or type ~/ and go into the folders with →.")).size(11.5).color(TEXT_FAINT).font(UI));
     let choices = brain.new_session_choices().into_iter().enumerate().map(|(i, choice)| {
         let active = i == dialog.pick;
         let label: Element<'_, Message> = match choice {
@@ -1995,7 +2000,7 @@ fn new_session(brain: &Brain) -> Element<'_, Message> {
     content = content.push(scrollable(column(choices).spacing(2)).height(Fill).style(scrollbar));
     content = content.push(
         container(
-            text(t("⏎ wählen/starten · ↑↓ · ~/ → Ordner · ⇥ Konto · ⇧⇥ Profil · ⌘T Team · ⌘I Brain/iTerm · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc", "⏎ pick/start · ↑↓ · ~/ → folders · ⇥ account · ⇧⇥ style · ⌘T team · ⌘I Brain/iTerm · ⌘E edit template · ⌘⇧N new template · esc"))
+            text(t("⏎ wählen/starten · ↑↓ · ~/ → Ordner · ⌘O Ordner wählen · ⇥ Konto · ⇧⇥ Profil · ⌘T Team · ⌘I Brain/iTerm · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc", "⏎ pick/start · ↑↓ · ~/ → folders · ⌘O choose folder · ⇥ account · ⇧⇥ style · ⌘T team · ⌘I Brain/iTerm · ⌘E edit template · ⌘⇧N new template · esc"))
                 .size(11.5)
                 .color(TEXT_FAINT)
                 .font(UI),
