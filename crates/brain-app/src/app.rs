@@ -3879,6 +3879,13 @@ impl Brain {
     fn end_selected(&mut self, confirmed: bool) -> Task<Message> {
         let Some(session) = self.selected_session() else { return Task::none() };
         let key = session.key.clone();
+        // Asleep, it has no process to stop: out of the list, until it wakes.
+        if session.phase() == Phase::Asleep {
+            self.prefs.hide(&key, now_ms());
+            self.prefs.save();
+            self.set_status(t("Die Session schläft schon – aus der Liste genommen.", "The session is asleep already – taken off the list."));
+            return Task::none();
+        }
         if let Some(agent) = session.agent.clone().filter(|a| a.is_active()) {
             if !confirmed && !self.arm('x', &key) {
                 self.set_status(t("Nochmal X stoppt die Hintergrund-Session (das Gespräch bleibt).", "Press X again to stop the background session (its conversation is kept)."));

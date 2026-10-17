@@ -374,6 +374,13 @@ impl Brain {
                 }
             },
             Command::End { .. } => {
+                // Asleep, it has no process to stop: out of the list, until it wakes.
+                if phase == Phase::Asleep {
+                    self.prefs.hide(&key, crate::format::now_ms());
+                    self.prefs.save();
+                    self.set_status(tr!("„{name}“ schläft schon – aus der Liste genommen.", "“{name}” is asleep already – taken off the list."));
+                    return Task::none();
+                }
                 // A background session stops as with X in Brain: its conversation stays.
                 if let Some(agent) = self.model.board.get(&key).and_then(|s| s.agent.clone()).filter(|a| a.is_active()) {
                     let Some(account) = self.model.account(&key.account).cloned() else {
