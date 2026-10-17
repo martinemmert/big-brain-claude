@@ -114,6 +114,8 @@ pub enum PaletteCommand {
     Garden,
     /// Today's log in the editor.
     OpenLog,
+    /// The selected session into this project, or back into its own (`None`).
+    Project(Option<String>),
     /// Show every key.
     Keys,
 }
@@ -229,6 +231,8 @@ pub enum Action {
     Trash,
     /// End a session that won't end, by force (the gardener's way).
     ForceEnd,
+    /// ⌘K with the selected session's projects to move it to.
+    MoveToProject,
 }
 
 #[derive(Debug, Clone)]
@@ -2272,6 +2276,19 @@ impl Brain {
         all.push((t("Ruhige Hintergrund-Sessions auf- / zuklappen", "Open / fold quiet background sessions").to_string(), "B", PaletteCommand::ToggleBackground));
         all.push((t("Automatisch gestartete Sessions (Reviews, Skripte) auf- / zuklappen", "Open / fold sessions started by programs (reviews, scripts)").to_string(), "U", PaletteCommand::ToggleAutomated));
 
+        // Into another project: each one that has sessions, back into its own, or a new one typed.
+        if let Some(session) = self.selected_session() {
+            let name = session.display_name();
+            let current = self.project_name(session);
+            for project in self.project_names().into_iter().filter(|p| *p != current) {
+                all.push((tr!("„{name}“ ins Projekt „{project}“ verschieben", "Move “{name}” to project “{project}”"), "", PaletteCommand::Project(Some(project))));
+            }
+            if self.prefs.project(&session.key).is_some() {
+                let own = self.own_project_name(session);
+                all.push((tr!("„{name}“ zurück in sein Projekt „{own}“", "Move “{name}” back to its project “{own}”"), "", PaletteCommand::Project(None)));
+            }
+        }
+
         let query = self.palette.trim().to_lowercase();
         let words: Vec<&str> = query.split_whitespace().collect();
         let mut shown: Vec<_> = all.into_iter().filter(|(label, _, _)| {
@@ -2280,6 +2297,12 @@ impl Brain {
         }).collect();
         let text = self.palette.trim();
         if !text.is_empty() {
+            // Not for a project that exists, nor for the word the menu fills in to list them.
+            let offers_new = !self.project_names().iter().any(|p| p == text) && !text.eq_ignore_ascii_case(t("Projekt", "project"));
+            if let Some(session) = self.selected_session().filter(|_| offers_new) {
+                let name = session.display_name();
+                shown.push((tr!("„{name}“ ins neue Projekt „{text}“ verschieben", "Move “{name}” to a new project “{text}”"), "", PaletteCommand::Project(Some(text.to_string()))));
+            }
             if let Some(session) = self.selected_session().filter(|s| self.can_send(&s.key)) {
                 let name = session.display_name();
                 shown.push((tr!("An „{name}“ senden: {text}", "Send to “{name}”: {text}"), "", PaletteCommand::Send(text.to_string())));
@@ -2294,6 +2317,12 @@ impl Brain {
 
     fn run_palette(&mut self, command: PaletteCommand) -> Task<Message> {
         match command {
+            PaletteCommand::Project(project) => {
+                if let Some(key) = self.selected.clone() {
+                    self.put_in_project(&key, project);
+                }
+                Task::none()
+            }
             PaletteCommand::Act(action) => self.act(action),
             PaletteCommand::Tab(tab) => {
                 self.tab = tab;
@@ -2892,6 +2921,41 @@ impl Brain {
         }
     }
 
+    /// The project a session is listed under: the one the user put it in, else its own.
+    pub fn project_name(&self, s: &Session) -> String {
+        self.prefs.project(&s.key).map(str::to_string).unwrap_or_else(|| self.own_project_name(s))
+    }
+
+    /// The project its folder says (the repository, for a worktree its main checkout).
+    fn own_project_name(&self, s: &Session) -> String {
+        self.projects.get(&s.key).map(|(n, _)| n.clone()).unwrap_or_else(|| s.display_name())
+    }
+
+    /// Every project a live session is listed under, by name.
+    pub fn project_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.groups(now_ms()).projects.iter().map(|(n, _)| n.clone()).collect();
+        names.sort_by_key(|n| n.to_lowercase());
+        names
+    }
+
+    /// Lists the session under `project`, or under its own again (`None`, or its own name).
+    pub(super) fn put_in_project(&mut self, key: &SessionKey, project: Option<String>) {
+        let Some(session) = self.model.board.get(key) else {
+            self.refuse(t("Diese Session gibt es nicht mehr.", "This session is gone."));
+            return;
+        };
+        let name = session.display_name();
+        let own = self.own_project_name(session);
+        let project = project.map(|p| p.trim().to_string()).filter(|p| !p.is_empty() && *p != own);
+        let status = match &project {
+            Some(p) => tr!("„{name}“ steht jetzt im Projekt „{p}“.", "“{name}” is now in project “{p}”."),
+            None => tr!("„{name}“ steht wieder im Projekt „{own}“.", "“{name}” is back in project “{own}”."),
+        };
+        self.prefs.set_project(key, project);
+        self.prefs.save();
+        self.set_status(status);
+    }
+
     // ---- the list ---------------------------------------------------------------
 
     pub fn groups(&self, now: i64) -> Groups<'_> {
@@ -2973,7 +3037,7 @@ impl Brain {
         let mut projects: Vec<(String, Vec<Entry>)> = Vec::new();
         for entry in entries {
             let session = entry.session();
-            let name = self.projects.get(&session.key).map(|(n, _)| n.clone()).unwrap_or_else(|| session.display_name());
+            let name = self.project_name(session);
             match projects.iter_mut().find(|(n, _)| *n == name) {
                 Some((_, list)) => list.push(entry),
                 None => projects.push((name, vec![entry])),
@@ -3616,6 +3680,11 @@ impl Brain {
             Action::OpenInITerm => self.open_selected(),
             Action::TakeOver => return self.open_relaunch(relaunch::Preset::TakeOver),
             Action::Pin => self.toggle_pin(),
+            Action::MoveToProject => {
+                let task = self.open_palette();
+                self.palette = t("Projekt", "project").into();
+                return task;
+            }
             Action::OpenBeside => {
                 // The terminal that was on screen stays on the left, this one opens beside it.
                 if let Some(kept) = self.before_menu.take().filter(|k| self.terminals.contains_key(k)) {

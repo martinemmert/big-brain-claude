@@ -232,7 +232,8 @@ impl Brain {
             headline: s.headline().map(|h| plain(&h)),
             since_ms: s.phase_since_ms(),
             folder: s.cwd.as_deref().and_then(|c| c.rsplit('/').find(|p| !p.is_empty())).map(str::to_string),
-            project: self.projects.get(&s.key).map(|(name, _)| name.clone()),
+            project: Some(self.project_name(s)),
+            project_moved: self.prefs.project(&s.key).is_some(),
             permission_open: s.awaiting_permission() && question.is_none(),
             permission_since_ms: (s.awaiting_permission() && question.is_none()).then(|| s.phase_since_ms()),
             question,
@@ -256,6 +257,7 @@ impl Brain {
             | Command::Permission { key, .. }
             | Command::Answer { key, .. }
             | Command::Interrupt { key }
+            | Command::Project { key, .. }
             | Command::Resume { key }
             | Command::Restart { key, .. }
             | Command::End { key }
@@ -372,6 +374,10 @@ impl Brain {
                 }
                 let outcome = terminal::send_key(pid, Key::Escape);
                 self.report(outcome, Some(done));
+                Task::none()
+            }
+            Command::Project { project, .. } => {
+                self.put_in_project(&key, project);
                 Task::none()
             }
             Command::Resume { .. } => {

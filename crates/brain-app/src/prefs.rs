@@ -38,6 +38,9 @@ pub struct Prefs {
     /// Session id → when the user chose "only a report" for it (epoch ms).
     #[serde(default)]
     reports: BTreeMap<String, i64>,
+    /// Session id → the project the user put it in, instead of the one its folder says.
+    #[serde(default)]
+    projects: BTreeMap<String, String>,
 }
 
 /// Sessions are remembered by account and session id, so a pin outlives the process.
@@ -188,6 +191,20 @@ impl Prefs {
         self.hidden.remove(&id);
         self.seen.remove(&id);
         self.reports.remove(&id);
+        self.projects.remove(&id);
+    }
+
+    /// The project the user put the session in, if any.
+    pub fn project(&self, key: &SessionKey) -> Option<&str> {
+        self.projects.get(&id(key)).map(String::as_str)
+    }
+
+    /// Puts the session in `project`, or back in its own one (`None`).
+    pub fn set_project(&mut self, key: &SessionKey, project: Option<String>) {
+        match project {
+            Some(project) => self.projects.insert(id(key), project),
+            None => self.projects.remove(&id(key)),
+        };
     }
 
     pub fn snooze(&mut self, key: &SessionKey, until: Option<i64>) {

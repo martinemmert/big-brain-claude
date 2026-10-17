@@ -264,6 +264,7 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
         keep.push((t("Pausieren (15 min → 1 h → morgen → bis sich etwas tut)", "Snooze (15 min → 1 h → tomorrow → until something happens)").to_string(), "S", Action::Snooze, false));
     }
     keep.push((t("Weiterführen … (Konto, Fork, Flags)", "Go on … (account, fork, flags)").to_string(), "A", Action::Relaunch, false));
+    keep.push((t("In ein anderes Projekt …", "Into another project …").to_string(), "", Action::MoveToProject, false));
     groups.push(keep);
 
     let mut remove = Vec::new();

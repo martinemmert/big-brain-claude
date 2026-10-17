@@ -74,6 +74,8 @@ pub struct View {
     /// The project it belongs to, as Brain's list names it (the repository, for a worktree its
     /// main checkout): the phone groups "Projects" by it and filters by it.
     pub project: Option<String>,
+    /// The user put it in that project (its own is another): the phone offers to move it back.
+    pub project_moved: bool,
     /// A permission dialog is open: the phone offers Allow and Deny.
     pub permission_open: bool,
     /// When that dialog opened (epoch ms): the phone sends it with its answer, so the answer
@@ -113,6 +115,8 @@ pub enum Command {
     Move { key: SessionKey, account: String },
     /// Esc for a working session: Claude stops what it does.
     Interrupt { key: SessionKey },
+    /// List the session under this project, or under its own again (`None`).
+    Project { key: SessionKey, project: Option<String> },
     /// An ended session goes on in the background.
     Resume { key: SessionKey },
     /// The session goes on with these flags (`--model opus`, `--chrome`).
@@ -156,7 +160,7 @@ pub struct Picked {
 }
 
 /// What this Brain Link offers beyond the first version, for the phone to show only what works.
-const FEATURES: [&str; 15] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands", "team", "move", "outcome", "projects"];
+const FEATURES: [&str; 16] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands", "team", "move", "outcome", "projects", "regroup"];
 /// How long a read with `wait` waits for something new before it answers anyway.
 const WAIT: Duration = Duration::from_secs(25);
 /// How often a waiting read looks again.
@@ -666,6 +670,8 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                     None => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "account" }))),
                 },
                 Some("team") => Command::Team { key, on: body.get("on").and_then(|o| o.as_bool()).unwrap_or(true) },
+                // A project's name, as for a session's; none puts it back into its own.
+                Some("project") => Command::Project { key, project: body.get("name").and_then(|n| n.as_str()).and_then(session_name) },
                 Some("style") => match body.get("name").and_then(|n| n.as_str()).and_then(session_name) {
                     Some(name) => Command::Reply { key, text: format!("/output-style {name}") },
                     None => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "name" }))),
@@ -1218,6 +1224,7 @@ mod tests {
             since_ms: 1,
             folder: Some("fin".into()),
             project: None,
+            project_moved: false,
             permission_open: false,
             permission_since_ms: None,
             question: None,
@@ -1568,6 +1575,7 @@ mod tests {
             since_ms: now - minutes * 60_000,
             folder: Some(name.to_lowercase()),
             project: None,
+            project_moved: false,
             permission_open: phase == "needs_you" && id != "be75a6ae-0000-0000-0000-000000000003",
             permission_since_ms: (phase == "needs_you").then_some(now - minutes * 60_000),
             question: None,
