@@ -1,83 +1,30 @@
-use std::collections::HashMap;
 use std::process::Command;
 
 use crate::account::Account;
-use crate::sessions::SessionFile;
+use crate::sessions::read_session_files;
 
-/// pid → parent pid for every process on the machine.
-#[derive(Debug, Default)]
-pub struct ProcessTable {
-    parents: HashMap<u32, u32>,
+/// The Claude Code session that runs this process (`brain report`, `brain later`, the mod's
+/// `brain hook`), as Claude Code names it in the environment of every command it starts:
+/// `CLAUDE_CODE_SESSION_ID`, whose session file holds the pid, else `CLAUDE_PID`, whose session
+/// file says the account.
+pub fn calling_session(accounts: &[Account]) -> Option<(Account, u32)> {
+    let session_id = std::env::var("CLAUDE_CODE_SESSION_ID").ok();
+    let pid = std::env::var("CLAUDE_PID").ok();
+    calling_session_from(accounts, session_id.as_deref(), pid.as_deref())
 }
 
-impl ProcessTable {
-    pub fn snapshot() -> Self {
-        let output = Command::new("ps").args(["-axo", "pid=,ppid="]).output();
-        match output {
-            Ok(out) => Self::parse(&String::from_utf8_lossy(&out.stdout)),
-            Err(_) => Self::default(),
-        }
-    }
-
-    pub fn parse(ps_output: &str) -> Self {
-        let parents = ps_output
-            .lines()
-            .filter_map(|line| {
-                let mut parts = line.split_whitespace();
-                let pid = parts.next()?.parse().ok()?;
-                let ppid = parts.next()?.parse().ok()?;
-                Some((pid, ppid))
-            })
-            .collect();
-        Self { parents }
-    }
-
-    /// `start` itself, then its parent, grandparent, … up to (excluding) pid 0/1.
-    pub fn ancestors(&self, start: u32) -> Vec<u32> {
-        let mut chain = Vec::new();
-        let mut current = start;
-        while current > 1 && !chain.contains(&current) {
-            chain.push(current);
-            match self.parents.get(&current) {
-                Some(parent) => current = *parent,
-                None => break,
-            }
-        }
-        chain
-    }
-}
-
-/// Walks up from `start` until a pid owns a `<config>/sessions/<pid>.json` file.
-/// That pid is the Claude Code process; the directory tells which account it belongs to.
-///
-/// With a `session_id`, only a session file carrying that id matches. This keeps
-/// a nested `claude` (started from another session's shell) from being
-/// attributed to its parent session once its own file is gone.
-pub fn find_claude_session(
-    table: &ProcessTable,
-    start: u32,
-    accounts: &[Account],
-    session_id: Option<&str>,
-) -> Option<(Account, u32)> {
-    table.ancestors(start).into_iter().find_map(|pid| {
-        accounts
-            .iter()
-            .find(|account| session_file_matches(&account.session_file(pid), session_id))
-            .map(|account| (account.clone(), pid))
+fn calling_session_from(accounts: &[Account], session_id: Option<&str>, pid: Option<&str>) -> Option<(Account, u32)> {
+    session_id.filter(|id| !id.is_empty()).and_then(|id| session_by_id(accounts, id)).or_else(|| {
+        let pid: u32 = pid?.trim().parse().ok()?;
+        accounts.iter().find(|a| a.session_file(pid).exists()).map(|a| (a.clone(), pid))
     })
 }
 
-fn session_file_matches(path: &std::path::Path, session_id: Option<&str>) -> bool {
-    let Ok(bytes) = std::fs::read(path) else {
-        return false;
-    };
-    let Some(expected) = session_id else {
-        return true;
-    };
-    serde_json::from_slice::<SessionFile>(&bytes)
-        .ok()
-        .and_then(|file| file.session_id)
-        .is_none_or(|actual| actual == expected)
+/// The account and pid of the running session with this id, from Claude Code's session files.
+pub fn session_by_id(accounts: &[Account], session_id: &str) -> Option<(Account, u32)> {
+    accounts.iter().find_map(|account| {
+        read_session_files(account).into_iter().find(|f| f.session_id.as_deref() == Some(session_id)).map(|f| (account.clone(), f.pid))
+    })
 }
 
 pub fn pid_alive(pid: u32) -> bool {
@@ -122,7 +69,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn finds_the_claude_ancestor_and_its_account() {
+    fn the_calling_session_is_the_one_claude_code_names() {
         let home = tempfile::tempdir().unwrap();
         let main = Account::from_config_dir(home.path().join(".claude"));
         let second = Account::from_config_dir(home.path().join(".claude-second"));
@@ -130,20 +77,12 @@ mod tests {
             std::fs::create_dir_all(account.sessions_dir()).unwrap();
         }
         std::fs::write(second.session_file(23096), r#"{"pid":23096,"sessionId":"outer"}"#).unwrap();
-        // brain (500) → zsh (49732) → claude (23096) → zsh (22855) → login (1)
-        let table = ProcessTable::parse("  500 49732\n49732 23096\n23096 22855\n22855 1\n");
         let accounts = [main.clone(), second.clone()];
 
-        assert_eq!(find_claude_session(&table, 500, &accounts, None), Some((second.clone(), 23096)));
-        assert_eq!(find_claude_session(&table, 500, &accounts, Some("outer")), Some((second, 23096)));
-        // A nested session whose own file is already gone must not match the outer one.
-        assert_eq!(find_claude_session(&table, 500, &accounts, Some("nested")), None);
-        assert_eq!(find_claude_session(&table, 22855, &[main], None), None);
-    }
-
-    #[test]
-    fn ancestors_stop_on_cycles() {
-        let table = ProcessTable::parse("10 11\n11 10\n");
-        assert_eq!(table.ancestors(10), vec![10, 11]);
+        assert_eq!(calling_session_from(&accounts, Some("outer"), None), Some((second.clone(), 23096)));
+        // After a /clear the id may be newer than the file: the pid still finds it.
+        assert_eq!(calling_session_from(&accounts, Some("newer"), Some("23096")), Some((second, 23096)));
+        assert_eq!(calling_session_from(&accounts, Some("newer"), Some("500")), None);
+        assert_eq!(calling_session_from(&accounts, None, None), None);
     }
 }

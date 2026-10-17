@@ -182,18 +182,9 @@ fn tail_entries(transcript: &Path, len: u64, window: u64) -> Vec<Value> {
     lines.filter_map(|line| serde_json::from_str::<Value>(line).ok()).collect()
 }
 
-/// Whether the latest turn is still running or has ended, according to the transcript.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Turn {
-    Working,
-    Ended,
-}
-
 /// What the end of a transcript says about its session.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Insight {
-    /// The latest turn state and when it was written (epoch ms).
-    pub turn: Option<(Turn, i64)>,
     pub model: Option<String>,
     /// Tokens the last request sent: input plus cache reads and writes.
     pub context_tokens: Option<u64>,
@@ -257,10 +248,8 @@ pub fn title_of(transcript: &Path) -> Option<String> {
     custom.or(generated)
 }
 
-/// Reads the last 512 KiB of a transcript.
-///
-/// A turn ends with a `system`/`turn_duration` entry; a denied permission or Esc writes
-/// `[Request interrupted by user…]` and no hook fires, so this catches what hooks miss.
+/// Reads the last 512 KiB of a transcript. Whether a turn runs is not read here: Claude Code's
+/// session file says it, interruptions included.
 pub fn insight(transcript: &Path) -> Insight {
     let len = std::fs::metadata(transcript).map(|m| m.len()).unwrap_or(0);
     let mut out = Insight::default();
@@ -270,29 +259,12 @@ pub fn insight(transcript: &Path) -> Insight {
         if entry.get("isSidechain").and_then(Value::as_bool).unwrap_or(false) {
             continue;
         }
-        let ts = entry
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .and_then(|t| t.parse::<DateTime<Utc>>().ok())
-            .map(|t| t.timestamp_millis());
         let field = |key: &str| entry.get(key).and_then(Value::as_str).map(str::to_string);
         if out.entrypoint.is_none() {
             out.entrypoint = field("entrypoint");
         }
         match entry.get("type").and_then(Value::as_str).unwrap_or_default() {
-            "system" if field("subtype").as_deref() == Some("turn_duration") => {
-                if let Some(ts) = ts {
-                    out.turn = Some((Turn::Ended, ts));
-                }
-            }
             "user" if !entry.get("isMeta").and_then(Value::as_bool).unwrap_or(false) => {
-                let Some(ts) = ts else { continue };
-                let state = if user_texts(&entry).any(|t| t.starts_with("[Request interrupted by user")) {
-                    Turn::Ended
-                } else {
-                    Turn::Working
-                };
-                out.turn = Some((state, ts));
                 if user_texts(&entry).next().is_some() {
                     out.asks = false;
                 }
@@ -305,9 +277,6 @@ pub fn insight(transcript: &Path) -> Insight {
                 }
             }
             "assistant" => {
-                if let Some(ts) = ts {
-                    out.turn = Some((Turn::Working, ts));
-                }
                 let message = entry.get("message");
                 open_calls.extend(tool_calls(message));
                 if let Some(text) = last_text(message) {
@@ -686,8 +655,6 @@ mod tests {
 
         let got = insight(&path);
 
-        let ended_at = "2026-10-03T08:43:07.100Z".parse::<DateTime<Utc>>().unwrap().timestamp_millis();
-        assert_eq!(got.turn, Some((Turn::Ended, ended_at)));
         assert_eq!(got.model.as_deref(), Some("claude-haiku-4-5-20251001"));
         assert_eq!(got.context_tokens, Some(23012));
         assert_eq!(got.permission_mode.as_deref(), Some("default"));
@@ -704,17 +671,6 @@ mod tests {
         let (_dir, path) = transcript(&lines);
 
         assert_eq!(insight(&path).edited, vec!["/w/c.rs", "/w/a.rs"]);
-    }
-
-    #[test]
-    fn a_new_prompt_after_the_turn_ended_means_working_again() {
-        let lines = [
-            r#"{"type":"system","subtype":"turn_duration","timestamp":"2026-10-03T09:00:00.000Z"}"#,
-            r#"{"type":"user","message":{"role":"user","content":"weiter"},"timestamp":"2026-10-03T09:01:00.000Z"}"#,
-        ];
-        let (_dir, path) = transcript(&lines);
-
-        assert_eq!(insight(&path).turn.map(|(t, _)| t), Some(Turn::Working));
     }
 
     #[test]

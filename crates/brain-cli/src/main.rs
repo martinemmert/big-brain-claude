@@ -8,7 +8,7 @@ use brain_core::account::{discover_accounts, home_dir, Account};
 use brain_core::event::{Event, Kind, Source, PROTOCOL_VERSION};
 use brain_core::hook::{one_line, HookPayload};
 use brain_core::install::{self, Change};
-use brain_core::process::{find_claude_session, pid_alive, ProcessTable};
+use brain_core::process::{calling_session, pid_alive, session_by_id};
 use brain_core::sessions::read_session_files;
 use brain_core::state::{Board, Phase};
 use brain_core::store::{Store, Tail};
@@ -99,19 +99,16 @@ enum Command {
     },
     /// Install hooks and the protocol section into every Claude account.
     Install,
-    /// Remove Brain's hooks and protocol section from every Claude account.
+    /// Remove Brain's mod, permission rules and protocol section from every Claude account.
     Uninstall,
     /// Print the current board.
     Status,
-    /// Status line wrapper: records plan limits, context and cost for Brain, then runs `--then`.
+    /// Records the plan limits, context and cost Brain's mod measured in a session.
     Statusline {
-        /// The status line command to run afterwards, with the same input.
+        /// The measurement, as status line JSON, in a file of `~/.claude-brain/inbox/`; the file
+        /// is deleted after reading.
         #[arg(long)]
-        then: Option<String>,
-        /// The status line JSON in a file of `~/.claude-brain/inbox/` instead of stdin (Brain's
-        /// mod); the file is deleted after reading, and nothing runs after.
-        #[arg(long)]
-        json_file: Option<std::path::PathBuf>,
+        json_file: std::path::PathBuf,
     },
     /// List the sessions that have not ended, in triage order.
     #[command(group(ArgGroup::new("format").required(true).args(["alfred", "json"])))]
@@ -247,7 +244,7 @@ fn main() -> ExitCode {
         Command::Install => run_install(&accounts),
         Command::Uninstall => run_uninstall(&accounts),
         Command::Status => run_status(&store, &accounts),
-        Command::Statusline { then, json_file } => statusline::run(then, json_file.and_then(|f| take_inbox_file(&f)), &accounts),
+        Command::Statusline { json_file } => statusline::run(take_inbox_file(&json_file), &accounts),
         Command::Sessions { alfred, json: _ } => run_sessions(&store, &accounts, alfred),
         Command::Open { session } => run_open(&accounts, &session),
         Command::Show { session } => run_show(&session),
@@ -260,12 +257,12 @@ fn run_hook(store: &Store, accounts: &[Account], input: &str, source: Source) ->
     let kind = payload.kind()?;
 
     let session_id = payload.session_id.as_deref();
-    let table = ProcessTable::snapshot();
-    // At `SessionEnd` the session file may already be gone; the earlier events
-    // of the same session still know its pid.
-    let (account, pid) = find_claude_session(&table, std::process::id(), accounts, session_id)
-        .or_else(|| find_by_session_id(accounts, session_id?))
-        .or_else(|| find_in_events(store, accounts, session_id?))?;
+    // The session id names Claude Code's session file. At `SessionEnd` that file may already be
+    // gone; the earlier events of the same session still know its pid.
+    let (account, pid) = session_id
+        .and_then(|id| session_by_id(accounts, id))
+        .or_else(|| find_in_events(store, accounts, session_id?))
+        .or_else(|| calling_session(accounts))?;
 
     // The status file is read directly by pid: it may already be gone at SessionEnd.
     let name = std::fs::read(account.session_file(pid))
@@ -319,8 +316,8 @@ fn run_later(accounts: &[Account], text: &str, json: Option<String>) -> ExitCode
         return ExitCode::SUCCESS;
     }
     let found = match field("session_id") {
-        Some(id) => find_by_session_id(accounts, &id),
-        None => find_claude_session(&ProcessTable::snapshot(), std::process::id(), accounts, None),
+        Some(id) => session_by_id(accounts, &id),
+        None => calling_session(accounts),
     };
     let session = found.as_ref().and_then(|(account, pid)| read_session_files(account).into_iter().find(|f| f.pid == *pid));
     let task = brain_core::later::Item {
@@ -344,15 +341,6 @@ fn run_later(accounts: &[Account], text: &str, json: Option<String>) -> ExitCode
     }
 }
 
-fn find_by_session_id(accounts: &[Account], session_id: &str) -> Option<(Account, u32)> {
-    accounts.iter().find_map(|account| {
-        read_session_files(account)
-            .into_iter()
-            .find(|f| f.session_id.as_deref() == Some(session_id))
-            .map(|f| (account.clone(), f.pid))
-    })
-}
-
 fn find_in_events(store: &Store, accounts: &[Account], session_id: &str) -> Option<(Account, u32)> {
     let today = chrono::Local::now().date_naive();
     let last = Tail::new(store.file_for(today))
@@ -370,8 +358,7 @@ fn run_report(store: &Store, accounts: &[Account], kind: Kind, text: &str) -> Ex
         eprintln!("brain report: text is empty");
         return ExitCode::FAILURE;
     }
-    let table = ProcessTable::snapshot();
-    let Some((account, pid)) = find_claude_session(&table, std::process::id(), accounts, None) else {
+    let Some((account, pid)) = calling_session(accounts) else {
         eprintln!("brain report: not running inside a Claude Code session");
         return ExitCode::FAILURE;
     };

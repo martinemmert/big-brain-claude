@@ -4,7 +4,7 @@ use crate::agents::BackgroundAgent;
 use crate::event::{BackgroundTask, Event, Kind, Source};
 use crate::qa::OpenQuestion;
 use crate::sessions::SessionFile;
-use crate::transcript::{Insight, Turn};
+use crate::transcript::Insight;
 
 /// What the user sees for a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -115,11 +115,10 @@ pub struct Session {
 
     hook_signal: Option<(Signal, i64)>,
     file_signal: Option<(Signal, i64)>,
-    transcript_signal: Option<(Signal, i64)>,
     /// Whether the last turn hook was a prompt (`true`) or a stop (`false`).
     turn_open: Option<bool>,
-    /// Brain's mod reports this session: the settings hooks, which still run as a fallback,
-    /// would say everything twice.
+    /// Brain's mod reports this session: the settings hooks an earlier install wrote, whose
+    /// events are still in the log, would say everything twice.
     reports_by_mod: bool,
 }
 
@@ -149,7 +148,6 @@ impl Session {
             agent: None,
             hook_signal: None,
             file_signal: None,
-            transcript_signal: None,
             reports_by_mod: false,
             turn_open: None,
         }
@@ -180,8 +178,8 @@ impl Session {
             Signal::Waiting if self.turn_open == Some(false) => (Signal::Idle, self.hook_signal.map_or(ts, |(_, hook)| hook.min(ts))),
             _ => (signal, ts),
         });
-        // The newest of the three wins; on a tie the hook, then the file.
-        [self.hook_signal, file, self.transcript_signal]
+        // The newer of the two wins; on a tie the hook.
+        [self.hook_signal, file]
             .into_iter()
             .flatten()
             .reduce(|best, next| if next.1 > best.1 { next } else { best })
@@ -473,16 +471,6 @@ impl Board {
 
     pub fn apply_insight(&mut self, key: &SessionKey, insight: Insight) {
         let Some(session) = self.sessions.get_mut(key) else { return };
-        session.transcript_signal = insight.turn.map(|(turn, ts)| {
-            let signal = match turn {
-                Turn::Working => Signal::Busy,
-                Turn::Ended => Signal::Idle,
-            };
-            (signal, ts)
-        });
-        if let Some((_, ts)) = session.transcript_signal {
-            session.last_activity_ms = session.last_activity_ms.max(ts);
-        }
         session.insight = insight;
     }
 
@@ -722,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn a_denial_seen_in_the_transcript_clears_a_stale_permission() {
+    fn a_denial_the_status_file_reports_clears_the_permission() {
         let mut board = Board::default();
         board.apply_event(&ev(0, Source::Hook, Kind::Prompt, None));
         board.apply_event(&ev(5, Source::Hook, Kind::Permission, Some("Bash?")));
@@ -730,9 +718,9 @@ mod tests {
         board.apply_session_file("second", &file("waiting", 5), true);
         assert!(board.get(&key()).unwrap().awaiting_permission());
 
-        // Denied with Esc: no hook fires, the status file may lag, the transcript ends the turn.
-        let turn = Some((Turn::Ended, (1_790_000_000 + 9) * 1000));
-        board.apply_insight(&key(), Insight { turn, ..Insight::default() });
+        // Denied with Esc: no hook fires, Claude Code's status file says idle at once (Claude Code
+        // 2.1.302: 61 ms after the key).
+        board.apply_session_file("second", &file("idle", 9), true);
 
         let s = board.get(&key()).unwrap();
         assert_eq!(s.phase(), Phase::YourTurn);

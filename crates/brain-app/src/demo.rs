@@ -223,8 +223,6 @@ pub fn build() -> Demo {
         board.apply_insight(
             &key,
             Insight {
-                // No turn signal: the demo's state comes from its events and status files.
-                turn: None,
                 asks: false,
                 closing: None,
                 tool: None,
