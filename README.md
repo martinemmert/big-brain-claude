@@ -105,7 +105,9 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   `brain report --waiting`; a reply that only ends with “?” is a yellow *Question?* that doesn't
   count and goes away when you open the session or choose *Only a report*. Then finished sessions
   you haven't looked at, each with the last sentence of its reply (*all seen* clears them), then
-  the rest. The phone groups the same way and filters by project or account.
+  the rest. The phone groups the same way and filters by project or account. A session that
+  belongs elsewhere goes into another project (right-click → *Into another project …*, ⌘K, or
+  ⋯ on the phone); Brain remembers it.
   At the end: a footer with *Ended* (the last day; older ones through the search), *Quiet in the
   background* and *Started by programs* (security reviews, SDK scripts, `claude -p`), and the
   folded section *Snoozed and hidden*. A click, or ⌘K, opens one. `⌘⌫` twice moves an ended session's transcript

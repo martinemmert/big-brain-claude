@@ -41,6 +41,10 @@ dieser Reihenfolge, jede mit ihrer Karte:
 
 Auf dem Handy ist die Liste genauso gruppiert, mit einem Filter nach Projekt oder Konto.
 
+Eine Session gehört woanders hin? Rechtsklick → **In ein anderes Projekt …** (oder ⌘K, „Projekt“ tippen):
+ein vorhandenes Projekt, ein neues per Namen, oder zurück in ihr eigenes. Brain merkt sich das, auch
+fürs Handy (⋯ → **In anderes Projekt …**, oder lange drücken in der Liste).
+
 Angeheftete Sessions (★) stehen in ihrem Projekt; beendete angeheftete unter „Zum Fortsetzen gemerkt“.
 Alles, was gerade nicht nach dir ruft, liegt am Listenende: in der Fußzeile und in einem
 zugeklappten Abschnitt, jeweils mit Zahl; ein Klick (oder ⌘K) klappt auf:
