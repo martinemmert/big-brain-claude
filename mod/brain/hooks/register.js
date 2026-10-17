@@ -179,8 +179,13 @@ async function carryOut($, item) {
     return
   }
   if (item.kind !== 'prompt' || typeof item.text !== 'string' || !item.text.trim()) return
-  // Queued: it starts a turn once the session is idle, as the person's own words.
-  const submit = () => void $.prompt.submit({ text: item.text, asUser: true }).catch(() => {})
+  // Queued: it starts a turn once the session is idle, as the person's own words. The mod's own
+  // `prompt.submit` hook doesn't see what it submits itself, so the prompt is reported here.
+  const submit = () =>
+    void $.prompt
+      .submit({ text: item.text, asUser: true })
+      .then(() => hook($, 'UserPromptSubmit', { prompt: item.text }))
+      .catch(() => {})
   // `/compact`, `/rename …`: the session's own command, as if typed. One the engine doesn't run
   // for a plugin goes as typed text, which Claude Code reads as the command.
   const slash = /^\/(\S+)\s*([\s\S]*)$/.exec(item.text.trim())
@@ -228,8 +233,8 @@ export function register(on) {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    // Prompts a mod submits aren't the user's, unless sent as theirs (a reply from Brain).
-    if (e.origin?.kind !== 'plugin' || e.origin?.asUser === true) await hook($, 'UserPromptSubmit', { prompt: e.text })
+    // Prompts a mod submits aren't the user's (Brain's own requests report themselves).
+    if (e.origin?.kind !== 'plugin') await hook($, 'UserPromptSubmit', { prompt: e.text })
     return next(e)
   }).catch(passOn)
 
