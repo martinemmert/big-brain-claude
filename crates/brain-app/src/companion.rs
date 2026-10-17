@@ -120,6 +120,30 @@ pub enum Command {
     Team { key: SessionKey, on: bool },
 }
 
+/// What became of a command, as Brain said it in its status line: `ok` false when Brain
+/// didn't carry it out.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize)]
+pub struct Outcome {
+    pub ok: bool,
+    pub message: Option<String>,
+}
+
+/// Where a command's [`Outcome`] goes: the phone's request, which waits for it a moment.
+#[derive(Debug)]
+pub struct Responder(Option<tokio::sync::oneshot::Sender<Outcome>>);
+
+impl Responder {
+    pub fn send(mut self, outcome: Outcome) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(outcome);
+        }
+    }
+}
+
+/// How long a command's request waits for Brain to carry it out (Brain takes commands every
+/// 0.8 s). Past that, or when Brain answers nothing, it answers "accepted" as before.
+const OUTCOME_WAIT: Duration = if cfg!(test) { Duration::from_millis(50) } else { Duration::from_secs(5) };
+
 /// The answer to one question: the options picked (one, or several where the question takes
 /// several) and what the user wrote instead or besides.
 #[derive(Debug, Clone, PartialEq)]
@@ -129,7 +153,7 @@ pub struct Picked {
 }
 
 /// What this Brain Link offers beyond the first version, for the phone to show only what works.
-const FEATURES: [&str; 13] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands", "team", "move"];
+const FEATURES: [&str; 14] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands", "team", "move", "outcome"];
 /// How long a read with `wait` waits for something new before it answers anyway.
 const WAIT: Duration = Duration::from_secs(25);
 /// How often a waiting read looks again.
@@ -186,7 +210,7 @@ pub struct Pairing {
 /// The running server: Brain publishes its session list to it and takes the phone's commands.
 pub struct Link {
     state: Arc<State>,
-    commands: Mutex<Receiver<Command>>,
+    commands: Mutex<Receiver<(Command, Responder)>>,
     stop: Arc<AtomicBool>,
     /// Where the certificate, its key and the token live.
     dir: PathBuf,
@@ -275,7 +299,7 @@ impl Link {
         Ok(())
     }
 
-    pub fn take_commands(&self) -> Vec<Command> {
+    pub fn take_commands(&self) -> Vec<(Command, Responder)> {
         self.commands.lock().map(|r| r.try_iter().collect()).unwrap_or_default()
     }
 }
@@ -484,7 +508,7 @@ struct State {
     places: RwLock<Places>,
     /// Each session's folder by its id, for the team's state file.
     folders: RwLock<std::collections::HashMap<String, PathBuf>>,
-    commands: Mutex<Sender<Command>>,
+    commands: Mutex<Sender<(Command, Responder)>>,
 }
 
 fn serve(listener: std::net::TcpListener, config: Arc<rustls::ServerConfig>, state: Arc<State>, stop: Arc<AtomicBool>) {
@@ -572,12 +596,7 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
             let style = field("output_style").filter(|s| !s.trim().is_empty());
             // As an agent team (`claude-team`), led by the configured agent.
             let team = body.get("team").and_then(|t| t.as_bool()).unwrap_or(false);
-            let sent = state.commands.lock().map(|s| s.send(Command::Start { account, folder, prompt, style, team }).is_ok()).unwrap_or(false);
-            if sent {
-                reply(StatusCode::ACCEPTED, &serde_json::json!({ "ok": true }))
-            } else {
-                reply(StatusCode::SERVICE_UNAVAILABLE, &serde_json::json!({ "error": "Brain is not listening" }))
-            }
+            send_command(&state, Command::Start { account, folder, prompt, style, team }).await
         }
         // `wait=<version>`: answers once the transcript changed (its size is the version).
         (Method::GET, ["v1", "sessions", account, id, "messages"]) => {
@@ -656,7 +675,7 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 },
                 _ => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "action" }))),
             };
-            send_command(&state, command)
+            send_command(&state, command).await
         }
         // The session's agents and their messages, as its mod reported them.
         (Method::GET, ["v1", "sessions", account, id, "team"]) => {
@@ -748,7 +767,7 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 },
             };
             match command {
-                Some(command) => send_command(&state, command),
+                Some(command) => send_command(&state, command).await,
                 None => reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "bad body" })),
             }
         }
@@ -756,12 +775,17 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
     })
 }
 
-/// Hands a command to Brain's UI thread.
-fn send_command(state: &State, command: Command) -> Response<Full<Bytes>> {
-    if state.commands.lock().map(|s| s.send(command).is_ok()).unwrap_or(false) {
-        reply(StatusCode::ACCEPTED, &serde_json::json!({ "ok": true }))
-    } else {
-        reply(StatusCode::SERVICE_UNAVAILABLE, &serde_json::json!({ "error": "Brain is not listening" }))
+/// Hands a command to Brain's UI thread and waits a moment for what became of it: `200` with
+/// `{ ok, message }` once Brain carried it out or refused it, else `202` with `pending` (it
+/// still goes on, e.g. once a terminal attached).
+async fn send_command(state: &State, command: Command) -> Response<Full<Bytes>> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    if !state.commands.lock().map(|s| s.send((command, Responder(Some(sender)))).is_ok()).unwrap_or(false) {
+        return reply(StatusCode::SERVICE_UNAVAILABLE, &serde_json::json!({ "error": "Brain is not listening" }));
+    }
+    match tokio::time::timeout(OUTCOME_WAIT, receiver).await {
+        Ok(Ok(outcome)) => reply(StatusCode::OK, &serde_json::json!(outcome)),
+        _ => reply(StatusCode::ACCEPTED, &serde_json::json!({ "ok": true, "pending": true })),
     }
 }
 
@@ -1256,7 +1280,7 @@ mod tests {
         assert!(listed.contains("\"commands\":[]") && listed.contains("Explanatory") && listed.ends_with("200"), "{listed}");
         let key = SessionKey { account: "main".into(), id: "0331-ab".into() };
         assert_eq!(
-            link.take_commands(),
+            link.take_commands().into_iter().map(|(command, _)| command).collect::<Vec<_>>(),
             vec![
                 Command::Reply { key: key.clone(), text: "weiter".into() },
                 Command::Permission { key: key.clone(), allow: true, since_ms: 7 },
@@ -1283,6 +1307,21 @@ mod tests {
                 Command::Move { key, account: "second".into() },
             ]
         );
+
+        // What Brain made of a command goes back to the phone, in its own words.
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..500 {
+                    if let Some((_, responder)) = link.take_commands().into_iter().next() {
+                        responder.send(Outcome { ok: false, message: Some("„fin“ wartet auf eine Freigabe".into()) });
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            });
+            let refused = curl(&["-H", &bearer, "-d", "{\"text\":\"weiter\"}", "BASE/v1/sessions/main/0331-ab/reply"]);
+            assert!(refused.contains("\"ok\":false") && refused.contains("wartet auf eine Freigabe") && refused.ends_with("200"), "{refused}");
+        });
 
         // A read with `wait` answers once the list changed, with its new version.
         let version = |out: &str| out.lines().find_map(|l| l.strip_prefix("brain-version: ")).map(|v| v.trim().to_string());
@@ -1573,7 +1612,7 @@ mod tests {
         std::fs::write(dir.join("pairing.bmp"), qr_bmp(&url)).unwrap();
         println!("{url}");
         for _ in 0..1800 {
-            for command in link.take_commands() {
+            for (command, _) in link.take_commands() {
                 println!("COMMAND {command:?}");
                 // A reply to "Finanzen" shows up in its conversation, and Claude answers: what a
                 // phone waiting for news sees within a moment.

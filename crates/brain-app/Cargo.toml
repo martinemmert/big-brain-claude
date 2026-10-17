@@ -29,7 +29,7 @@ http-body-util = "0.1.5"
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 rcgen = "0.14.10"
 qrcode = { version = "0.14.1", default-features = false }
-tokio = { version = "1", features = ["rt", "net", "time"] }
+tokio = { version = "1", features = ["rt", "net", "time", "sync"] }
 libc = "0.2"
 ring = "0.17"
 base64 = "0.22"

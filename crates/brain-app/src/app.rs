@@ -794,6 +794,8 @@ pub struct Brain {
     /// The sessions that asked for a decision at the last refresh (none before the first one).
     asking: Option<HashSet<SessionKey>>,
     pub(crate) questions: HashMap<SessionKey, (link::QuestionReadAt, Option<brain_core::qa::OpenQuestion>)>,
+    /// While a command from the phone runs: what Brain says about it, for the phone's answer.
+    pub(crate) link_heard: Option<link::Heard>,
     /// Session ids whose mod takes Brain's requests (replies, commands, interrupts) itself.
     request_takers: HashSet<String>,
     /// Brain Link, the companion app's server, while it runs.
@@ -922,6 +924,7 @@ impl Brain {
             focus_on_select: false,
             account_setup: account::AccountSetup::default(),
             questions: HashMap::new(),
+            link_heard: None,
             request_takers: HashSet::new(),
             reminders: HashMap::new(),
             held: None,
@@ -2355,7 +2358,7 @@ impl Brain {
         match brain_core::requests::send(&brain_core::requests::dir(&brain_core::account::home_dir()), session_id, request) {
             Ok(()) => true,
             Err(err) => {
-                self.set_status(tr!("Nicht an die Session übergeben: {err}", "Not handed to the session: {err}"));
+                self.refuse(tr!("Nicht an die Session übergeben: {err}", "Not handed to the session: {err}"));
                 false
             }
         }
@@ -2380,7 +2383,7 @@ impl Brain {
             return false;
         }
         let Some(id) = self.request_taker(key) else {
-            self.set_status(self.why_brain_cant_send());
+            self.refuse(self.why_brain_cant_send());
             return false;
         };
         self.send_request(&id, brain_core::requests::Request::Prompt { text: text.to_string() })
@@ -3407,7 +3410,19 @@ impl Brain {
         if !self.model.is_demo() {
             brain_core::log::write(&brain_core::account::home_dir(), "status", &message);
         }
+        if let Some(heard) = self.link_heard.as_mut() {
+            heard.said = Some(message.clone());
+        }
         self.status = Some((message, Instant::now()));
+    }
+
+    /// Says why a command from the phone (or anything) wasn't carried out: in the status line,
+    /// and to the phone as a refusal.
+    pub(super) fn refuse(&mut self, message: impl Into<String>) {
+        self.set_status(message);
+        if let Some(heard) = self.link_heard.as_mut() {
+            heard.refused = true;
+        }
     }
 
     /// Demo pids are made up and may belong to unrelated processes: nothing is ever sent.
@@ -3425,12 +3440,12 @@ impl Brain {
                     self.set_status(message);
                 }
             }
-            Outcome::NoTerminal => self.set_status(t(
+            Outcome::NoTerminal => self.refuse(t(
                 "Kein Terminal zu dieser Session gefunden (beendet oder ohne Terminal gestartet).",
                 "No terminal found for this session (it ended or runs without one).",
             )),
-            Outcome::Unsupported(reason) => self.set_status(reason),
-            Outcome::Failed(reason) => self.set_status(tr!("Fehlgeschlagen: {reason}", "Failed: {reason}")),
+            Outcome::Unsupported(reason) => self.refuse(reason),
+            Outcome::Failed(reason) => self.refuse(tr!("Fehlgeschlagen: {reason}", "Failed: {reason}")),
         }
     }
 

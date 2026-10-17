@@ -10,7 +10,7 @@ use iced::widget::image;
 use iced::Task;
 
 use super::{movable, off_thread, Brain, Message, Mode};
-use crate::companion::{self, Command, LimitView, Link, Pairing, Picked, Places, UsageView, View};
+use crate::companion::{self, Command, LimitView, Link, Outcome, Pairing, Picked, Places, UsageView, View};
 use brain_core::qa::OpenQuestion;
 use crate::format::plain;
 use crate::i18n::t;
@@ -26,6 +26,14 @@ const KEY_GAP: Duration = Duration::from_millis(120);
 /// Pixels per QR module, and the quiet zone around the code (in modules).
 const QR_SCALE: usize = 8;
 const QR_QUIET: usize = 4;
+
+/// What Brain said while it carried out a command from the phone: its last status line, and
+/// whether it refused.
+#[derive(Debug, Default)]
+pub(crate) struct Heard {
+    pub said: Option<String>,
+    pub refused: bool,
+}
 
 /// When a session's open question was read: its transcript's length and the call of the
 /// question its mod reported.
@@ -108,7 +116,14 @@ impl Brain {
         link.publish_more(self.link_usage(now), self.link_places());
         link.publish_folders(self.model.board.keys().filter_map(|k| Some((k.id.clone(), std::path::PathBuf::from(self.model.board.get(k)?.cwd.clone()?)))).collect());
         let commands = link.take_commands();
-        let tasks: Vec<Task<Message>> = commands.into_iter().map(|command| self.run_link_command(command, true)).collect();
+        let mut tasks = Vec::new();
+        // Each command's outcome goes back to the phone, in Brain's own words.
+        for (command, responder) in commands {
+            self.link_heard = Some(Heard::default());
+            tasks.push(self.run_link_command(command, true));
+            let heard = self.link_heard.take().unwrap_or_default();
+            responder.send(Outcome { ok: !heard.refused, message: heard.said });
+        }
         Task::batch(tasks)
     }
 
@@ -226,6 +241,7 @@ impl Brain {
     /// in Brain gets one first (`claude attach`), and the command is tried again once it is up.
     pub(super) fn run_link_command(&mut self, command: Command, first_try: bool) -> Task<Message> {
         if self.blocked_in_demo() {
+            self.refuse(t("Im Demo-Modus schickt Brain nichts.", "In demo mode Brain sends nothing."));
             return Task::none();
         }
         let key = match &command {
@@ -240,7 +256,10 @@ impl Brain {
             Command::Start { account, folder, prompt, style, team } => return self.link_start(account, folder, prompt.clone(), style.clone(), *team),
             Command::Move { key, account } => return self.link_move(key.clone(), account),
         };
-        let Some(session) = self.model.board.get(&key) else { return Task::none() };
+        let Some(session) = self.model.board.get(&key) else {
+            self.refuse(t("Diese Session gibt es nicht mehr.", "This session is gone."));
+            return Task::none();
+        };
         let name = session.display_name();
         let phase = session.phase();
         let permission_open = session.awaiting_permission();
@@ -251,7 +270,7 @@ impl Brain {
         match command {
             Command::Reply { text, .. } => {
                 if permission_open {
-                    self.set_status(tr!(
+                    self.refuse(tr!(
                         "Vom Handy: „{name}“ wartet auf eine Freigabe – Antwort nicht gesendet.",
                         "From the phone: “{name}” waits for a permission – reply not sent."
                     ));
@@ -269,7 +288,7 @@ impl Brain {
                 // Only the question the phone showed, if it is still open right now.
                 let open = self.open_question(&key).filter(|q| q.call == call);
                 let Some(question) = open else {
-                    self.set_status(tr!(
+                    self.refuse(tr!(
                         "„{name}“ fragt inzwischen etwas anderes – Antwort nicht gesendet.",
                         "“{name}” asks something else by now – answer not sent."
                     ));
@@ -281,7 +300,7 @@ impl Brain {
                 let keys = single.and_then(|picks| brain_core::qa::answer_keys(&question, &picks));
                 let typed = if keys.is_none() { answer_text(&question, &answers) } else { None };
                 if keys.is_none() && typed.is_none() {
-                    self.set_status(tr!("Die Antwort passt nicht zu „{name}“s Frage.", "The answer doesn't fit “{name}”'s question."));
+                    self.refuse(tr!("Die Antwort passt nicht zu „{name}“s Frage.", "The answer doesn't fit “{name}”'s question."));
                     return Task::none();
                 }
                 let answered = tr!("Antwort an „{name}“ gegeben.", "Answered “{name}”.");
@@ -294,6 +313,7 @@ impl Brain {
                     };
                 }
                 if in_background && first_try && self.spawn_terminal(&key) {
+                    self.set_status(tr!("Öffne „{name}“s Terminal für die Antwort …", "Opening “{name}”'s terminal for the answer …"));
                     return later(Command::Answer { key, call, answers });
                 }
                 // In another terminal app Esc and typed text work, the dialog's option keys don't.
@@ -303,7 +323,7 @@ impl Brain {
                     self.report(outcome, None);
                     return if sent { type_later(key, text) } else { Task::none() };
                 }
-                self.set_status(tr!(
+                self.refuse(tr!(
                     "„{name}“ läuft nicht in Brain – bitte dort antworten.",
                     "“{name}” doesn't run in Brain – answer it there."
                 ));
@@ -312,7 +332,7 @@ impl Brain {
             Command::Interrupt { .. } => {
                 // Esc on a dialog would deny it: only a session that works is interrupted.
                 if phase != Phase::Working {
-                    self.set_status(tr!("Vom Handy: „{name}“ arbeitet gerade nicht – nichts unterbrochen.", "From the phone: “{name}” isn't working – nothing interrupted."));
+                    self.refuse(tr!("Vom Handy: „{name}“ arbeitet gerade nicht – nichts unterbrochen.", "From the phone: “{name}” isn't working – nothing interrupted."));
                     return Task::none();
                 }
                 let done = tr!("„{name}“ vom Handy unterbrochen.", "Interrupted “{name}” from the phone.");
@@ -331,6 +351,7 @@ impl Brain {
                     if first_try && self.spawn_terminal(&key) {
                         return later(Command::Interrupt { key });
                     }
+                    self.refuse(tr!("„{name}“ ist gerade nicht erreichbar – nichts unterbrochen.", "“{name}” can't be reached right now – nothing interrupted."));
                     return Task::none();
                 }
                 let outcome = terminal::send_key(pid, Key::Escape);
@@ -339,6 +360,7 @@ impl Brain {
             }
             Command::Resume { .. } => {
                 if phase != Phase::Ended {
+                    self.refuse(tr!("„{name}“ läuft schon.", "“{name}” is running already."));
                     return Task::none();
                 }
                 self.resume_in_background(&key, Vec::new())
@@ -346,24 +368,28 @@ impl Brain {
             Command::Team { on, .. } => match self.switch_team(key, on) {
                 Ok(task) => task,
                 Err(err) => {
-                    self.set_status(tr!("Vom Handy: Team umschalten geht nicht – {err}", "From the phone: can't switch the team – {err}"));
+                    self.refuse(tr!("Vom Handy: Team umschalten geht nicht – {err}", "From the phone: can't switch the team – {err}"));
                     Task::none()
                 }
             },
             Command::End { .. } => {
                 // A background session stops as with X in Brain: its conversation stays.
                 if let Some(agent) = self.model.board.get(&key).and_then(|s| s.agent.clone()).filter(|a| a.is_active()) {
-                    let Some(account) = self.model.account(&key.account).cloned() else { return Task::none() };
+                    let Some(account) = self.model.account(&key.account).cloned() else {
+                        self.refuse(t("Das Konto dieser Session gibt es nicht mehr.", "This session's account is gone."));
+                        return Task::none();
+                    };
                     match brain_core::agents::stop(&account, &agent.id) {
                         Ok(()) => {
                             self.model.relist_transcripts();
                             self.set_status(tr!("„{name}“ vom Handy gestoppt.", "Stopped “{name}” from the phone."));
                         }
-                        Err(err) => self.set_status(tr!("Vom Handy: Stoppen fehlgeschlagen – {err}", "From the phone: stopping failed – {err}")),
+                        Err(err) => self.refuse(tr!("Vom Handy: Stoppen fehlgeschlagen – {err}", "From the phone: stopping failed – {err}")),
                     }
                     return Task::none();
                 }
                 if phase == Phase::Ended {
+                    self.refuse(tr!("„{name}“ ist schon beendet.", "“{name}” has ended already."));
                     return Task::none();
                 }
                 // Any other session ends itself, once it waits for a prompt.
@@ -372,7 +398,7 @@ impl Brain {
             Command::Restart { flags, .. } => match self.restart_session(key, flags, true) {
                 Ok(task) => task,
                 Err(err) => {
-                    self.set_status(tr!("Vom Handy: Neustart geht nicht – {err}", "From the phone: can't restart – {err}"));
+                    self.refuse(tr!("Vom Handy: Neustart geht nicht – {err}", "From the phone: can't restart – {err}"));
                     Task::none()
                 }
             },
@@ -382,10 +408,12 @@ impl Brain {
                 // Only the dialog the phone showed: one that opened since was never seen there.
                 if asking || permission_since != Some(since_ms) {
                     if permission_open {
-                        self.set_status(tr!(
+                        self.refuse(tr!(
                             "„{name}“ fragt inzwischen etwas anderes – Freigabe nicht gesendet.",
                             "“{name}” asks something else by now – permission not sent."
                         ));
+                    } else {
+                        self.refuse(tr!("„{name}“ wartet auf keine Freigabe mehr.", "“{name}” no longer waits for a permission."));
                     }
                     return Task::none();
                 }
@@ -402,8 +430,10 @@ impl Brain {
                     return Task::none();
                 }
                 if first_try && self.spawn_terminal(&key) {
+                    self.set_status(tr!("Öffne „{name}“s Terminal für die Freigabe …", "Opening “{name}”'s terminal for the permission …"));
                     return later(Command::Permission { key, allow, since_ms });
                 }
+                self.refuse(tr!("„{name}“ ist gerade nicht erreichbar – Freigabe nicht gesendet.", "“{name}” can't be reached right now – permission not sent."));
                 Task::none()
             }
         }
@@ -415,7 +445,10 @@ impl Brain {
     /// the selection on the Mac.
     fn link_start(&mut self, account: &str, folder: &str, prompt: Option<String>, style: Option<String>, team: bool) -> Task<Message> {
         let team = team.then(crate::config::team_start);
-        let Some(account) = self.model.account(account).cloned() else { return Task::none() };
+        let Some(account) = self.model.account(account).cloned() else {
+            self.refuse(t("Dieses Konto kennt Brain nicht.", "Brain doesn't know this account."));
+            return Task::none();
+        };
         // Only a style the account knows: anything else would quietly fall back to Default.
         let style = style.filter(|s| brain_core::styles::available(&account.config_dir, Some(std::path::Path::new(folder))).iter().any(|known| known.name == *s));
         let folder_name = folder.rsplit('/').find(|p| !p.is_empty()).unwrap_or(folder).to_string();
@@ -434,7 +467,10 @@ impl Brain {
     /// A move from the phone: as `A` in Brain, the phone's choice of account being the
     /// confirmation.
     fn link_move(&mut self, key: SessionKey, account: &str) -> Task<Message> {
-        let Some(index) = self.model.accounts.iter().position(|a| a.id == account) else { return Task::none() };
+        let Some(index) = self.model.accounts.iter().position(|a| a.id == account) else {
+            self.refuse(t("Dieses Konto kennt Brain nicht.", "Brain doesn't know this account."));
+            return Task::none();
+        };
         self.move_session(key, index, Vec::new())
     }
 }
