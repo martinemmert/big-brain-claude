@@ -180,12 +180,12 @@ async function carryOut($, item) {
   }
   if (item.kind !== 'prompt' || typeof item.text !== 'string' || !item.text.trim()) return
   // Queued: it starts a turn once the session is idle, as the person's own words. The mod's own
-  // `prompt.submit` hook doesn't see what it submits itself, so the prompt is reported here.
-  const submit = () =>
-    void $.prompt
-      .submit({ text: item.text, asUser: true })
-      .then(() => hook($, 'UserPromptSubmit', { prompt: item.text }))
-      .catch(() => {})
+  // `prompt.submit` hook doesn't see what it submits itself, so the prompt is reported here, at
+  // once: a reload of the mod while the prompt waits for its turn would lose a later report.
+  const submit = () => {
+    void hook($, 'UserPromptSubmit', { prompt: item.text })
+    void $.prompt.submit({ text: item.text, asUser: true }).catch(() => {})
+  }
   // `/compact`, `/rename …`: the session's own command, as if typed. One the engine doesn't run
   // for a plugin goes as typed text, which Claude Code reads as the command.
   const slash = /^\/(\S+)\s*([\s\S]*)$/.exec(item.text.trim())

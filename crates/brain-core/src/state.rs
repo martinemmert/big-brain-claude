@@ -170,19 +170,18 @@ impl Session {
     }
 
     fn current_signal(&self) -> Option<(Signal, i64)> {
-        // After a stop hook (and no new prompt) the file's `waiting` can only be
-        // Claude Code's idle reminder, not a permission prompt.
-        // The reminder keeps the time the turn ended: a later one must not make a report that
-        // was read look new again.
-        let file = self.file_signal.map(|(signal, ts)| match signal {
+        // Claude Code's status file says what the session does. Brain's events reach it later
+        // than they happened (mod, inbox, `brain hook`), so they never overrule it: a stop
+        // stamped after the next turn began would read as idle. They stand in only where a
+        // session has no status file (`claude -p`).
+        let Some((signal, ts)) = self.file_signal else { return self.hook_signal };
+        // After a stop hook (and no new prompt) the file's `waiting` can only be Claude Code's
+        // idle reminder, not a permission prompt. The reminder keeps the time the turn ended: a
+        // later one must not make a report that was read look new again.
+        Some(match signal {
             Signal::Waiting if self.turn_open == Some(false) => (Signal::Idle, self.hook_signal.map_or(ts, |(_, hook)| hook.min(ts))),
             _ => (signal, ts),
-        });
-        // The newer of the two wins; on a tie the hook.
-        [self.hook_signal, file]
-            .into_iter()
-            .flatten()
-            .reduce(|best, next| if next.1 > best.1 { next } else { best })
+        })
     }
 
     /// True while a permission dialog is open: the newest signal says waiting and Claude Code's
@@ -647,17 +646,29 @@ mod tests {
     }
 
     #[test]
-    fn the_newer_of_hook_and_session_file_decides_the_phase() {
+    fn claude_codes_status_file_decides_the_phase_and_events_tell_what_it_is_about() {
         let mut board = Board::default();
-        board.apply_event(&ev(0, Source::Hook, Kind::Stop, None));
+        // A stop the mod reported late, after the next turn began: the file's busy stands.
         board.apply_session_file("second", &file("busy", 3), true);
+        board.apply_event(&ev(4, Source::Mod, Kind::Stop, Some("Fertig.")));
         assert_eq!(board.get(&key()).unwrap().phase(), Phase::Working);
 
-        board.apply_event(&ev(7, Source::Hook, Kind::Permission, Some("Claude needs your permission to use Bash")));
+        // A permission request alone (auto mode may still decide it) isn't a dialog yet.
+        board.apply_event(&ev(7, Source::Mod, Kind::Prompt, None));
+        board.apply_event(&ev(8, Source::Mod, Kind::Permission, Some("Claude needs your permission to use Bash")));
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::Working);
+        board.apply_session_file("second", &file("waiting", 8), true);
         let s = board.get(&key()).unwrap();
         assert_eq!(s.phase(), Phase::NeedsYou);
         assert_eq!(s.headline().as_deref(), Some("Claude needs your permission to use Bash"));
-        assert_eq!(s.phase_since_ms(), (1_790_000_000 + 7) * 1000);
+        assert_eq!(s.phase_since_ms(), (1_790_000_000 + 8) * 1000);
+
+        // Without a status file (`claude -p`) the events stand in.
+        let mut board = Board::default();
+        board.apply_event(&ev(0, Source::Mod, Kind::Prompt, None));
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::Working);
+        board.apply_event(&ev(5, Source::Mod, Kind::Stop, Some("Fertig.")));
+        assert_eq!(board.get(&key()).unwrap().phase(), Phase::YourTurn);
     }
 
     #[test]
