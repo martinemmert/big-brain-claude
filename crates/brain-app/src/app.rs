@@ -1631,12 +1631,15 @@ impl Brain {
                 continue;
             }
             let account = item.key.account.clone();
-            let subtitle = match item.phase {
-                Phase::NeedsYou => tr!("{account} · braucht dich", "{account} · needs you"),
-                _ => tr!("{account} · fertig, du bist dran", "{account} · done, your turn"),
+            // Whatever asks for a decision calls, also a `--waiting` question of an idle session.
+            let calling = self.real_ask(&item.key).is_some();
+            let subtitle = if calling {
+                tr!("{account} · braucht dich", "{account} · needs you")
+            } else {
+                tr!("{account} · fertig, du bist dran", "{account} · done, your turn")
             };
             let body = plain(item.headline.as_deref().unwrap_or(""));
-            self.notifier.post(&item.key, &item.name, &subtitle, &body, item.phase == Phase::NeedsYou);
+            self.notifier.post(&item.key, &item.name, &subtitle, &body, calling);
         }
 
         let mut tasks = Vec::new();
@@ -1840,15 +1843,18 @@ impl Brain {
     fn remind(&mut self, now: i64) {
         const MAX_REMINDERS: u32 = 3;
         let Some(interval) = config::remind_after_ms() else { return };
-        let waiting: Vec<(SessionKey, i64, Phase, String, Option<String>)> = self
-            .groups(now)
-            .decide
-            .iter()
-            .filter(|(_, ask)| *ask != Ask::Maybe)
-            .map(|(s, _)| (s.key.clone(), s.phase_since_ms(), s.phase(), s.display_name(), s.headline()))
+        // Straight from the board: neither the search nor the account filter hides a session
+        // that waits for a decision.
+        let waiting: Vec<(SessionKey, i64, String, Option<String>)> = self
+            .model
+            .board
+            .keys()
+            .filter(|key| self.real_ask(key).is_some())
+            .filter_map(|key| self.model.board.get(key))
+            .map(|s| (s.key.clone(), s.phase_since_ms(), s.display_name(), s.headline()))
             .collect();
         self.reminders.retain(|key, _| waiting.iter().any(|(k, ..)| k == key));
-        for (key, since, phase, name, headline) in waiting {
+        for (key, since, name, headline) in waiting {
             if self.prefs.is_muted(&key) || self.prefs.snoozed_until(&key, now).is_some() || self.is_quiet(&key) {
                 continue;
             }
@@ -1865,7 +1871,7 @@ impl Brain {
             let account = key.account.clone();
             let subtitle = tr!("{account} · wartet seit {waited}", "{account} · waiting for {waited}");
             let body = plain(headline.as_deref().unwrap_or(""));
-            self.notifier.post(&key, &name, &subtitle, &body, phase == Phase::NeedsYou);
+            self.notifier.post(&key, &name, &subtitle, &body, true);
         }
     }
 
@@ -2929,6 +2935,12 @@ impl Brain {
             top += item.height() + LIST_GAP;
         }
         Task::none()
+    }
+
+    /// What the session asks of the user, a guess at a question left out.
+    fn real_ask(&self, key: &SessionKey) -> Option<Ask> {
+        let open_question = self.questions.get(key).is_some_and(|(_, q)| q.is_some());
+        self.model.board.get(key)?.ask(open_question).filter(|ask| *ask != Ask::Maybe)
     }
 
     /// A background session without activity for a day, or one a program started: listed in
