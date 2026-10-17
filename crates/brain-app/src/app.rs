@@ -456,6 +456,33 @@ pub struct ChangesCache {
     pub changes: Option<brain_core::changes::Changes>,
 }
 
+/// Where a running session stands in the list.
+#[derive(Debug, PartialEq)]
+enum Place {
+    Decide(Ask),
+    Read,
+    Quiet,
+}
+
+/// A session Martin has open counts as seen, also after a new turn end: it never moves to
+/// "Zum Lesen" and a mere "Frage?" doesn't keep it in "Zu entscheiden". Real questions stay.
+fn place(session: &Session, selected: bool, open_question: bool, prefs: &Prefs, now: i64) -> Place {
+    let since = session.phase_since_ms();
+    let seen = selected || prefs.is_seen(&session.key, since);
+    let snoozed = prefs.snoozed_until(&session.key, now).is_some();
+    let ask = session
+        .ask(open_question)
+        .filter(|_| !snoozed)
+        .filter(|ask| *ask != Ask::Maybe || !(seen || prefs.is_report(&session.key, since)));
+    if let Some(ask) = ask {
+        Place::Decide(ask)
+    } else if session.phase() == Phase::YourTurn && !snoozed && !seen {
+        Place::Read
+    } else {
+        Place::Quiet
+    }
+}
+
 /// The left column, already filtered and sorted.
 pub struct Groups<'a> {
     /// Ended sessions the user marked with `P` to resume later.
@@ -2728,23 +2755,16 @@ impl Brain {
                 }
                 continue;
             }
-            let since = session.phase_since_ms();
             if matches!(session.phase(), Phase::NeedsYou | Phase::YourTurn) && !self.prefs.is_pinned(&session.key) && self.prefs.snoozed_until(&session.key, now).is_some() {
                 groups.paused.push(session);
                 continue;
             }
-            // The selected session stays where it is while it's selected, so nothing jumps away
-            // under the cursor when it counts as seen.
             let selected = self.selected.as_ref() == Some(&session.key);
-            let seen = !selected && self.prefs.is_seen(&session.key, since);
             let open_question = self.questions.get(&session.key).is_some_and(|(_, q)| q.is_some());
-            let ask = session.ask(open_question).filter(|ask| *ask != Ask::Maybe || !(seen || self.prefs.is_report(&session.key, since)));
-            if let Some(ask) = ask {
-                groups.decide.push((session, ask));
-            } else if session.phase() == Phase::YourTurn && !seen {
-                groups.read.push(session);
-            } else {
-                quiet.push(session);
+            match place(session, selected, open_question, &self.prefs, now) {
+                Place::Decide(ask) => groups.decide.push((session, ask)),
+                Place::Read => groups.read.push(session),
+                Place::Quiet => quiet.push(session),
             }
         }
         groups.decide.sort_by_key(|(s, ask)| (*ask, s.phase_since_ms()));
@@ -4524,6 +4544,60 @@ fn read_file(path: std::path::PathBuf) -> Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brain_core::event::{Event, Kind, Source};
+    use chrono::TimeZone;
+
+    fn finished_session() -> Session {
+        let ev = |secs: i64, kind: Kind, text: &str| Event {
+            v: 1,
+            ts: chrono::Utc.timestamp_opt(1_790_000_000 + secs, 0).unwrap(),
+            account: "second".into(),
+            pid: 40461,
+            session_id: Some("s1".into()),
+            cwd: Some("/w/checkout-app".into()),
+            source: Source::Hook,
+            kind,
+            text: Some(text.into()),
+            tasks: None,
+            name: None,
+            ask: None,
+        };
+        let mut board = brain_core::state::Board::default();
+        board.apply_event(&ev(0, Kind::Prompt, "Baue es"));
+        board.apply_event(&ev(5, Kind::Stop, "Fertig."));
+        let key = SessionKey { account: "second".into(), id: "s1".into() };
+        board.get(&key).unwrap().clone()
+    }
+
+    #[test]
+    fn a_selected_session_is_never_in_the_reading_zone() {
+        let session = finished_session();
+        let mut prefs = Prefs::default();
+        let now = 1_790_001_000_000;
+        assert_eq!(place(&session, false, false, &prefs, now), Place::Read);
+        assert_eq!(place(&session, true, false, &prefs, now), Place::Quiet);
+        prefs.see(&session.key, now, session.phase_since_ms());
+        assert_eq!(place(&session, false, false, &prefs, now), Place::Quiet);
+        assert_eq!(place(&session, true, false, &prefs, now), Place::Quiet);
+    }
+
+    #[test]
+    fn a_selected_session_with_a_maybe_question_leaves_the_decide_zone() {
+        let mut session = finished_session();
+        session.insight.asks = true;
+        let prefs = Prefs::default();
+        let now = 1_790_001_000_000;
+        assert_eq!(place(&session, false, false, &prefs, now), Place::Decide(Ask::Maybe));
+        assert_eq!(place(&session, true, false, &prefs, now), Place::Quiet);
+    }
+
+    #[test]
+    fn a_selected_session_with_a_real_question_stays_in_the_decide_zone() {
+        let session = finished_session();
+        let prefs = Prefs::default();
+        let now = 1_790_001_000_000;
+        assert_eq!(place(&session, true, true, &prefs, now), Place::Decide(Ask::Options));
+    }
 
     #[test]
     fn dropped_paths_are_escaped_like_iterm_does() {
