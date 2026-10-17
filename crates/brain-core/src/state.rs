@@ -227,13 +227,16 @@ impl Session {
             // `claude agents` updates "working" late; the process's own status file says at once
             // when the turn ended, so an idle process falls through to the usual rules.
             let process_idle = matches!(self.current_signal(), Some((Signal::Idle | Signal::Waiting, _)));
+            // Claude Code still lists it, and its process is gone: asleep, it wakes when written
+            // to. One that failed has ended. The process decides, not the list, which is read
+            // every few seconds and lags behind a stop or a wake.
+            if !self.alive {
+                return if agent.state == "failed" { Phase::Ended } else { Phase::Asleep };
+            }
             match agent.state.as_str() {
                 "idle" => return Phase::YourTurn,
                 "starting" | "running" | "working" if !process_idle => return Phase::Working,
-                // Claude Code still lists it, and its process is gone (the list may lag behind
-                // a new one): asleep, it wakes when written to. One that failed has ended.
                 "failed" if agent.pid.is_none() => return Phase::Ended,
-                _ if agent.pid.is_none() && !self.alive => return Phase::Asleep,
                 // With its process still there it waits for the next prompt: the usual rules
                 // (status file, hooks) tell which phase.
                 _ => {}

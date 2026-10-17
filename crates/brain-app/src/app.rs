@@ -2364,6 +2364,11 @@ impl Brain {
     }
 
     /// An asleep background session Claude Code wakes again (`claude respawn`).
+    /// Brain woke the session for a message that waits for it to be up.
+    pub(super) fn is_waking(&self, key: &SessionKey) -> bool {
+        self.waking.contains_key(key)
+    }
+
     fn wakeable(&self, key: &SessionKey) -> bool {
         self.model.board.get(key).is_some_and(|s| s.phase() == Phase::Asleep && s.agent.is_some() && s.session_id.is_some())
     }

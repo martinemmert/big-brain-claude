@@ -278,7 +278,8 @@ impl Brain {
                     return Task::none();
                 }
                 // Through the session's mod: no terminal needs to be attached first.
-                if self.send_text(&key, &text) {
+                // An asleep session is woken first: its own words say so.
+                if self.send_text(&key, &text) && !self.is_waking(&key) {
                     self.set_status(tr!("Antwort vom Handy an „{name}“ gesendet.", "Reply from the phone sent to “{name}”."));
                 }
                 Task::none()
