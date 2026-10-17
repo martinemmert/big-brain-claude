@@ -423,9 +423,12 @@ fn take_inbox_file(file: &std::path::Path) -> Option<String> {
 /// Creates the inbox, readable only by the user.
 fn create_inbox() -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    let dir = inbox_dir();
-    std::fs::create_dir_all(&dir)?;
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+    // The inbox for what the mod hands Brain, and requests for what Brain asks of a session.
+    for dir in [inbox_dir(), brain_core::requests::dir(&home_dir())] {
+        std::fs::create_dir_all(&dir)?;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 /// Brain's Claude Code mod, built into the CLI so every install has the matching version.

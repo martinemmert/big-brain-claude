@@ -780,6 +780,8 @@ pub struct Brain {
     /// Reminders sent per waiting session: (when its wait began, how many).
     reminders: HashMap<SessionKey, (i64, u32)>,
     pub(crate) questions: HashMap<SessionKey, (link::QuestionReadAt, Option<brain_core::qa::OpenQuestion>)>,
+    /// Session ids whose mod takes Brain's requests (replies, commands, interrupts) itself.
+    request_takers: HashSet<String>,
     /// Brain Link, the companion app's server, while it runs.
     link: Option<crate::companion::Link>,
     /// The pairing code as an image.
@@ -796,6 +798,7 @@ impl Brain {
         }
         let demo = model.is_demo();
         if !demo {
+            brain_core::requests::prune(&brain_core::requests::dir(&brain_core::account::home_dir()));
             let now = now_ms();
             let finished: Vec<(SessionKey, i64)> =
                 model.board.sorted().into_iter().filter(|s| s.phase() == Phase::YourTurn).map(|s| (s.key.clone(), s.phase_since_ms())).collect();
@@ -905,6 +908,7 @@ impl Brain {
             focus_on_select: false,
             account_setup: account::AccountSetup::default(),
             questions: HashMap::new(),
+            request_takers: HashSet::new(),
             reminders: HashMap::new(),
             sync: sync::SyncDialog::default(),
             garden: garden::GardenDialog::default(),
@@ -1618,6 +1622,9 @@ impl Brain {
         let now = now_ms();
         let refreshed = self.model.refresh();
         self.refresh_questions();
+        if !self.model.is_demo() {
+            self.request_takers = brain_core::requests::takers(&brain_core::requests::dir(&brain_core::account::home_dir()));
+        }
         for item in refreshed {
             if self.prefs.snoozed_until(&item.key, now).is_some() || self.prefs.is_muted(&item.key) || self.is_quiet(&item.key) {
                 continue;
@@ -2071,7 +2078,10 @@ impl Brain {
         if self.blocked_in_demo() {
             return Task::none();
         }
-        let task = if let Some(term) = self.terminals.get_mut(&key) {
+        // Through the session's mod the text goes as written, line breaks and all.
+        let task = if self.request_taker(&key).is_some() {
+            self.send_text(&key, &text)
+        } else if let Some(term) = self.terminals.get_mut(&key) {
             term.paste(&text);
             let enter_key = key.clone();
             Task::perform(off_thread(|| std::thread::sleep(Duration::from_millis(150))), move |_| Message::TerminalKeys(enter_key.clone(), b"\r".to_vec()))
@@ -2270,10 +2280,28 @@ impl Brain {
         }
     }
 
-    /// Whether Brain can type into the session: its terminal runs in Brain, or it waits in an
-    /// iTerm tab Brain can type into.
+    /// Whether Brain can send the session text: its mod takes it, its terminal runs in Brain, or
+    /// it waits in an iTerm tab Brain can type into.
     pub fn can_send(&self, key: &SessionKey) -> bool {
-        self.terminals.contains_key(key) || self.model.board.get(key).is_some_and(|s| s.accepts_input())
+        self.request_taker(key).is_some() || self.terminals.contains_key(key) || self.model.board.get(key).is_some_and(|s| s.accepts_input())
+    }
+
+    /// The session's id when its mod takes requests: a reply, a command or an interrupt then
+    /// goes to the mod, and nothing is typed. A mod from before requests types as before.
+    pub(super) fn request_taker(&self, key: &SessionKey) -> Option<String> {
+        let session = self.model.board.get(key).filter(|s| s.phase() != Phase::Ended)?;
+        session.session_id.clone().filter(|id| self.request_takers.contains(id))
+    }
+
+    /// Hands `request` to the session's mod; says so in the status line only when it failed.
+    pub(super) fn send_request(&mut self, session_id: &str, request: brain_core::requests::Request) -> bool {
+        match brain_core::requests::send(&brain_core::requests::dir(&brain_core::account::home_dir()), session_id, request) {
+            Ok(()) => true,
+            Err(err) => {
+                self.set_status(tr!("Nicht an die Session übergeben: {err}", "Not handed to the session: {err}"));
+                false
+            }
+        }
     }
 
     /// Sessions whose turn it is and that Brain can type into. Sessions with a permission
@@ -2288,10 +2316,15 @@ impl Brain {
             .collect()
     }
 
-    /// Types `text` into a session and submits it: into Brain's terminal (Return a moment later,
-    /// so Claude Code doesn't take it for a pasted newline), or into its iTerm tab.
+    /// Sends `text` to a session: through its mod, which submits it once the session is idle;
+    /// else typed into Brain's terminal (Return a moment later, so Claude Code doesn't take it for
+    /// a pasted newline), or into its iTerm tab.
     fn send_text(&mut self, key: &SessionKey, text: &str) -> Task<Message> {
         if self.blocked_in_demo() {
+            return Task::none();
+        }
+        if let Some(id) = self.request_taker(key) {
+            self.send_request(&id, brain_core::requests::Request::Prompt { text: text.to_string() });
             return Task::none();
         }
         if let Some(term) = self.terminals.get_mut(key) {
@@ -3587,7 +3620,7 @@ impl Brain {
             self.set_status(t("Die Session arbeitet inzwischen wieder – nichts geschickt.", "The session is working again – nothing sent."));
             return Task::none();
         }
-        if self.terminals.contains_key(&key) {
+        if self.request_taker(&key).is_some() || self.terminals.contains_key(&key) {
             let task = self.send_text(&key, text);
             self.set_status(done);
             return task;
@@ -3888,7 +3921,10 @@ impl Brain {
             self.set_status(tr!("In {target} fortgesetzt.", "Resumed in {target}."));
             return Task::none();
         }
-        let closed = matches!(terminal::type_text(pid, "/exit"), Outcome::Done);
+        let closed = match self.request_taker(&key) {
+            Some(id) => self.send_request(&id, brain_core::requests::Request::Prompt { text: "/exit".into() }),
+            None => matches!(terminal::type_text(pid, "/exit"), Outcome::Done),
+        };
         self.set_status(if closed {
             tr!("Nach {target} umgezogen, das Original ist geschlossen.", "Moved to {target}; the original is closed.")
         } else {

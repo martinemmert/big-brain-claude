@@ -24,6 +24,7 @@ pub mod markdown;
 pub mod process;
 pub mod project;
 pub mod qa;
+pub mod requests;
 pub mod sessions;
 pub mod state;
 pub mod store;

@@ -320,6 +320,13 @@ impl Brain {
                     return Task::none();
                 }
                 let done = tr!("„{name}“ vom Handy unterbrochen.", "Interrupted “{name}” from the phone.");
+                // Its mod ends the turn itself: no terminal, and no Esc that could hit a dialog.
+                if let Some(id) = self.request_taker(&key) {
+                    if self.send_request(&id, brain_core::requests::Request::Interrupt) {
+                        self.set_status(done);
+                    }
+                    return Task::none();
+                }
                 if self.terminals.contains_key(&key) {
                     self.set_status(done);
                     return Task::done(Message::TerminalKeys(key, b"\x1b".to_vec()));
@@ -441,7 +448,7 @@ impl Brain {
     /// through the terminal app the session runs in. Not checked for "accepts input" first: the
     /// dialog just closed, Brain's state may not know yet.
     pub(super) fn type_after_dialog(&mut self, key: &SessionKey, text: &str) -> Task<Message> {
-        if self.terminals.contains_key(key) {
+        if self.request_taker(key).is_some() || self.terminals.contains_key(key) {
             return self.send_text(key, text);
         }
         let Some(pid) = self.model.board.get(key).map(|s| s.pid) else { return Task::none() };

@@ -112,6 +112,85 @@ async function recordMessage($, sender, recipient, text) {
   await reportTeam($)
 }
 
+// What Brain asks of this session (a reply, a slash command, an interrupt), so nothing has to be
+// typed into a terminal. Brain writes `~/.claude-brain/requests/<session id>.json`:
+// `{ items: [{ seq, kind: 'prompt', text } | { seq, kind: 'interrupt' }] }`. The mod takes each
+// `seq` once and writes the last one it took to `<session id>.done`; that file also tells Brain
+// this session takes requests.
+let handled = 0
+let taking = false
+let runningTurn
+
+async function requestFiles($) {
+  const home = await $.env.get('HOME')
+  const id = await $.session.id()
+  if (!home || !id) return undefined
+  const base = home + '/.claude-brain/requests/' + id
+  return { requests: base + '.json', done: base + '.done' }
+}
+
+async function readItems($, file) {
+  try {
+    if (!(await $.fs.exists(file))) return []
+    const items = JSON.parse(await $.fs.read(file)).items
+    return Array.isArray(items) ? items : []
+  } catch {
+    return []
+  }
+}
+
+// At the start: what was already there (a resumed session's old requests) is not done again.
+async function openRequests($) {
+  const files = await requestFiles($)
+  if (!files) return
+  let done = 0
+  try {
+    if (await $.fs.exists(files.done)) done = Number((await $.fs.read(files.done)).trim()) || 0
+  } catch {}
+  const items = await readItems($, files.requests)
+  handled = Math.max(done, ...items.map((item) => Number(item.seq) || 0))
+  await $.fs.write(files.done, String(handled))
+  $.clock.every(500, () => void takeRequests($))
+}
+
+async function takeRequests($) {
+  if (taking) return
+  taking = true
+  try {
+    const files = await requestFiles($)
+    if (!files) return
+    const items = (await readItems($, files.requests)).filter((item) => Number(item.seq) > handled)
+    for (const item of items.sort((a, b) => a.seq - b.seq)) {
+      handled = Number(item.seq)
+      await $.fs.write(files.done, String(handled))
+      try {
+        await carryOut($, item)
+      } catch {}
+    }
+  } catch {
+  } finally {
+    taking = false
+  }
+}
+
+async function carryOut($, item) {
+  if (item.kind === 'interrupt') {
+    if (runningTurn !== undefined) await $.turn.abort({ turnId: runningTurn })
+    return
+  }
+  if (item.kind !== 'prompt' || typeof item.text !== 'string' || !item.text.trim()) return
+  // Queued: it starts a turn once the session is idle, as the person's own words.
+  const submit = () => void $.prompt.submit({ text: item.text, asUser: true }).catch(() => {})
+  // `/compact`, `/rename …`: the session's own command, as if typed. One the engine doesn't run
+  // for a plugin goes as typed text, which Claude Code reads as the command.
+  const slash = /^\/(\S+)\s*([\s\S]*)$/.exec(item.text.trim())
+  if (slash) {
+    void $.command.run({ command: slash[1], args: slash[2] }).catch(submit)
+    return
+  }
+  submit()
+}
+
 // A hook that fails passes the event on unchanged, so reporting never holds up the session.
 // After a failed hook had called next, next(e) returns that result without running it again.
 const passOn = async ($, e, next) => next(e)
@@ -128,6 +207,15 @@ export function register(on) {
       })
     } catch {}
     await reportCommands($)
+    try {
+      await openRequests($)
+    } catch {}
+    return next(e)
+  })
+
+  // The main loop's running turn, for an interrupt from Brain.
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) runningTurn = e.turnId
     return next(e)
   })
 
@@ -140,8 +228,8 @@ export function register(on) {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    // Prompts a mod submits aren't the user's.
-    if (e.origin?.kind !== 'plugin') await hook($, 'UserPromptSubmit', { prompt: e.text })
+    // Prompts a mod submits aren't the user's, unless sent as theirs (a reply from Brain).
+    if (e.origin?.kind !== 'plugin' || e.origin?.asUser === true) await hook($, 'UserPromptSubmit', { prompt: e.text })
     return next(e)
   }).catch(passOn)
 
@@ -173,6 +261,7 @@ export function register(on) {
   on('turn.complete', async ($, e, next) => {
     // Subagents' turns end inside the main one.
     if (!e.agentId) {
+      runningTurn = undefined
       await hook($, 'Stop', { last_assistant_message: e.answer ?? '', background_tasks: await runningAgents($) })
     }
     // Who works and who waits now, the lead's turn and each member's.
