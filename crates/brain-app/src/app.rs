@@ -598,15 +598,16 @@ pub enum Item<'a> {
     /// A finished session to read.
     Report(&'a Session, usize),
     Row(&'a Session, usize),
-    /// The project's name above its sessions.
-    Project(String),
+    /// The project's name above its sessions, and how many there are.
+    Project(String, usize),
     /// Under the projects: the toggles for ended, background and automated sessions.
     Footer,
 }
 
 pub const SECTION_H: f32 = 34.0;
 pub const HINT_H: f32 = 36.0;
-pub const ROW_H: f32 = 36.0;
+/// A session as the phone shows it: name and time, its headline, folder and phase.
+pub const ROW_H: f32 = 74.0;
 pub const CARD_H: f32 = 88.0;
 /// The button row of a permission or maybe-question card.
 pub const BUTTONS_H: f32 = 34.0;
@@ -614,10 +615,10 @@ pub const BUTTONS_H: f32 = 34.0;
 pub const OPTION_H: f32 = 32.0;
 /// The line with the tool and command a permission card asks about.
 pub const CMD_H: f32 = 31.0;
-pub const REPORT_H: f32 = 72.0;
+pub const REPORT_H: f32 = ROW_H;
 /// The line under a maybe-question that says why it is listed.
 pub const WHY_H: f32 = 18.0;
-pub const PROJECT_H: f32 = 26.0;
+pub const PROJECT_H: f32 = 34.0;
 pub const FOOTER_H: f32 = 40.0;
 pub const LIST_GAP: f32 = 6.0;
 pub const LIST_TOP: f32 = 4.0;
@@ -635,7 +636,7 @@ impl Item<'_> {
             },
             Item::Report(..) => REPORT_H,
             Item::Row(..) => ROW_H,
-            Item::Project(_) => PROJECT_H,
+            Item::Project(..) => PROJECT_H,
             Item::Footer => FOOTER_H,
         }
     }
@@ -3075,7 +3076,7 @@ impl Brain {
             items.push(Item::Hint(t("Nichts wartet auf dich.", "Nothing is waiting for you.").into()));
         }
         for (name, entries) in &groups.projects {
-            items.push(Item::Project(name.clone()));
+            items.push(Item::Project(name.clone(), entries.len()));
             for entry in entries {
                 match *entry {
                     Entry::Decide(s, ask) => {
@@ -3117,7 +3118,7 @@ impl Brain {
         ];
         for (title, sessions, open) in lists {
             if open && !sessions.is_empty() {
-                items.push(Item::Project(title.into()));
+                items.push(Item::Project(title.into(), sessions.len()));
                 for s in sessions {
                     push(&mut items, s);
                 }

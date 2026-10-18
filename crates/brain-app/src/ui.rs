@@ -468,7 +468,7 @@ fn list(brain: &Brain, now: i64) -> Element<'_, Message> {
             Item::Decide { s, ask, .. } => card(brain, s, ask, now),
             Item::Report(s, _) => report(brain, s, now),
             Item::Row(s, _) => list_row(brain, s, now),
-            Item::Project(name) => project_title(&name),
+            Item::Project(name, count) => project_title(&name, count),
             Item::Footer => list_footer(brain),
         })
         .collect();
@@ -691,31 +691,82 @@ fn option_button<'a>(label: String, answer: Message) -> Element<'a, Message> {
         .into()
 }
 
-/// A finished session to read: green dot, name, age and its last sentence.
+/// A finished session to read: the session's card with the last sentence of its reply.
 fn report<'a>(brain: &'a Brain, s: &'a Session, now: i64) -> Element<'a, Message> {
-    let selected = brain.selected.as_ref() == Some(&s.key);
-    let hovered = brain.hovered.as_ref() == Some(&s.key);
     let line = plain(&s.closing_line().unwrap_or_else(|| t("Fertig, du bist dran", "Done, your turn").into()));
-    let mut top = row![name_label(s, 13.0, TEXT_STRONG), account_badge(&s.key.account, brain.account_index(&s.key.account))].spacing(8).align_y(iced::Center);
-    if brain.prefs.is_pinned(&s.key) {
-        top = top.push(marker("★", TURN));
-    }
-    top = top.push(Space::new().width(Fill)).push(text(ago(s.phase_since_ms(), now)).size(12).color(TEXT_MUTED).font(UI));
-    let body = column![top, text(clip(&line, 110)).size(12.5).line_height(1.4).color(TEXT).font(UI)].spacing(2);
-    let content = container(
-        row![container(style::dot(DONE, 7.0)).padding(Padding { top: 6.0, ..Padding::ZERO }), container(body).width(Fill).clip(true)].spacing(10),
-    )
-    .padding(Padding { top: 8.0, right: 10.0, bottom: 9.0, left: 12.0 })
-    .height(app::REPORT_H)
-    .width(Fill)
-    .clip(true)
-    .style(move |_| boxed(if selected { RAISED } else if hovered { style::HOVER } else { Color::TRANSPARENT }, Color::TRANSPARENT, 8.0));
-    clickable(content.into(), s)
+    session_card(brain, s, now, line)
 }
 
-/// The project's name above its sessions.
-fn project_title<'a>(name: &str) -> Element<'a, Message> {
-    container(text(name.to_string()).size(11.5).color(TEXT_FAINT).font(style::semibold())).padding(Padding { top: 10.0, right: 4.0, bottom: 0.0, left: 4.0 }).height(app::PROJECT_H).into()
+/// The project's name above its sessions, with how many there are, as on the phone.
+fn project_title<'a>(name: &str, count: usize) -> Element<'a, Message> {
+    let title = row![
+        text(clip(name, 40)).size(14).color(TEXT_STRONG).font(style::semibold()).wrapping(text::Wrapping::None),
+        text(count.to_string()).size(13).color(TEXT_FAINT).font(UI),
+    ]
+    .spacing(8)
+    .align_y(iced::Center);
+    container(title).padding(Padding { top: 12.0, right: 4.0, bottom: 0.0, left: 4.0 }).height(app::PROJECT_H).into()
+}
+
+/// The phase in a word, as the phone writes it under a session.
+fn phase_word(phase: Phase) -> &'static str {
+    match phase {
+        Phase::NeedsYou => t("braucht dich", "needs you"),
+        Phase::YourTurn => t("du bist dran", "your turn"),
+        Phase::Working => t("arbeitet", "working"),
+        Phase::Background => t("im Hintergrund", "in the background"),
+        Phase::Asleep => t("schläft – wacht auf, wenn du schreibst", "asleep – wakes when you write"),
+        Phase::Ended => t("beendet", "ended"),
+    }
+}
+
+/// A session as the phone shows it: a card with the phase's colour along its left edge; its
+/// name, account and age (or that it works) on top, `line` below, then folder and phase with
+/// Brain's markers (PR, worktree, bell, pin …).
+fn session_card<'a>(brain: &'a Brain, s: &'a Session, now: i64, line: String) -> Element<'a, Message> {
+    let selected = brain.selected.as_ref() == Some(&s.key);
+    let hovered = brain.hovered.as_ref() == Some(&s.key);
+    let phase = s.phase();
+    let ended = phase == Phase::Ended;
+    // Ended cards are dimmed like the GPUI version's 60 % opacity.
+    let dim = |c: Color| if ended { Color { a: 0.6, ..c } } else { c };
+    let color = phase_color(phase);
+    let waits = matches!(phase, Phase::NeedsYou | Phase::YourTurn);
+    let right: Element<'a, Message> = match phase {
+        Phase::Working | Phase::Background => text(format!("◌ {}", phase_word(phase))).size(12.5).color(color).font(style::semibold()).into(),
+        Phase::Asleep | Phase::Ended => text(ago(s.last_activity_ms, now)).size(12.5).color(dim(TEXT_FAINT)).font(UI).into(),
+        _ => text(ago(s.phase_since_ms(), now)).size(12.5).color(if waits { color } else { TEXT_FAINT }).font(style::semibold()).into(),
+    };
+    let top = row![name_label(s, 14.0, dim(TEXT_STRONG)), account_badge(&s.key.account, brain.account_index(&s.key.account)), Space::new().width(Fill), right]
+        .spacing(8)
+        .align_y(iced::Center);
+    let folder = s.cwd.as_deref().and_then(|c| c.rsplit('/').find(|p| !p.is_empty())).unwrap_or("–");
+    let caption = match (phase, brain.model.days_left(s, now)) {
+        (Phase::Ended, Some(days)) => tr!("{folder} · beendet · noch {days} T fortsetzbar", "{folder} · ended · resumable for {days} more days"),
+        _ => format!("{folder} · {}", phase_word(phase)),
+    };
+    let mut bottom = row![text(clip(&caption, 70)).size(11.5).color(dim(TEXT_FAINT)).font(UI).wrapping(text::Wrapping::None)].spacing(8).align_y(iced::Center);
+    for m in markers(brain, s) {
+        bottom = bottom.push(m);
+    }
+    let body = column![
+        top,
+        text(clip(&line, 110)).size(13).color(dim(TEXT)).font(UI).wrapping(text::Wrapping::None),
+        bottom,
+    ]
+    .spacing(4);
+    let background = if selected { RAISED } else if hovered { style::HOVER } else { SURFACE };
+    let edge = if selected { alpha(color, 0x77) } else { LINE };
+    let content = container(row![rail(dim(color), 10.0), container(body).padding([9, 12]).width(Fill).clip(true)].height(Fill))
+        .height(app::ROW_H)
+        .width(Fill)
+        .clip(true)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(background)),
+            border: Border { color: edge, width: 1.0, radius: 10.0.into() },
+            ..container::Style::default()
+        });
+    clickable(content.into(), s)
 }
 
 /// Under the projects: ended, background and automated sessions, each folded away.
@@ -739,11 +790,9 @@ fn list_footer(brain: &Brain) -> Element<'_, Message> {
 }
 
 fn list_row<'a>(brain: &'a Brain, s: &'a Session, now: i64) -> Element<'a, Message> {
-    let selected = brain.selected.as_ref() == Some(&s.key);
-    let hovered = brain.hovered.as_ref() == Some(&s.key);
     let phase = s.phase();
-    let ended = phase == Phase::Ended;
-    let detail = match phase {
+    // What it is about, as the phone shows it; what Brain knows besides where there is none.
+    let detail = s.headline().map(|h| plain(&h)).unwrap_or_else(|| match phase {
         Phase::Working => plain(&s.headline().unwrap_or_else(|| t("arbeitet …", "working …").into())),
         Phase::Background => background_summary(s.background_tasks()),
         Phase::NeedsYou => plain(&s.headline().unwrap_or_else(|| t("wartet auf dich", "waiting for you").into())),
@@ -755,35 +804,9 @@ fn list_row<'a>(brain: &'a Brain, s: &'a Session, now: i64) -> Element<'a, Messa
             let ago = ago_phrase(s.last_activity_ms, now);
             tr!("schläft · {ago} · wacht auf, wenn du schreibst", "asleep · {ago} · wakes when you write")
         }
-        Phase::Ended => {
-            let ago = ago_phrase(s.last_activity_ms, now);
-            match brain.model.days_left(s, now) {
-                Some(days) => tr!("{ago} · noch {days} T fortsetzbar", "{ago} · resumable for {days} more days"),
-                None => ago,
-            }
-        }
-    };
-    // Ended rows are dimmed like the GPUI version's 60 % opacity.
-    let dim = |c: Color| if ended { Color { a: 0.6, ..c } } else { c };
-    // Red is for the top zone only: a session in the quiet zone that wants something without a
-    // signal is yellow.
-    let dot_color = if phase == Phase::NeedsYou { TURN } else { phase_color(phase) };
-    let mut line = row![style::dot(dim(dot_color), 7.0), name_label(s, 13.0, dim(TEXT_STRONG)), account_badge(&s.key.account, brain.account_index(&s.key.account))]
-        .spacing(9)
-        .align_y(iced::Center);
-    for m in markers(brain, s) {
-        line = line.push(m);
-    }
-    line = line.push(text(clip(&detail, 60)).size(12).color(dim(TEXT_MUTED)).font(UI).wrapping(text::Wrapping::None));
-    let content = container(row![
-        if selected { rail(phase_color(phase), 8.0) } else { Space::new().width(4).into() },
-        container(line).padding(Padding { top: 0.0, right: 8.0, bottom: 0.0, left: 8.0 }).center_y(Fill).width(Fill).clip(true),
-    ])
-    .height(app::ROW_H)
-    .width(Fill)
-    .clip(true)
-    .style(move |_| boxed(if selected { RAISED } else if hovered { style::HOVER } else { Color::TRANSPARENT }, Color::TRANSPARENT, 8.0));
-    clickable(content.into(), s)
+        Phase::Ended => ago_phrase(s.last_activity_ms, now),
+    });
+    session_card(brain, s, now, detail)
 }
 
 /// Plan limits per account (from the status line) and today's cost, under the list.
