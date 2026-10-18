@@ -23,6 +23,9 @@ pub struct SessionFile {
     /// process stays, attached to whatever session it shows now. Claude Code's own list no
     /// longer counts the file's session as running here.
     pub parked_job_id: Option<String>,
+    /// Where the session takes messages from other sessions (Claude Code's `SendMessage`):
+    /// `uds:<this path>` reaches it from any account on this machine.
+    pub messaging_socket_path: Option<String>,
 }
 
 pub fn read_session_files(account: &Account) -> Vec<SessionFile> {

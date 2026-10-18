@@ -120,6 +120,15 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// The running Claude sessions of every account and the address `SendMessage` reaches them at
+    /// (`uds:…`): Claude Code lists only its own account's sessions.
+    Peers {
+        /// Only sessions whose name, folder or account has this.
+        query: Option<String>,
+        /// As a JSON array (address, name, account, cwd, status).
+        #[arg(long)]
+        json: bool,
+    },
     /// Bring the terminal of a session to the front.
     Open {
         /// The session as <account>:<pid>, e.g. main:4242.
@@ -245,6 +254,7 @@ fn main() -> ExitCode {
         Command::Uninstall => run_uninstall(&accounts),
         Command::Status => run_status(&store, &accounts),
         Command::Statusline { json_file } => statusline::run(take_inbox_file(&json_file), &accounts),
+        Command::Peers { query, json } => run_peers(&accounts, query.as_deref(), json),
         Command::Sessions { alfred, json: _ } => run_sessions(&store, &accounts, alfred),
         Command::Open { session } => run_open(&accounts, &session),
         Command::Show { session } => run_show(&session),
@@ -350,6 +360,27 @@ fn find_in_events(store: &Store, accounts: &[Account], session_id: &str) -> Opti
         .find(|e| e.session_id.as_deref() == Some(session_id))?;
     let account = accounts.iter().find(|a| a.id == last.account)?.clone();
     Some((account, last.pid))
+}
+
+fn run_peers(accounts: &[Account], query: Option<&str>, json: bool) -> ExitCode {
+    let calling = calling_session(accounts).map(|(account, pid)| (account.id, pid));
+    let peers = sessions::peers(accounts, calling, query);
+    if json {
+        let list: Vec<serde_json::Value> = peers.iter().map(sessions::Peer::to_json).collect();
+        println!("{}", serde_json::to_string_pretty(&list).unwrap_or_else(|_| "[]".into()));
+        return ExitCode::SUCCESS;
+    }
+    if peers.is_empty() {
+        println!("No other running Claude session{}.", query.map(|q| format!(" matches {q:?}")).unwrap_or_default());
+        return ExitCode::SUCCESS;
+    }
+    for peer in &peers {
+        let folder = peer.cwd.as_deref().and_then(|c| c.rsplit('/').find(|p| !p.is_empty())).unwrap_or("-");
+        let status = peer.status.as_deref().unwrap_or("-");
+        println!("{}  {} ({}, {}, {})", peer.address, peer.name, peer.account, folder, status);
+    }
+    println!("\nSend with SendMessage, the address as `to`.");
+    ExitCode::SUCCESS
 }
 
 fn run_report(store: &Store, accounts: &[Account], kind: Kind, text: &str) -> ExitCode {

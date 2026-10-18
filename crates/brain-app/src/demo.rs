@@ -163,6 +163,7 @@ pub fn build() -> Demo {
                 status_updated_at: Some(ms(spec.minutes_ago)),
                 spare: false,
                 parked_job_id: None,
+                messaging_socket_path: None,
             },
             true,
         );

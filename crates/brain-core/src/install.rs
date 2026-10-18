@@ -6,7 +6,7 @@ use serde_json::{json, Map, Value};
 /// Claude Code now, and an install takes them out again.
 const HOOK_MARKER: &str = "brain hook";
 /// What Claude may run without asking: reports and tasks for later.
-pub const PERMISSION_RULES: [&str; 2] = ["Bash(brain report:*)", "Bash(brain later:*)"];
+pub const PERMISSION_RULES: [&str; 3] = ["Bash(brain report:*)", "Bash(brain later:*)", "Bash(brain peers:*)"];
 
 /// Claude Code loads the plugin directories listed in this variable (`env` in settings.json).
 const PLUGIN_DIRS: &str = "CLAUDE_CODE_PLUGIN_DIRS";
@@ -28,6 +28,7 @@ The user tracks all Claude Code sessions in the Brain dashboard. Report there wi
 - When starting a long multi-step task: `brain report --doing \"<what you are doing>\"`
 - If you end a turn while subagents or background tasks still run and you need nothing from the user, don't report `--waiting`: Brain shows the session as working in the background. If you do ask the user something, report `--waiting` even while work is running.
 - When the user wants to put a task off for later, or agrees to leave something for later: `brain later \"<the task, self-contained>\"`. Brain keeps it with this folder and can start it as a new session; `brain later` lists the open ones.
+- To message a Claude session in another account (`ListAgents` shows only this one's): `brain peers [part of its name]` lists the running sessions of all accounts with their address; send with `SendMessage`, that `uds:…` address as `to`.
 
 Session state (working, permission prompts, turn end) is tracked automatically by Brain's mod; only report content. If `brain` fails, ignore it and continue.
 {SECTION_END}
@@ -372,7 +373,7 @@ mod tests {
         assert_eq!(settings, once);
         assert_eq!(settings["model"], "opus");
         assert_eq!(settings["hooks"]["Stop"][0]["hooks"][0]["command"], "other-tool");
-        assert_eq!(settings["permissions"]["allow"], json!(["Bash(ls:*)", PERMISSION_RULES[0], PERMISSION_RULES[1]]));
+        assert_eq!(settings["permissions"]["allow"], json!(["Bash(ls:*)", PERMISSION_RULES[0], PERMISSION_RULES[1], PERMISSION_RULES[2]]));
     }
 
     #[test]
