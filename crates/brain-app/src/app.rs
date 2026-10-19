@@ -4243,6 +4243,8 @@ impl Brain {
             }
             let target_id = target.id.clone();
             self.set_status(tr!("Ziehe die Session nach {target_id} um …", "Moving the session to {target_id} …"));
+            self.hide_move_leftover(&target_id, &session_id);
+            let original = key.clone();
             let moved = off_thread(move || {
                 if let Some(agent) = running_agent {
                     brain_core::agents::stop(&source, &agent.id)?;
@@ -4250,7 +4252,8 @@ impl Brain {
                 brain_core::transcript::copy_to_account(&transcript, &target).map_err(|e| e.to_string())?;
                 brain_core::agents::fork(&target, std::path::Path::new(&cwd), &session_id, name.as_deref(), &flags)
             });
-            return Task::perform(moved, move |result| Message::Started(target_id.clone(), result));
+            // The session goes on in the target account: the original leaves the list.
+            return Task::perform(moved, move |result| Message::Replaced(original.clone(), target_id.clone(), result));
         }
         if let Err(err) = brain_core::transcript::copy_to_account(&transcript, &target) {
             self.set_status(tr!("Kopieren fehlgeschlagen: {err}", "Copy failed: {err}"));
@@ -4267,6 +4270,11 @@ impl Brain {
             self.prefs.toggle_pin(&key);
             self.prefs.save();
         }
+        // It goes on in the target account: the original and the transcript left there for the
+        // copy to start from leave the list.
+        self.hide_move_leftover(&target.id, &session_id);
+        self.prefs.hide(&key, now_ms());
+        self.prefs.save();
         let target = target.id;
         if ended {
             self.set_status(tr!("In {target} fortgesetzt.", "Resumed in {target}."));
@@ -4279,6 +4287,14 @@ impl Brain {
             tr!("Nach {target} umgezogen. Das Original konnte Brain nicht schließen.", "Moved to {target}. Brain could not close the original.")
         });
         Task::none()
+    }
+
+    /// A move copies the transcript into the target account for the copy to start from: Brain
+    /// would list it there as an ended session beside the copy. It is hidden (until something
+    /// happens in it, which nothing does).
+    fn hide_move_leftover(&mut self, target: &str, session_id: &str) {
+        self.prefs.hide(&SessionKey { account: target.to_string(), id: session_id.to_string() }, now_ms());
+        self.prefs.save();
     }
 
     /// `⌫` twice: hides the session (or shows it again) until something new happens in it.
@@ -4336,12 +4352,17 @@ impl Brain {
             let _ = brain_core::agents::stop(&account, &agent.id);
         }
         if let Some(session_id) = session.session_id.clone() {
-            for path in brain_core::transcript::session_files(&account, &session_id) {
+            // A file already gone (moved, deleted elsewhere) is no reason to keep the entry.
+            for path in brain_core::transcript::session_files(&account, &session_id).into_iter().filter(|p| p.exists()) {
                 crate::trash::move_to_trash(&path)?;
             }
         }
+        // Claude Code may not know the background session any more (removed elsewhere, moved):
+        // the conversation is in the Trash, so the entry goes all the same; the log says why.
         if let Some(agent) = agent {
-            brain_core::agents::remove(&account, &agent.id)?;
+            if let Err(err) = brain_core::agents::remove(&account, &agent.id) {
+                brain_core::log::write(&brain_core::account::home_dir(), "trash", &format!("claude rm {}: {err}", agent.id));
+            }
         }
         self.prefs.forget(key);
         self.prefs.save();
