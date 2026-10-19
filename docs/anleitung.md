@@ -116,8 +116,8 @@ Die Tabs (`←` `→`):
   `~/.claude-mods/agenten-team-anleitung.md`).
 - **Öffnen:** `⏎` oder Doppelklick. Läuft die Session in Brain, öffnet sie sich hier; eine beendete
   wird hier fortgesetzt. `⌥⏎` öffnet sie stattdessen in iTerm.
-- **Aus iTerm holen:** `I` (dann `⏎`) holt eine Session aus ihrem iTerm-Tab nach Brain, ohne
-  dass das Gespräch verloren geht.
+- **Aus iTerm holen:** `I` holt eine Session aus ihrem iTerm-Tab nach Brain, ohne dass das
+  Gespräch verloren geht. Das ist kein Kontowechsel und hat deshalb keinen Dialog.
 
 **Tastatur im Terminal:**
 
@@ -177,7 +177,7 @@ Die Tabs (`←` `→`):
 | `⌘⌫` `⌘⌫` | beendete Session in den Papierkorb |
 | `C` | aufräumen: alles, was seit N Tagen ruht, ausblenden oder in den Papierkorb |
 | `L` | für später: Aufgaben aus `/later`, `⏎` startet eine als neue Session, `⌫` hakt ab |
-| `A` | **weiterführen …**: ein Dialog für Konto (`1`, `2`, … – mit dem Verbrauch jedes Kontos), ob das Original weiterläuft (`⇥`), und Flags. Er sagt, was `⏎` tut: anderes Konto → *umziehen* (z. B. wenn ein Limit voll ist); Original läuft weiter → *forken*; eigenes Konto mit Flags (`--chrome`, `--model opus`) → *neu starten*, wo sie lief; eigenes Konto ohne Flags → aus iTerm *nach Brain holen* |
+| `A` | **in ein anderes Konto oder forken …**: ein Dialog für Konto (`1`, `2`, … – mit dem Verbrauch jedes Kontos), ob das Original weiterläuft (`⇥`), und Flags. Er sagt, was `⏎` tut: anderes Konto → *umziehen* (z. B. wenn ein Limit voll ist); Original läuft weiter → *forken*. Neu starten mit Flags (`--chrome`, `--model opus`) geht über Rechtsklick oder ⌘K → „Neu starten mit …“, nach Brain holen mit `I` |
 | `F` / `I` / Rechtsklick → *Neu starten mit …* | derselbe Dialog, vorbelegt zum Forken / Holen / mit Flags |
 
 Tasten, die zweimal gedrückt werden wollen, fragen im Rechtsklick-Menü nicht nach: Der Klick
@@ -289,8 +289,8 @@ Alles optional, in `~/.claude-brain/config.json`:
 | `R` | umbenennen (solange die Session wartet) |
 | `P` / `S` | anheften / pausieren |
 | `⌫` `⌫` | ausblenden, bis sich etwas tut |
-| `A` | weiterführen: Konto, Fork, Flags |
-| `F` / `I` | forken / aus iTerm nach Brain holen (derselbe Dialog) |
+| `A` / `F` | in ein anderes Konto umziehen / forken (ein Dialog: Konto, Original, Flags) |
+| `I` | aus iTerm nach Brain holen (sofort, ohne Dialog) |
 | `X` `X`, `⌘⌫` `⌘⌫` | beenden, in den Papierkorb |
 | `⌘F` | in der ganzen Session suchen (Ansichten: Prompts, Fragen, Ereignisse) |
 | `⌘⇧C` | letzte Antwort kopieren |

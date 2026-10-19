@@ -134,18 +134,19 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   1 h → tomorrow 9:00 → until something happens in it → back (`⌫` twice jumps to the last).
 - **New sessions** in a recent folder and any account (`⌘N`), or from a **template**: a
   Markdown file with folder, account, model and a first prompt with placeholders (below).
-- **Go on … (`A`)**: one dialog for where and how a session goes on. Pick the account (`1`,
-  `2`, …, each with its current usage), whether the original keeps running (`⇥`), and flags
-  such as `--chrome` or `--model opus`; the dialog says what ⏎ will do:
+- **Into another account or fork … (`A`)**: one dialog for the account a session goes on in.
+  Pick the account (`1`, `2`, …, each with its current usage), whether the original keeps
+  running (`⇥`), and flags such as `--chrome` or `--model opus`; the dialog says what ⏎ will do:
   - **another account, the original ends:** a *move*, e.g. when one hits its five-hour limit.
     Brain copies the transcript, resumes it there with `claude --resume <id> --fork-session`
     and closes the original;
   - **the original keeps running:** a *fork* (`F` opens the dialog so) into any account, its own
     too, as a background session attached in Brain;
-  - **its own account with flags:** a *restart* (right-click or ⌘K → *Restart with …*): Claude
-    takes flags only at start, so the session ends and goes on where it ran (in the background,
-    in Brain's terminal, or in a new iTerm tab);
-  - **its own account without flags:** a session in iTerm moves into Brain (`I`).
+
+  *Restart with …* (right-click or ⌘K) asks only for flags: Claude takes them only at start, so
+  the session ends and goes on where it ran (in the background, in Brain's terminal, or in a new
+  iTerm tab). Moving a session from iTerm into Brain (`I`) changes where it runs, not its
+  account: it happens right away, without the dialog.
 
   ⌘K also lists *Continue in <account>* and *Fork into <account>* to do it in one step.
 - **Quick replies.** `T`, then `1`–`9` fills in a canned reply and ⏎ sends it (a digit alone
@@ -354,9 +355,9 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `P` | pin (an ended session: save it to resume) |
 | `S` | snooze: 15 min → 1 h → until tomorrow 9:00 → until something happens → back |
 | `⌫` `⌫` | straight to "until something happens" (hidden; again: show it) |
-| `A` | go on …: another account, a fork or flags (one dialog) |
+| `A` | into another account or fork … (one dialog: account, original, flags) |
 | `F` | the same dialog, set for a fork (the original keeps running) |
-| `I` | the same dialog, set for moving a session from iTerm into Brain |
+| `I` | move a session from iTerm into Brain (right away, no dialog) |
 | `X` `X` | end the session (`/exit`; a background session: `claude stop`); it stays resumable |
 | `⌘⌫` `⌘⌫` | move an ended session's transcript to the Trash |
 | `⌘F` | find in the session's whole conversation; lenses: prompts, questions, events (`esc` closes) |

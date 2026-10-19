@@ -263,7 +263,7 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
     } else if !ended {
         keep.push((t("Pausieren (15 min → 1 h → morgen → bis sich etwas tut)", "Snooze (15 min → 1 h → tomorrow → until something happens)").to_string(), "S", Action::Snooze, false));
     }
-    keep.push((t("Weiterführen … (Konto, Fork, Flags)", "Go on … (account, fork, flags)").to_string(), "A", Action::Relaunch, false));
+    keep.push((t("In ein anderes Konto oder forken …", "Into another account or fork …").to_string(), "A", Action::Relaunch, false));
     keep.push((t("In ein anderes Projekt …", "Into another project …").to_string(), "", Action::MoveToProject, false));
     groups.push(keep);
 
@@ -2271,9 +2271,9 @@ fn later(brain: &Brain) -> Element<'_, Message> {
     .into()
 }
 
-/// "Go on …" (`A`, `F`, `I`, "Restart with …"): the account (each with how much of its limits is
+/// "Into another account or fork …" (`A`, `F`): the account (each with how much of its limits is
 /// used, so the one with room is easy to spot), whether the original keeps running, flags for the
-/// new start, and in one sentence what ⏎ does with that.
+/// new start, and in one sentence what ⏎ does with that. "Restart with …": only the flags.
 fn relaunch(brain: &Brain) -> Element<'_, Message> {
     let Some(session) = brain.selected_session() else { return Space::new().into() };
     let name = session.display_name();
@@ -2335,26 +2335,28 @@ fn relaunch(brain: &Brain) -> Element<'_, Message> {
                 true,
             )
         }
-        Ok(app::Relaunch::TakeOver) => (
-            t("Holt die Session aus iTerm in Brain: Das iTerm-Tab endet, die Session läuft hier im Hintergrund weiter.", "Moves the session from iTerm into Brain: its iTerm tab ends, the session goes on here in the background.").to_string(),
-            true,
-        ),
         Err(why) => (why, false),
     };
-    let mut body = column![
-        dialog_title(tr!("„{name}“ weiterführen", "Go on with “{name}”")),
-        text(t("Konto (1, 2, …)", "Account (1, 2, …)")).size(12).color(TEXT_MUTED).font(style::semibold()),
-        column(rows).spacing(6),
-        row![original, text(t("⇥ wechselt", "⇥ switches")).size(11.5).color(TEXT_FAINT).font(UI)].spacing(10).align_y(iced::Center),
-        field,
-        text(what).size(13).line_height(1.5).color(if ready { TEXT } else { TURN }).font(UI),
-    ]
+    let what = text(what).size(13).line_height(1.5).color(if ready { TEXT } else { TURN }).font(UI);
+    let mut body = if dialog.restart {
+        column![dialog_title(tr!("„{name}“ neu starten mit …", "Restart “{name}” with …")), field, what]
+    } else {
+        column![
+            dialog_title(tr!("„{name}“ in ein anderes Konto oder forken", "“{name}” into another account or fork")),
+            text(t("Konto (1, 2, …)", "Account (1, 2, …)")).size(12).color(TEXT_MUTED).font(style::semibold()),
+            column(rows).spacing(6),
+            row![original, text(t("⇥ wechselt", "⇥ switches")).size(11.5).color(TEXT_FAINT).font(UI)].spacing(10).align_y(iced::Center),
+            field,
+            what,
+        ]
+    }
     .spacing(12)
     .max_width(640);
     if let Some(err) = &dialog.error {
         body = body.push(text(err.clone()).size(12.5).color(CALLS).font(UI));
     }
-    body = body.push(action(t("Weiterführen", "Go on"), "⏎", true, ready.then_some(Message::RelaunchSubmit)));
+    let label = if dialog.restart { t("Neu starten", "Restart") } else { t("Weiterführen", "Go on") };
+    body = body.push(action(label, "⏎", true, ready.then_some(Message::RelaunchSubmit)));
     body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
 }
 
@@ -2713,7 +2715,7 @@ fn keys_sheet(_brain: &Brain) -> Element<'_, Message> {
                 ("P", t("anheften", "pin")),
                 ("S", t("pausieren: 15 min → 1 h → morgen → bis sich etwas tut", "snooze: 15 min → 1 h → tomorrow → until something happens")),
                 ("⌫ ⌫", t("gleich bis sich etwas tut", "straight to until something happens")),
-                ("A", t("weiterführen: Konto, Fork, Flags", "go on: account, fork, flags")),
+                ("A", t("in ein anderes Konto oder forken", "into another account or fork")),
                 ("F", t("forken (Original läuft weiter)", "fork (the original keeps running)")),
                 ("I", t("aus iTerm in Brain holen", "move from iTerm into Brain")),
                 ("X X", t("beenden", "end")),

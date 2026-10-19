@@ -224,7 +224,7 @@ pub enum Action {
     MoveTo(usize),
     /// Fork the selected session into this account; the original goes on.
     ForkTo(usize),
-    /// The "Go on …" dialog, opened for a move (`A`), a fork (`F`) or a restart with flags.
+    /// The account dialog, opened for a move (`A`), a fork (`F`) or a restart with flags.
     Relaunch,
     Fork,
     RestartWith,
@@ -412,7 +412,7 @@ pub enum Message {
     SyncKeep(usize),
     SyncApply,
     SyncDone(Result<brain_core::sync::Outcome, String>),
-    /// The "Go on …" dialog: the account picked, whether the original keeps running, the flags
+    /// The account dialog: the account picked, whether the original keeps running, the flags
     /// typed, and ⏎.
     RelaunchTarget(usize),
     RelaunchKeep(bool),
@@ -2342,7 +2342,7 @@ impl Brain {
                 let id = self.model.accounts[index].id.clone();
                 all.push((tr!("In {id} forken", "Fork into {id}"), "", PaletteCommand::Act(Action::ForkTo(index))));
             }
-            all.push((t("Weiterführen … (Konto, Fork, Flags)", "Go on … (account, fork, flags)").to_string(), "A", PaletteCommand::Act(Action::Relaunch)));
+            all.push((t("In ein anderes Konto oder forken …", "Into another account or fork …").to_string(), "A", PaletteCommand::Act(Action::Relaunch)));
             all.push((t("Neu starten mit … (z. B. --chrome)", "Restart with … (e.g. --chrome)").to_string(), "", PaletteCommand::Act(Action::RestartWith)));
             if self.in_team(&session.key) {
                 all.push((t("Ohne Team fortsetzen", "Go on without the team").to_string(), "", PaletteCommand::Team(false)));
@@ -3513,6 +3513,8 @@ impl Brain {
             Mode::Relaunch => {
                 match named {
                     Some(Named::Enter) => return self.submit_relaunch(),
+                    // "Restart with …" asks only for the flags.
+                    _ if self.relaunch.restart => {}
                     Some(Named::Tab) => self.relaunch.keep = !self.relaunch.keep,
                     _ => {
                         // 1, 2, … pick the account in the order the dialog lists them.
@@ -3805,7 +3807,10 @@ impl Brain {
             }
             Action::Open => self.open_selected(),
             Action::OpenInITerm => self.open_selected(),
-            Action::TakeOver => return self.open_relaunch(relaunch::Preset::TakeOver),
+            Action::TakeOver => {
+                self.take_over();
+                return Task::none();
+            }
             Action::Pin => self.toggle_pin(),
             Action::MoveToProject => {
                 let task = self.open_palette();

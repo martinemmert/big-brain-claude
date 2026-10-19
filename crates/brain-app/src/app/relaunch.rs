@@ -1,12 +1,12 @@
-//! "Go on …" (`A`, `F`, `I`, "Restart with …"): where and how the selected session goes on, in
-//! one dialog: the account (its own or another), whether the original keeps running, and flags
-//! for the new start. What ⏎ does follows from the choice:
+//! "Into another account or fork …" (`A`, `F`) and "Restart with …": the dialog for the account
+//! the selected session goes on in, whether the original keeps running, and flags for the new
+//! start. Moving a session from iTerm into Brain (`I`) is no part of it: that changes where it
+//! runs, not its account. What ⏎ does follows from the choice:
 //! - the original keeps running: a fork into the account, in the background in Brain;
 //! - another account: the session moves there (transcript copied, resumed, original closed);
-//! - its own account with flags: it ends and resumes with them where it ran (Claude takes flags
-//!   only at start: a background session in the background, one in Brain's terminal there, one
-//!   in iTerm in a new iTerm tab);
-//! - its own account without flags: a session in iTerm moves into Brain.
+//! - "Restart with …" (only the flags): it ends and resumes with them where it ran (Claude takes
+//!   flags only at start: a background session in the background, one in Brain's terminal there,
+//!   one in iTerm in a new iTerm tab).
 
 use brain_core::state::{Phase, SessionKey};
 use brain_terminal::{self as terminal, Outcome};
@@ -31,10 +31,8 @@ pub enum Preset {
     Move,
     /// `F`: its own account, the original keeps running.
     Fork,
-    /// "Restart with …": its own account, flags.
+    /// "Restart with …": only flags.
     Restart,
-    /// `I`: its own account, into Brain.
-    TakeOver,
 }
 
 #[derive(Default)]
@@ -43,6 +41,8 @@ pub struct RelaunchDialog {
     pub target: usize,
     /// The original keeps running (a fork).
     pub keep: bool,
+    /// "Restart with …": the dialog asks only for the flags.
+    pub restart: bool,
     pub flags: String,
     pub error: Option<String>,
 }
@@ -53,7 +53,6 @@ pub enum Relaunch {
     Fork(Vec<String>),
     Move(Vec<String>),
     Restart(Vec<String>),
-    TakeOver,
 }
 
 /// A session asked to end (`/exit`), to go on with these flags once it has.
@@ -88,7 +87,7 @@ impl Brain {
             _ => own,
         };
         self.armed = None;
-        self.relaunch = RelaunchDialog { target, keep: preset == Preset::Fork, flags: String::new(), error: None };
+        self.relaunch = RelaunchDialog { target, keep: preset == Preset::Fork, restart: preset == Preset::Restart, flags: String::new(), error: None };
         self.mode = Mode::Relaunch;
         if preset == Preset::Restart {
             return operation::focus(RELAUNCH_FLAGS);
@@ -100,24 +99,23 @@ impl Brain {
     pub fn relaunch_choice(&self) -> Result<Relaunch, String> {
         let Some(session) = self.selected_session() else { return Err(String::new()) };
         let flags = parse_flags(&self.relaunch.flags)?;
-        let own = self.account_index(&session.key.account);
+        if self.relaunch.restart {
+            if flags.is_empty() {
+                return Err(t("Gib die Flags an, mit denen sie neu startet.", "Give the flags it restarts with.").into());
+            }
+            return Ok(Relaunch::Restart(flags));
+        }
         if self.relaunch.keep {
             return Ok(Relaunch::Fork(flags));
         }
-        if self.relaunch.target != own {
+        if self.relaunch.target != self.account_index(&session.key.account) {
             return Ok(Relaunch::Move(flags));
         }
-        if !flags.is_empty() {
-            return Ok(Relaunch::Restart(flags));
-        }
-        if session.agent.is_some() || self.terminals.contains_key(&session.key) {
-            return Err(t(
-                "Sie läuft schon hier in Brain: Wähle ein anderes Konto, gib Flags an oder lass das Original weiterlaufen.",
-                "It already runs here in Brain: pick another account, give flags, or keep the original running.",
-            )
-            .into());
-        }
-        Ok(Relaunch::TakeOver)
+        Err(t(
+            "Wähle ein anderes Konto, oder lass das Original weiterlaufen: Dann geht eine Kopie hier weiter.",
+            "Pick another account, or keep the original running: then a copy goes on here.",
+        )
+        .into())
     }
 
     /// ⏎ in the dialog.
@@ -143,10 +141,6 @@ impl Brain {
                         Task::none()
                     }
                 }
-            }
-            Relaunch::TakeOver => {
-                self.take_over();
-                Task::none()
             }
         }
     }
