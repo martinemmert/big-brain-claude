@@ -405,10 +405,20 @@ fn trusted_folders(state: &Value) -> Vec<String> {
 /// Marks `folder` as trusted in `target` if `source` trusts it, so a session moved there
 /// doesn't stop at the trust question. Leaves everything else in the file as it is.
 pub fn carry_trust(source: &Account, target: &Account, home: &Path, folder: &str) -> std::io::Result<()> {
-    let trusted = read_json(&global_json(source, home)).is_some_and(|s| trusted_folders(&s).iter().any(|f| f == folder));
-    if !trusted {
+    if !trusts(source, home, folder) {
         return Ok(());
     }
+    trust(target, home, folder)
+}
+
+/// Whether the account answered Claude's question "Do you trust this folder?" with yes.
+pub fn trusts(account: &Account, home: &Path, folder: &str) -> bool {
+    read_json(&global_json(account, home)).is_some_and(|s| trusted_folders(&s).iter().any(|f| f == folder))
+}
+
+/// Records yes to Claude's question "Do you trust this folder?" for the account, as Claude does
+/// when it is answered there. Leaves everything else in the file as it is.
+pub fn trust(target: &Account, home: &Path, folder: &str) -> std::io::Result<()> {
     let path = global_json(target, home);
     let mut state = read_json(&path).unwrap_or_else(|| Value::Object(Map::new()));
     if trusted_folders(&state).iter().any(|f| f == folder) {

@@ -33,6 +33,8 @@ const QR_QUIET: usize = 4;
 pub(crate) struct Heard {
     pub said: Option<String>,
     pub refused: bool,
+    /// What the person must answer before it goes (see [`Outcome::needs`]).
+    pub needs: Option<&'static str>,
 }
 
 /// When a session's open question was read: its transcript's length and the call of the
@@ -122,7 +124,7 @@ impl Brain {
             self.link_heard = Some(Heard::default());
             tasks.push(self.run_link_command(command, true));
             let heard = self.link_heard.take().unwrap_or_default();
-            responder.send(Outcome { ok: !heard.refused, message: heard.said });
+            responder.send(Outcome { ok: !heard.refused, message: heard.said, needs: heard.needs });
         }
         Task::batch(tasks)
     }
@@ -263,7 +265,7 @@ impl Brain {
             | Command::Restart { key, .. }
             | Command::End { key }
             | Command::Team { key, .. } => key.clone(),
-            Command::Start { account, folder, prompt, style, team } => return self.link_start(account, folder, prompt.clone(), style.clone(), *team),
+            Command::Start { account, folder, prompt, style, team, trust } => return self.link_start(account, folder, prompt.clone(), style.clone(), *team, *trust),
             Command::Move { key, account } => return self.link_move(key.clone(), account),
         };
         let Some(session) = self.model.board.get(&key) else {
@@ -477,12 +479,31 @@ impl Brain {
 impl Brain {
     /// A session started from the phone runs in the background; Brain lists it without taking
     /// the selection on the Mac.
-    fn link_start(&mut self, account: &str, folder: &str, prompt: Option<String>, style: Option<String>, team: bool) -> Task<Message> {
+    fn link_start(&mut self, account: &str, folder: &str, prompt: Option<String>, style: Option<String>, team: bool, trust: bool) -> Task<Message> {
         let team = team.then(crate::config::team_start);
         let Some(account) = self.model.account(account).cloned() else {
             self.refuse(t("Dieses Konto kennt Brain nicht.", "Brain doesn't know this account."));
             return Task::none();
         };
+        // A team runs interactively in tmux, where nobody sees Claude's question whether it
+        // trusts a folder it hasn't been in: the phone asks it, and only a yes is recorded.
+        if team.is_some() && !brain_core::account_setup::trusts(&account, &brain_core::account::home_dir(), folder) {
+            if !trust {
+                let folder_name = folder.rsplit('/').find(|p| !p.is_empty()).unwrap_or(folder);
+                self.refuse(tr!(
+                    "Claude fragt beim ersten Start in „{folder_name}“: Vertraust du diesem Ordner? Claude darf dort Dateien lesen, ändern und Befehle ausführen.",
+                    "Claude asks on its first start in “{folder_name}”: do you trust this folder? Claude may read and change files and run commands there."
+                ));
+                if let Some(heard) = self.link_heard.as_mut() {
+                    heard.needs = Some("trust");
+                }
+                return Task::none();
+            }
+            if let Err(err) = brain_core::account_setup::trust(&account, &brain_core::account::home_dir(), folder) {
+                self.refuse(tr!("Konnte den Ordner nicht als vertraut eintragen: {err}", "Couldn't record the folder as trusted: {err}"));
+                return Task::none();
+            }
+        }
         // Only a style the account knows: anything else would quietly fall back to Default.
         let style = style.filter(|s| brain_core::styles::available(&account.config_dir, Some(std::path::Path::new(folder))).iter().any(|known| known.name == *s));
         let folder_name = folder.rsplit('/').find(|p| !p.is_empty()).unwrap_or(folder).to_string();

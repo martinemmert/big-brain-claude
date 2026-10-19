@@ -108,7 +108,8 @@ pub enum Command {
     Answer { key: SessionKey, call: String, answers: Vec<Picked> },
     /// A new background session in one of the offered folders, with an optional first prompt and
     /// output style.
-    Start { account: String, folder: String, prompt: Option<String>, style: Option<String>, team: bool },
+    /// `trust`: the person answered yes to Claude's question whether it trusts the folder.
+    Start { account: String, folder: String, prompt: Option<String>, style: Option<String>, team: bool, trust: bool },
     /// `since_ms`: when the dialog the user answered opened ([`View::permission_since_ms`]).
     Permission { key: SessionKey, allow: bool, since_ms: i64 },
     /// Continue the session in another account, as `A` in Brain.
@@ -133,6 +134,10 @@ pub enum Command {
 pub struct Outcome {
     pub ok: bool,
     pub message: Option<String>,
+    /// Not carried out until the person answers: `trust`, Claude's question whether it trusts
+    /// the folder (the phone asks it and sends the command again with the answer).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub needs: Option<&'static str>,
 }
 
 /// Where a command's [`Outcome`] goes: the phone's request, which waits for it a moment.
@@ -160,7 +165,7 @@ pub struct Picked {
 }
 
 /// What this Brain Link offers beyond the first version, for the phone to show only what works.
-const FEATURES: [&str; 16] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands", "team", "move", "outcome", "projects", "regroup"];
+const FEATURES: [&str; 17] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands", "team", "move", "outcome", "projects", "regroup", "trust"];
 /// How long a read with `wait` waits for something new before it answers anyway.
 const WAIT: Duration = Duration::from_secs(25);
 /// How often a waiting read looks again.
@@ -603,7 +608,8 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
             let style = field("output_style").filter(|s| !s.trim().is_empty());
             // As an agent team (`claude-team`), led by the configured agent.
             let team = body.get("team").and_then(|t| t.as_bool()).unwrap_or(false);
-            send_command(&state, Command::Start { account, folder, prompt, style, team }).await
+            let trust = body.get("trust").and_then(|t| t.as_bool()).unwrap_or(false);
+            send_command(&state, Command::Start { account, folder, prompt, style, team, trust }).await
         }
         // `wait=<version>`: answers once the transcript changed (its size is the version).
         (Method::GET, ["v1", "sessions", account, id, "messages"]) => {
@@ -1306,7 +1312,7 @@ mod tests {
                     call: "toolu_2".into(),
                     answers: vec![Picked { picks: vec![0, 2], other: None }, Picked { picks: vec![], other: Some("lieber so".into()) }],
                 },
-                Command::Start { account: "main".into(), folder: "/w/fin".into(), prompt: Some("los".into()), style: None, team: false },
+                Command::Start { account: "main".into(), folder: "/w/fin".into(), prompt: Some("los".into()), style: None, team: false, trust: false },
                 Command::Interrupt { key: key.clone() },
                 Command::Reply { key: key.clone(), text: "/compact".into() },
                 Command::Resume { key: key.clone() },
@@ -1324,7 +1330,7 @@ mod tests {
             scope.spawn(|| {
                 for _ in 0..500 {
                     if let Some((_, responder)) = link.take_commands().into_iter().next() {
-                        responder.send(Outcome { ok: false, message: Some("„fin“ wartet auf eine Freigabe".into()) });
+                        responder.send(Outcome { ok: false, message: Some("„fin“ wartet auf eine Freigabe".into()), needs: None });
                         return;
                     }
                     std::thread::sleep(Duration::from_millis(2));

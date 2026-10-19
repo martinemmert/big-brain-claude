@@ -106,7 +106,9 @@ Die Tabs (`←` `→`):
   (Agent `team_agent`, Standard `dirigent`; Plugin-Ordner `team_plugin_dir`, Standard
   `~/.claude-mods/team-chat`). Ein Team braucht eine interaktive Session: Brain startet es in einer
   unsichtbaren tmux-Session (`brain-team-…`), sein Terminal-Tab hängt sich daran, und es läuft weiter,
-  wenn Brain beendet wird. `⌘K` → „Als Agenten-Team fortsetzen“ / „Ohne Team fortsetzen“ schaltet eine
+  wenn Brain beendet wird. Startest du ein Team vom Handy in einem Ordner, dem das Konto noch nicht
+  vertraut, stellt das Handy Claudes Frage „Vertraust du diesem Ordner?“; erst nach „Vertrauen und
+  starten“ trägt Brain ihn ein und startet (in tmux sähe die Frage sonst niemand). `⌘K` → „Als Agenten-Team fortsetzen“ / „Ohne Team fortsetzen“ schaltet eine
   laufende Session um (sie startet dafür neu, das Gespräch bleibt). Hat eine Session Agenten, zeigt der Tab **Team** ihre Fragen an dich
   („Frage an Martin: …“, mit Mitteilung; „Antworten“ schreibt dem Lead, der gibt es weiter), wer
   arbeitet und wer wartet, was jeder verbraucht hat (Tokens rein/raus, aus den Transkripten der
