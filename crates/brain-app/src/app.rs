@@ -116,6 +116,8 @@ pub enum PaletteCommand {
     OpenLog,
     /// The selected session into this project, or back into its own (`None`).
     Project(Option<String>),
+    /// Leave this project out of the list, or bring it back.
+    HideProject(String),
     /// Show every key.
     Keys,
 }
@@ -275,6 +277,16 @@ pub enum Message {
     ToggleEnded,
     /// A card's button: the same command the phone sends.
     Steer(crate::companion::Command),
+    /// A click on a list section's title: fold or open it (`saved`, `projects`).
+    ToggleSection(&'static str),
+    /// A click on a project's head: fold or open it.
+    ToggleProjectFolded(String),
+    /// Leave a project out of the list, or bring it back.
+    ToggleProjectHidden(String),
+    /// Show the hidden projects for a look, or not.
+    ToggleHiddenProjects,
+    /// Open or fold the sessions that ended over a day ago.
+    ToggleOlder,
     /// "alle gesehen": every report in the reading zone counts as read.
     SeeAll,
     /// "Nur Bericht" on a maybe-question: it counts as a report, not as a question.
@@ -521,10 +533,15 @@ pub struct Groups<'a> {
     pub read: Vec<&'a Session>,
     /// Everything else that lives.
     pub quiet: Vec<&'a Session>,
-    /// The live sessions by project, as the list draws them: the project with the most urgent
-    /// session first (a decision, then a report, then the rest); in a project its decisions, its
+    /// The live sessions by project, in a fixed order (by name); in a project its decisions, its
     /// reports, then its quiet sessions.
-    pub projects: Vec<(String, Vec<Entry<'a>>)>,
+    pub projects: Vec<Block<'a>>,
+    /// The "Projects" section is open (a search opens it).
+    pub projects_open: bool,
+    /// The hidden projects show, for a look.
+    pub hidden_open: bool,
+    /// "Saved to resume" is open.
+    pub saved_open: bool,
     /// Snoozed while waiting, or hidden with ⌫ until something happens: folded at the end.
     pub paused: Vec<&'a Session>,
     /// Background sessions without activity for a day.
@@ -532,12 +549,30 @@ pub struct Groups<'a> {
     /// Sessions programs started (SDK reviews, `claude -p`).
     pub automated: Vec<&'a Session>,
     pub ended: Vec<&'a Session>,
-    /// Ended over a day ago, shown only while searching.
-    pub older_ended: usize,
+    /// Ended over a day ago: a footer link opens them (a search puts them with `ended`).
+    pub older: Vec<&'a Session>,
+    pub older_open: bool,
     /// Which of the folded lists at the end are open (a search opens all; ended: `include_ended`).
     pub paused_open: bool,
     pub background_open: bool,
     pub automated_open: bool,
+}
+
+/// A project's sessions in the list.
+pub struct Block<'a> {
+    pub name: String,
+    pub entries: Vec<Entry<'a>>,
+    /// Folded: its head shows, its sessions don't.
+    pub folded: bool,
+    /// Left out of the list unless the hidden projects are shown.
+    pub hidden: bool,
+}
+
+impl Block<'_> {
+    /// Whether its sessions are drawn: not folded, and not hidden unless those show.
+    fn shows(&self, hidden_open: bool) -> bool {
+        !self.folded && (!self.hidden || hidden_open)
+    }
 }
 
 /// A live session in its project's block, with the card it gets.
@@ -559,13 +594,14 @@ impl<'a> Entry<'a> {
 impl<'a> Groups<'a> {
     /// The sessions ↑↓ reach, in drawing order: what the list shows, folded lists only while open.
     pub fn navigable(&self, include_ended: bool) -> Vec<&'a Session> {
-        let mut all: Vec<&Session> = self.saved.clone();
+        let mut all: Vec<&Session> = if self.saved_open { self.saved.clone() } else { Vec::new() };
         all.extend(self.live());
-        let folded: [(bool, &Vec<&'a Session>); 4] = [
+        let folded: [(bool, &Vec<&'a Session>); 5] = [
             (self.paused_open, &self.paused),
             (self.background_open, &self.background),
             (self.automated_open, &self.automated),
             (include_ended, &self.ended),
+            (self.older_open, &self.older),
         ];
         for (open, sessions) in folded {
             if open {
@@ -575,9 +611,17 @@ impl<'a> Groups<'a> {
         all
     }
 
-    /// The running sessions in drawing order.
+    /// The running sessions the list draws, in drawing order: not in a folded or hidden project.
     pub fn live(&self) -> Vec<&'a Session> {
-        self.projects.iter().flat_map(|(_, entries)| entries.iter().map(Entry::session)).collect()
+        if !self.projects_open {
+            return Vec::new();
+        }
+        self.projects.iter().filter(|b| b.shows(self.hidden_open)).flat_map(|b| b.entries.iter().map(Entry::session)).collect()
+    }
+
+    /// How many projects are hidden.
+    pub fn hidden_projects(&self) -> usize {
+        self.projects.iter().filter(|b| b.hidden).count()
     }
 
     /// How many sessions wait for a decision. A guess ([`Ask::Maybe`]) doesn't count.
@@ -589,8 +633,9 @@ impl<'a> Groups<'a> {
 /// One entry of the session list, in drawing order. The list's height is known from these, so
 /// keyboard navigation can keep the selection in view.
 pub enum Item<'a> {
-    /// `action`: a link at the section's right edge and what it sends.
-    Section { title: String, count: usize, alert: bool, action: Option<Box<(String, Message)>> },
+    /// `action`: a link at the section's right edge and what it sends. `fold`: whether it is
+    /// open, and what a click on its title sends to fold or open it.
+    Section { title: String, count: usize, alert: bool, action: Option<Box<(String, Message)>>, fold: Option<Box<(bool, Message)>> },
     Hint(String),
     /// A session that asks something. `options`: how many option buttons the card has (for a
     /// permission: 1 when it shows the command).
@@ -598,10 +643,19 @@ pub enum Item<'a> {
     /// A finished session to read.
     Report(&'a Session, usize),
     Row(&'a Session, usize),
-    /// The project's name above its sessions, and how many there are.
-    Project(String, usize),
+    /// A project's head above its sessions, or a folded list's title.
+    Project(Head),
     /// Under the projects: the toggles for ended, background and automated sessions.
     Footer,
+}
+
+/// A head in the list: a project (folded or not, hidden or not) or a folded list's title.
+#[derive(Debug, Clone)]
+pub struct Head {
+    pub name: String,
+    pub count: usize,
+    /// A project: whether it is folded (a click folds or opens it) and hidden.
+    pub project: Option<(bool, bool)>,
 }
 
 pub const SECTION_H: f32 = 34.0;
@@ -654,6 +708,8 @@ pub struct Brain {
     pub show_ended: bool,
     /// Whether the snoozed-and-hidden section is open.
     pub show_snoozed: bool,
+    /// The projects hidden from the list show for a look (not remembered).
+    pub show_hidden_projects: bool,
     /// The clean-up dialog's age choice (index into CLEANUP_DAYS).
     pub cleanup_age: usize,
     /// Each session's agents and their messages, as its mod reported them, and when each
@@ -872,6 +928,7 @@ impl Brain {
             hovered: None,
             show_ended: false,
             show_snoozed: false,
+            show_hidden_projects: false,
             cleanup_age: 1,
             teams: HashMap::new(),
             team_panes: HashMap::new(),
@@ -1144,6 +1201,36 @@ impl Brain {
             }
             Message::ToggleAutomated => {
                 self.toggle_automated();
+                Task::none()
+            }
+            Message::ToggleSection(section) => {
+                self.prefs.toggle_section(section);
+                self.prefs.save();
+                Task::none()
+            }
+            Message::ToggleProjectFolded(name) => {
+                self.prefs.toggle_project_folded(&name);
+                self.prefs.save();
+                Task::none()
+            }
+            Message::ToggleProjectHidden(name) => {
+                self.prefs.toggle_project_hidden(&name);
+                self.prefs.save();
+                let hidden = self.prefs.is_project_hidden(&name);
+                self.set_status(if hidden {
+                    tr!("Projekt „{name}“ ausgeblendet – unten zeigt „ausgeblendet“ es wieder.", "Project “{name}” hidden – “hidden” at the bottom shows it again.")
+                } else {
+                    tr!("Projekt „{name}“ wieder eingeblendet.", "Project “{name}” shown again.")
+                });
+                Task::none()
+            }
+            Message::ToggleHiddenProjects => {
+                self.show_hidden_projects = !self.show_hidden_projects;
+                Task::none()
+            }
+            Message::ToggleOlder => {
+                self.prefs.show_older = !self.prefs.show_older;
+                self.prefs.save();
                 Task::none()
             }
             Message::Steer(command) => self.run_link_command(command, true),
@@ -2277,6 +2364,12 @@ impl Brain {
         all.push((t("Ruhige Hintergrund-Sessions auf- / zuklappen", "Open / fold quiet background sessions").to_string(), "B", PaletteCommand::ToggleBackground));
         all.push((t("Automatisch gestartete Sessions (Reviews, Skripte) auf- / zuklappen", "Open / fold sessions started by programs (reviews, scripts)").to_string(), "U", PaletteCommand::ToggleAutomated));
 
+        // Leave a project out of the list, or bring it back.
+        for block in &self.groups(now_ms()).projects {
+            let name = block.name.clone();
+            let label = if block.hidden { tr!("Projekt „{name}“ wieder einblenden", "Show project “{name}” again") } else { tr!("Projekt „{name}“ ausblenden", "Hide project “{name}”") };
+            all.push((label, "", PaletteCommand::HideProject(name)));
+        }
         // Into another project: each one that has sessions, back into its own, or a new one typed.
         if let Some(session) = self.selected_session() {
             let name = session.display_name();
@@ -2318,6 +2411,7 @@ impl Brain {
 
     fn run_palette(&mut self, command: PaletteCommand) -> Task<Message> {
         match command {
+            PaletteCommand::HideProject(name) => self.update(Message::ToggleProjectHidden(name)),
             PaletteCommand::Project(project) => {
                 if let Some(key) = self.selected.clone() {
                     self.put_in_project(&key, project);
@@ -2949,7 +3043,7 @@ impl Brain {
 
     /// Every project a live session is listed under, by name.
     pub fn project_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.groups(now_ms()).projects.iter().map(|(n, _)| n.clone()).collect();
+        let mut names: Vec<String> = self.groups(now_ms()).projects.iter().map(|b| b.name.clone()).collect();
         names.sort_by_key(|n| n.to_lowercase());
         names
     }
@@ -2986,7 +3080,11 @@ impl Brain {
             background: vec![],
             automated: vec![],
             ended: vec![],
-            older_ended: 0,
+            older: vec![],
+            older_open: self.prefs.show_older,
+            projects_open: !self.prefs.is_section_folded("projects") || searching,
+            hidden_open: self.show_hidden_projects || searching,
+            saved_open: !self.prefs.is_section_folded("saved") || searching,
             paused_open: self.show_snoozed || searching,
             background_open: self.prefs.show_background || searching,
             automated_open: self.prefs.show_automated || searching,
@@ -3025,7 +3123,7 @@ impl Brain {
                 } else if searching || now - session.last_activity_ms < ENDED_RECENT_MS {
                     groups.ended.push(session);
                 } else {
-                    groups.older_ended += 1;
+                    groups.older.push(session);
                 }
                 continue;
             }
@@ -3043,22 +3141,27 @@ impl Brain {
         }
         groups.decide.sort_by_key(|(s, ask)| (*ask, s.phase_since_ms()));
         groups.read.sort_by_key(|s| std::cmp::Reverse(s.phase_since_ms()));
-        // Most urgent first: a project takes its place from its most urgent session.
+        // In a project its decisions, reports, then the rest.
         let entries = groups
             .decide
             .iter()
             .map(|(s, ask)| Entry::Decide(s, *ask))
             .chain(groups.read.iter().map(|s| Entry::Read(s)))
             .chain(groups.quiet.iter().map(|s| Entry::Quiet(s)));
-        let mut projects: Vec<(String, Vec<Entry>)> = Vec::new();
+        let mut projects: Vec<Block> = Vec::new();
         for entry in entries {
             let session = entry.session();
             let name = self.project_name(session);
-            match projects.iter_mut().find(|(n, _)| *n == name) {
-                Some((_, list)) => list.push(entry),
-                None => projects.push((name, vec![entry])),
+            match projects.iter_mut().find(|b| b.name == name) {
+                Some(block) => block.entries.push(entry),
+                None => {
+                    let (folded, hidden) = (self.prefs.is_project_folded(&name) && !searching, self.prefs.is_project_hidden(&name));
+                    projects.push(Block { name, entries: vec![entry], folded, hidden });
+                }
             }
         }
+        // A fixed order: projects don't jump when one of their sessions starts to ask.
+        projects.sort_by_key(|b| b.name.to_lowercase());
         groups.projects = projects;
         groups
     }
@@ -3079,20 +3182,28 @@ impl Brain {
             items.push(Item::Hint(tr!("Keine Session passt zu „{query}“. Esc leert die Suche.", "No session matches “{query}”. Esc clears the search.")));
         }
         if !groups.saved.is_empty() {
-            items.push(Item::Section { title: t("Zum Fortsetzen gemerkt", "Saved to resume").into(), count: groups.saved.len(), alert: false, action: None });
-            for s in &groups.saved {
-                push(&mut items, s);
+            let fold = Some(Box::new((groups.saved_open, Message::ToggleSection("saved"))));
+            items.push(Item::Section { title: t("Zum Fortsetzen gemerkt", "Saved to resume").into(), count: groups.saved.len(), alert: false, action: None, fold });
+            if groups.saved_open {
+                for s in &groups.saved {
+                    push(&mut items, s);
+                }
             }
         }
         // Everything that lives, by project: the count is what waits for a decision.
         let action = (!groups.read.is_empty()).then(|| Box::new((t("alle gesehen", "all seen").to_string(), Message::SeeAll)));
-        items.push(Item::Section { title: t("Projekte", "Projects").into(), count: groups.deciding(), alert: true, action });
-        if groups.decide.is_empty() && !searching {
+        let fold = Some(Box::new((groups.projects_open, Message::ToggleSection("projects"))));
+        items.push(Item::Section { title: t("Projekte", "Projects").into(), count: groups.deciding(), alert: true, action, fold });
+        if groups.decide.is_empty() && !searching && groups.projects_open {
             items.push(Item::Hint(t("Nichts wartet auf dich.", "Nothing is waiting for you.").into()));
         }
-        for (name, entries) in &groups.projects {
-            items.push(Item::Project(name.clone(), entries.len()));
-            for entry in entries {
+        let shown = groups.projects.iter().filter(|b| groups.projects_open && (!b.hidden || groups.hidden_open));
+        for block in shown {
+            items.push(Item::Project(Head { name: block.name.clone(), count: block.entries.len(), project: Some((block.folded, block.hidden)) }));
+            if block.folded {
+                continue;
+            }
+            for entry in &block.entries {
                 match *entry {
                     Entry::Decide(s, ask) => {
                         let options = match ask {
@@ -3107,33 +3218,29 @@ impl Brain {
                 }
             }
         }
-        if groups.older_ended > 0 {
-            let n = groups.older_ended;
-            items.push(Item::Hint(tr!("{n} älter als ein Tag – / sucht darin, C räumt auf.", "{n} older than a day – / searches them, C cleans up.")));
-        }
-        if !groups.ended.is_empty() || !groups.background.is_empty() || !groups.automated.is_empty() {
+        if !groups.ended.is_empty() || !groups.background.is_empty() || !groups.automated.is_empty() || !groups.older.is_empty() || groups.hidden_projects() > 0 {
             items.push(Item::Footer);
         }
         // Folded away at the end, one click (or ⌘K) opens each: nothing leaves the list without
         // a trace.
         if !groups.paused.is_empty() {
-            let action = if groups.paused_open { t("zuklappen", "fold") } else { t("aufklappen", "open") };
-            let action = Box::new((action.to_string(), Message::ToggleSnoozed));
-            items.push(Item::Section { title: t("Pausiert und ausgeblendet", "Snoozed and hidden").into(), count: groups.paused.len(), alert: false, action: Some(action) });
+            let fold = Some(Box::new((groups.paused_open, Message::ToggleSnoozed)));
+            items.push(Item::Section { title: t("Pausiert und ausgeblendet", "Snoozed and hidden").into(), count: groups.paused.len(), alert: false, action: None, fold });
             if groups.paused_open {
                 for s in &groups.paused {
                     push(&mut items, s);
                 }
             }
         }
-        let lists: [(&str, &Vec<&'a Session>, bool); 3] = [
+        let lists: [(&str, &Vec<&'a Session>, bool); 4] = [
             (t("Ruhig im Hintergrund", "Quiet in the background"), &groups.background, groups.background_open),
             (t("Automatisch gestartet", "Started by programs"), &groups.automated, groups.automated_open),
             (t("Beendet", "Ended"), &groups.ended, self.include_ended()),
+            (t("Älter als ein Tag", "Older than a day"), &groups.older, groups.older_open),
         ];
         for (title, sessions, open) in lists {
             if open && !sessions.is_empty() {
-                items.push(Item::Project(title.into(), sessions.len()));
+                items.push(Item::Project(Head { name: title.into(), count: sessions.len(), project: None }));
                 for s in sessions {
                     push(&mut items, s);
                 }

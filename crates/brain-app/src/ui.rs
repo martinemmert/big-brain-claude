@@ -455,8 +455,16 @@ fn list(brain: &Brain, now: i64) -> Element<'_, Message> {
         .items(&groups, now)
         .into_iter()
         .map(|item| match item {
-            Item::Section { title, count, alert, action } => {
-                let mut line = row![section_title(title, count, alert)].align_y(iced::Bottom);
+            Item::Section { title, count, alert, action, fold } => {
+                // A section that folds: its title with ▾/▸ is what a click folds or opens.
+                let title_el: Element<'_, Message> = match fold.map(|f| *f) {
+                    Some((open, message)) => mouse_area(section_title(format!("{} {title}", if open { "▾" } else { "▸" }), count, alert))
+                        .on_press(message)
+                        .interaction(iced::mouse::Interaction::Pointer)
+                        .into(),
+                    None => section_title(title, count, alert),
+                };
+                let mut line = row![title_el].align_y(iced::Bottom);
                 if let Some((label, message)) = action.map(|a| *a) {
                     line = line.push(Space::new().width(Fill)).push(
                         container(style::text_button(label, false, message)).padding(Padding { bottom: 0.0, ..Padding::ZERO }),
@@ -468,7 +476,7 @@ fn list(brain: &Brain, now: i64) -> Element<'_, Message> {
             Item::Decide { s, ask, .. } => card(brain, s, ask, now),
             Item::Report(s, _) => report(brain, s, now),
             Item::Row(s, _) => list_row(brain, s, now),
-            Item::Project(name, count) => project_title(&name, count),
+            Item::Project(head) => project_title(head),
             Item::Footer => list_footer(brain),
         })
         .collect();
@@ -697,15 +705,31 @@ fn report<'a>(brain: &'a Brain, s: &'a Session, now: i64) -> Element<'a, Message
     session_card(brain, s, now, line)
 }
 
-/// The project's name above its sessions, with how many there are, as on the phone.
-fn project_title<'a>(name: &str, count: usize) -> Element<'a, Message> {
+/// A project's head above its sessions, with how many there are, as on the phone. A click folds
+/// or opens it; "hide" at its right leaves it out of the list. A folded list's title is just that.
+fn project_title<'a>(head: app::Head) -> Element<'a, Message> {
+    let app::Head { name, count, project } = head;
+    let Some((folded, hidden)) = project else {
+        let title = row![
+            text(clip(&name, 40)).size(14).color(TEXT_STRONG).font(style::semibold()).wrapping(text::Wrapping::None),
+            text(count.to_string()).size(13).color(TEXT_FAINT).font(UI),
+        ]
+        .spacing(8)
+        .align_y(iced::Center);
+        return container(title).padding(Padding { top: 12.0, right: 4.0, bottom: 0.0, left: 4.0 }).height(app::PROJECT_H).into();
+    };
+    let color = if hidden { TEXT_FAINT } else { TEXT_STRONG };
     let title = row![
-        text(clip(name, 40)).size(14).color(TEXT_STRONG).font(style::semibold()).wrapping(text::Wrapping::None),
+        text(if folded { "▸" } else { "▾" }).size(12).color(TEXT_FAINT).font(UI),
+        text(clip(&name, 40)).size(14).color(color).font(style::semibold()).wrapping(text::Wrapping::None),
         text(count.to_string()).size(13).color(TEXT_FAINT).font(UI),
     ]
     .spacing(8)
     .align_y(iced::Center);
-    container(title).padding(Padding { top: 12.0, right: 4.0, bottom: 0.0, left: 4.0 }).height(app::PROJECT_H).into()
+    let fold: Element<'a, Message> = mouse_area(title).on_press(Message::ToggleProjectFolded(name.clone())).interaction(iced::mouse::Interaction::Pointer).into();
+    let hide = style::text_button(if hidden { t("einblenden", "show") } else { t("ausblenden", "hide") }, false, Message::ToggleProjectHidden(name));
+    let line = row![fold, Space::new().width(Fill), hide].align_y(iced::Center);
+    container(line).padding(Padding { top: 8.0, right: 0.0, bottom: 0.0, left: 4.0 }).height(app::PROJECT_H).into()
 }
 
 /// The phase in a word, as the phone writes it under a session.
@@ -785,6 +809,16 @@ fn list_footer(brain: &Brain) -> Element<'_, Message> {
     if !groups.automated.is_empty() {
         let label = if brain.prefs.show_automated { t("▾ Automatisch", "▾ Automated").to_string() } else { t("▸ automatisch", "▸ automated").to_string() };
         line = line.push(style::text_button(label, brain.prefs.show_automated, Message::ToggleAutomated));
+    }
+    if !groups.older.is_empty() {
+        let (n, arrow) = (groups.older.len(), if groups.older_open { "▾" } else { "▸" });
+        line = line.push(style::text_button(tr!("{arrow} {n} älter", "{arrow} {n} older"), groups.older_open, Message::ToggleOlder));
+    }
+    let hidden = groups.hidden_projects();
+    if hidden > 0 {
+        let arrow = if brain.show_hidden_projects { "▾" } else { "▸" };
+        let label = if hidden == 1 { tr!("{arrow} 1 Projekt ausgeblendet", "{arrow} 1 project hidden") } else { tr!("{arrow} {hidden} Projekte ausgeblendet", "{arrow} {hidden} projects hidden") };
+        line = line.push(style::text_button(label, brain.show_hidden_projects, Message::ToggleHiddenProjects));
     }
     container(line).padding(Padding { top: 12.0, right: 0.0, bottom: 0.0, left: 0.0 }).height(app::FOOTER_H).into()
 }

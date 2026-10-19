@@ -194,13 +194,14 @@ impl Brain {
         Places { accounts: self.model.accounts.iter().map(|a| a.id.clone()).collect(), folders, styles }
     }
 
-    /// The sessions as Brain lists them: the live ones by project, most urgent project first,
-    /// each with its zone (`attention`, `read`, `quiet`), then the ended ones.
+    /// The sessions as Brain lists them: the live ones by project, in the list's fixed order, each
+    /// with its zone (`attention`, `read`, `quiet`), then the ended ones. The phone has its own
+    /// filter: projects hidden on the Mac go along.
     fn link_views(&self, now: i64) -> Vec<View> {
         let groups = self.groups(now);
         let mut views: Vec<View> = Vec::new();
-        for (_, entries) in &groups.projects {
-            for entry in entries {
+        for block in &groups.projects {
+            for entry in &block.entries {
                 let group = match entry {
                     Entry::Decide(_, Ask::Maybe) | Entry::Read(_) => "read",
                     Entry::Decide(..) => "attention",

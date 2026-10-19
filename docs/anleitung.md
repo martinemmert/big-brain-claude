@@ -39,6 +39,11 @@ dieser Reihenfolge, jede mit ihrer Karte:
   grau ruht; „schläft“ heißt, Claude hat den Prozess nach einer Stunde Ruhe beendet, eine
   Nachricht weckt die Session wieder.
 
+Die Projekte stehen in fester Reihenfolge (alphabetisch), damit nichts springt. Ein Klick auf
+einen Projektkopf klappt das Projekt zu oder auf, ein Klick auf „Projekte“ oder „Zum Fortsetzen
+gemerkt“ die ganze Gruppe. **ausblenden** rechts am Projektkopf (oder ⌘K) nimmt ein Projekt aus der
+Liste; unten holt „N Projekte ausgeblendet“ sie zum Nachsehen zurück. Brain merkt sich das alles.
+
 Auf dem Handy ist die Liste genauso gruppiert, mit einem Filter nach Projekt oder Konto.
 
 Eine Session gehört woanders hin? Rechtsklick → **In ein anderes Projekt …** (oder ⌘K, „Projekt“ tippen):
@@ -49,7 +54,8 @@ Angeheftete Sessions (★) stehen in ihrem Projekt; beendete angeheftete unter �
 Alles, was gerade nicht nach dir ruft, liegt am Listenende: in der Fußzeile und in einem
 zugeklappten Abschnitt, jeweils mit Zahl; ein Klick (oder ⌘K) klappt auf:
 
-- **▸ N beendet** (`E`): die des letzten Tages; ältere findet die Suche.
+- **▸ N beendet** (`E`): die des letzten Tages.
+- **▸ N älter**: was vor mehr als einem Tag endete.
 - **▸ N im Hintergrund** (`B`): Claudes Hintergrund-Sessions ohne Aktivität seit einem Tag.
 - **▸ automatisch** (`U`): Sessions, die Programme gestartet haben, etwa Security-Reviews nach
   Commits oder `claude -p`-Skripte.

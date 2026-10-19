@@ -41,6 +41,18 @@ pub struct Prefs {
     /// Session id → the project the user put it in, instead of the one its folder says.
     #[serde(default)]
     projects: BTreeMap<String, String>,
+    /// Projects folded in the list (their head shows, their sessions don't).
+    #[serde(default)]
+    folded_projects: BTreeSet<String>,
+    /// Projects left out of the list; a footer link shows them again for a look.
+    #[serde(default)]
+    hidden_projects: BTreeSet<String>,
+    /// List sections folded by the user: `saved`, `projects`.
+    #[serde(default)]
+    folded_sections: BTreeSet<String>,
+    /// Show the sessions that ended over a day ago, at the end of the list.
+    #[serde(default)]
+    pub show_older: bool,
 }
 
 /// Sessions are remembered by account and session id, so a pin outlives the process.
@@ -192,6 +204,36 @@ impl Prefs {
         self.seen.remove(&id);
         self.reports.remove(&id);
         self.projects.remove(&id);
+    }
+
+    pub fn is_project_folded(&self, name: &str) -> bool {
+        self.folded_projects.contains(name)
+    }
+
+    pub fn toggle_project_folded(&mut self, name: &str) {
+        if !self.folded_projects.remove(name) {
+            self.folded_projects.insert(name.to_string());
+        }
+    }
+
+    pub fn is_project_hidden(&self, name: &str) -> bool {
+        self.hidden_projects.contains(name)
+    }
+
+    pub fn toggle_project_hidden(&mut self, name: &str) {
+        if !self.hidden_projects.remove(name) {
+            self.hidden_projects.insert(name.to_string());
+        }
+    }
+
+    pub fn is_section_folded(&self, section: &str) -> bool {
+        self.folded_sections.contains(section)
+    }
+
+    pub fn toggle_section(&mut self, section: &str) {
+        if !self.folded_sections.remove(section) {
+            self.folded_sections.insert(section.to_string());
+        }
     }
 
     /// The project the user put the session in, if any.
