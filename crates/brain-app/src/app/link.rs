@@ -485,9 +485,10 @@ impl Brain {
             self.refuse(t("Dieses Konto kennt Brain nicht.", "Brain doesn't know this account."));
             return Task::none();
         };
-        // A team runs interactively in tmux, where nobody sees Claude's question whether it
-        // trusts a folder it hasn't been in: the phone asks it, and only a yes is recorded.
-        if team.is_some() && !brain_core::account_setup::trusts(&account, &brain_core::account::home_dir(), folder) {
+        // Claude asks whether it trusts a folder it hasn't been in: a team in tmux shows the
+        // question where nobody sees it, a background session refuses to start ("Workspace not
+        // trusted"). The phone asks it, and only a yes is recorded.
+        if !brain_core::account_setup::trusts(&account, &brain_core::account::home_dir(), folder) {
             if !trust {
                 let folder_name = folder.rsplit('/').find(|p| !p.is_empty()).unwrap_or(folder);
                 self.refuse(tr!(
