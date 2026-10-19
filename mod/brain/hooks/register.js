@@ -93,10 +93,43 @@ async function reportTeam($) {
   } catch {}
 }
 
+// Each agent's name by its id, kept once seen: an agent that finished is no longer listed, and
+// the lead answers it by id while its question was recorded under its name.
+const agentNames = new Map()
+
 async function nameOfLoop($, agentId) {
   if (agentId === undefined) return LEAD
   const agent = (await $.agent.list()).find((one) => one.id === agentId)
-  return agent?.name ?? agent?.description ?? String(agentId).slice(0, 8)
+  const name = agent?.name ?? agent?.description ?? agentNames.get(agentId) ?? String(agentId).slice(0, 8)
+  agentNames.set(agentId, name)
+  return name
+}
+
+// Whom a message goes to, by the name its questions were recorded under: an agent's id, its
+// name or a teammate address (`name@team`).
+async function nameOfRecipient($, to) {
+  const address = String(to).split('@')[0]
+  const agent = (await $.agent.list()).find((one) => one.id === address || one.name === address || one.teammateId === address)
+  if (agent) return agent.name ?? agent.description ?? address
+  return agentNames.get(address) ?? address
+}
+
+// The person answers a member's question through the lead: "Antwort an <name>: …" (what Brain
+// and the phone send). Their answer settles that member's open questions at once, whether or
+// not the lead passes it on in a way Brain sees.
+async function answeredByPerson($, text) {
+  const match = /^\s*Antwort an ([^:\n]+):/.exec(text ?? '')
+  if (!match) return
+  const asker = match[1].trim()
+  let changed = false
+  teamMessages = teamMessages.map((m) => {
+    if (m.question && !m.answered && m.from === asker) {
+      changed = true
+      return { ...m, answered: true }
+    }
+    return m
+  })
+  if (changed) await reportTeam($)
 }
 
 // In an agent team the lead is `team-lead`: the same as the main conversation here.
@@ -179,6 +212,7 @@ async function carryOut($, item) {
     return
   }
   if (item.kind !== 'prompt' || typeof item.text !== 'string' || !item.text.trim()) return
+  await answeredByPerson($, item.text)
   // Queued: it starts a turn once the session is idle, as the person's own words. The mod's own
   // `prompt.submit` hook doesn't see what it submits itself, so the prompt is reported here, at
   // once: a reload of the mod while the prompt waits for its turn would lose a later report.
@@ -234,7 +268,10 @@ export function register(on) {
 
   on('prompt.submit', async ($, e, next) => {
     // Prompts a mod submits aren't the user's (Brain's own requests report themselves).
-    if (e.origin?.kind !== 'plugin') await hook($, 'UserPromptSubmit', { prompt: e.text })
+    if (e.origin?.kind !== 'plugin') {
+      await hook($, 'UserPromptSubmit', { prompt: e.text })
+      await answeredByPerson($, e.text)
+    }
     return next(e)
   }).catch(passOn)
 
@@ -279,7 +316,7 @@ export function register(on) {
   // What the session's agents write each other (the lead is the main conversation).
   on('session.send', async ($, e, next) => {
     const result = await next(e)
-    if (result.isDelivered) await recordMessage($, await nameOfLoop($, e.agentId), String(e.to).split('@')[0], e.text ?? '')
+    if (result.isDelivered) await recordMessage($, await nameOfLoop($, e.agentId), await nameOfRecipient($, e.to), e.text ?? '')
     return result
   }).catch(passOn)
 

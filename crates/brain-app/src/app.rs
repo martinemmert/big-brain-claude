@@ -2463,16 +2463,31 @@ impl Brain {
         }
         if let Some(waking) = self.waking.get_mut(key) {
             waking.texts.push(text.to_string());
+            self.answered_through_lead(key, text);
             return true;
         }
         if let Some(id) = self.request_taker(key) {
-            return self.send_request(&id, brain_core::requests::Request::Prompt { text: text.to_string() });
+            let sent = self.send_request(&id, brain_core::requests::Request::Prompt { text: text.to_string() });
+            if sent {
+                self.answered_through_lead(key, text);
+            }
+            return sent;
         }
         if self.wake(key, text) {
+            self.answered_through_lead(key, text);
             return true;
         }
         self.refuse(self.why_brain_cant_send());
         false
+    }
+
+    /// "Antwort an <member>: …" from Brain or the phone answers that member's open questions to
+    /// the person, whether or not the lead passes it on in a way its mod sees.
+    fn answered_through_lead(&mut self, key: &SessionKey, text: &str) {
+        let Some(asker) = brain_core::teams::answered_asker(text) else { return };
+        if let Err(err) = brain_core::teams::mark_answered(&brain_core::account::home_dir(), &key.id, asker) {
+            brain_core::log::write(&brain_core::account::home_dir(), "team", &format!("{asker}: answer not marked – {err}"));
+        }
     }
 
     /// Wakes an asleep session (`claude respawn`, off the UI thread), with `text` waiting for it.

@@ -161,6 +161,30 @@ pub fn load(home: &Path, session_id: &str) -> Option<Team> {
     serde_json::from_slice(&bytes).ok()
 }
 
+/// The person answered `asker` through the lead ("Antwort an <asker>: …", as Brain and the phone
+/// send it): its open questions count as answered. `asker` comes from that line; `false` when
+/// nothing changed.
+pub fn mark_answered(home: &Path, session_id: &str, asker: &str) -> std::io::Result<bool> {
+    let Some(mut team) = load(home, session_id) else { return Ok(false) };
+    let mut changed = false;
+    for message in team.messages.iter_mut().filter(|m| m.question && !m.answered && m.from == asker) {
+        message.answered = true;
+        changed = true;
+    }
+    if changed {
+        save(home, session_id, &team)?;
+    }
+    Ok(changed)
+}
+
+/// Whom "Antwort an <asker>: …" answers.
+pub fn answered_asker(text: &str) -> Option<&str> {
+    let rest = text.trim_start().strip_prefix("Antwort an ")?;
+    let (asker, _) = rest.split_once(':')?;
+    let asker = asker.trim();
+    (!asker.is_empty() && !asker.contains('\n')).then_some(asker)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +237,20 @@ mod tests {
         assert_eq!((usage[0].name.as_str(), usage[0].output), ("agent-aplaner-2", 500), "no meta: the file's name");
         assert_eq!((usage[1].name.as_str(), usage[1].input, usage[1].output), ("bote", 228, 36));
         assert_eq!(usage[1].model.as_deref(), Some("claude-haiku-5-5"));
+    }
+
+    #[test]
+    fn the_persons_answer_through_the_lead_settles_that_askers_questions() {
+        assert_eq!(answered_asker("Antwort an gestalter: nimm Variante B"), Some("gestalter"));
+        assert_eq!(answered_asker("Antwort an Replace stand-ins with new FUX components: ja"), Some("Replace stand-ins with new FUX components"));
+        assert_eq!(answered_asker("weiter so"), None);
+        let home = tempfile::tempdir().unwrap();
+        let team = Team { members: Vec::new(), messages: vec![message("1", "gestalter", true, false), message("2", "pruefer", true, false)] };
+        save(home.path(), "0aa1", &team).unwrap();
+        assert!(mark_answered(home.path(), "0aa1", "gestalter").unwrap());
+        let open: Vec<String> = load(home.path(), "0aa1").unwrap().open_questions().map(|m| m.from.clone()).collect();
+        assert_eq!(open, ["pruefer"]);
+        assert!(!mark_answered(home.path(), "0aa1", "gestalter").unwrap());
     }
 
     #[test]
