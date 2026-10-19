@@ -14,7 +14,7 @@ use iced::widget::operation;
 use iced::Task;
 
 use super::{off_thread, Brain, DetailTab, Message, Mode};
-use crate::format::shell_quote;
+use crate::format::{now_ms, shell_quote};
 use crate::i18n::t;
 use crate::tr;
 
@@ -193,6 +193,7 @@ impl Brain {
             return Ok(Task::none());
         }
         let in_brain = self.terminals.contains_key(&key);
+        self.note_started_from(&key);
         self.pending_restart = Some(PendingRestart { key: key.clone(), flags, in_brain, from_phone, team: None });
         Ok(self.type_into(&key, "/exit", t("Beende die Session für den Neustart …", "Ending the session for the restart …").into()))
     }
@@ -232,6 +233,7 @@ impl Brain {
             self.set_status(t("Umschalten geht, sobald die Session fertig ist und auf dich wartet.", "Switching works once the session has finished and waits for you."));
             return Ok(Task::none());
         }
+        self.note_started_from(&key);
         self.pending_restart = Some(PendingRestart { key: key.clone(), flags: Vec::new(), in_brain: false, from_phone: true, team: Some(on) });
         let note = if on { t("Beende die Session, sie geht als Team weiter …", "Ending the session, it goes on as a team …") } else { t("Beende das Team, die Session geht ohne weiter …", "Ending the team, the session goes on without one …") };
         Ok(self.type_into(&key, "/exit", note.into()))
@@ -240,7 +242,7 @@ impl Brain {
     /// An ended session goes on as an agent team in tmux.
     fn resume_as_team(&mut self, key: &SessionKey) -> Task<Message> {
         let Some(session) = self.model.board.get(key) else { return Task::none() };
-        let (Some(session_id), Some(cwd), Some(account)) = (session.session_id.clone(), session.cwd.clone(), self.model.account(&key.account).cloned()) else { return Task::none() };
+        let (Some(session_id), Some(cwd), Some(account)) = (self.conversation_id(session), session.cwd.clone(), self.model.account(&key.account).cloned()) else { return Task::none() };
         let options = brain_core::agents::Start { name: session.name.clone(), team: Some(crate::config::team_start()), resume: Some(session_id), ..Default::default() };
         self.set_status(t("Setze die Session als Team fort …", "Going on as a team …"));
         let started = off_thread(move || brain_core::agents::start_team(&account, std::path::Path::new(&cwd), &options));
@@ -250,7 +252,7 @@ impl Brain {
     /// An ended session goes on in the background (`claude --bg --resume`), with flags if any.
     pub(super) fn resume_in_background(&mut self, key: &SessionKey, flags: Vec<String>) -> Task<Message> {
         let Some(session) = self.model.board.get(key) else { return Task::none() };
-        let (Some(session_id), Some(cwd), Some(account)) = (session.session_id.clone(), session.cwd.clone(), self.model.account(&key.account).cloned()) else {
+        let (Some(session_id), Some(cwd), Some(account)) = (self.conversation_id(session), session.cwd.clone(), self.model.account(&key.account).cloned()) else {
             self.set_status(t("Zu dieser Session fehlt die ID oder der Ordner.", "This session has no id or folder."));
             return Task::none();
         };
@@ -281,6 +283,11 @@ impl Brain {
             return Task::none();
         }
         let Some(PendingRestart { key, flags, in_brain, from_phone, team }) = self.pending_restart.take() else { return Task::none() };
+        // A copy without a message goes on as the conversation it came from: it leaves the list.
+        if self.goes_on_from_elsewhere(&key) {
+            self.prefs.hide(&key, now_ms());
+            self.prefs.save();
+        }
         if team == Some(true) {
             return self.resume_as_team(&key);
         }
@@ -290,7 +297,8 @@ impl Brain {
         if in_brain {
             return self.resume_in_brain(key, flags);
         }
-        let (Some(session_id), Some(cwd)) = (session.session_id.clone(), session.cwd.clone()) else { return Task::none() };
+        let Some(session) = self.model.board.get(&key) else { return Task::none() };
+        let (Some(session_id), Some(cwd)) = (self.conversation_id(session), session.cwd.clone()) else { return Task::none() };
         let config_dir = self.model.account(&key.account).filter(|a| a.id != "main").map(|a| a.config_dir.display().to_string());
         let quoted: Vec<String> = flags.iter().map(|f| shell_quote(f)).collect();
         let command = format!("claude --resume {} {}", shell_quote(&session_id), quoted.join(" "));

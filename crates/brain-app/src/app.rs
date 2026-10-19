@@ -877,6 +877,9 @@ pub struct Brain {
     pub relaunch: relaunch::RelaunchDialog,
     pending_restart: Option<relaunch::PendingRestart>,
     restart_flags: HashMap<SessionKey, Vec<String>>,
+    /// Sessions ended to go on that were copies without a message yet: the conversation they
+    /// were started from, read from their command line while it was there.
+    started_from: HashMap<SessionKey, String>,
     /// Per session that waits: what it was read at, and the question it asks.
     /// Reminders sent per waiting session: (when its wait began, how many).
     reminders: HashMap<SessionKey, (i64, u32)>,
@@ -1035,6 +1038,7 @@ impl Brain {
             relaunch: relaunch::RelaunchDialog::default(),
             pending_restart: None,
             restart_flags: HashMap::new(),
+            started_from: HashMap::new(),
             link: None,
             link_qr: None,
         };
@@ -2798,7 +2802,7 @@ impl Brain {
         }
         if session.phase() == Phase::Ended {
             // A restart's flags come after the resume.
-            let mut args = vec!["--resume".into(), session.session_id.clone()?];
+            let mut args = vec!["--resume".into(), self.conversation_id(session)?];
             args.extend(self.restart_flags.get(&session.key).cloned().unwrap_or_default());
             return Some(("claude", args, cwd));
         }
@@ -4218,7 +4222,7 @@ impl Brain {
             self.set_status(t("Umziehen geht, sobald die Session fertig ist und auf dich wartet.", "Moving works once the session has finished and waits for you."));
             return Task::none();
         }
-        let (session_id, cwd, name) = (session.session_id.clone(), session.cwd.clone(), session.name.clone());
+        let (session_id, cwd, name) = (self.conversation_id(session), session.cwd.clone(), session.name.clone());
         let running_agent = session.agent.clone().filter(|a| a.is_active());
         let in_brain = session.agent.is_some();
         let (Some(session_id), Some(cwd)) = (session_id, cwd) else {
@@ -4773,6 +4777,7 @@ impl Brain {
         if self.blocked_in_demo() {
             return;
         }
+        self.note_started_from(&key);
         if !ended {
             // Never one in Brain's terminal (see above): typing goes through iTerm, no task.
             let _ = self.type_into_selected("/exit", t("Beende die Session in iTerm …", "Ending the session in iTerm …").into());
@@ -4792,14 +4797,47 @@ impl Brain {
         }
         self.takeover = None;
         let name = session.name.clone();
-        let (Some(session_id), Some(cwd), Some(account)) = (session.session_id.clone(), session.cwd.clone(), self.model.account(&key.account).cloned()) else {
+        let copy = self.goes_on_from_elsewhere(&key);
+        let (Some(session_id), Some(cwd), Some(account)) = (self.conversation_id(session), session.cwd.clone(), self.model.account(&key.account).cloned()) else {
             self.set_status(t("Zu dieser Session fehlt die ID oder der Ordner.", "This session has no id or folder."));
             return Task::none();
         };
+        self.started_from.remove(&key);
         self.set_status(t("Setze die Session in Brain fort …", "Continuing the session in Brain …"));
         let id = account.id.clone();
         let resumed = off_thread(move || brain_core::agents::resume(&account, std::path::Path::new(&cwd), &session_id, name.as_deref()));
-        Task::perform(resumed, move |result| Message::Started(id.clone(), result))
+        // A copy without a message goes on as the conversation it came from, which takes its place.
+        Task::perform(resumed, move |result| if copy { Message::Replaced(key.clone(), id.clone(), result) } else { Message::Started(id.clone(), result) })
+    }
+
+    /// The conversation to resume or move for a session: its own id, or, for a copy
+    /// (`--resume … --fork-session`) that has had no message yet, the one it was started from.
+    /// Claude Code writes a copy's transcript only with its first message: resuming the copy's
+    /// id fails ("source session … not found").
+    pub(super) fn conversation_id(&self, session: &Session) -> Option<String> {
+        let own = session.session_id.clone()?;
+        let account = self.model.account(&session.key.account)?;
+        if brain_core::transcript::find_transcript(account, &own).is_some() {
+            return Some(own);
+        }
+        let running = session.alive && brain_core::process::pid_alive(session.pid);
+        let from = if running { brain_core::process::resumed_from(session.pid) } else { self.started_from.get(&session.key).cloned() };
+        Some(from.unwrap_or(own))
+    }
+
+    /// Before a session is ended to go on: the conversation it goes on from, while its command
+    /// line is still there to tell.
+    pub(super) fn note_started_from(&mut self, key: &SessionKey) {
+        let Some(session) = self.model.board.get(key) else { return };
+        match self.conversation_id(session).filter(|id| Some(id) != session.session_id.as_ref()) {
+            Some(id) => self.started_from.insert(key.clone(), id),
+            None => self.started_from.remove(key),
+        };
+    }
+
+    /// Whether the session goes on as another conversation (see `conversation_id`).
+    pub(super) fn goes_on_from_elsewhere(&self, key: &SessionKey) -> bool {
+        self.model.board.get(key).is_some_and(|s| self.conversation_id(s).is_some_and(|id| Some(&id) != s.session_id.as_ref()))
     }
 }
 

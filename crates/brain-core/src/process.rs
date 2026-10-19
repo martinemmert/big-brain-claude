@@ -56,6 +56,26 @@ pub fn process_started_ms(pid: u32) -> Option<i64> {
     (read == size).then(|| info.pbi_start_tvsec as i64 * 1000 + info.pbi_start_tvusec as i64 / 1000)
 }
 
+/// The conversation a running session was started from (`claude --resume <id>`, also with
+/// `--fork-session`), from its command line.
+pub fn resumed_from(pid: u32) -> Option<String> {
+    let out = Command::new("ps").args(["-o", "args=", "-p", &pid.to_string()]).output().ok()?;
+    resume_arg(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn resume_arg(command_line: &str) -> Option<String> {
+    let mut words = command_line.split_whitespace();
+    while let Some(word) = words.next() {
+        if word == "--resume" || word == "-r" {
+            return words.next().filter(|id| !id.starts_with('-')).map(str::to_string);
+        }
+        if let Some(id) = word.strip_prefix("--resume=") {
+            return Some(id.to_string());
+        }
+    }
+    None
+}
+
 /// The controlling terminal of a process as a device path, e.g. `/dev/ttys018`.
 pub fn tty_of(pid: u32) -> Option<String> {
     let out = Command::new("ps")
@@ -89,5 +109,15 @@ mod tests {
         assert_eq!(calling_session_from(&accounts, Some("newer"), Some("23096")), Some((second, 23096)));
         assert_eq!(calling_session_from(&accounts, Some("newer"), Some("500")), None);
         assert_eq!(calling_session_from(&accounts, None, None), None);
+    }
+
+    #[test]
+    fn a_resumed_session_names_the_conversation_it_was_started_from() {
+        assert_eq!(resume_arg("claude --resume 9fa5e20b --fork-session"), Some("9fa5e20b".into()));
+        assert_eq!(resume_arg("claude -r 9fa5e20b"), Some("9fa5e20b".into()));
+        assert_eq!(resume_arg("claude --resume=9fa5e20b --model haiku"), Some("9fa5e20b".into()));
+        // `--resume` alone opens the picker: no conversation is named.
+        assert_eq!(resume_arg("claude --resume --model haiku"), None);
+        assert_eq!(resume_arg("claude"), None);
     }
 }
