@@ -455,8 +455,30 @@ fn hosts() -> Vec<String> {
     if let Some(name) = local_host_name() {
         hosts.push(format!("{name}.local"));
     }
-    hosts.extend(ipv4_addresses().into_iter().map(|a| a.to_string()));
+    let addresses = ipv4_addresses();
+    // On the go over Tailscale the phone needs the Mac's Tailscale name: iOS lets the app reach
+    // a 100.x address only with a CA's certificate (App Transport Security), and the app makes
+    // an exception for *.ts.net names.
+    if addresses.iter().any(|ip| tailscale(*ip)) {
+        hosts.extend(tailscale_name());
+    }
+    hosts.extend(addresses.into_iter().map(|a| a.to_string()));
     hosts
+}
+
+/// The Mac's name in the tailnet (`macbook.tail1234.ts.net`), from the Tailscale CLI: the one
+/// the Mac app ships, or one on the PATH (Homebrew).
+fn tailscale_name() -> Option<String> {
+    ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "tailscale"].into_iter().find_map(|cli| {
+        let out = std::process::Command::new(cli).args(["status", "--json"]).output().ok()?;
+        out.status.success().then(|| tailscale_name_in(&out.stdout)).flatten()
+    })
+}
+
+fn tailscale_name_in(status: &[u8]) -> Option<String> {
+    let status: serde_json::Value = serde_json::from_slice(status).ok()?;
+    let name = status.get("Self")?.get("DNSName")?.as_str()?.trim_end_matches('.');
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 fn local_host_name() -> Option<String> {
@@ -479,9 +501,13 @@ fn computer_name() -> String {
 /// Whether the phone may reach Brain at this address: Wi-Fi and Ethernet (macOS names them
 /// en0, en1, …), and on the go Tailscale, whose addresses are 100.64.0.0/10 on a tunnel.
 fn reachable(interface: &[u8], ip: Ipv4Addr) -> bool {
+    !ip.is_link_local() && (interface.starts_with(b"en") || tailscale(ip))
+}
+
+/// Tailscale gives out addresses in 100.64.0.0/10.
+fn tailscale(ip: Ipv4Addr) -> bool {
     let [first, second, ..] = ip.octets();
-    let tailscale = first == 100 && (64..128).contains(&second);
-    !ip.is_link_local() && (interface.starts_with(b"en") || tailscale)
+    first == 100 && (64..128).contains(&second)
 }
 
 fn ipv4_addresses() -> Vec<Ipv4Addr> {
@@ -1205,6 +1231,15 @@ mod tests {
         assert!(!reachable(b"utun4", "10.8.0.2".parse().unwrap()));
         assert!(!reachable(b"utun4", "100.128.0.1".parse().unwrap()));
         assert!(!reachable(b"en0", "169.254.3.4".parse().unwrap()));
+    }
+
+    #[test]
+    fn the_tailscale_name_is_the_macs_own_without_the_final_dot() {
+        use super::tailscale_name_in;
+        let status = br#"{"Self":{"DNSName":"macbook-pro-3.tail1b3106.ts.net.","TailscaleIPs":["100.117.51.56"]}}"#;
+        assert_eq!(tailscale_name_in(status), Some("macbook-pro-3.tail1b3106.ts.net".into()));
+        assert_eq!(tailscale_name_in(br#"{"Self":{"DNSName":""}}"#), None);
+        assert_eq!(tailscale_name_in(b"not json"), None);
     }
 
     use super::*;

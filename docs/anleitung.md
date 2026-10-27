@@ -222,8 +222,8 @@ Die App erreicht Brain, solange iPhone und Mac im selben WLAN sind. Wechseln bei
 sie Brain nach wenigen Sekunden wieder; eine neue Adresse des Macs übernimmt sie von selbst.
 
 **Unterwegs** erreicht die App Brain über [Tailscale](https://tailscale.com): die App auf Mac und
-iPhone installieren und mit demselben Konto anmelden. Brain nennt dem Handy seine Tailscale-Adresse
-mit; das Handy lernt sie, sobald es Brain einmal erreicht (zu Hause im WLAN oder per neuem
+iPhone installieren und mit demselben Konto anmelden (auf dem iPhone mit „Use Tailscale DNS“, der
+Voreinstellung). Brain nennt dem Handy seinen Tailscale-Namen (`….ts.net`) mit; das Handy lernt sie, sobald es Brain einmal erreicht (zu Hause im WLAN oder per neuem
 QR-Code). Danach geht es überall, solange Tailscale auf dem iPhone an ist und der Mac wach ist (am
 Netzteil schläft er nicht, zugeklappt ohne Monitor schon). Im
 Kopplungsdialog: **„Alle Handys abmelden“** (neuer Schlüssel, alte Kopplungen
