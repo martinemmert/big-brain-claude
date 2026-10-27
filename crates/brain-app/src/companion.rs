@@ -476,6 +476,14 @@ fn computer_name() -> String {
         .unwrap_or_else(|| "Brain".into())
 }
 
+/// Whether the phone may reach Brain at this address: Wi-Fi and Ethernet (macOS names them
+/// en0, en1, …), and on the go Tailscale, whose addresses are 100.64.0.0/10 on a tunnel.
+fn reachable(interface: &[u8], ip: Ipv4Addr) -> bool {
+    let [first, second, ..] = ip.octets();
+    let tailscale = first == 100 && (64..128).contains(&second);
+    !ip.is_link_local() && (interface.starts_with(b"en") || tailscale)
+}
+
 fn ipv4_addresses() -> Vec<Ipv4Addr> {
     let mut addresses = Vec::new();
     let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
@@ -489,12 +497,10 @@ fn ipv4_addresses() -> Vec<Ipv4Addr> {
         while !entry.is_null() {
             let ifa = &*entry;
             let up = ifa.ifa_flags & (libc::IFF_UP as u32) != 0 && ifa.ifa_flags & (libc::IFF_LOOPBACK as u32) == 0;
-            // macOS names Wi-Fi and Ethernet en0, en1, …
-            let wired_or_wifi = !ifa.ifa_name.is_null() && std::ffi::CStr::from_ptr(ifa.ifa_name).to_bytes().starts_with(b"en");
-            if up && wired_or_wifi && !ifa.ifa_addr.is_null() && i32::from((*ifa.ifa_addr).sa_family) == libc::AF_INET {
+            if up && !ifa.ifa_name.is_null() && !ifa.ifa_addr.is_null() && i32::from((*ifa.ifa_addr).sa_family) == libc::AF_INET {
                 let addr = &*(ifa.ifa_addr as *const libc::sockaddr_in);
                 let ip = Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr));
-                if !ip.is_link_local() && !addresses.contains(&ip) {
+                if reachable(std::ffi::CStr::from_ptr(ifa.ifa_name).to_bytes(), ip) && !addresses.contains(&ip) {
                     addresses.push(ip);
                 }
             }
@@ -1190,6 +1196,17 @@ fn not_found() -> Response<Full<Bytes>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_phone_reaches_brain_in_the_wifi_and_over_tailscale() {
+        use super::reachable;
+        assert!(reachable(b"en0", "192.168.1.171".parse().unwrap()));
+        assert!(reachable(b"utun4", "100.101.7.3".parse().unwrap()));
+        // Other tunnels (a company VPN) and link-local addresses lead nowhere for the phone.
+        assert!(!reachable(b"utun4", "10.8.0.2".parse().unwrap()));
+        assert!(!reachable(b"utun4", "100.128.0.1".parse().unwrap()));
+        assert!(!reachable(b"en0", "169.254.3.4".parse().unwrap()));
+    }
+
     use super::*;
 
     #[test]

@@ -219,7 +219,13 @@ Anfrage den Schlüssel mit – ohne ihn kommt niemand rein. Eine Freigabe vom Ha
 Dialog, den das Handy gezeigt hat: Ist inzwischen ein anderer offen, antwortet Brain nicht.
 
 Die App erreicht Brain, solange iPhone und Mac im selben WLAN sind. Wechseln beide das WLAN, findet
-sie Brain nach wenigen Sekunden wieder; eine neue Adresse des Macs übernimmt sie von selbst. Im
+sie Brain nach wenigen Sekunden wieder; eine neue Adresse des Macs übernimmt sie von selbst.
+
+**Unterwegs** erreicht die App Brain über [Tailscale](https://tailscale.com): die App auf Mac und
+iPhone installieren und mit demselben Konto anmelden. Brain nennt dem Handy seine Tailscale-Adresse
+mit; das Handy lernt sie, sobald es Brain einmal erreicht (zu Hause im WLAN oder per neuem
+QR-Code). Danach geht es überall, solange Tailscale auf dem iPhone an ist und der Mac wach ist (am
+Netzteil schläft er nicht, zugeklappt ohne Monitor schon). Im
 Kopplungsdialog: **„Alle Handys abmelden“** (neuer Schlüssel, alte Kopplungen
 gelten nicht mehr) und **„Brain Link ausschalten“**.
 
