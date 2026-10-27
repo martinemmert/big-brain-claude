@@ -223,9 +223,22 @@ sie Brain nach wenigen Sekunden wieder; eine neue Adresse des Macs übernimmt si
 
 **Unterwegs** erreicht die App Brain über [Tailscale](https://tailscale.com): die App auf Mac und
 iPhone installieren und mit demselben Konto anmelden (auf dem iPhone mit „Use Tailscale DNS“, der
-Voreinstellung). Brain nennt dem Handy seinen Tailscale-Namen (`….ts.net`) mit; das Handy lernt sie, sobald es Brain einmal erreicht (zu Hause im WLAN oder per neuem
-QR-Code). Danach geht es überall, solange Tailscale auf dem iPhone an ist und der Mac wach ist (am
-Netzteil schläft er nicht, zugeklappt ohne Monitor schon). Im
+Voreinstellung). Brain nennt dem Handy seinen Tailscale-Namen (`….ts.net`); das Handy lernt ihn,
+sobald es Brain einmal erreicht, und behält ihn.
+
+Tailscale läuft am Mac nur, solange du unterwegs bist:
+
+- **Losgehen:** die Kurzbefehl-Aktion **„Fernzugriff einschalten“** der Brain-App (noch im WLAN).
+  Brain öffnet Tailscale am Mac und verbindet. Im selben Kurzbefehl danach Tailscales „Connect“, das
+  WLAN aus und die Brain-App öffnen.
+- **Zurück:** Meldet sich das Handy wieder über das WLAN, schaltet Brain Tailscale ab (frühestens
+  3 Minuten nach dem Einschalten, damit der Kurzbefehl in Ruhe das WLAN abschalten kann). Von Hand:
+  **„Fernzugriff ausschalten“**. Am iPhone schaltet eine Automation „Beim Verbinden mit <WLAN>“ →
+  Tailscale „Disconnect“ Tailscale dort ab.
+- **Aus** heißt: getrennt und die Tailscale-App beendet, sie hat dann keine Verbindung nach draußen.
+  Beendet sich Brain, schaltet es Tailscale genauso ab. Was Brain dabei tut, steht im Log (`remote`).
+
+Der Mac muss dafür wach sein (am Netzteil schläft er nicht, zugeklappt ohne Monitor schon). Im
 Kopplungsdialog: **„Alle Handys abmelden“** (neuer Schlüssel, alte Kopplungen
 gelten nicht mehr) und **„Brain Link ausschalten“**.
 

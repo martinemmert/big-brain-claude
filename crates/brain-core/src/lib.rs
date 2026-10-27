@@ -30,6 +30,7 @@ pub mod state;
 pub mod store;
 pub mod styles;
 pub mod sync;
+pub mod tailscale;
 pub mod teams;
 pub mod templates;
 pub mod transcript;

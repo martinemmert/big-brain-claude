@@ -15,7 +15,7 @@
 use std::convert::Infallible;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -165,7 +165,7 @@ pub struct Picked {
 }
 
 /// What this Brain Link offers beyond the first version, for the phone to show only what works.
-const FEATURES: [&str; 17] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands", "team", "move", "outcome", "projects", "regroup", "trust"];
+const FEATURES: [&str; 18] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands", "team", "move", "outcome", "projects", "regroup", "trust", "remote"];
 /// How long a read with `wait` waits for something new before it answers anyway.
 const WAIT: Duration = Duration::from_secs(25);
 /// How often a waiting read looks again.
@@ -252,6 +252,7 @@ impl Link {
             places: RwLock::new(Places::default()),
             folders: RwLock::new(Default::default()),
             commands: Mutex::new(sender),
+            remote_since: AtomicI64::new(0),
         });
         let listener = std::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port))).map_err(|e| e.to_string())?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
@@ -455,30 +456,29 @@ fn hosts() -> Vec<String> {
     if let Some(name) = local_host_name() {
         hosts.push(format!("{name}.local"));
     }
-    let addresses = ipv4_addresses();
     // On the go over Tailscale the phone needs the Mac's Tailscale name: iOS lets the app reach
     // a 100.x address only with a CA's certificate (App Transport Security), and the app makes
     // an exception for *.ts.net names.
-    if addresses.iter().any(|ip| tailscale(*ip)) {
-        hosts.extend(tailscale_name());
-    }
-    hosts.extend(addresses.into_iter().map(|a| a.to_string()));
+    hosts.extend(tailscale_name());
+    hosts.extend(ipv4_addresses().into_iter().map(|a| a.to_string()));
     hosts
 }
 
 /// The Mac's name in the tailnet (`macbook.tail1234.ts.net`), from the Tailscale CLI: the one
 /// the Mac app ships, or one on the PATH (Homebrew).
+/// Remembered while Tailscale is off (only on while the phone is out): the phone keeps the
+/// list Brain names, and must still know the name the next time it goes out.
 fn tailscale_name() -> Option<String> {
-    ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "tailscale"].into_iter().find_map(|cli| {
-        let out = std::process::Command::new(cli).args(["status", "--json"]).output().ok()?;
-        out.status.success().then(|| tailscale_name_in(&out.stdout)).flatten()
-    })
-}
-
-fn tailscale_name_in(status: &[u8]) -> Option<String> {
-    let status: serde_json::Value = serde_json::from_slice(status).ok()?;
-    let name = status.get("Self")?.get("DNSName")?.as_str()?.trim_end_matches('.');
-    (!name.is_empty()).then(|| name.to_string())
+    let file = dir().join("tailscale-name");
+    match brain_core::tailscale::name() {
+        Some(name) => {
+            if std::fs::read_to_string(&file).ok().as_deref() != Some(name.as_str()) {
+                let _ = std::fs::write(&file, &name);
+            }
+            Some(name)
+        }
+        None => std::fs::read_to_string(&file).ok().map(|n| n.trim().to_string()).filter(|n| !n.is_empty()),
+    }
 }
 
 fn local_host_name() -> Option<String> {
@@ -502,6 +502,47 @@ fn computer_name() -> String {
 /// en0, en1, …), and on the go Tailscale, whose addresses are 100.64.0.0/10 on a tunnel.
 fn reachable(interface: &[u8], ip: Ipv4Addr) -> bool {
     !ip.is_link_local() && (interface.starts_with(b"en") || tailscale(ip))
+}
+
+/// How long the phone's `remote` request waits for Tailscale to connect (its own timeout is 15 s).
+const REMOTE_WAIT: Duration = Duration::from_secs(12);
+
+/// After turning Tailscale on the phone is still in the Wi-Fi for a moment (its shortcut turns
+/// the Wi-Fi off next): its requests from there don't count as "back home" yet.
+const REMOTE_GRACE_MS: i64 = 3 * 60 * 1000;
+
+/// Whether a request from `peer` means the phone is back in the home Wi-Fi while Brain has
+/// Tailscale on: then it is marked off (once), and the caller turns it off.
+fn home_again(state: &State, peer: std::net::IpAddr, now_ms: i64) -> bool {
+    let since = state.remote_since.load(Ordering::Relaxed);
+    back_home(since, peer, now_ms) && state.remote_since.compare_exchange(since, 0, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+}
+
+fn back_home(remote_since: i64, peer: std::net::IpAddr, now_ms: i64) -> bool {
+    let in_the_wifi = match peer {
+        std::net::IpAddr::V4(ip) => !ip.is_loopback() && !tailscale(ip),
+        std::net::IpAddr::V6(_) => false,
+    };
+    remote_since > 0 && in_the_wifi && now_ms - remote_since > REMOTE_GRACE_MS
+}
+
+/// However Brain ends (quit, crash), Tailscale goes off after it: once per Brain.
+fn down_when_brain_quits() {
+    static WATCHING: AtomicBool = AtomicBool::new(false);
+    if !WATCHING.swap(true, Ordering::Relaxed) {
+        if let Err(err) = brain_core::tailscale::down_after(std::process::id()) {
+            WATCHING.store(false, Ordering::Relaxed);
+            brain_core::log::write(&home_dir(), "remote", &format!("can't watch for Brain's end: {err}"));
+        }
+    }
+}
+
+fn remote_log(result: Result<&str, String>) {
+    let line = match result {
+        Ok(done) => done.to_string(),
+        Err(why) => format!("Tailscale: {why}"),
+    };
+    brain_core::log::write(&home_dir(), "remote", &line);
 }
 
 /// Tailscale gives out addresses in 100.64.0.0/10.
@@ -553,6 +594,8 @@ struct State {
     /// Each session's folder by its id, for the team's state file.
     folders: RwLock<std::collections::HashMap<String, PathBuf>>,
     commands: Mutex<Sender<(Command, Responder)>>,
+    /// When the phone turned Tailscale on (epoch ms), 0 while it's off or not Brain's doing.
+    remote_since: AtomicI64,
 }
 
 fn serve(listener: std::net::TcpListener, config: Arc<rustls::ServerConfig>, state: Arc<State>, stop: Arc<AtomicBool>) {
@@ -562,23 +605,27 @@ fn serve(listener: std::net::TcpListener, config: Arc<rustls::ServerConfig>, sta
         let acceptor = tokio_rustls::TlsAcceptor::from(config);
         while !stop.load(Ordering::Relaxed) {
             // Wakes up every second to notice a stop.
-            let Ok(Ok((tcp, _))) = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await else { continue };
+            let Ok(Ok((tcp, peer))) = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await else { continue };
             let (acceptor, state) = (acceptor.clone(), state.clone());
             tokio::spawn(async move {
                 let Ok(Ok(tls)) = tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await else { return };
-                let service = hyper::service::service_fn(move |req| handle(req, state.clone()));
+                let service = hyper::service::service_fn(move |req| handle(req, state.clone(), peer.ip()));
                 let _ = hyper::server::conn::http1::Builder::new().serve_connection(hyper_util::rt::TokioIo::new(tls), service).await;
             });
         }
     });
 }
 
-async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Full<Bytes>>, Infallible> {
+async fn handle(req: Request<Incoming>, state: Arc<State>, peer: std::net::IpAddr) -> Result<Response<Full<Bytes>>, Infallible> {
     let token = state.token.read().map(|t| t.clone()).unwrap_or_default();
     if token.is_empty() || !authorized(&req, &token) {
         // Guessing gets slow.
         tokio::time::sleep(Duration::from_millis(400)).await;
         return Ok(reply(StatusCode::UNAUTHORIZED, &serde_json::json!({ "error": "not paired" })));
+    }
+    // The phone is back in the home Wi-Fi: Tailscale goes off again.
+    if home_again(&state, peer, chrono::Utc::now().timestamp_millis()) {
+        tokio::task::spawn_blocking(|| remote_log(brain_core::tailscale::down().map(|()| "back in the Wi-Fi: Tailscale is off")));
     }
     let path: Vec<String> = req.uri().path().trim_matches('/').split('/').map(str::to_string).collect();
     let parts: Vec<&str> = path.iter().map(String::as_str).collect();
@@ -591,6 +638,39 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 StatusCode::OK,
                 &serde_json::json!({ "name": computer_name(), "version": env!("CARGO_PKG_VERSION"), "hosts": hosts(), "features": FEATURES }),
             )
+        }
+        // On the go: `on` before going out turns Tailscale on, `off` turns it off (and the phone
+        // turns it off by itself once it is back in the Wi-Fi).
+        (Method::POST, ["v1", "remote"]) => {
+            let Some(body) = read_json(req).await else { return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "json" }))) };
+            let on = body.get("on").and_then(|o| o.as_bool()).unwrap_or(true);
+            let switched = tokio::task::spawn_blocking(move || if on { brain_core::tailscale::up() } else { brain_core::tailscale::down() });
+            match tokio::time::timeout(REMOTE_WAIT, switched).await {
+                Ok(Ok(result)) => {
+                    let ok = result.is_ok();
+                    if ok && on {
+                        state.remote_since.store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+                        down_when_brain_quits();
+                    } else if ok {
+                        state.remote_since.store(0, Ordering::Relaxed);
+                    }
+                    let message = match &result {
+                        Ok(()) if on => "Brain ist unterwegs erreichbar (Tailscale an).".to_string(),
+                        Ok(()) => "Tailscale ist aus.".to_string(),
+                        Err(why) => format!("Tailscale: {why}"),
+                    };
+                    remote_log(result.map(|()| if on { "Tailscale is on" } else { "Tailscale is off" }));
+                    reply(StatusCode::OK, &serde_json::json!({ "ok": ok, "message": message }))
+                }
+                // Still connecting: the phone tries again on its own.
+                _ => {
+                    if on {
+                        state.remote_since.store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+                        down_when_brain_quits();
+                    }
+                    reply(StatusCode::ACCEPTED, &serde_json::json!({ "ok": true, "pending": true }))
+                }
+            }
         }
         // `wait=<version>`: answers once the list is newer than that version (or after a while
         // anyway), so the phone sees a change within a moment instead of at its next look.
@@ -1234,13 +1314,20 @@ mod tests {
     }
 
     #[test]
-    fn the_tailscale_name_is_the_macs_own_without_the_final_dot() {
-        use super::tailscale_name_in;
-        let status = br#"{"Self":{"DNSName":"macbook-pro-3.tail1b3106.ts.net.","TailscaleIPs":["100.117.51.56"]}}"#;
-        assert_eq!(tailscale_name_in(status), Some("macbook-pro-3.tail1b3106.ts.net".into()));
-        assert_eq!(tailscale_name_in(br#"{"Self":{"DNSName":""}}"#), None);
-        assert_eq!(tailscale_name_in(b"not json"), None);
+    fn the_phone_in_the_wifi_turns_tailscale_off_after_the_grace() {
+        use super::{back_home, REMOTE_GRACE_MS};
+        let (wifi, tailnet, mac) = ("192.168.1.185".parse().unwrap(), "100.66.71.105".parse().unwrap(), "127.0.0.1".parse().unwrap());
+        let on = 1_000_000;
+        let later = on + REMOTE_GRACE_MS + 1;
+        assert!(back_home(on, wifi, later));
+        // Right after turning it on the phone is still in the Wi-Fi: its shortcut turns it off next.
+        assert!(!back_home(on, wifi, on + 1000));
+        // Over Tailscale, from the Mac itself, or with Tailscale not on by Brain: nothing happens.
+        assert!(!back_home(on, tailnet, later));
+        assert!(!back_home(on, mac, later));
+        assert!(!back_home(0, wifi, later));
     }
+
 
     use super::*;
 
