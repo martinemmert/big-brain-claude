@@ -38,12 +38,19 @@ pub fn pid_alive(pid: u32) -> bool {
     result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-/// Whether `pid` runs Claude Code (its command is `claude …`): a pid Brain remembers may belong
-/// to another program by now.
+/// Whether `pid` runs Claude Code: a pid Brain remembers may belong to another program by now.
 pub fn is_claude(pid: u32) -> bool {
     let Ok(out) = Command::new("ps").args(["-o", "command=", "-p", &pid.to_string()]).output() else { return false };
-    let command = String::from_utf8_lossy(&out.stdout);
-    command.split_whitespace().next().is_some_and(|program| program == "claude" || program.ends_with("/claude"))
+    claude_program(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Its command is `claude …`, or the versioned binary Claude Code's daemon starts background
+/// sessions with (`~/.local/share/claude/versions/2.1.312 …`).
+fn claude_program(command: &str) -> bool {
+    command.split_whitespace().next().is_some_and(|program| {
+        let parent = std::path::Path::new(program).parent().and_then(|p| p.to_str()).unwrap_or("");
+        program == "claude" || program.ends_with("/claude") || parent.ends_with("/claude/versions")
+    })
 }
 
 /// When a process started (epoch ms), from the kernel's process info.
@@ -109,6 +116,17 @@ mod tests {
         assert_eq!(calling_session_from(&accounts, Some("newer"), Some("23096")), Some((second, 23096)));
         assert_eq!(calling_session_from(&accounts, Some("newer"), Some("500")), None);
         assert_eq!(calling_session_from(&accounts, None, None), None);
+    }
+
+    #[test]
+    fn claude_code_is_known_by_its_program_also_the_versioned_one() {
+        assert!(claude_program("claude --resume x"));
+        assert!(claude_program("/Users/m/.local/bin/claude"));
+        assert!(claude_program("/Users/m/.local/share/claude/ClaudeCode.app/Contents/MacOS/claude --bg"));
+        assert!(claude_program("/Users/m/.local/share/claude/versions/2.1.312 --resume /Users/m/x.jsonl"));
+        // The desktop app and anything else that took over a pid.
+        assert!(!claude_program("/Applications/Claude.app/Contents/MacOS/Claude"));
+        assert!(!claude_program("/usr/bin/vim notes"));
     }
 
     #[test]

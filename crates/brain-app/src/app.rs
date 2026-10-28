@@ -720,8 +720,6 @@ pub struct Brain {
     team_panes: HashMap<u32, String>,
     team_panes_read: Option<Instant>,
     teams_read: HashMap<String, std::time::SystemTime>,
-    /// Questions to the person already notified about; the first read only sets the baseline.
-    team_notified: Option<HashSet<String>>,
     /// The team guide while the Team tab shows.
     pub team_guide: Option<String>,
     /// What each of the selected session's agents used, while the Team tab shows.
@@ -937,7 +935,6 @@ impl Brain {
             team_panes: HashMap::new(),
             team_panes_read: None,
             teams_read: HashMap::new(),
-            team_notified: None,
             team_guide: None,
             team_usage: Vec::new(),
             team_state: None,
@@ -1808,20 +1805,17 @@ impl Brain {
             let body = plain(&session.headline().unwrap_or_default());
             self.notifier.post(&key, &session.display_name(), &subtitle, &body, true);
         }
+        // Only what asks the person directly notifies: a question, a permission, a `--waiting`
+        // question of an idle session. A turn that just ended, or a team member's question (the
+        // lead asks the person itself), shows in the list.
         for item in refreshed {
-            if self.prefs.snoozed_until(&item.key, now).is_some() || self.prefs.is_muted(&item.key) || self.is_quiet(&item.key) {
+            if self.prefs.snoozed_until(&item.key, now).is_some() || self.prefs.is_muted(&item.key) || self.is_quiet(&item.key) || self.real_ask(&item.key).is_none() {
                 continue;
             }
             let account = item.key.account.clone();
-            // Whatever asks for a decision calls, also a `--waiting` question of an idle session.
-            let calling = self.real_ask(&item.key).is_some();
-            let subtitle = if calling {
-                tr!("{account} · braucht dich", "{account} · needs you")
-            } else {
-                tr!("{account} · fertig, du bist dran", "{account} · done, your turn")
-            };
+            let subtitle = tr!("{account} · braucht dich", "{account} · needs you");
             let body = plain(item.headline.as_deref().unwrap_or(""));
-            self.notifier.post(&item.key, &item.name, &subtitle, &body, calling);
+            self.notifier.post(&item.key, &item.name, &subtitle, &body, true);
         }
 
         let mut tasks = Vec::new();
@@ -1839,7 +1833,7 @@ impl Brain {
                 notify::Response::Reply(key, text) => tasks.push(self.reply_from_notification(key, text)),
             }
         }
-        self.refresh_teams(now);
+        self.refresh_teams();
         tasks.push(self.serve_link(now));
         self.refresh_sync_conflicts();
         self.garden_count = self.garden_findings().iter().filter(|f| f.sure).count();
@@ -1962,9 +1956,9 @@ impl Brain {
         Task::none()
     }
 
-    /// Reads the teams the sessions' mods reported, only files that changed, and notifies each
-    /// new question to the person once (not for muted or snoozed sessions).
-    fn refresh_teams(&mut self, now: i64) {
+    /// Reads the teams the sessions' mods reported, only files that changed. Their questions to
+    /// the person show in the Team tab; they don't notify (the lead asks the person itself).
+    fn refresh_teams(&mut self) {
         if self.team_panes_read.is_none_or(|at| at.elapsed() > Duration::from_secs(5)) {
             self.team_panes = brain_core::agents::team_panes();
             self.team_panes_read = Some(Instant::now());
@@ -1995,27 +1989,6 @@ impl Brain {
                 self.team_state = cwd.and_then(|c| brain_core::teams::state_file(&config::team_state_dir(), std::path::Path::new(&c))).and_then(|f| std::fs::read_to_string(f).ok());
                 self.team_state_read = Some((key, Instant::now()));
             }
-        }
-
-        let open: Vec<(SessionKey, brain_core::teams::TeamMessage)> =
-            self.teams.iter().flat_map(|(key, team)| team.open_questions().map(move |q| (key.clone(), q.clone()))).collect();
-        let Some(notified) = self.team_notified.as_mut() else {
-            self.team_notified = Some(open.into_iter().map(|(_, q)| q.id).collect());
-            return;
-        };
-        let mut posts = Vec::new();
-        for (key, question) in open {
-            if notified.insert(question.id.clone()) {
-                posts.push((key, question));
-            }
-        }
-        for (key, question) in posts {
-            if self.prefs.is_muted(&key) || self.prefs.snoozed_until(&key, now).is_some() {
-                continue;
-            }
-            let name = self.model.board.get(&key).map(|s| s.display_name()).unwrap_or_default();
-            let from = question.from.clone();
-            self.notifier.post(&key, &name, &tr!("Frage von {from}", "Question from {from}"), &plain(&question.text), true);
         }
     }
 

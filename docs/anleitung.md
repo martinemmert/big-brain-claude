@@ -111,7 +111,7 @@ Die Tabs (`←` `→`):
   „Vertrauen und starten“ trägt Brain ihn ein und startet (sonst startet Claude im Hintergrund gar
   nicht, und in tmux sähe die Frage niemand). `⌘K` → „Als Agenten-Team fortsetzen“ / „Ohne Team fortsetzen“ schaltet eine
   laufende Session um (sie startet dafür neu, das Gespräch bleibt). Hat eine Session Agenten, zeigt der Tab **Team** ihre Fragen an dich
-  („Frage an Martin: …“, mit Mitteilung; „Antworten“ schreibt dem Lead, der gibt es weiter), wer
+  („Frage an Martin: …“, ohne Mitteilung, der Lead fragt dich selbst; „Antworten“ schreibt dem Lead, der gibt es weiter), wer
   arbeitet und wer wartet, was jeder verbraucht hat (Tokens rein/raus, aus den Transkripten der
   Mitglieder), den Stand der Aufgabe (die Datei des Leads unter `team_state_dir`, Standard
   `~/.claude-mods/team-state/<repo>/<branch>.md`), ihre Nachrichten mit Typ (`[BLOCKER]`, `[EINWAND]`
@@ -155,8 +155,9 @@ Die Tabs (`←` `→`):
   eingefügten Screenshots. `⌘⏎` sendet.
 - **Befehlspalette:** `⌘K`. Alle Aktionen; Slash-Befehle wie `/compact`, `/context`, `/model`
   für die Session. Freier Text geht an die Session oder an alle, die auf dich warten.
-- **Benachrichtigungen:** Nur wenn eine Session fertig ist oder dich etwas fragt (eine Frage oder
-  eine Freigabe). Wartet eine Session weiter auf eine Entscheidung, erinnert Brain nach
+- **Benachrichtigungen:** Nur wenn eine Session dich direkt fragt (eine Frage, eine Freigabe oder
+  ein `brain report --waiting`). Eine fertige Runde („du bist dran“) und Fragen von Team-Mitgliedern
+  stehen nur in der Liste. Auf dem iPhone gilt dasselbe. Wartet eine Session weiter auf eine Entscheidung, erinnert Brain nach
   `remind_after_minutes` (Standard 10, 0 schaltet aus), höchstens dreimal; nie bei „Frage?“
   und nie bei Berichten. Direkt in der Mitteilung kannst du
   antworten (nur am entsperrten Mac), öffnen oder 15 Minuten pausieren.
