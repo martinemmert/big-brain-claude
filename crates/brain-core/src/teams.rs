@@ -52,6 +52,13 @@ pub struct TeamMessage {
 pub const KINDS: [&str; 8] = ["AUFTRAG", "FRAGE", "ANTWORT", "INFO", "EINWAND", "BLOCKER", "FERTIG", "STILL"];
 
 impl TeamMessage {
+    /// A member asking the person: its message starts with "Frage an Martin:". The lead asks the
+    /// person itself; a message that only quotes such a question (the lead deciding it, a member
+    /// reporting it done) asks nothing. Brain's mod marked those as questions until 2026-10.
+    pub fn asks_the_person(&self) -> bool {
+        self.from != "lead" && self.text.trim_start().to_lowercase().starts_with("frage an martin")
+    }
+
     /// Its kind and the text after it, when the first line starts with one (`[BLOCKER] …`).
     pub fn kind(&self) -> Option<(&'static str, &str)> {
         let rest = self.text.trim_start().strip_prefix('[')?;
@@ -78,7 +85,7 @@ pub fn state_file(dir: &Path, cwd: &Path) -> Option<PathBuf> {
 impl Team {
     /// The questions for the person nobody answered yet, oldest first.
     pub fn open_questions(&self) -> impl Iterator<Item = &TeamMessage> {
-        self.messages.iter().filter(|m| m.question && !m.answered)
+        self.messages.iter().filter(|m| m.question && !m.answered && m.asks_the_person())
     }
 
     /// Members still at work or waiting for a message, not the finished ones.
@@ -190,7 +197,8 @@ mod tests {
     use super::*;
 
     fn message(id: &str, from: &str, question: bool, answered: bool) -> TeamMessage {
-        TeamMessage { id: id.into(), from: from.into(), to: "lead".into(), text: "…".into(), at: 1, question, answered }
+        let text = if question { "Frage an Martin: …" } else { "…" };
+        TeamMessage { id: id.into(), from: from.into(), to: "lead".into(), text: text.into(), at: 1, question, answered }
     }
 
     #[test]
@@ -251,6 +259,15 @@ mod tests {
         let open: Vec<String> = load(home.path(), "0aa1").unwrap().open_questions().map(|m| m.from.clone()).collect();
         assert_eq!(open, ["pruefer"]);
         assert!(!mark_answered(home.path(), "0aa1", "gestalter").unwrap());
+    }
+
+    #[test]
+    fn only_a_members_own_question_asks_the_person() {
+        let message = |from: &str, text: &str| TeamMessage { id: "1".into(), from: from.into(), to: "lead".into(), text: text.into(), at: 0, question: true, answered: false };
+        assert!(message("quirin", "Frage an Martin: darf ich dort SQL schreiben?").asks_the_person());
+        assert!(!message("lead", "Q1 entscheide ich, die Frage an Martin war: …").asks_the_person());
+        assert!(!message("lead", "Frage an Martin: ja?").asks_the_person());
+        assert!(!message("gestalter", "[FERTIG] K5: Frage an Martin geklärt").asks_the_person());
     }
 
     #[test]

@@ -76,7 +76,9 @@ async function reportCommands($) {
 // Agents of this session (an agent team's members, subagents) and what they write each other,
 // for Brain's Team tab. Messages asking the person ("Frage an Martin: …") are questions there.
 const LEAD = 'lead'
-const QUESTION = /frage an martin/i
+// A member's own question starts so; the lead asks the person itself, and a message that only
+// quotes one asks nothing.
+const QUESTION = /^\s*frage an martin/i
 let teamMessages = []
 
 async function reportTeam($) {
@@ -141,7 +143,7 @@ async function recordMessage($, sender, recipient, text) {
   const at = await $.clock.now()
   // A message from the lead to someone answers that someone's open questions.
   if (from === LEAD) teamMessages = teamMessages.map((m) => (m.question && m.from === to ? { ...m, answered: true } : m))
-  teamMessages = [...teamMessages, { id: `${at}-${from}-${to}`, from, to, text: text.trim().slice(0, 2000), at, question: QUESTION.test(text), answered: false }].slice(-200)
+  teamMessages = [...teamMessages, { id: `${at}-${from}-${to}`, from, to, text: text.trim().slice(0, 2000), at, question: from !== LEAD && QUESTION.test(text), answered: false }].slice(-200)
   await reportTeam($)
 }
 
