@@ -200,7 +200,8 @@ impl Brain {
     /// with its zone (`attention`, `read`, `quiet`), then the ended ones. The phone has its own
     /// filter: projects hidden on the Mac go along.
     fn link_views(&self, now: i64) -> Vec<View> {
-        let groups = self.groups(now);
+        // What's typed into the Mac's search or picked as its account filter stays on the Mac.
+        let groups = self.groups_for(now, "", None);
         let mut views: Vec<View> = Vec::new();
         for block in &groups.projects {
             for entry in &block.entries {

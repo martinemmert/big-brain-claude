@@ -3046,7 +3046,13 @@ impl Brain {
     // ---- the list ---------------------------------------------------------------
 
     pub fn groups(&self, now: i64) -> Groups<'_> {
-        let searching = !self.search.is_empty();
+        self.groups_for(now, &self.search, self.filter.as_deref())
+    }
+
+    /// The list as grouped for a search and an account (none: every account). The phone gets it
+    /// without the Mac's search and account filter: it has its own.
+    pub(super) fn groups_for(&self, now: i64, search: &str, account: Option<&str>) -> Groups<'_> {
+        let searching = !search.is_empty();
         let mut groups = Groups {
             saved: vec![],
             decide: vec![],
@@ -3071,8 +3077,8 @@ impl Brain {
             .board
             .sorted()
             .into_iter()
-            .filter(|s| self.filter.as_ref().is_none_or(|f| *f == s.key.account))
-            .filter(|s| s.matches(&self.search));
+            .filter(|s| account.is_none_or(|f| f == s.key.account))
+            .filter(|s| s.matches(search));
         for session in visible {
             let ended = session.phase() == Phase::Ended;
             if ended && (session.is_empty() || !self.model.resumable(session)) {
