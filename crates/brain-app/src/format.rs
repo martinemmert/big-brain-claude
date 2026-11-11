@@ -1,6 +1,5 @@
 //! Text for the UI: times, previews, labels and short forms. Nothing here draws.
 
-use brain_core::state::Phase;
 use chrono::{Local, TimeZone, Utc};
 
 use crate::i18n::t;
@@ -114,17 +113,6 @@ pub fn background_summary(tasks: &[brain_core::event::BackgroundTask]) -> String
     }
     let list = parts.join(", ");
     if tasks.len() == 1 { crate::tr!("{list} läuft", "{list} running") } else { crate::tr!("{list} laufen", "{list} running") }
-}
-
-pub fn phase_label(phase: Phase) -> &'static str {
-    match phase {
-        Phase::NeedsYou => t("Wartet auf dich", "Waiting for you"),
-        Phase::YourTurn => t("Fertig, du bist dran", "Done, your turn"),
-        Phase::Working => t("Arbeitet", "Working"),
-        Phase::Background => t("Arbeitet im Hintergrund", "Working in the background"),
-        Phase::Asleep => t("Schläft – wacht auf, wenn du schreibst", "Asleep – wakes when you write"),
-        Phase::Ended => t("Beendet", "Ended"),
-    }
 }
 
 /// `claude-opus-5-5` → `opus-5-5`, `claude-haiku-4-5-20251001` → `haiku-4-5`.

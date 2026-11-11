@@ -22,28 +22,6 @@ pub fn quick_terminal() -> Option<String> {
     (!spec.trim().is_empty() && spec.trim() != "off").then_some(spec)
 }
 
-/// Where new screenshots are watched for: `screenshot_folder`, else macOS' screenshot location
-/// (`defaults read com.apple.screencapture location`), else the Desktop. "off" turns it off.
-pub fn screenshot_folder() -> Option<std::path::PathBuf> {
-    let home = brain_core::account::home_dir();
-    let configured = read().and_then(|v| v.get("screenshot_folder")?.as_str().map(str::to_string));
-    match configured.as_deref().map(str::trim) {
-        Some("off") | Some("") => None,
-        Some(folder) => Some(match folder.strip_prefix("~/") {
-            Some(rest) => home.join(rest),
-            None => folder.into(),
-        }),
-        None => {
-            let out = std::process::Command::new("defaults").args(["read", "com.apple.screencapture", "location"]).output().ok();
-            let location = out.filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|l| !l.is_empty());
-            Some(location.map(|l| match l.strip_prefix("~/") {
-                Some(rest) => home.join(rest),
-                None => l.into(),
-            }).unwrap_or_else(|| home.join("Desktop")))
-        }
-    }
-}
-
 /// The chat history's font family (`chat_font`), e.g. "JetBrains Mono"; by default the
 /// terminal's.
 pub fn chat_font() -> Option<String> {
@@ -55,21 +33,3 @@ pub fn chat_font_size() -> Option<f32> {
     read().and_then(|v| v.get("chat_font_size")?.as_f64()).map(|s| s.clamp(9.0, 24.0) as f32)
 }
 
-/// Canned replies for `T` then `1`–`9`: `quick_replies` in config.json, or a default set in the
-/// UI language.
-pub fn quick_replies() -> Vec<String> {
-    let configured: Option<Vec<String>> = read()
-        .and_then(|v| v.get("quick_replies")?.as_array().cloned())
-        .map(|list| list.iter().filter_map(|r| r.as_str().map(str::to_string)).filter(|r| !r.trim().is_empty()).collect());
-    if let Some(list) = configured.filter(|l| !l.is_empty()) {
-        return list.into_iter().take(9).collect();
-    }
-    let defaults: [(&str, &str); 5] = [
-        ("Weiter.", "Go on."),
-        ("Ja, mach das.", "Yes, do that."),
-        ("Lass die Tests laufen und melde das Ergebnis.", "Run the tests and report the result."),
-        ("Committe die Änderungen.", "Commit the changes."),
-        ("Fass kurz zusammen, wo du stehst.", "Summarise briefly where you are."),
-    ];
-    defaults.iter().map(|(de, en)| crate::i18n::t(de, en).to_string()).collect()
-}

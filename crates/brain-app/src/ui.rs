@@ -1,14 +1,12 @@
 //! Everything Brain draws: title bar, session list, detail pane, dialogs, footer.
 
 use brain_core::state::{Ask, Phase, Session};
-use brain_core::transcript::Role;
 use iced::widget::{button, column, container, mouse_area, row, scrollable, stack, text, text_input, Space};
 use iced::{Background, Border, Color, Element, Fill, Length, Padding};
 
 use crate::companion::{Command, Picked};
 use crate::app::{self, Action, Brain, Choice, Groups, Item, Message, Mode, CLEANUP_DAYS};
-use crate::config;
-use crate::format::{ago, ago_phrase, background_summary, clip, clock, format_tokens, now_ms, phase_label, plain, short_model, tilde};
+use crate::format::{ago, ago_phrase, background_summary, clip, clock, format_tokens, now_ms, plain, short_model, tilde};
 use crate::i18n::t;
 use crate::markdown;
 use crate::style::{
@@ -36,7 +34,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::Garden => garden(brain),
         Mode::Relaunch => relaunch(brain),
         Mode::NewSession => new_session(brain),
-        _ => detail(brain, now),
+        _ => detail(brain),
     };
     let mut left = column![search(brain), list(brain, &groups, now)];
     if let Some(usage) = usage(brain, now) {
@@ -59,11 +57,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         grip,
         container(detail).width(Fill).height(Fill).style(|_| style::fill(INK)),
     ];
-    let mut chrome = column![titlebar(brain, groups.deciding()), divider(), body.height(Fill), divider()];
-    if let Some(offer) = screenshot_offer(brain) {
-        chrome = chrome.push(offer);
-    }
-    let window = container(chrome.push(footer(brain)))
+    let window = container(column![titlebar(brain, groups.deciding()), divider(), body.height(Fill), divider(), footer(brain)])
         .width(Fill)
         .height(Fill)
         .style(|_| container::Style { background: Some(Background::Color(INK)), text_color: Some(TEXT), ..container::Style::default() });
@@ -177,26 +171,6 @@ fn palette(brain: &Brain) -> Element<'_, Message> {
     stack![backdrop, container(panel).padding(Padding { top: 90.0, ..Padding::ZERO }).center_x(Fill)].into()
 }
 
-/// A screenshot taken a moment ago: into a session's terminal, into the composer, or away.
-fn screenshot_offer(brain: &Brain) -> Option<Element<'_, Message>> {
-    let path = brain.screenshot_offer.as_ref()?;
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut bar = row![
-        container(iced::widget::image(iced::widget::image::Handle::from_path(path)).height(34)).padding(2).style(|_| boxed(SURFACE, LINE, 4.0)),
-        text(tr!("Neuer Screenshot: {name}", "New screenshot: {name}")).size(12.5).color(TEXT).font(UI).width(Fill),
-    ]
-    .spacing(10)
-    .align_y(iced::Center);
-    if let Some(target) = brain.screenshot_target().and_then(|k| brain.model.board.get(&k)) {
-        let session = clip(&target.display_name(), 28);
-        bar = bar.push(action(tr!("In „{session}“", "Into “{session}”"), "", true, Some(Message::ScreenshotTo(true))));
-    }
-    bar = bar
-        .push(action(t("In den Composer", "Into the composer"), "", false, Some(Message::ScreenshotTo(false))))
-        .push(button(text("✕").size(13).color(TEXT_MUTED)).padding([4, 8]).on_press(Message::ScreenshotDismiss).style(|_, _| button::Style::default()));
-    Some(container(bar).padding([6, 14]).width(Fill).style(|_| style::fill(alpha(WORKING, 0x1c))).into())
-}
-
 // ---- context menu -----------------------------------------------------------------
 
 const MENU_WIDTH: f32 = 250.0;
@@ -240,8 +214,6 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
     if s.awaiting_permission() && caps.keys {
         talk.push((t("Erlauben", "Allow").to_string(), "Y", Action::Allow, false));
         talk.push((t("Ablehnen", "Deny").to_string(), "N", Action::Deny, false));
-    } else if s.waits_for_input() && brain.can_send(&s.key) {
-        talk.push((t("Antworten", "Reply").to_string(), "T", Action::StartReply, false));
     }
     // Brain renames with `/rename` through the session's mod: only while the session waits.
     if s.waits_for_input() && brain.can_send(&s.key) {
@@ -641,7 +613,7 @@ fn card<'a>(brain: &'a Brain, s: &'a Session, ask: Ask, now: i64) -> Element<'a,
             .font(UI));
             body = body.push(
                 row![
-                    action(t("Antworten", "Reply"), key_cap("T"), false, Some(Message::OpenEntry(s.key.clone()))),
+                    action(t("Antworten", "Reply"), key_cap("⏎"), false, Some(Message::OpenEntry(s.key.clone()))),
                     button(text(t("Nur Bericht", "Only a report")).size(12.5).color(TEXT_MUTED).font(UI))
                         .padding([6, 12])
                         .on_press(Message::OnlyReport(s.key.clone()))
@@ -952,17 +924,17 @@ fn limit_bar<'a>(label: &str, limit: brain_core::usage::Limit, runs_out: Option<
 
 // ---- detail -----------------------------------------------------------------------
 
-fn detail(brain: &Brain, now: i64) -> Element<'_, Message> {
+fn detail(brain: &Brain) -> Element<'_, Message> {
     let partner = brain.split.as_ref().filter(|k| Some(*k) != brain.selected.as_ref()).and_then(|k| brain.model.board.get(k));
     match partner {
         Some(other) => row![
             container(other_pane(brain, other)).width(Fill).height(Fill),
             container(Space::new().width(1).height(Fill)).style(|_| style::fill(LINE)),
-            container(session_pane(brain, now)).width(Fill).height(Fill),
+            container(session_pane(brain)).width(Fill).height(Fill),
         ]
         .height(Fill)
         .into(),
-        None => session_pane(brain, now),
+        None => session_pane(brain),
     }
 }
 
@@ -991,13 +963,13 @@ fn other_pane<'a>(brain: &'a Brain, s: &'a Session) -> Element<'a, Message> {
         .into()
 }
 
-/// The selected session: header, details, tabs and the tab's content.
-fn session_pane(brain: &Brain, now: i64) -> Element<'_, Message> {
+/// The selected session: header, details and its terminal.
+fn session_pane(brain: &Brain) -> Element<'_, Message> {
     let Some(s) = brain.selected_session() else {
         return container(
             column![
                 text(t("Keine Session ausgewählt", "No session selected")).size(13).color(TEXT).font(UI),
-                text(t("Wähle links eine Session aus oder starte eine neue im Terminal.", "Pick a session on the left, or start a new one in your terminal."))
+                text(t("Wähle links eine Session aus oder starte eine neue mit ⌘N.", "Pick a session on the left, or start a new one with ⌘N."))
                     .size(12.5)
                     .color(TEXT_MUTED)
                     .font(UI),
@@ -1008,23 +980,10 @@ fn session_pane(brain: &Brain, now: i64) -> Element<'_, Message> {
         .center(Fill)
         .into();
     };
-    let phase = s.phase();
-    let caps = brain.capabilities();
-    // One verb for getting to the session wherever it runs; never the loud button: when the
-    // session waits, the callout's Reply or Allow is the next step.
-    let primary = if phase == Phase::Ended {
-        action(t("Fortsetzen", "Resume"), "⏎", false, Some(Message::Do(Action::Resume)))
-    } else if s.agent.is_some() {
-        action(t("Öffnen", "Open"), "⏎", false, Some(Message::Do(Action::Open)))
-    } else {
-        action(t("Öffnen", "Open"), "⏎", false, caps.focus.then_some(Message::Do(Action::Open)))
-    };
-
     let mut header = row![name(brain, s), account_badge(&s.key.account, brain.account_index(&s.key.account))].spacing(10).align_y(iced::Center);
     for m in markers(brain, s) {
         header = header.push(m);
     }
-    header = header.push(Space::new().width(Fill)).push(primary);
 
     let content: Element<'_, Message> = if !brain.find_open {
         terminal(brain, s)
@@ -1033,13 +992,11 @@ fn session_pane(brain: &Brain, now: i64) -> Element<'_, Message> {
     } else {
         column![find_bar(brain), whole_session(brain)].spacing(8).height(Fill).into()
     };
-    column![
-        header,
-        subtitle(brain, s),
-        callout(brain, s, now, caps),
-        content,
-    ]
-    .spacing(14)
+    let mut pane = column![header, subtitle(brain, s)].spacing(14);
+    for line in conflict_lines(brain, s) {
+        pane = pane.push(line);
+    }
+    pane.push(content)
     .padding(Padding { top: 20.0, right: 28.0, bottom: 0.0, left: 28.0 })
     .height(Fill)
     .into()
@@ -1146,94 +1103,6 @@ fn subtitle<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     iced::widget::tooltip(line, card, iced::widget::tooltip::Position::Bottom).gap(6).into()
 }
 
-/// The state box: what the session waits for, plus the actions that fit.
-fn callout<'a>(brain: &'a Brain, s: &'a Session, now: i64, caps: brain_terminal::Capabilities) -> Element<'a, Message> {
-    let phase = s.phase();
-    let color = phase_color(phase);
-    let last_reply = brain
-        .conversation
-        .as_ref()
-        .filter(|c| c.key == s.key)
-        .and_then(|c| c.messages.iter().rev().find(|m| m.role == Role::Assistant))
-        .map(|m| brain_core::hook::one_line(&m.text, 320));
-    let headline = plain(&s.headline().or(last_reply).unwrap_or_else(|| t("Noch keine Meldung von dieser Session.", "No message from this session yet.").into()));
-    let since = ago(s.phase_since_ms(), now);
-
-    let mut body = column![
-        row![
-            style::dot(color, 7.0),
-            text(phase_label(phase)).size(12).color(color).font(style::semibold()),
-            text(tr!("seit {since}", "for {since}")).size(12).color(TEXT_MUTED).font(UI),
-        ]
-        .spacing(8)
-        .align_y(iced::Center),
-        text(clip(&headline, 420)).size(13).color(TEXT_STRONG).font(UI).line_height(1.5),
-    ]
-    .spacing(8);
-    for line in conflict_lines(brain, s) {
-        body = body.push(line);
-    }
-    if phase == Phase::Background {
-        body = body.push(text(background_summary(s.background_tasks())).size(12).color(TEXT_MUTED).font(UI));
-        for task in s.background_tasks() {
-            let what = task.description.clone().unwrap_or_else(|| task.id.clone());
-            let kind = task.agent_type.clone().unwrap_or_else(|| task.kind.clone());
-            body = body.push(row![text(kind).size(12).color(style::BACKGROUND).font(UI), text(clip(&what, 90)).size(12).color(TEXT).font(UI)].spacing(8));
-        }
-    }
-    if brain.mode == Mode::Reply {
-        let field = text_input(t("Antwort an die Session …", "Reply to the session …"), &brain.reply)
-            .id(app::REPLY)
-            .on_input(Message::Reply)
-            .on_submit(Message::ReplySubmit)
-            .size(13)
-            .font(UI)
-            .padding([7, 10])
-            .style(field_style);
-        let hint = if brain.reply.is_empty() { t("1–9 übernimmt · ⏎ senden · esc", "1–9 fills in · ⏎ send · esc") } else { t("⏎ senden · esc", "⏎ send · esc") };
-        body = body.push(row![field, text(hint).size(11).color(TEXT_MUTED).font(UI)].spacing(8).align_y(iced::Center));
-        // `/…`: the session's commands and skills that fit, ⇥ takes the first.
-        let completions = brain.reply_completions();
-        if !completions.is_empty() {
-            let rows = completions.into_iter().enumerate().map(|(i, command)| {
-                let mut line = row![text(format!("/{}", command.name)).size(12).color(TEXT_STRONG).font(MONO)].spacing(10).align_y(iced::Center);
-                if !command.description.is_empty() {
-                    line = line.push(text(clip(&command.description, 90)).size(11.5).color(TEXT_FAINT).font(UI));
-                }
-                if i == 0 {
-                    line = line.push(Space::new().width(Fill)).push(kbd("⇥".to_string()));
-                }
-                button(line).width(Fill).padding([3, 8]).on_press(Message::ReplyComplete(command.name.clone())).style(style::entry_style(i == 0, Color::TRANSPARENT, RAISED, Color::TRANSPARENT, 6.0)).into()
-            });
-            body = body.push(column(rows).spacing(2));
-        }
-        if brain.reply.is_empty() {
-            let quick = config::quick_replies().into_iter().enumerate().map(|(i, reply)| {
-                container(row![kbd(format!("{}", i + 1)), text(reply).size(12).color(TEXT).font(UI)].spacing(6).align_y(iced::Center))
-                    .padding([3, 8])
-                    .style(|_| boxed(SURFACE, LINE, 6.0))
-                    .into()
-            });
-            body = body.push(column(quick).spacing(4));
-        }
-    }
-    let mut actions: Vec<Element<'a, Message>> = Vec::new();
-    if s.awaiting_permission() {
-        actions.push(action(t("Erlauben", "Allow"), "Y", true, caps.keys.then_some(Message::Do(Action::Allow))));
-        actions.push(action(t("Ablehnen", "Deny"), "N", false, caps.keys.then_some(Message::Do(Action::Deny))));
-    } else if s.waits_for_input() && brain.mode != Mode::Reply {
-        actions.push(action(t("Antworten", "Reply"), "T", true, brain.can_send(&s.key).then_some(Message::Do(Action::StartReply))));
-    }
-    if !actions.is_empty() {
-        body = body.push(row(actions).spacing(8));
-    }
-    container(row![rail(color, 10.0), container(body).padding(Padding { top: 12.0, right: 14.0, bottom: 12.0, left: 12.0 }).width(Fill)].height(Length::Shrink))
-        .width(Fill)
-        .clip(true)
-        .style(move |_| boxed(alpha(color, 0x14), alpha(color, 0x3a), 10.0))
-        .into()
-}
-
 /// "Edits the same files as X: a.rs, b.rs" and "Works in the same checkout as Y".
 fn conflict_lines<'a>(brain: &'a Brain, s: &Session) -> Vec<Element<'a, Message>> {
     let Some(conflict) = brain.conflicts.get(&s.key) else { return Vec::new() };
@@ -1252,7 +1121,7 @@ fn conflict_lines<'a>(brain: &'a Brain, s: &Session) -> Vec<Element<'a, Message>
 }
 
 /// A real terminal running the session inside Brain, or why there is none.
-/// The Terminal tab; split (⌘D), the kept session's terminal beside it; an open file shows
+/// The session's terminal; split (⌘D), the kept session's terminal beside it; an open file shows
 /// in the reader (also once the terminal ended).
 fn terminal<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     let main = terminal_or_hint(brain, s);
@@ -1359,8 +1228,8 @@ fn terminal_or_hint<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
         t("Im Demo-Modus startet Brain keine Terminals.", "In demo mode Brain starts no terminals.")
     } else if brain.terminal_command().is_none() {
         t(
-            "Diese Session läuft in einem iTerm-Tab – dort kann sich Brain nicht einklinken. Hier laufen Hintergrund-Sessions (claude attach) und beendete Sessions (claude --resume).",
-            "This session runs in an iTerm tab, which Brain can't join. Background sessions (claude attach) and ended sessions (claude --resume) run here.",
+            "Diese Session läuft in einem iTerm-Tab. „Nach Brain holen“ (Rechtsklick auf die Session, oder I) holt sie hierher.",
+            "This session runs in an iTerm tab. “Move into Brain” (right-click the session, or I) brings it here.",
         )
     } else {
         let command = if s.agent.is_some() { "claude attach" } else { "claude --resume" };
@@ -2156,38 +2025,9 @@ fn pairing(brain: &Brain) -> Element<'_, Message> {
 
 // ---- footer -----------------------------------------------------------------------
 
-/// The few keys that matter for the selected session right now; everything else is behind ⌘K
-/// and `?`.
-fn footer_hints(brain: &Brain) -> Vec<(&'static str, &'static str)> {
-    if brain.selected.as_ref().is_some_and(|k| brain.terminals.contains_key(k)) {
-        return vec![
-            ("⏎ ⌘2", t("ins Terminal", "into terminal")),
-            ("⌘1", t("zur Liste", "to the list")),
-            ("⌘T", t("Shell", "shell")),
-            ("⌘D", t("teilen", "split")),
-        ];
-    }
-    let mut hints = vec![("↑↓", t("wählen", "select"))];
-    match brain.selected_session() {
-        None => hints.push(("⌘N", t("neue Session", "new session"))),
-        Some(s) if s.phase() == Phase::Ended => hints.push(("⏎", t("fortsetzen", "resume"))),
-        Some(s) => {
-            if s.awaiting_permission() {
-                hints.push(("Y N", t("erlauben · ablehnen", "allow · deny")));
-            } else if s.accepts_input() {
-                hints.push(("T", t("antworten", "reply")));
-            }
-            hints.push(("⏎", t("öffnen", "open")));
-        }
-    }
-    hints.push(("/", t("suchen", "search")));
-    hints
-}
-
+/// The status message ("press again" prompts, what a command did) in a band of its own; empty
+/// otherwise, so the terminal above keeps its size when a message comes and goes.
 fn footer(brain: &Brain) -> Element<'_, Message> {
-    let shown = footer_hints(brain);
-    // A status message takes the whole footer while it shows: the hints would push it off the
-    // edge, and "press again" prompts must not be missed.
     if let Some((message, _)) = &brain.status {
         let band = row![
             text("●").size(11).color(CALLS),
@@ -2208,20 +2048,10 @@ fn footer(brain: &Brain) -> Element<'_, Message> {
             })
             .into();
     }
-    let hint = |(key, label): (&'static str, &'static str)| -> Element<'_, Message> {
-        row![kbd(key), text(label).size(11.5).color(TEXT_FAINT).font(UI)].spacing(5).align_y(iced::Center).into()
-    };
-    let always = [("⌘K", t("Befehle", "commands")), ("?", t("alle Tasten", "all keys"))];
-    let bar = row![
-        row(shown.into_iter().map(hint)).spacing(12).align_y(iced::Center),
-        Space::new().width(Fill),
-        row(always.into_iter().map(hint)).spacing(12).align_y(iced::Center),
-    ]
-    .align_y(iced::Center);
-    container(bar).height(32).padding([0, 14]).center_y(32).width(Fill).clip(true).style(|_| style::fill(CHROME)).into()
+    container(Space::new()).height(32).width(Fill).style(|_| style::fill(CHROME)).into()
 }
 
-/// `?`: every key, by what it acts on. The footer only shows the few the moment needs.
+/// `?`: every key, by what it acts on.
 fn keys_sheet(_brain: &Brain) -> Element<'_, Message> {
     let groups: [(&str, Vec<(&str, &str)>); 3] = [
         (
@@ -2241,7 +2071,6 @@ fn keys_sheet(_brain: &Brain) -> Element<'_, Message> {
         (
             t("Session", "Session"),
             vec![
-                ("T", t("antworten (1–9 übernimmt eine Schnellantwort)", "reply (1–9 fills in a quick reply)")),
                 ("Y  N", t("Freigabe erlauben · ablehnen", "allow · deny a permission")),
                 ("R", t("umbenennen", "rename")),
                 ("P", t("anheften", "pin")),
@@ -2260,7 +2089,6 @@ fn keys_sheet(_brain: &Brain) -> Element<'_, Message> {
         (
             t("Ansicht und Terminal", "View and terminal"),
             vec![
-                ("← →", t("Tabs wechseln", "switch tabs")),
                 ("⌘2  ⌘J", t("Tastatur ins Terminal", "keyboard into the terminal")),
                 ("⌘1  ⌘[", t("zurück zur Liste", "back to the list")),
                 ("⌘T", t("Shell im Projektordner", "shell in the project folder")),

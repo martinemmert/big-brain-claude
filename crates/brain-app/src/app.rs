@@ -43,7 +43,6 @@ const CLIPBOARD_AFTER_SELECTING: Duration = Duration::from_secs(2);
 pub const CLEANUP_DAYS: [i64; 4] = [1, 3, 7, 14];
 
 pub const SEARCH: &str = "search";
-pub const REPLY: &str = "reply";
 pub const RENAME: &str = "rename";
 pub const NEW_SESSION: &str = "new-session";
 pub const LIST: &str = "session-list";
@@ -57,7 +56,6 @@ pub enum Mode {
     Normal,
     Search,
     Rename,
-    Reply,
     NewSession,
     Cleanup,
     /// Tasks noted for later (`/later`, `brain later`).
@@ -142,7 +140,6 @@ pub enum Action {
     Resume,
     Allow,
     Deny,
-    StartReply,
     StartRename,
     StartTerminal,
     OpenInITerm,
@@ -190,10 +187,6 @@ pub enum Message {
     Hover(Option<SessionKey>),
     Search(String),
     SearchSubmit,
-    Reply(String),
-    /// A completion picked under the reply field: `/name `.
-    ReplyComplete(String),
-    ReplySubmit,
     Rename(String),
     RenameSubmit,
     NewInput(String),
@@ -268,9 +261,6 @@ pub enum Message {
     MousePressed,
     /// The quick-terminal hotkey was pressed (from anywhere).
     QuickTerminal,
-    /// The new screenshot into the offered session's terminal (`true`) or into the composer.
-    ScreenshotTo(bool),
-    ScreenshotDismiss,
     /// The left mouse button went up (a selection may have ended).
     MouseReleased,
     /// A terminal's request to put text on the clipboard, and whether it has the keyboard.
@@ -646,13 +636,6 @@ pub struct Brain {
     brief_loading: Option<SessionKey>,
     pub palette: String,
     /// The composer's text, the screenshots pasted into it, and the templates it offers.
-    /// A screenshot taken a moment ago, offered for a session.
-    pub screenshot_offer: Option<std::path::PathBuf>,
-    /// The folder watched for screenshots, when it was last looked at, and what was offered.
-    screenshot_folder: Option<std::path::PathBuf>,
-    screenshot_scan: Instant,
-    screenshots_offered: HashSet<std::path::PathBuf>,
-    started: std::time::SystemTime,
     pub composer: iced::widget::text_editor::Content,
     pub composer_images: Vec<std::path::PathBuf>,
     pub composer_templates: Vec<brain_core::templates::Template>,
@@ -670,9 +653,6 @@ pub struct Brain {
     pub mode: Mode,
     pub search: String,
     pub rename: String,
-    pub reply: String,
-    /// The selected session's slash commands while its reply field is open, for completing `/…`.
-    reply_commands: Vec<brain_core::commands::SlashCommand>,
     /// How many sessions wait for a decision (not counting a question that is only a guess), as of
     /// the last sync: the window title and the menu bar read it.
     deciding: usize,
@@ -829,8 +809,6 @@ impl Brain {
             mode: Mode::Normal,
             search: String::new(),
             rename: String::new(),
-            reply: String::new(),
-            reply_commands: Vec::new(),
             deciding: 0,
             hosts: HashMap::new(),
             hosts_pending: HashSet::new(),
@@ -846,11 +824,6 @@ impl Brain {
             brief_loading: None,
             find: String::new(),
             palette: String::new(),
-            screenshot_offer: None,
-            screenshot_folder: if demo { None } else { crate::config::screenshot_folder() },
-            screenshot_scan: Instant::now(),
-            screenshots_offered: HashSet::new(),
-            started: std::time::SystemTime::now(),
             composer: iced::widget::text_editor::Content::new(),
             composer_images: Vec::new(),
             composer_templates: Vec::new(),
@@ -1015,15 +988,6 @@ impl Brain {
                 self.open_selected();
                 Task::none()
             }
-            Message::Reply(text) => {
-                // A digit typed into the empty reply field fills in that quick reply; ⏎ sends it.
-                // Sending right away would answer "4" to Claude's numbered question with a commit.
-                let quick = self.reply.is_empty() && text.len() == 1 && text.chars().all(|c| ('1'..='9').contains(&c));
-                self.reply = quick.then(|| config::quick_replies().get(text.parse::<usize>().unwrap_or(1) - 1).cloned()).flatten().unwrap_or(text);
-                Task::none()
-            }
-            Message::ReplySubmit => self.submit_reply(),
-            Message::ReplyComplete(name) => self.complete_reply(&name),
             Message::Rename(text) => {
                 self.rename = text;
                 Task::none()
@@ -1323,26 +1287,6 @@ impl Brain {
             }
             Message::ToggleShell => self.toggle_shell(),
             Message::QuickTerminal => self.quick_terminal(),
-            Message::ScreenshotTo(into_terminal) => {
-                let Some(path) = self.screenshot_offer.take() else { return Task::none() };
-                let target = self.screenshot_target();
-                if into_terminal {
-                    if let Some(key) = target {
-                        self.selected = Some(key);
-                        let escaped = escape_path(&path.display().to_string()) + " ";
-                        if let Some(term) = self.selected.as_ref().and_then(|k| self.terminals.get_mut(k)) {
-                            term.paste(&escaped);
-                        }
-                        return Task::batch([self.bring_forward(), self.focus_terminal()]);
-                    }
-                }
-                self.composer_images.push(path);
-                Task::batch([self.bring_forward(), self.open_composer()])
-            }
-            Message::ScreenshotDismiss => {
-                self.screenshot_offer = None;
-                Task::none()
-            }
             Message::MouseReleased => {
                 if let Some(key) = self.focused_terminal.clone() {
                     self.last_terminal_release = Some((key, Instant::now()));
@@ -1536,7 +1480,6 @@ impl Brain {
         if !self.titlebar_ready {
             self.titlebar_ready = crate::chrome::unified_titlebar();
         }
-        self.watch_screenshots();
         let now = now_ms();
         let refreshed = self.model.refresh();
         self.refresh_questions();
@@ -1807,40 +1750,6 @@ impl Brain {
             Ok(file)
         });
         Task::perform(exported, Message::Exported)
-    }
-
-    /// Every two seconds: a screenshot saved since Brain started and not offered yet becomes the
-    /// offer (the newest one).
-    fn watch_screenshots(&mut self) {
-        if self.screenshot_scan.elapsed() < Duration::from_secs(2) {
-            return;
-        }
-        self.screenshot_scan = Instant::now();
-        let Some(folder) = &self.screenshot_folder else { return };
-        let Ok(entries) = std::fs::read_dir(folder) else { return };
-        let newest = entries
-            .flatten()
-            .filter(|e| {
-                let name = e.file_name().to_string_lossy().to_lowercase();
-                (name.starts_with("screenshot") || name.starts_with("bildschirmfoto")) && (name.ends_with(".png") || name.ends_with(".jpg"))
-            })
-            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
-            .filter(|(modified, path)| *modified > self.started && !self.screenshots_offered.contains(path))
-            .max_by_key(|(modified, _)| *modified);
-        if let Some((_, path)) = newest {
-            self.screenshots_offered.insert(path.clone());
-            self.screenshot_offer = Some(path);
-        }
-    }
-
-    /// Where a new screenshot would go: the selected session when it runs in Brain, else the one
-    /// waiting longest that runs in Brain.
-    pub fn screenshot_target(&self) -> Option<SessionKey> {
-        if self.has_terminal() {
-            return self.selected.clone();
-        }
-        let groups = self.groups(now_ms());
-        groups.live().into_iter().find(|s| self.terminals.contains_key(&s.key)).map(|s| s.key.clone())
     }
 
     /// A reply typed into a notification: straight to the session when its mod takes it and no
@@ -2258,7 +2167,7 @@ impl Brain {
         Task::batch([operation::focus(FIND), self.load_history()])
     }
 
-    /// Sums up the selected session once it has ended, for the Terminal tab before resuming.
+    /// Sums up the selected session once it has ended, before resuming it.
     fn load_brief(&mut self) -> Task<Message> {
         let Some(session) = self.selected_session() else { return Task::none() };
         if session.phase() != Phase::Ended || self.has_terminal() {
@@ -2338,7 +2247,7 @@ impl Brain {
         self.selected.as_ref().is_some_and(|k| self.terminals.contains_key(k))
     }
 
-    /// Gives a running terminal the keyboard when its tab is shown; starts nothing.
+    /// Gives a running terminal the keyboard; starts nothing.
     fn focus_terminal(&mut self) -> Task<Message> {
         let Some(key) = self.selected.clone() else { return Task::none() };
         match self.terminals.get(&key) {
@@ -2369,16 +2278,12 @@ impl Brain {
     /// the shell. Claude Code turns image paths into attachments (`[Image #1]`).
     fn drop_file(&mut self, path: &std::path::Path) -> Task<Message> {
         let escaped = escape_path(&path.display().to_string()) + " ";
-        if self.mode == Mode::Reply {
-            self.reply.push_str(&escaped);
-            return Task::none();
-        }
         if self.write_to_terminal(&escaped) {
             return self.focus_terminal();
         }
         self.set_status(t(
-            "Dateien lassen sich in Sessions ziehen, die in Brain laufen (Terminal-Reiter).",
-            "Files can be dropped into sessions that run in Brain (Terminal tab).",
+            "Dateien lassen sich in Sessions ziehen, die in Brain laufen.",
+            "Files can be dropped into sessions that run in Brain.",
         ));
         Task::none()
     }
@@ -2409,7 +2314,7 @@ impl Brain {
         Task::none()
     }
 
-    /// Starts the selected session's terminal on the Terminal tab (⏎ or the button), and
+    /// Starts the selected session's terminal (⏎ or the button), and
     /// focuses it.
     fn open_terminal(&mut self, focus: bool) -> Task<Message> {
         if self.model.is_demo() {
@@ -2944,12 +2849,6 @@ impl Brain {
             }
             return Task::none();
         }
-        // ⇥ in the reply field takes the first completion of `/…`.
-        if self.mode == Mode::Reply && named == Some(Named::Tab) {
-            if let Some(name) = self.reply_completions().first().map(|c| c.name.clone()) {
-                return self.complete_reply(&name);
-            }
-        }
         // The dialog's field takes → for its cursor; in a typed path it goes into a folder.
         if self.mode == Mode::NewSession && named == Some(Named::ArrowRight) {
             if let Some(task) = self.enter_picked_folder() {
@@ -3006,9 +2905,9 @@ impl Brain {
                 return Task::none();
             }
             Mode::NewSession => return self.on_new_session_key(named, character.as_deref(), cmd, modifiers.shift()),
-            Mode::Reply | Mode::Rename => {
+            Mode::Rename => {
                 // The field lost its focus (a click elsewhere): give it back instead of acting.
-                return operation::focus(if self.mode == Mode::Reply { REPLY } else { RENAME });
+                return operation::focus(RENAME);
             }
             Mode::Search if !matches!(named, Some(Named::ArrowUp | Named::ArrowDown | Named::Enter)) => {
                 // Not captured, so the field isn't focused any more: keys act on the list again.
@@ -3068,7 +2967,6 @@ impl Brain {
             "j" => return self.select_index(&list, next),
             "k" => return self.select_index(&list, previous),
             "r" => return self.start_rename(),
-            "t" => return self.start_reply(),
             "y" => self.answer_permission(true),
             "n" => self.answer_permission(false),
             "p" => self.toggle_pin(),
@@ -3089,7 +2987,7 @@ impl Brain {
         Task::none()
     }
 
-    /// Esc: leaves whatever is open — search (cleared), reply, rename, a dialog.
+    /// Esc: leaves whatever is open — search (cleared), rename, a dialog.
     fn escape(&mut self) -> Task<Message> {
         // A dialog takes the keyboard from any terminal.
         if self.mode != Mode::Normal {
@@ -3116,7 +3014,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Reply | Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden => {
+            Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden => {
                 self.mode = Mode::Normal;
                 unfocus()
             }
@@ -3301,7 +3199,6 @@ impl Brain {
             Action::Resume => self.resume_selected(),
             Action::Allow => self.answer_permission(true),
             Action::Deny => self.answer_permission(false),
-            Action::StartReply => return self.start_reply(),
             Action::StartRename => return self.start_rename(),
             Action::StartTerminal => return self.open_terminal(true),
         }
@@ -3383,51 +3280,6 @@ impl Brain {
         if !name.is_empty() && !self.blocked_in_demo() {
             typed = self.type_into_selected(&format!("/rename {name}"), tr!("„{name}“ an die Session geschickt.", "Sent “{name}” to the session."));
         }
-        Task::batch([typed, unfocus()])
-    }
-
-    fn start_reply(&mut self) -> Task<Message> {
-        let Some(session) = self.selected_session() else { return Task::none() };
-        if !session.waits_for_input() {
-            self.set_status(t(
-                "Antworten geht, sobald die Session fertig ist und auf dich wartet.",
-                "You can reply once the session has finished and waits for you.",
-            ));
-            return Task::none();
-        }
-        if !self.can_type_into_selected() {
-            self.set_status(self.why_brain_cant_send());
-            return Task::none();
-        }
-        // What `/…` completes to: the commands the session's mod listed from Claude Code.
-        self.reply_commands = brain_core::commands::load(&brain_core::account::home_dir(), &session.key.id);
-        self.reply.clear();
-        self.mode = Mode::Reply;
-        operation::focus(REPLY)
-    }
-
-    /// What `/…` in the reply field completes to (at most six), while no space was typed.
-    pub fn reply_completions(&self) -> Vec<&brain_core::commands::SlashCommand> {
-        if !self.reply.starts_with('/') || self.reply.contains(char::is_whitespace) {
-            return Vec::new();
-        }
-        brain_core::commands::completions(&self.reply_commands, &self.reply).into_iter().take(6).collect()
-    }
-
-    /// Puts a completion into the reply field, the cursor after it.
-    fn complete_reply(&mut self, name: &str) -> Task<Message> {
-        self.reply = format!("/{name} ");
-        Task::batch([operation::focus(REPLY), operation::move_cursor_to_end(REPLY)])
-    }
-
-    fn submit_reply(&mut self) -> Task<Message> {
-        self.mode = Mode::Normal;
-        let text = self.reply.trim().to_string();
-        let mut typed = Task::none();
-        if !text.is_empty() && !self.blocked_in_demo() {
-            typed = self.type_into_selected(&text, t("Antwort geschickt.", "Reply sent.").into());
-        }
-        self.reply.clear();
         Task::batch([typed, unfocus()])
     }
 

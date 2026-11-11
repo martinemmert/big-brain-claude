@@ -70,7 +70,7 @@ Tastenkürzel stehen nur auf der gewählten Karte.
 - **Suchen:** `/` durchsucht die Liste nach Name, Ordner, Konto und Überschrift.
 - **Kontofilter:** in der Titelleiste, umschalten mit `⇥`.
 - **Rechtsklick** auf eine Session zeigt alle passenden Aktionen mit ihren Kürzeln.
-- **Fußleiste:** zeigt die Tasten, die für die gewählte Session gerade passen; `?` zeigt alle.
+- **Tasten:** `?` zeigt alle.
 
 ## Eine Session ansehen
 
@@ -81,16 +81,15 @@ Rechts steht die ausgewählte Session.
 - **Darunter eine Zeile:** Ordner, Modell, die **Context-Anzeige** (ab 80 % gelb mit Knopf
   **/compact**, ab 90 % rot), ein abweichender Freigabe-Modus und der PR mit Checks. Kosten,
   pid und Startzeit zeigt sie beim Überfahren.
-- **Wartekarte:** worauf die Session wartet, mit **Antworten** (`T`) bzw. **Erlauben**/**Ablehnen**
-  (`Y`/`N`) als Hauptknopf.
-
-Die Tabs (`←` `→`):
-
-| Tab | Inhalt |
-|---|---|
-| **Nachrichten** | Die letzten Nachrichten im Terminal-Look. `⌘F` öffnet darüber die Suchleiste für die ganze Session, mit den Ansichten **Gespräch**, **Deine Prompts** (alles, was du gefragt hast), **Fragen** (jede Rückfrage von Claude mit deiner Antwort; offene sind markiert) und **Ereignisse** (Start, Prompts, Freigaben, Turn-Enden, Meldungen). `esc` schließt sie. `⌘⇧C` kopiert die letzte Antwort, ⌘K → „Gespräch als Markdown öffnen“ öffnet es in YAMV. |
-| **Dateien** | Jede Datei, die die Session geschrieben, geändert, gelesen oder bekommen hat, neueste zuerst. So findest du z. B. erzeugte Markdown-Dateien. Klick öffnet sie. Der letzte Abschnitt, **Git-Änderungen**, zeigt Branch und geänderte Dateien; ein Klick zeigt den Diff, „Änderung verwerfen“ (zweimal) legt die jetzige Fassung in den Papierkorb und holt die aus HEAD zurück. |
-| **Terminal** | Die Session selbst, in Brains Terminal (siehe unten). Bei einer beendeten Session steht hier vorher ein **Steckbrief**: Anfang, letzte Frage, letzte Antwort, offene Rückfrage, geänderte Dateien. |
+- **Das Terminal:** darunter läuft die Session selbst, in Brains Terminal (siehe unten). Bei einer
+  beendeten Session steht dort vorher ein **Steckbrief**: Anfang, letzte Frage, letzte Antwort,
+  offene Rückfrage, geänderte Dateien. Läuft die Session in einem iTerm-Tab, steht dort ein Hinweis;
+  „Nach Brain holen“ (Rechtsklick oder `I`) holt sie herüber.
+- **Suchen in der Session:** `⌘F` öffnet über dem Terminal eine Suchleiste für das ganze Gespräch;
+  mit Text darin ersetzen die Treffer das Terminal, ein Klick öffnet einen ganz. `esc` schließt sie.
+  `⌘⇧C` kopiert die letzte Antwort, ⌘K → „Gespräch als Markdown öffnen“ öffnet es in YAMV.
+- **Freigaben** beantwortest du auf der Karte in der Liste (**Erlauben**/**Ablehnen**, `Y`/`N`),
+  Fragen mit Optionen mit einem Klick.
 
 ## Sessions in Brain laufen lassen
 
@@ -128,7 +127,7 @@ Die Tabs (`←` `→`):
 
 **Mehr Platz:**
 
-- **Teilen:** `⌘D` im Terminal-Tab, oder Rechtsklick → „Daneben öffnen“. Zwei ganze Sessions
+- **Teilen:** `⌘D`, oder Rechtsklick → „Daneben öffnen“. Zwei ganze Sessions
   nebeneinander; ein Klick in die linke macht sie zur aktiven.
 - **Übersicht:** `⌘⇧A` zeigt alle Terminals als Live-Vorschau, ein Klick öffnet eine.
 - **Shell:** `⌘T` öffnet eine Shell im Ordner der Session, unter ihrem Terminal.
@@ -136,8 +135,6 @@ Die Tabs (`←` `→`):
 ## Antworten und steuern
 
 - **Freigaben:** `Y` erlaubt, `N` lehnt ab.
-- **Kurz antworten:** `T`, dann tippen, oder `1`–`9` übernimmt eine Schnellantwort; `⏎` schickt
-  ab. Eine Ziffer allein schickt nie etwas (Claudes nummerierte Fragen).
 - **Composer:** `⌘E`. Ein großes Feld für längere Prompts, mit Diktat, Vorlagen und
   eingefügten Screenshots. `⌘⏎` sendet.
 - **Befehlspalette:** `⌘K`. Alle Aktionen; Slash-Befehle wie `/compact`, `/context`, `/model`
@@ -152,9 +149,6 @@ Die Tabs (`←` `→`):
   wartenden Session nach vorn; nochmal drücken blendet Brain aus. Ist aus, bis du sie in der
   Config setzt (`"quick_terminal": "cmd+shift+b"`). Eine globale Taste gilt überall, auch
   gegenüber macOS: ⌃⌥Space etwa wechselt dort die Eingabequelle.
-- **Screenshot-Wächter:** Ein neuer Screenshot erscheint als Leiste über der Fußzeile, mit
-  „In <Session>“ oder „In den Composer“.
-
 ## Ordnung halten
 
 | Taste | Wirkung |
@@ -272,9 +266,7 @@ Alles optional, in `~/.claude-brain/config.json`:
 |---|---|
 | `language` | `"de"` oder `"en"` |
 | `chat_font`, `chat_font_size` | Schrift des Gesprächs, sonst die von iTerm |
-| `quick_replies` | eigene Schnellantworten für `T` `1`–`9` |
 | `quick_terminal` | Tastenkürzel des Quick Terminals, z. B. `"cmd+shift+b"`; ohne Eintrag aus |
-| `screenshot_folder` | Ordner, den der Screenshot-Wächter beobachtet; `"off"` schaltet ihn ab |
 
 **Vorlagen** liegen in `~/.claude-brain/templates/*.md`, mit Platzhaltern wie `{branch}`. Im Dialog
 „Neue Session“ öffnet `⌘E` die gewählte Vorlage im Editor, `⌘⇧N` legt eine neue an.
@@ -294,7 +286,6 @@ Alles optional, in `~/.claude-brain/config.json`:
 | `E` `B` `U` | beendete / Hintergrund- / automatische Sessions auflisten |
 | `C` | aufräumen |
 | `⌘N` | neue Session (darin `⌘O`: Ordner im macOS-Dialog wählen) |
-| `T` | antworten (`1`–`9` übernimmt eine Schnellantwort, `⏎` schickt ab) |
 | `Y` / `N` | Freigabe erlauben / ablehnen |
 | `R` | umbenennen (solange die Session wartet) |
 | `P` / `S` | anheften / pausieren |
@@ -302,15 +293,14 @@ Alles optional, in `~/.claude-brain/config.json`:
 | `A` / `F` | in ein anderes Konto umziehen / forken (ein Dialog: Konto, Original, Flags) |
 | `I` | aus iTerm nach Brain holen (sofort, ohne Dialog) |
 | `X` `X`, `⌘⌫` `⌘⌫` | beenden, in den Papierkorb |
-| `⌘F` | in der ganzen Session suchen (Ansichten: Prompts, Fragen, Ereignisse) |
+| `⌘F` | in der ganzen Session suchen |
 | `⌘⇧C` | letzte Antwort kopieren |
 | `⌘E` | Composer |
 | `⌘T` | Shell im Projektordner |
-| `⌘D` | Terminal teilen (im Terminal-Tab) |
+| `⌘D` | Terminal teilen |
 | `⌘⇧A` | alle Terminals im Überblick |
 | `⌘`-Klick | Pfad oder Link aus der Ausgabe öffnen |
 | `⌘V` | Screenshot ins Terminal einfügen |
-| `←` `→` | Tabs wechseln |
 | `⌘K` | Befehlspalette: alles, auch was keine Taste hat (stumm, Abschnitte aufklappen, Konten abgleichen …) |
 | `?` | alle Tasten |
 | `esc` | Dialog oder Suchleiste schließen, Suche leeren |
