@@ -57,7 +57,7 @@ mit den Aufgaben aus `/later` dieses Projekts: ein Klick startet eine als neue S
 nimmt ihr Projekt in den Baum.
 
 Alles, was gerade nicht nach dir ruft, liegt am Ende in einer Zeile mit Zahlen; ein Klick klappt auf:
-**pausiert** (`S`, `⌫`), **im Hintergrund** (`B`, ohne Aktivität seit einem Tag), **automatisch** (`U`:
+**pausiert** (Menü *Session → Pausieren*, `⌫`), **im Hintergrund** (Menü *Darstellung*, ohne Aktivität seit einem Tag), **automatisch** (Menü *Darstellung*:
 Programme wie Security-Reviews nach Commits oder `claude -p`-Skripte) und **älter**. Diese Sessions
 melden sich nie per Mitteilung. So verschwindet keine Session spurlos.
 
@@ -69,10 +69,17 @@ fürs Handy (⋯ → **In anderes Projekt …**, oder lange drücken in der List
 
 Oben in der Titelleiste steht der Kontofilter (umschalten mit `⇥`).
 
-- **Suchen:** `/` filtert den Baum nach Name, Ordner, Konto und Überschrift.
+- **Suchen:** `⌥⌘F` filtert den Baum nach Name, Ordner, Konto und Überschrift; `⌘O` sucht auch unter den beendeten.
 - **Klick auf eine Session** gibt die Tastatur an ihr Terminal.
 - **Rechtsklick** auf eine Session zeigt alle passenden Aktionen mit ihren Kürzeln.
-- **Tasten:** `?` zeigt alle.
+- **Menüleiste:** alle Befehle stehen in den Menüs oben (*Brain, Ablage, Bearbeiten, Session, Darstellung,
+  Fenster, Hilfe*), mit ihren Kürzeln. Einbuchstaben-Tasten gibt es in der Liste nicht mehr; was gerade nicht passt, ist
+  ausgegraut. Im Menü *Fenster* stehen die Sessions, die dich brauchen, als `⌘1` bis `⌘9`.
+- **Statusmenü:** ein Klick auf Brains Zeichen in der Menüleiste zeigt, wer dich braucht (bei einer Freigabe mit
+  *Erlauben* und *Ablehnen*), wer fertig ist und noch nicht angesehen wurde, den Verbrauch je Konto und *Neue Session …*.
+- **Größe:** `⌘+`, `⌘-` und `⌘0` skalieren das ganze Fenster samt Terminalschrift; die Statuszeile zeigt die Stufe,
+  wenn sie nicht 100 % ist.
+- **Tasten:** `⌘?` zeigt alle.
 
 Über dem Terminal steht eine schmale Zeile: Projekt › Session (ein Klick benennt um), Branch, Konto,
 wie voll der Kontext ist (ab 80 % mit **/compact**) und ein ⚠, wenn die Session dieselben Dateien
@@ -93,11 +100,11 @@ Rechts steht die ausgewählte Session.
 - **Das Terminal:** darunter läuft die Session selbst, in Brains Terminal (siehe unten). Bei einer
   beendeten Session steht dort vorher ein **Steckbrief**: Anfang, letzte Frage, letzte Antwort,
   offene Rückfrage, geänderte Dateien. Läuft die Session in einem iTerm-Tab, steht dort ein Hinweis;
-  „Nach Brain holen“ (Rechtsklick oder `I`) holt sie herüber.
+  „Nach Brain holen“ (Rechtsklick oder `⌥⌘O`) holt sie herüber.
 - **Suchen in der Session:** `⌘F` öffnet über dem Terminal eine Suchleiste für das ganze Gespräch;
   mit Text darin ersetzen die Treffer das Terminal, ein Klick öffnet einen ganz. `esc` schließt sie.
   `⌘⇧C` kopiert die letzte Antwort, ⌘K → „Gespräch als Markdown öffnen“ öffnet es in YAMV.
-- **Freigaben** beantwortest du im Baum (**Erlauben**/**Ablehnen**, `Y`/`N`),
+- **Freigaben** beantwortest du im Baum (**Erlauben**/**Ablehnen**, `⌘Y`/`⇧⌘Y`),
   Fragen mit Optionen mit einem Klick.
 
 ## Sessions in Brain laufen lassen
@@ -114,13 +121,14 @@ Rechts steht die ausgewählte Session.
   trägt Brain ihn ein und startet (sonst startet Claude im Hintergrund gar nicht).
 - **Öffnen:** `⏎` oder Doppelklick. Läuft die Session in Brain, öffnet sie sich hier; eine beendete
   wird hier fortgesetzt. `⌥⏎` öffnet sie stattdessen in iTerm.
-- **Aus iTerm holen:** `I` holt eine Session aus ihrem iTerm-Tab nach Brain, ohne dass das
+- **Aus iTerm holen:** `⌥⌘O` holt eine Session aus ihrem iTerm-Tab nach Brain, ohne dass das
   Gespräch verloren geht. Das ist kein Kontowechsel und hat deshalb keinen Dialog.
 
 **Tastatur im Terminal:**
 
-- **Hinein und heraus:** `⏎`, `⌘2` oder ein Klick ins Terminal gibt ihm die Tastatur. Dann
-  gehören alle Tasten Claude, Brains Kürzel ruhen. `⌘1` bringt dich zurück zur Liste.
+- **Hinein und heraus:** `⏎`, `⌘J` oder ein Klick ins Terminal gibt ihm die Tastatur. Dann
+  gehören die Tasten Claude, die das Terminal braucht (`⌘⌫`, `⌘←`, `⌘→`, `⌘C`, `⌘V`); Brains Menükürzel liegen auf `⌘` und `⌥⌘`
+  und stehen ihm nicht im Weg. `⌘[` bringt dich zurück in den Baum.
 - **Zeilen bearbeiten wie am Mac:** `⌘⌫` löscht bis zum Zeilenanfang, `⌘←`/`⌘→` springen an
   Anfang und Ende. `⇧⏎` macht eine neue Zeile im Prompt.
 - **Umlaute, Tottasten und Diktat** funktionieren, auch über Karabiner.
@@ -143,7 +151,7 @@ Rechts steht die ausgewählte Session.
 
 ## Antworten und steuern
 
-- **Freigaben:** `Y` erlaubt, `N` lehnt ab.
+- **Freigaben:** `⌘Y` erlaubt, `⇧⌘Y` lehnt ab.
 - **Composer:** `⌘E`. Ein großes Feld für längere Prompts, mit Diktat, Vorlagen und
   eingefügten Screenshots. `⌘⏎` sendet.
 - **Befehlspalette:** `⌘K`. Alle Aktionen; Slash-Befehle wie `/compact`, `/context`, `/model`
@@ -162,17 +170,17 @@ Rechts steht die ausgewählte Session.
 
 | Taste | Wirkung |
 |---|---|
-| `P` | anheften; bei einer beendeten Session: zum Fortsetzen merken |
-| `S` | pausieren: 15 Min → 1 Std → bis morgen 9 Uhr → bis sich in der Session etwas tut → wieder da |
+| `⌥⌘P` | anheften; bei einer beendeten Session: zum Fortsetzen merken |
+| Menü *Pausieren* | 15 Min, 1 Std, bis morgen 9 Uhr, bis sich in der Session etwas tut, Pause aufheben |
 | `⌫` `⌫` | gleich „bis sich etwas tut“ (nochmal: wieder einblenden) |
 | Rechtsklick → *Stummschalten* | keine Benachrichtigungen mehr für diese Session (auch in ⌘K) |
-| `R` | umbenennen, solange die Session auf dich wartet |
-| `X` `X` | beenden (bleibt fortsetzbar) |
-| `⌘⌫` `⌘⌫` | beendete Session in den Papierkorb |
-| `C` | aufräumen: alles, was seit N Tagen ruht, ausblenden oder in den Papierkorb |
-| `L` | für später: Aufgaben aus `/later`, `⏎` startet eine als neue Session, `⌫` hakt ab |
-| `A` | **in ein anderes Konto oder forken …**: ein Dialog für Konto (`1`, `2`, … – mit dem Verbrauch jedes Kontos), ob das Original weiterläuft (`⇥`), und Flags. Er sagt, was `⏎` tut: anderes Konto → *umziehen* (z. B. wenn ein Limit voll ist); Original läuft weiter → *forken*. Neu starten mit Flags (`--chrome`, `--model opus`) geht über Rechtsklick oder ⌘K → „Neu starten mit …“, nach Brain holen mit `I` |
-| `F` / `I` / Rechtsklick → *Neu starten mit …* | derselbe Dialog, vorbelegt zum Forken / Holen / mit Flags |
+| `⌘R` | umbenennen (auch während die Session arbeitet; `/rename` geht hinein, sobald sie frei ist) |
+| `⌥⌘X` `⌥⌘X` | beenden (bleibt fortsetzbar) |
+| `⌥⌘⌫` `⌥⌘⌫` | beendete Session in den Papierkorb |
+| Menü *Ablage → Aufräumen …* | alles, was seit N Tagen ruht, ausblenden oder in den Papierkorb |
+| `⌘L` | für später: Aufgaben aus `/later`, `⏎` startet eine als neue Session, `⌫` hakt ab |
+| Menü *In anderes Konto*, *Forken in* | **in ein anderes Konto oder forken …**: ein Dialog für Konto (`1`, `2`, … – mit dem Verbrauch jedes Kontos), ob das Original weiterläuft (`⇥`), und Flags. Er sagt, was `⏎` tut: anderes Konto → *umziehen* (z. B. wenn ein Limit voll ist); Original läuft weiter → *forken*. Neu starten mit Flags (`--chrome`, `--model opus`) geht über Menü *Session* oder ⌘K → „Neu starten mit …“, nach Brain holen mit `⌥⌘O` |
+| Menü *Session → Neu starten mit …* | derselbe Dialog, vorbelegt mit Flags |
 
 Tasten, die zweimal gedrückt werden wollen, fragen im Rechtsklick-Menü nicht nach: Der Klick
 zählt als Bestätigung.
@@ -282,35 +290,42 @@ Alles optional, in `~/.claude-brain/config.json`:
 
 ## Alle Tastenkürzel
 
-`?` zeigt sie auch in Brain.
+`⌘?` zeigt sie auch in Brain; die Menüleiste zeigt jedes Kürzel neben seinem Befehl. Alle liegen auf `⌘` oder
+`⌥⌘`. Hat das Terminal die Tastatur, gehören ihm `⌘⌫`, `⌘←`, `⌘→`, `⌘C` und `⌘V`.
 
 | Taste | Wirkung |
 |---|---|
-| `↑` `↓`, `j` `k` | Session wählen |
+| `↑` `↓` | Session wählen (solange der Baum die Tastatur hat) |
 | `⏎`, Doppelklick | öffnen (in Brain, sonst im Terminal-Programm; eine beendete: fortsetzen) |
 | `⌥⏎` | in iTerm öffnen |
-| `⌘2` `⌘J` / `⌘1` `⌘[` | ins Terminal / zurück zur Liste |
-| `/` | Liste durchsuchen |
+| `⌘J` / `⌘[` | ins Terminal / zurück in den Baum |
+| `⌃⇥` `⌃⇧⇥` | nächste / vorherige Session |
+| `⇧⌘U` | nächste Session, die dich braucht |
+| `⌘1` … `⌘9` | die Sessions, die dich brauchen (Menü *Fenster*) |
+| `⌥⌘F` | Liste durchsuchen |
+| `⌘O` | Session fortsetzen: suchen, auch unter den beendeten |
 | `⇥` / `⇧⇥` | Kontofilter |
-| `B` `U` | Hintergrund- / automatische Sessions auflisten |
-| `C` | aufräumen |
-| `⌘N` | neue Session (darin `⌘O`: Ordner im macOS-Dialog wählen) |
-| `Y` / `N` | Freigabe erlauben / ablehnen |
-| `R` | umbenennen (solange die Session wartet) |
-| `P` / `S` | anheften / pausieren |
+| `⌘N` / `⌥⌘N` / `⇧⌘N` | neue Session / im Projekt / neues Projekt (im `⌘N`-Dialog: `⌘O` Ordner wählen) |
+| `⌘L` / `⇧⌘L` | für später / Später-Notizen des Projekts |
+| `⌘Y` / `⇧⌘Y` | Freigabe erlauben / ablehnen |
+| `⌘R` | umbenennen |
+| `⌥⌘P` / `⌥⌘M` | anheften / stummschalten |
 | `⌫` `⌫` | ausblenden, bis sich etwas tut |
-| `A` / `F` | in ein anderes Konto umziehen / forken (ein Dialog: Konto, Original, Flags) |
-| `I` | aus iTerm nach Brain holen (sofort, ohne Dialog) |
-| `X` `X`, `⌘⌫` `⌘⌫` | beenden, in den Papierkorb |
+| `⌥⌘O` | aus iTerm nach Brain holen (sofort, ohne Dialog) |
+| `⌥⌘X` `⌥⌘X`, `⌥⌘⌫` `⌥⌘⌫` | beenden, in den Papierkorb |
 | `⌘F` | in der ganzen Session suchen |
 | `⌘⇧C` | letzte Antwort kopieren |
+| `⌘C` | im Terminal: was Claude Code nach deiner Maus-Auswahl kopiert hat, sonst Brains Auswahl |
+| `⌘V` / `⌃⌘V` | ins Terminal einsetzen (ein Screenshot geht als Pfad hinein) / nur den Screenshot einsetzen |
 | `⌘E` | Composer |
 | `⌘T` | Shell im Projektordner |
 | `⌘D` | Terminal teilen |
 | `⌘⇧A` | alle Terminals im Überblick |
+| `⌃⌘S` / `⌥⌘0` | Seitenleiste / Änderungen unter der Session ein- und ausblenden |
+| `⌘+` `⌘-` `⌘0` | Fenster größer / kleiner / Originalgröße (die Stufe bleibt gemerkt) |
 | `⌘`-Klick | Pfad oder Link aus der Ausgabe öffnen |
-| `⌘V` | Screenshot ins Terminal einfügen |
-| `⌘K` | Befehlspalette: alles, auch was keine Taste hat (stumm, Abschnitte aufklappen, Konten abgleichen …) |
-| `?` | alle Tasten |
+| `⌘K` | Befehlspalette: alles, auch was keine Taste hat (Abschnitte aufklappen, Konten abgleichen …) |
+| `⌘,` | Einstellungen: `~/.claude-brain/config.json` im Texteditor |
+| `⌘?` | alle Tasten |
 | `esc` | Dialog oder Suchleiste schließen, Suche leeren |
 | deine `quick_terminal`-Taste | Quick Terminal, aus jeder App |

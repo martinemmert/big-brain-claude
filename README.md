@@ -26,8 +26,9 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   (`claude --bg`) and opens it in Brain's own terminal: Claude Code exactly as in your terminal,
   in your iTerm2 font and colours (`"chat_font"` and `"chat_font_size"` in
   `~/.claude-brain/config.json` pick another font), at a readable width. It keeps running when Brain quits, and
-  `claude attach <id>` opens it from any terminal. `I` moves a session from an iTerm tab into
-  Brain without losing its conversation (`/exit` there, `claude --bg --resume` here).
+  `claude attach <id>` opens it from any terminal. *File → Move from iTerm into Brain* (`⌥⌘O`)
+  moves a session from an iTerm tab into Brain without losing its conversation (`/exit` there,
+  `claude --bg --resume` here).
 - **Screenshots and files in.** Drag files onto the terminal or paste a copied screenshot with
   `⌘V`: Brain inserts the path, and Claude reads the picture. `⌘`-click a path or URL in the
   output: Markdown opens in [YAMV](https://github.com/martinemmert/yet-another-markdown-viewer)
@@ -62,7 +63,7 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
 - **Triage inbox.** Sessions that wait for you come first, longest wait on top: red when
   Claude asks a question or needs a permission, amber when a turn finished, quiet blue when the
   turn ended but subagents or background shells still run (the mod's turn end lists them; Claude's own `brain report --waiting` still marks it red).
-- **Answer from Brain.** Allow or deny an open permission prompt (`Y` / `N`, or the card's
+- **Answer from Brain.** Allow or deny an open permission prompt (`⌘Y` / `⇧⌘Y`, or the card's
   buttons), in any terminal and in the background, through Brain's mod. Keys for a dialog go only
   when the session's state is unambiguous. Replies go into the session's terminal, from a
   notification or the phone through the mod.
@@ -77,7 +78,7 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
 - **Conflicts.** A warning when two sessions edit the same files, read
   from their transcripts, and a softer hint when they change files in the same checkout.
 - **For later.** `/later <task>` in any session (or `brain later "<task>"`, which Claude uses too) notes a
-  task with its folder; `L` lists them, `⏎` starts one as a new session there, `⌫` checks it off.
+  task with its folder; `⌘L` lists them, `⏎` starts one as a new session there, `⌫` checks it off.
 - **A tree of projects, nothing lost.** Sessions that never got a prompt don't show up. The left
   side is a tree: the projects you keep (*+ New project …*, or a session started from Brain in its
   folder; the first start takes over those running in Brain) as fixed headings in alphabetical
@@ -95,42 +96,51 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   *snoozed*, *in the background*, *automated* and *older* ones. A slim header over the terminal
   shows project › session, branch, account and context fill; a status line at the bottom shows
   who needs you, who finished, who works, the last message and the usage per account.
-  `⌘⌫` twice moves an ended session's transcript
-  to the **Trash**. `C` opens *Clean up*: everything ended (or in the background) and quiet for
+  `⌥⌘⌫` twice moves an ended session's transcript
+  to the **Trash**. *File → Clean up …* shows everything ended (or in the background) and quiet for
   1, 3, 7 or 14 days, to hide or trash at once. Pinned and saved sessions always stay.
 - **Claude Code's background sessions** (`claude --bg`, listed by `claude agents`) show with
   their own state (blocked, failed, done …) while something happens; after a day without activity
   they go to *Quiet in the background*, and like those programs started, they never notify. `⏎`
-  attaches to one, `X X` stops it, `⌘⌫ ⌘⌫` stops it, moves its transcript to the Trash and runs
-  `claude rm`.
-- **End now, resume later.** `X` twice ends a waiting session (`/exit`); closing the tab works
+  attaches to one, `⌥⌘X` twice stops it, `⌥⌘⌫` twice stops it, moves its transcript to the Trash
+  and runs `claude rm`.
+- **End now, resume later.** `⌥⌘X` twice ends a waiting session (`/exit`); closing the tab works
   too. Ended sessions stay in the list as long as Claude Code keeps their transcript
   (`cleanupPeriodDays`, 30 days by default), with their name, last message and how many days are
-  left. `P` saves one under "Saved to resume" at the top; `⏎` resumes it in a new tab.
+  left. `⌥⌘P` saves one under "Saved to resume" at the top; `⏎` resumes it in a new tab; `⌘O` searches
+  all sessions, ended ones included.
 - **Open the terminal.** iTerm2, Terminal.app and tmux (in any terminal) jump to the exact
   pane; VS Code and Cursor bring the project window forward.
 - **Search** by name, path, account or last message; **pin** and **mute**
   (right-click or ⌘K) sessions. The title bar keeps the account filter (`⇥`) and alerts.
-- **Rename** a waiting session; Brain types `/rename <name>` into its terminal.
+- **Rename** a session (`⌘R`); Brain types `/rename <name>` into its terminal, once the session is
+  idle.
+- **The menu bar** has every command, in German or English as macOS is set: *Brain, File, Edit,
+  Session, View, Window, Help*. Shortcuts are on `⌘` or `⌥⌘`, so they never collide with typing
+  into the terminal; what doesn't apply right now is greyed out. There are no single-letter keys
+  on the list any more. *Window* lists the sessions that need you as `⌘1` … `⌘9`.
 - **Menu bar count** and native **notifications** with *Open* and *Snooze 15 min*, only when a
   session is done or asks you something (a question or a permission), sound only for the
   latter; reminders only while a session still waits for a decision (`remind_after_minutes` in
-  `config.json`, 10 by default, 0 turns them off, at most three). `S` snoozes a session: 15 min →
-  1 h → tomorrow 9:00 → until something happens in it → back (`⌫` twice jumps to the last).
+  `config.json`, 10 by default, 0 turns them off, at most three). *Session → Snooze* pauses a
+  session for 15 min, 1 h, until tomorrow 9:00 or until something happens in it (`⌫` twice jumps to
+  the last). Clicking the menu bar item opens a menu: the sessions that need you (a permission
+  with *Allow* and *Deny*), the finished ones you haven't seen, the usage of each account and
+  *New session …*.
 - **New sessions** in a recent folder and any account (`⌘N`), or from a **template**: a
   Markdown file with folder, account, model and a first prompt with placeholders (below).
-- **Into another account or fork … (`A`)**: one dialog for the account a session goes on in.
+- **Into another account or fork …** (*Session → Into another account*): one dialog for the account a session goes on in.
   Pick the account (`1`, `2`, …, each with its current usage), whether the original keeps
   running (`⇥`), and flags such as `--chrome` or `--model opus`; the dialog says what ⏎ will do:
   - **another account, the original ends:** a *move*, e.g. when one hits its five-hour limit.
     Brain copies the transcript, resumes it there with `claude --resume <id> --fork-session`
     and closes the original;
-  - **the original keeps running:** a *fork* (`F` opens the dialog so) into any account, its own
-    too, as a background session attached in Brain;
+  - **the original keeps running:** a *fork* (*Session → Fork into …* does it in one step) into
+    any account, its own too, as a background session attached in Brain;
 
   *Restart with …* (right-click or ⌘K) asks only for flags: Claude takes them only at start, so
   the session ends and goes on where it ran (in the background, in Brain's terminal, or in a new
-  iTerm tab). Moving a session from iTerm into Brain (`I`) changes where it runs, not its
+  iTerm tab). Moving a session from iTerm into Brain (`⌥⌘O`) changes where it runs, not its
   account: it happens right away, without the dialog.
 
   ⌘K also lists *Continue in <account>* and *Fork into <account>* to do it in one step.
@@ -216,7 +226,7 @@ conversations, the plugins' files, or `skills/synced` (claude.ai's own, per Clau
 **Brain Companion** (repo `brain-companion-native`, SwiftUI; before that `brain-companion`, .NET
 MAUI) shows the sessions on the iPhone, reads along, replies, answers permission dialogs and
 moves a session to another account; Brain carries those out on the Mac as it does for a reply
-typed in Brain (a move as with `A`). ⌘K → *Pair a phone (Brain Link)* turns the server on and
+typed in Brain. ⌘K → *Pair a phone (Brain Link)* turns the server on and
 shows a QR code; the iPhone camera opens it in the app.
 
 - Off until paired, then it starts with Brain. HTTPS on port 48620 on every interface, so the
@@ -320,35 +330,45 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 
 | Key | Action |
 |---|---|
-| `↑` `↓` / `j` `k` | select |
+Every shortcut is on `⌘` or `⌥⌘`; the menu bar shows each next to its command. While the terminal
+has the keyboard, the keys it needs are its own (`⌘⌫` deletes the line, `⌘←` `⌘→` jump to its
+start and end), and none of the menu's shortcuts uses them.
+
+| Key | Action |
+|---|---|
+| `↑` `↓` | select (while the tree has the keyboard) |
 | `⏎`, double-click | open the session: in Brain's terminal if it runs in Brain, else its terminal app (an ended one resumes) |
 | `⌥⏎` | open it in iTerm instead |
-| `⌘J` `⌘2` / `⌘[` `⌘1` | keyboard into the terminal / back to the list |
-| `/` | search the session list (`esc` clears) |
+| `⌘J` / `⌘[` | keyboard into the terminal / back to the tree |
+| `⌃⇥` `⌃⇧⇥` | next / previous session |
+| `⇧⌘U` | next session that needs you |
+| `⌘1` … `⌘9` | the sessions that need you (*Window* menu) |
+| `⌥⌘F` | search the session list (`esc` clears) |
+| `⌘O` | resume a session: search, ended ones included |
 | `⇥` / `⇧⇥` | cycle the account filter |
-| `B` / `U` | open / fold background / automated sessions |
-| `C` | clean up: hide or trash everything quiet for N days |
-| `⌘N` | start a new session (in Brain; `⌘I` in the dialog: in iTerm) |
-| `Y` / `N` | allow / deny an open permission prompt |
-| `R`, click the name | rename (while the session waits for you) |
-| `P` | pin (an ended session: save it to resume) |
-| `S` | snooze: 15 min → 1 h → until tomorrow 9:00 → until something happens → back |
-| `⌫` `⌫` | straight to "until something happens" (hidden; again: show it) |
-| `A` | into another account or fork … (one dialog: account, original, flags) |
-| `F` | the same dialog, set for a fork (the original keeps running) |
-| `I` | move a session from iTerm into Brain (right away, no dialog) |
-| `X` `X` | end the session (`/exit`; a background session: `claude stop`); it stays resumable |
-| `⌘⌫` `⌘⌫` | move an ended session's transcript to the Trash |
+| `⌘N` / `⌥⌘N` / `⇧⌘N` | new session / in this project / new project (in the `⌘N` dialog: `⌘I` in iTerm, `⌘O` choose a folder) |
+| `⌘L` / `⇧⌘L` | for later: tasks from `/later` / the project's notes in the tree |
+| `⌘Y` / `⇧⌘Y` | allow / deny an open permission prompt |
+| `⌘R` | rename |
+| `⌥⌘P` / `⌥⌘M` | pin (an ended session: save it to resume) / mute |
+| `⌫` `⌫` | hide until something happens in the session (again: show it) |
+| `⌥⌘O` | move a session from iTerm into Brain (right away, no dialog) |
+| `⌥⌘X` `⌥⌘X` | end the session (`/exit`; a background session: `claude stop`); it stays resumable |
+| `⌥⌘⌫` `⌥⌘⌫` | move an ended session's transcript to the Trash |
 | `⌘F` | find in the session's whole conversation (`esc` closes) |
 | `⌘⇧C` | copy Claude's last answer |
+| `⌘C` | in the terminal: copy what Claude Code copied after your mouse selection, else Brain's selection |
+| `⌘V` / `⌃⌘V` | paste into the terminal (a copied screenshot goes in as its path) / paste only the screenshot |
 | `⌘E` | composer: a longer prompt for the session (`⌘⏎` sends) |
 | `⌘T` | shell in the session's folder (again: hide) |
 | `⌘D` | keep this terminal beside the next session (again: end) |
 | `⌘⇧A` | all terminals as live previews |
+| `⌃⌘S` / `⌥⌘0` | show / hide the sidebar / the changes under the session |
+| `⌘+` `⌘-` `⌘0` | larger / smaller / actual size of the whole window (the level is remembered) |
 | `⌘`-click | open a path (Markdown in YAMV, else the reader) or URL from the terminal output |
-| `⌘V` | paste a copied screenshot into the terminal |
-| `⌘K` | command palette: everything, also what has no key (mute, open/fold sections, sync accounts …) |
-| `?` | every key |
+| `⌘K` | command palette: everything, also what has no key (open/fold sections, sync accounts …) |
+| `⌘,` | settings: `~/.claude-brain/config.json` in the text editor |
+| `⌘?` | every key |
 | `esc` | close a dialog or the find bar; clear the search |
 | your `quick_terminal` key | from any app: Brain with the waiting session's terminal (again: hide) |
 | right-click | a session's actions |
