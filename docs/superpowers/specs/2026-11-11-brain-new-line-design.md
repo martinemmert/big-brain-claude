@@ -144,8 +144,7 @@ never collide with typing into the terminal; items that don't apply are greyed o
   is Claude Code copying its own selection through OSC 52; iced-term turns that into
   `Event::ClipboardStore` (`iced-term/src/backend.rs`), and Brain writes it to the clipboard in
   `Message::TerminalCopy` (`app.rs`). Brain's own ⌘C (`BindingAction::Copy`, `iced-term/src/view.rs`)
-  copies Brain's selection. The menu shows "Kopieren beim Markieren (aus)" as a toggle, off by
-  default.
+  copies Brain's selection. How it works now: see *Answers*, 3.
 
 ## Removed
 
@@ -228,7 +227,6 @@ hot path for free.
 - Composer (⌘E) and Quick Terminal stay, reachable from the menu.
 - Questions and Changes tabs go with the others (Martin uses only the terminal).
 - Usage moves from the sidebar into the bottom status line.
-- "Kopieren beim Markieren" stays as a menu toggle, off by default.
 - Rename any time (the "only while waiting" guard was for typing into foreign terminals).
 
 ## Left to the builder
