@@ -316,7 +316,7 @@ pub enum Message {
     /// The left mouse button went up (a selection may have ended).
     MouseReleased,
     /// A terminal's request to put text on the clipboard, and whether it has the keyboard.
-    TerminalCopy(SessionKey, String, bool),
+    TerminalCopy(SessionKey, String, bool, CopyAsk),
     /// Whether this session's shell has the keyboard (asked after a click).
     ShellFocused(SessionKey, bool),
     /// ⌘T: show or hide the session's shell.
@@ -695,6 +695,8 @@ pub struct Brain {
     last_terminal_input: Option<(SessionKey, Instant)>,
     /// The terminal the user last released the mouse in (the end of a selection), and when.
     last_terminal_release: Option<(SessionKey, Instant)>,
+    /// Text Claude Code copied right after a mouse selection: Brain keeps it until ⌘C.
+    held_copy: Option<(SessionKey, String)>,
     /// A file is being dragged over the window.
     pub file_hover: bool,
     /// The file the reader beside the terminal shows.
@@ -848,6 +850,7 @@ impl Brain {
             focused_shell: None,
             last_terminal_input: None,
             last_terminal_release: None,
+            held_copy: None,
             file_hover: false,
             reader: None,
             pending_attach: None,
@@ -1276,13 +1279,12 @@ impl Brain {
                         // Output can carry clipboard requests too (a printed file, a fetched page):
                         // only a terminal you typed into a moment ago may write the clipboard, and
                         // only if it really has the keyboard now (asked below), and it says so.
-                        Some(iced_term::actions::Action::CopyToClipboard(text))
-                            if self.last_terminal_input.as_ref().is_some_and(|(k, at)| *k == key && at.elapsed() < CLIPBOARD_AFTER_TYPING)
-                                || self.last_terminal_release.as_ref().is_some_and(|(k, at)| *k == key && at.elapsed() < CLIPBOARD_AFTER_SELECTING) =>
-                        {
-                            if let Some(term) = self.terminals.get(&key) {
+                        Some(iced_term::actions::Action::CopyToClipboard(text)) => {
+                            let age = |at: &Option<(SessionKey, Instant)>| at.as_ref().filter(|(k, _)| *k == key).map(|(_, at)| at.elapsed());
+                            let ask = copy_decision(age(&self.last_terminal_input), age(&self.last_terminal_release));
+                            if let (Some(term), true) = (self.terminals.get(&key), ask != CopyAsk::Ignore) {
                                 let key = key.clone();
-                                task = operation::is_focused(term.widget_id().clone()).map(move |focused| Message::TerminalCopy(key.clone(), text.clone(), focused));
+                                task = operation::is_focused(term.widget_id().clone()).map(move |focused| Message::TerminalCopy(key.clone(), text.clone(), focused, ask));
                             }
                         }
                         _ => {}
@@ -1311,6 +1313,8 @@ impl Brain {
                 self.update(Message::Started(account, result))
             }
             Message::MousePressed => {
+                // A new selection (or a click that ends one) replaces the held text.
+                self.held_copy = None;
                 // Clicks move the keyboard in or out of a terminal; ask each shown one.
                 let mut asks: Vec<Task<Message>> = self
                     .shown_terminals
@@ -1343,12 +1347,19 @@ impl Brain {
                 }
                 Task::none()
             }
-            Message::TerminalCopy(key, text, focused) => {
+            Message::TerminalCopy(key, text, focused, ask) => {
                 if !focused {
                     return Task::none();
                 }
-                self.focused_terminal = Some(key);
+                self.focused_terminal = Some(key.clone());
                 let chars = text.chars().count();
+                if ask == CopyAsk::Hold {
+                    // Selected with the mouse: nothing reaches the clipboard before ⌘C.
+                    self.held_copy = Some((key, text));
+                    self.set_status(tr!("Markiert ({chars} Zeichen) – ⌘C kopiert.", "Selected ({chars} characters) – ⌘C copies."));
+                    self.refresh_menus();
+                    return Task::none();
+                }
                 self.set_status(tr!("Die Session hat {chars} Zeichen in die Zwischenablage kopiert.", "The session copied {chars} characters to the clipboard."));
                 iced::clipboard::write(text)
             }
@@ -2838,6 +2849,10 @@ impl Brain {
         if let Some(focused) = self.focused_terminal.clone() {
             self.last_terminal_input = Some((focused, Instant::now()));
         }
+        if !modifiers.command() && !modifiers.control() && (text.as_ref().is_some_and(|t| !t.is_empty()) || matches!(key.as_ref(), keyboard::Key::Named(Named::Enter | Named::Backspace | Named::Escape | Named::Tab | Named::Delete))) {
+            // Typing goes on: the selection held for ⌘C is no longer what the user means.
+            self.held_copy = None;
+        }
         let named = match key.as_ref() {
             keyboard::Key::Named(named) => Some(named),
             _ => None,
@@ -4292,6 +4307,30 @@ fn movable(session: &Session) -> bool {
     }
 }
 
+/// What to do with text a terminal asks to copy (OSC 52).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyAsk {
+    /// Nobody asked for it: output, not the user.
+    Ignore,
+    /// Claude Code's own command (`/copy`): to the clipboard at once.
+    Now,
+    /// Claude Code copied its mouse selection: Brain holds it until ⌘C.
+    Hold,
+}
+
+/// Decides from how long ago the user last typed into the terminal and let go of the mouse in it.
+/// A mouse release counts only when it came after the last key: that was a selection, not a click
+/// before typing `/copy`.
+pub fn copy_decision(since_typing: Option<Duration>, since_release: Option<Duration>) -> CopyAsk {
+    let typed = since_typing.is_some_and(|d| d < CLIPBOARD_AFTER_TYPING);
+    let selected = since_release.is_some_and(|r| r < CLIPBOARD_AFTER_SELECTING && since_typing.is_none_or(|k| r < k));
+    match (selected, typed) {
+        (true, _) => CopyAsk::Hold,
+        (false, true) => CopyAsk::Now,
+        (false, false) => CopyAsk::Ignore,
+    }
+}
+
 /// The sizes ⌘+ and ⌘− step through.
 const ZOOM_STEPS: [f32; 12] = [0.5, 0.67, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
 
@@ -4472,6 +4511,25 @@ mod tests {
         assert_eq!(kinds, [DiffKind::Hunk, DiffKind::Context, DiffKind::Added]);
         assert_eq!(cut, 1);
         assert_eq!(preview_lines("", 3), (vec![], 0));
+    }
+
+    #[test]
+    fn text_claude_copies_after_a_mouse_selection_is_held_and_a_slash_copy_goes_at_once() {
+        let secs = |s: f64| Some(Duration::from_secs_f64(s));
+        // /copy: typed a moment ago, no mouse release before it.
+        assert_eq!(copy_decision(secs(0.3), None), CopyAsk::Now);
+        // A selection: the mouse went up a moment ago, typing was long before.
+        assert_eq!(copy_decision(secs(30.0), secs(0.1)), CopyAsk::Hold);
+        assert_eq!(copy_decision(None, secs(0.1)), CopyAsk::Hold);
+        // Typed within the typing window, but the release came after the last key.
+        assert_eq!(copy_decision(secs(8.0), secs(0.1)), CopyAsk::Hold);
+        // A click before `/copy` was typed: the keys came after the release.
+        assert_eq!(copy_decision(secs(0.2), secs(0.9)), CopyAsk::Now);
+        // The release is too old to be the selection.
+        assert_eq!(copy_decision(secs(1.0), secs(5.0)), CopyAsk::Now);
+        // Neither: output carrying a clipboard request is not the user's wish.
+        assert_eq!(copy_decision(secs(60.0), secs(60.0)), CopyAsk::Ignore);
+        assert_eq!(copy_decision(None, None), CopyAsk::Ignore);
     }
 
     #[test]

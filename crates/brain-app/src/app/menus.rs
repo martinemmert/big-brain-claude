@@ -579,6 +579,11 @@ impl Brain {
     /// Brain's own selection.
     fn copy_from_terminal(&mut self) -> Task<Message> {
         let Some(key) = self.focused_terminal.clone().or_else(|| self.focused_shell.clone()) else { return Task::none() };
+        if let Some((_, text)) = self.held_copy.take().filter(|(held_in, _)| *held_in == key) {
+            let chars = text.chars().count();
+            self.set_status(tr!("{chars} Zeichen kopiert.", "Copied {chars} characters."));
+            return iced::clipboard::write(text);
+        }
         let from_shell = self.focused_terminal.is_none();
         let text = if from_shell { self.shells.get(&key) } else { self.terminals.get(&key) }.map(|term| term.selection_text()).unwrap_or_default();
         if text.is_empty() {
