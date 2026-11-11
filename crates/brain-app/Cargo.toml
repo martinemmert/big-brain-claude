@@ -13,7 +13,7 @@ tempfile = "3"
 [dependencies]
 brain-core.workspace = true
 brain-terminal.workspace = true
-iced = { version = "0.14", features = ["tokio", "advanced", "highlighter", "image"] }
+iced = { version = "0.14", features = ["tokio", "advanced", "highlighter", "image", "canvas"] }
 iced_term = { path = "../iced-term" }
 chrono.workspace = true
 serde_json.workspace = true

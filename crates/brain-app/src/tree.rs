@@ -194,13 +194,20 @@ impl<'a> Tree<'a> {
     }
 }
 
+/// A head of the tree the pointer can rest on: a project (by name) or "Weitere".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeadKey {
+    Project(String),
+    Others,
+}
+
 /// A project's head, with room above its name that sets the projects apart.
 pub const PROJECT_H: f32 = 42.0;
 pub const ROW_H: f32 = 30.0;
 /// The line under a session that asks or has finished unseen.
 pub const STATUS_H: f32 = 20.0;
 /// Allow and Deny under a permission.
-pub const BUTTONS_H: f32 = 38.0;
+pub const BUTTONS_H: f32 = 30.0;
 pub const NOTE_H: f32 = 26.0;
 pub const FOOTER_H: f32 = 30.0;
 pub const HINT_H: f32 = 34.0;
@@ -511,5 +518,14 @@ mod tests {
         let s = session("s", "/w/api", 1, false);
         let tree = Tree::build(&groups(vec![], vec![], vec![&s], vec![]), &listed(&["api", "docs"]), &by_folder, [], &views(), true);
         assert_eq!(tree.projects.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["api"]);
+    }
+
+    #[test]
+    fn a_row_is_as_tall_as_its_parts_draw_it() {
+        assert_eq!(row_height(Mark::Calm), 30.0);
+        assert_eq!(row_height(Mark::Unseen), 50.0);
+        assert_eq!(row_height(Mark::Asks(Ask::Question)), 50.0);
+        // Name line, status line, and the 30 pt row of 24 pt buttons.
+        assert_eq!(row_height(Mark::Asks(Ask::Permission)), 80.0);
     }
 }

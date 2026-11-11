@@ -228,6 +228,8 @@ pub enum Message {
     Pointer(iced::Point),
     WindowSized(iced::Size),
     Hover(Option<SessionKey>),
+    /// The pointer over a project's head (or "Weitere"): its "+" and fold arrow show.
+    HoverHead(Option<crate::tree::HeadKey>),
     Search(String),
     SearchSubmit,
     Rename(String),
@@ -397,6 +399,7 @@ impl Message {
                 | Message::Pointer(_)
                 | Message::WindowSized(_)
                 | Message::Hover(_)
+                | Message::HoverHead(_)
                 | Message::ListScrolled(_)
                 | Message::FileHover(_)
                 | Message::MousePressed
@@ -592,6 +595,7 @@ pub struct Brain {
     pub filter: Option<String>,
     pub selected: Option<SessionKey>,
     pub hovered: Option<SessionKey>,
+    pub hovered_head: Option<crate::tree::HeadKey>,
     /// Whether the snoozed-and-hidden section is open.
     pub show_snoozed: bool,
     /// The projects hidden from the list show for a look (not remembered).
@@ -791,6 +795,7 @@ impl Brain {
             filter: None,
             selected: None,
             hovered: None,
+            hovered_head: None,
             show_snoozed: false,
             show_hidden_projects: false,
             cleanup_age: 1,
@@ -999,6 +1004,10 @@ impl Brain {
             }
             Message::Hover(key) => {
                 self.hovered = key;
+                Task::none()
+            }
+            Message::HoverHead(head) => {
+                self.hovered_head = head;
                 Task::none()
             }
             Message::Search(text) => {
@@ -4545,6 +4554,7 @@ mod tests {
     #[test]
     fn pointer_and_scroll_messages_skip_sync_but_ticks_and_selection_keep_it() {
         assert!(!Message::Hover(None).may_change_synced_state());
+        assert!(!Message::HoverHead(None).may_change_synced_state());
         assert!(!Message::Pointer(iced::Point::ORIGIN).may_change_synced_state());
         assert!(!Message::MousePressed.may_change_synced_state());
         assert!(Message::Tick.may_change_synced_state());

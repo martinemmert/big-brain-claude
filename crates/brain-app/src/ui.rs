@@ -18,6 +18,7 @@ use crate::style::{
     TURN, UI, WORKING,
 };
 use crate::tr;
+use crate::tree::HeadKey;
 
 /// Room for the window's traffic lights at the left of the title bar.
 const TRAFFIC_LIGHTS: f32 = 78.0;
@@ -59,7 +60,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
             .on_move(move |p| Message::Pointer(iced::Point::new(p.x, p.y + titlebar_height + 1.0)));
         row![left, grip, detail]
     };
-    let window = container(column![titlebar(brain, groups.deciding()), divider(), body.height(Fill), divider(), status_line_bar(brain, &groups, now)])
+    let window = container(column![titlebar(brain), divider(), body.height(Fill), divider(), status_line_bar(brain, &groups, now)])
         .width(Fill)
         .height(Fill)
         .style(|_| container::Style { background: Some(Background::Color(INK)), text_color: Some(TEXT), ..container::Style::default() });
@@ -353,11 +354,9 @@ fn divider<'a>() -> Element<'a, Message> {
 
 // ---- title bar --------------------------------------------------------------------
 
-fn titlebar(brain: &Brain, waiting: usize) -> Element<'_, Message> {
+fn titlebar(brain: &Brain) -> Element<'_, Message> {
     let mut bar = row![
         Space::new().width(TRAFFIC_LIGHTS / brain.zoom()),
-        brand_mark(waiting > 0),
-        text("Brain").size(14).color(TEXT_STRONG).font(style::bold()),
         Space::new().width(Fill),
     ]
     .spacing(12)
@@ -383,7 +382,7 @@ fn titlebar(brain: &Brain, waiting: usize) -> Element<'_, Message> {
     }
     let mut accounts = vec![(t("Alle", "All").to_string(), brain.filter.is_none(), Message::Filter(None))];
     accounts.extend(brain.model.accounts.iter().map(|a| (a.id.clone(), brain.filter.as_deref() == Some(&a.id), Message::Filter(Some(a.id.clone())))));
-    bar = bar.push(segmented(accounts));
+    bar = bar.push(style::segmented_in(accounts, LINE_STRONG, Color::from_rgba8(0xff, 0xff, 0xff, 0.06)));
 
     // The native title bar keeps its size in points when the window is zoomed.
     let titlebar_height = crate::chrome::TITLEBAR_HEIGHT / brain.zoom();
@@ -391,23 +390,6 @@ fn titlebar(brain: &Brain, waiting: usize) -> Element<'_, Message> {
         .on_press(Message::DragWindow)
         .on_double_click(Message::ZoomWindow)
         .into()
-}
-
-/// Brain's mark in miniature: a grid of sessions, one of them calling.
-fn brand_mark<'a>(calling: bool) -> Element<'a, Message> {
-    let cell = |color: Color| style::dot::<Message>(color, 4.0);
-    let quiet = LINE_STRONG;
-    container(
-        column![
-            row![cell(quiet), cell(WORKING), cell(if calling { CALLS } else { quiet })].spacing(2),
-            row![cell(WORKING), cell(quiet), cell(quiet)].spacing(2),
-            row![cell(quiet), cell(quiet), cell(WORKING)].spacing(2),
-        ]
-        .spacing(2),
-    )
-    .padding(4)
-    .style(|_| boxed(RAISED, Color::TRANSPARENT, 6.0))
-    .into()
 }
 
 // ---- list -------------------------------------------------------------------------
@@ -424,7 +406,7 @@ fn search(brain: &Brain) -> Element<'_, Message> {
         .style(|theme, status| text_input::Style { border: Border::default(), background: Background::Color(Color::TRANSPARENT), ..field_style(theme, status) });
     let edge = if editing { alpha(WORKING, 0x99) } else { LINE };
     container(
-        container(row![text("⌕").size(13).color(TEXT_FAINT), field, kbd(if editing { "esc" } else { "⌥⌘F" })].spacing(6).align_y(iced::Center))
+        container(if editing { row![text("⌕").size(13).color(TEXT_FAINT), field, kbd("esc")] } else { row![text("⌕").size(13).color(TEXT_FAINT), field] }.spacing(6).align_y(iced::Center))
             .padding([0, 10])
             .style(move |_| boxed(INK, edge, 8.0)),
     )
@@ -461,14 +443,14 @@ fn tree<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Mess
             Node::Session(row) => session_row(brain, row.session, row.mark, now),
             Node::NotesHead { project, count, open } => notes_head(project, count, open),
             Node::Note { note } => note_row(note),
-            Node::OthersHead { count, open } => others_head(count, open),
+            Node::OthersHead { count, open } => others_head(brain, count, open),
             Node::Footer => tree_footer(brain, &tree),
             Node::NewProject => new_project_row(),
             Node::ChangesHead { count, added, removed } => changes_head(count, added, removed),
             Node::Change(change) => change_row(change, brain.preview.as_ref().is_some_and(|p| p.change.path == change.path)),
         })
         .collect();
-    scrollable(column(items).spacing(tree::GAP).padding(Padding { top: tree::TOP, right: 8.0, bottom: 16.0, left: 8.0 }))
+    scrollable(column(items).spacing(tree::GAP).padding(Padding { top: tree::TOP, right: 12.0, bottom: 16.0, left: 12.0 }))
         .id(app::LIST)
         .on_scroll(Message::ListScrolled)
         .height(Fill)
@@ -476,24 +458,34 @@ fn tree<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Mess
         .into()
 }
 
-/// Where a project's name starts: its padding, the fold arrow and the gap after it. A session's
-/// dot stands there, under the name.
-const NEST: f32 = 26.0;
+/// Where a session's dot stands, from the tree's left edge (12 pt in): under the project's name.
+const NEST: f32 = 20.0;
 /// Where a session's name starts (its dot and the gap after it): its status line and what stands
 /// under it (changes, notes) begin there.
 const NAME: f32 = NEST + 16.0;
 /// One step further in: the files and notes under such a head.
 const LEAF: f32 = NAME + 14.0;
+/// The fold arrow's square; the head leaves two points more before the name.
+const ARROW: f32 = 12.0;
+/// The "+" of a project's head.
+const PLUS_W: f32 = 20.0;
 
 /// A tree head's line (project, "Weitere"): sits at the bottom of its row, so the room above it
-/// parts it from what comes before.
+/// parts it from what comes before. It starts at the tree's edge, like the search field.
 fn head_cell<'a>(line: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
-    container(line).height(tree::PROJECT_H).align_y(iced::Bottom).padding(Padding { left: 6.0, right: 6.0, bottom: 5.0, top: 0.0 }).width(Fill).clip(true)
+    container(line).height(tree::PROJECT_H).align_y(iced::Bottom).padding(Padding { left: 0.0, right: 6.0, bottom: 5.0, top: 0.0 }).width(Fill).clip(true)
 }
 
-/// The fold arrow of a head.
-fn fold_arrow<'a>(folded: bool) -> Element<'a, Message> {
-    text(if folded { "▸" } else { "▾" }).size(11).color(TEXT_MUTED).font(UI).width(14).into()
+/// The fold arrow of a head: a quiet chevron, which stays out of sight (but keeps its room)
+/// when `visible` is not set.
+fn fold_arrow<'a>(folded: bool, visible: bool) -> Element<'a, Message> {
+    let inner: Element<'a, Message> = if visible { style::chevron(folded, ARROW, TEXT_FAINT) } else { Space::new().width(ARROW).height(ARROW).into() };
+    container(inner).width(ARROW + 2.0).into()
+}
+
+/// Wraps a head so the pointer over it is known (its "+" and open arrow show then).
+fn head_hover<'a>(head: Element<'a, Message>, key: HeadKey) -> Element<'a, Message> {
+    mouse_area(head).on_enter(Message::HoverHead(Some(key))).on_exit(Message::HoverHead(None)).into()
 }
 
 /// A project's head: fold arrow, name, and at the right what is going on in it. A click folds it,
@@ -501,8 +493,9 @@ fn fold_arrow<'a>(folded: bool) -> Element<'a, Message> {
 fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Message> {
     let name = project.name.clone();
     let color = if project.hidden { TEXT_FAINT } else { TEXT_STRONG };
+    let hovered = brain.hovered_head.as_ref() == Some(&HeadKey::Project(name.clone()));
     let mut line = row![
-        fold_arrow(project.folded),
+        fold_arrow(project.folded, project.folded || hovered),
         text(clip(&name, 30)).size(13).color(color).font(style::semibold()).wrapping(text::Wrapping::None),
         Space::new().width(Fill),
     ]
@@ -528,24 +521,30 @@ fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Messa
     if project.hidden {
         line = line.push(text(t("ausgeblendet", "hidden")).size(11).color(TEXT_FAINT).font(UI));
     }
-    if let Some(account) = project.account() {
-        line = line.push(account_badge(account, brain.account_index(account)));
+    // The account only tells when all accounts show and it isn't the first one.
+    if let Some(account) = project.account().filter(|a| brain.filter.is_none() && brain.model.accounts.first().is_some_and(|first| first.id != *a)) {
+        line = line.push(text(account.to_string()).size(11).color(TEXT_FAINT).font(UI));
     }
-    line = line.push(
-        button(text("+").size(14).color(TEXT_MUTED).font(UI))
-            .padding([0, 6])
-            .on_press(Message::NewSessionIn(name.clone()))
-            .style(|_, status| button::Style {
-                text_color: if matches!(status, button::Status::Hovered | button::Status::Pressed) { TEXT_STRONG } else { TEXT_MUTED },
-                border: iced::border::rounded(4),
-                ..button::Style::default()
-            }),
-    );
-    mouse_area(head_cell(line))
+    line = line.push(if hovered {
+        Element::from(
+            button(container(text("+").size(14).font(UI)).center_x(Fill))
+                .padding(0)
+                .width(PLUS_W)
+                .on_press(Message::NewSessionIn(name.clone()))
+                .style(|_, status| button::Style {
+                    text_color: if matches!(status, button::Status::Hovered | button::Status::Pressed) { TEXT_STRONG } else { TEXT_MUTED },
+                    border: iced::border::rounded(4),
+                    ..button::Style::default()
+                }),
+        )
+    } else {
+        Element::from(Space::new().width(PLUS_W).height(1))
+    });
+    let head = mouse_area(head_cell(line))
         .on_press(Message::ToggleProjectFolded(name.clone()))
-        .on_right_press(Message::ProjectMenu(name))
-        .interaction(iced::mouse::Interaction::Pointer)
-        .into()
+        .on_right_press(Message::ProjectMenu(name.clone()))
+        .interaction(iced::mouse::Interaction::Pointer);
+    head_hover(head.into(), HeadKey::Project(name))
 }
 
 /// A session under its project: state dot, name, the time since its state changed. A line below
@@ -576,9 +575,15 @@ fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> El
     }
     head = head.push(text(ago(since, now)).size(11).color(TEXT_FAINT).font(UI));
     let mut body = column![container(head).height(tree::ROW_H).center_y(tree::ROW_H)];
-    if let Some((line, color)) = status_line(s, mark) {
+    if let Some((prefix, line)) = status_line(s, mark) {
+        let line = text(clip(&line, 64)).size(12).color(TEXT_MUTED).font(UI).wrapping(text::Wrapping::None);
+        // "Frage:" and "Freigabe:" stand out in red; what follows is as quiet as any line.
+        let line: Element<'a, Message> = match prefix {
+            Some(prefix) => row![text(prefix).size(12).color(CALLS_SOFT).font(UI).wrapping(text::Wrapping::None), line].spacing(3).into(),
+            None => line.into(),
+        };
         body = body.push(
-            container(text(clip(&line, 64)).size(12).color(color).font(UI).wrapping(text::Wrapping::None))
+            container(line)
                 .height(tree::STATUS_H)
                 .align_y(iced::Top)
                 .padding(Padding { left: NAME - NEST, ..Padding::ZERO }),
@@ -587,20 +592,19 @@ fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> El
     if mark == Mark::Asks(Ask::Permission) {
         let answer = |allow: bool| Message::Steer(Command::Permission { key: s.key.clone(), allow, since_ms: s.phase_since_ms() });
         body = body.push(
-            container(row![action(t("Erlauben", "Allow"), "", true, Some(answer(true))), action(t("Ablehnen", "Deny"), "", false, Some(answer(false)))].spacing(8))
+            container(row![answer_button(t("Erlauben", "Allow"), false, answer(true)), answer_button(t("Ablehnen", "Deny"), true, answer(false))].spacing(8))
                 .height(tree::BUTTONS_H)
-                .align_y(iced::Center)
+                .align_y(iced::Top)
                 .padding(Padding { left: NAME - NEST, ..Padding::ZERO }),
         );
     }
-    let background = if selected { RAISED } else if hovered { style::HOVER } else if asking { alpha(CALLS, 0x12) } else { Color::TRANSPARENT };
-    let edge = if asking { alpha(CALLS, 0x77) } else { Color::TRANSPARENT };
+    let background = if selected { RAISED } else if asking { alpha(CALLS, 0x1a) } else if hovered { style::HOVER } else { Color::TRANSPARENT };
     let content = container(body)
         .height(tree::row_height(mark))
         .width(Fill)
         .padding(Padding { left: NEST, right: 8.0, ..Padding::ZERO })
         .clip(true)
-        .style(move |_| boxed(background, edge, 6.0));
+        .style(move |_| boxed(background, Color::TRANSPARENT, 6.0));
     iced::widget::tooltip(clickable(content.into(), s), tooltip_card(brain, s, now), iced::widget::tooltip::Position::Right).gap(8).into()
 }
 
@@ -621,22 +625,42 @@ fn state_dot<'a>(s: &Session, mark: Mark) -> Element<'a, Message> {
     }
 }
 
-/// What a session that asks or finished unseen says under its name.
-fn status_line(s: &Session, mark: Mark) -> Option<(String, Color)> {
+/// What a session that asks or finished unseen says under its name: a lead word for what is
+/// asked (if any), and the line itself.
+fn status_line(s: &Session, mark: Mark) -> Option<(Option<String>, String)> {
     let said = |fallback: &str| plain(&s.closing_line().unwrap_or_else(|| fallback.to_string()));
     match mark {
         Mark::Asks(Ask::Permission) => {
             let what = s.insight.tool.clone().or_else(|| s.headline()).map(|h| plain(&h)).unwrap_or_default();
-            Some((format!("{}: {what}", t("Freigabe", "Permission")), TEXT))
+            Some((Some(format!("{}:", t("Freigabe", "Permission"))), what))
         }
         Mark::Asks(Ask::Options) | Mark::Asks(Ask::Question) | Mark::Asks(Ask::Maybe) => {
             let what = plain(&s.headline().unwrap_or_else(|| t("wartet auf deine Eingabe", "waiting for your input").into()));
-            Some((format!("{}: {what}", t("Frage", "Question")), TEXT))
+            Some((Some(format!("{}:", t("Frage", "Question"))), what))
         }
-        Mark::Guess => Some((format!("“{}”", said("")), TEXT)),
-        Mark::Unseen => Some((said(t("Fertig, du bist dran", "Done, your turn")), TEXT)),
+        Mark::Guess => Some((None, format!("“{}”", said("")))),
+        Mark::Unseen => Some((None, said(t("Fertig, du bist dran", "Done, your turn")))),
         Mark::Calm | Mark::Ended => None,
     }
+}
+
+/// A button on a card that asks: neutral, so the red of the card stays the one signal. Deny
+/// keeps a fine edge.
+fn answer_button<'a>(label: &str, edged: bool, message: Message) -> Element<'a, Message> {
+    button(text(label.to_string()).size(12).color(TEXT_STRONG).font(style::semibold()))
+        .padding([0, 10])
+        .height(24)
+        .on_press(message)
+        .style(move |_, status| {
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            button::Style {
+                background: Some(Background::Color(if hovered { LINE_STRONG } else { RAISED })),
+                text_color: TEXT_STRONG,
+                border: Border { color: if edged { LINE_STRONG } else { Color::TRANSPARENT }, width: if edged { 1.0 } else { 0.0 }, radius: 6.0.into() },
+                ..button::Style::default()
+            }
+        })
+        .into()
 }
 
 /// The details of a session on hover: what it is about, where it runs, its markers.
@@ -703,12 +727,14 @@ fn counts<'a>(added: Option<u64>, removed: Option<u64>) -> Element<'a, Message> 
 }
 
 fn notes_head<'a>(project: Option<&str>, count: usize, open: bool) -> Element<'a, Message> {
-    let label = text(format!("{}  {} · {count}", if project.is_some() { if open { "▾" } else { "▸" } } else { " " }, t("Für später", "For later")))
-        .size(12)
-        .color(TURN)
-        .font(UI)
-        .wrapping(text::Wrapping::None);
-    let head = container(label).height(tree::NOTE_H).center_y(tree::NOTE_H).padding(Padding { left: NEST - 3.0, ..Padding::ZERO });
+    let label = text(format!("{} · {count}", t("Für später", "For later"))).size(12).color(TEXT_MUTED).font(UI).wrapping(text::Wrapping::None);
+    // The arrow stands in the dots' column, the text flush under the session names.
+    let line: Element<'a, Message> = if project.is_some() {
+        row![Space::new().width(NEST - 1.0), style::chevron(!open, 10.0, TEXT_FAINT), Space::new().width(NAME - NEST - 9.0), label].align_y(iced::Center).into()
+    } else {
+        row![Space::new().width(NAME), label].into()
+    };
+    let head = container(line).height(tree::NOTE_H).center_y(tree::NOTE_H);
     match project {
         Some(project) => mouse_area(head).on_press(Message::ToggleNotes(project.to_string())).interaction(iced::mouse::Interaction::Pointer).into(),
         None => head.into(),
@@ -740,12 +766,16 @@ fn note_row<'a>(note: &later::Item) -> Element<'a, Message> {
 }
 
 /// "Weitere": sessions of folders that are not projects of the tree.
-fn others_head<'a>(count: usize, open: bool) -> Element<'a, Message> {
-    let label = row![fold_arrow(!open), text(format!("{} · {count}", t("Weitere", "Others"))).size(13).color(TEXT_MUTED).font(style::semibold())].spacing(6).align_y(iced::Center);
-    mouse_area(head_cell(label))
-        .on_press(Message::ToggleSection("others"))
-        .interaction(iced::mouse::Interaction::Pointer)
-        .into()
+fn others_head<'a>(brain: &Brain, count: usize, open: bool) -> Element<'a, Message> {
+    let hovered = brain.hovered_head == Some(HeadKey::Others);
+    let label = row![
+        fold_arrow(!open, !open || hovered),
+        text(format!("{} · {count}", t("Weitere", "Others"))).size(13).color(TEXT_MUTED).font(style::semibold())
+    ]
+    .spacing(6)
+    .align_y(iced::Center);
+    let head = mouse_area(head_cell(label)).on_press(Message::ToggleSection("others")).interaction(iced::mouse::Interaction::Pointer);
+    head_hover(head.into(), HeadKey::Others)
 }
 
 /// The folded lists at the end of the tree, each one click from open: nothing leaves the tree
@@ -782,7 +812,7 @@ fn tree_footer<'a>(brain: &'a Brain, tree: &Tree<'_>) -> Element<'a, Message> {
 fn new_project_row<'a>() -> Element<'a, Message> {
     let label = container(text(t("+ Neues Projekt …", "+ New project …")).size(13).font(UI)).height(Fill).align_y(iced::Bottom).padding(Padding { bottom: 5.0, ..Padding::ZERO });
     button(label)
-        .padding([0, 6])
+        .padding(Padding { left: 0.0, right: 6.0, ..Padding::ZERO })
         .height(tree::PROJECT_H)
         .width(Fill)
         .on_press(Message::NewProject)
@@ -2132,13 +2162,12 @@ pub fn usage_text(account: &str, usage: &UsageNow, now_ms: i64) -> String {
     format!("{account}  {}", parts.join("  ·  "))
 }
 
-/// An account's limits: `main 5 h ▓▓░ 46 % Woche 21 % · voll ~Do 14:00`, or "hat Platz" when
-/// neither window is half used.
+/// An account's limits: `main 5 h ▓▓░ 46 % Woche 21 %`, and `voll ~Do 14:00` when it gets tight.
 fn usage_segment<'a>(brain: &Brain, account: &str, now: i64) -> Option<Element<'a, Message>> {
     let usage = usage_now(brain, account, now)?;
     let faint = |label: String| text(label).size(11.5).color(TEXT_FAINT).font(UI);
     let num = |label: String| text(label).size(11.5).color(TEXT).font(UI);
-    let mut line = row![account_badge(account, brain.account_index(account))].spacing(6).align_y(iced::Center);
+    let mut line = row![text(account.to_string()).size(11.5).color(TEXT_MUTED).font(style::medium())].spacing(6).align_y(iced::Center);
     if let Some(used) = usage.five_hour {
         let color = if used >= 90.0 { CALLS } else if used >= 70.0 { TURN } else { WORKING };
         let bar = stack![
@@ -2150,13 +2179,11 @@ fn usage_segment<'a>(brain: &Brain, account: &str, now: i64) -> Option<Element<'
     if let Some(used) = usage.week {
         line = line.push(faint(t("Woche", "week").into())).push(num(format!("{used:.0} %")));
     }
-    match usage.runs_out {
-        Some(at) => {
-            let when = runs_out_label(at, now);
-            line = line.push(text(tr!("voll ~{when}", "full ~{when}")).size(11.5).color(TURN).font(style::semibold()));
-        }
-        None if usage.has_room => line = line.push(text(t("hat Platz", "has room")).size(11.5).color(DONE).font(UI)),
-        None => {}
+    // Only when it gets tight: amber, red once the five hours are nearly gone.
+    if let Some(at) = usage.runs_out {
+        let when = runs_out_label(at, now);
+        let color = if usage.five_hour.is_some_and(|used| used >= 90.0) { CALLS } else { TURN };
+        line = line.push(text(tr!("voll ~{when}", "full ~{when}")).size(11.5).color(color).font(style::semibold()));
     }
     Some(line.into())
 }

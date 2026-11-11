@@ -214,23 +214,66 @@ pub fn action<'a, M: Clone + 'a>(label: impl Into<String>, key: impl Into<String
 
 /// A segmented control; picking an option produces its message.
 pub fn segmented<'a, M: Clone + 'a>(options: Vec<(String, bool, M)>) -> Element<'a, M> {
+    segmented_in(options, RAISED, Color::TRANSPARENT)
+}
+
+/// A segmented control whose active option stands out more: `active` fills it, `rim` is a fine
+/// inner edge (transparent for none).
+pub fn segmented_in<'a, M: Clone + 'a>(options: Vec<(String, bool, M)>, active_background: Color, rim: Color) -> Element<'a, M> {
     let buttons = options.into_iter().map(|(label, active, message)| {
         button(text(label).size(12).font(if active { medium() } else { UI }))
             .padding([3, 11])
             .on_press(message)
             .style(move |_, status| button::Style {
-                background: active.then_some(Background::Color(RAISED)),
+                background: active.then_some(Background::Color(active_background)),
                 text_color: match (active, status) {
                     (true, _) => TEXT_STRONG,
                     (false, button::Status::Hovered) => TEXT,
                     _ => TEXT_MUTED,
                 },
-                border: border::rounded(5),
+                border: Border { color: if active { rim } else { Color::TRANSPARENT }, width: if active && rim.a > 0.0 { 1.0 } else { 0.0 }, radius: 5.0.into() },
                 ..button::Style::default()
             })
             .into()
     });
     container(row(buttons).spacing(2)).padding(3).style(|_| boxed(INK, LINE, 8.0)).into()
+}
+
+/// A quiet chevron drawn as a stroke (the system font's "▾" renders tiny): pointing down when
+/// open, right when `folded`. `size` is its square in points.
+pub fn chevron<'a, M: 'a>(folded: bool, size: f32, color: Color) -> Element<'a, M> {
+    iced::widget::canvas(Chevron { folded, color }).width(size).height(size).into()
+}
+
+struct Chevron {
+    folded: bool,
+    color: Color,
+}
+
+impl<M> iced::widget::canvas::Program<M> for Chevron {
+    type State = ();
+
+    fn draw(
+        &self,
+        _: &(),
+        renderer: &iced::Renderer,
+        _: &iced::Theme,
+        bounds: iced::Rectangle,
+        _: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas::{Frame, LineCap, LineJoin, Path, Stroke};
+        let mut frame = Frame::new(renderer, bounds.size());
+        let k = bounds.width / 12.0;
+        // The artifact's 12 × 12 box: a down chevron, or the same turned a quarter to the left.
+        let points = if self.folded { [(4.5, 3.0), (7.5, 6.0), (4.5, 9.0)] } else { [(3.0, 4.5), (6.0, 7.5), (9.0, 4.5)] };
+        let path = Path::new(|p| {
+            p.move_to(iced::Point::new(points[0].0 * k, points[0].1 * k));
+            p.line_to(iced::Point::new(points[1].0 * k, points[1].1 * k));
+            p.line_to(iced::Point::new(points[2].0 * k, points[2].1 * k));
+        });
+        frame.stroke(&path, Stroke::default().with_color(self.color).with_width(1.5 * k).with_line_cap(LineCap::Round).with_line_join(LineJoin::Round));
+        vec![frame.into_geometry()]
+    }
 }
 
 /// A clickable text that only looks like a link-ish label (e.g. the background filter).
