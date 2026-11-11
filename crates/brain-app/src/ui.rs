@@ -442,7 +442,7 @@ fn tree<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Mess
             Node::Project(project) => project_row(brain, project),
             Node::Session(row) => session_row(brain, row.session, row.mark, now),
             Node::NotesHead { project, count, open } => notes_head(project, count, open),
-            Node::Note { note } => note_row(note),
+            Node::Note { note } => note_row(note, tree_inner(brain)),
             Node::OthersHead { count, open } => others_head(brain, count, open),
             Node::Footer => tree_footer(brain, &tree),
             Node::NewProject => new_project_row(),
@@ -450,9 +450,12 @@ fn tree<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Mess
             Node::Change(change) => change_row(change, brain.preview.as_ref().is_some_and(|p| p.change.path == change.path)),
         })
         .collect();
+    // A thin scroller inside the tree's right padding: it floats, but never over a row.
+    let bar = scrollable::Scrollbar::new().width(5).scroller_width(5).margin(3);
     scrollable(column(items).spacing(tree::GAP).padding(Padding { top: tree::TOP, right: 12.0, bottom: 16.0, left: 12.0 }))
         .id(app::LIST)
         .on_scroll(Message::ListScrolled)
+        .direction(scrollable::Direction::Vertical(bar))
         .height(Fill)
         .style(scrollbar)
         .into()
@@ -469,6 +472,20 @@ const LEAF: f32 = NAME + 14.0;
 const ARROW: f32 = 12.0;
 /// The "+" of a project's head.
 const PLUS_W: f32 = 20.0;
+/// Room kept free at the right end of a session's lines, so text ends before the edge.
+const ROW_RIGHT: f32 = 10.0;
+
+/// The width inside the tree: the sidebar less the tree's own padding on both sides.
+fn tree_inner(brain: &Brain) -> f32 {
+    brain.prefs.sidebar_width.unwrap_or(app::SIDEBAR_DEFAULT) - 24.0
+}
+
+/// How many characters of text at `size` fit into `width` points. Iced cuts text hard at the
+/// edge (it has no ellipsis), so a line is clipped to what fits, with `…`; SF's average glyph is a
+/// little over half its size.
+fn fitting(width: f32, size: f32) -> usize {
+    (width / (size * 0.56)).max(6.0) as usize
+}
 
 /// A tree head's line (project, "Weitere"): sits at the bottom of its row, so the room above it
 /// parts it from what comes before. It starts at the tree's edge, like the search field.
@@ -494,9 +511,11 @@ fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Messa
     let name = project.name.clone();
     let color = if project.hidden { TEXT_FAINT } else { TEXT_STRONG };
     let hovered = brain.hovered_head.as_ref() == Some(&HeadKey::Project(name.clone()));
+    // Arrow, gap, "+", the head's right padding, and room for a word like "ruht" or the account.
+    let room = tree_inner(brain) - (ARROW + 2.0) - 6.0 - PLUS_W - 6.0 - 64.0;
     let mut line = row![
         fold_arrow(project.folded, project.folded || hovered),
-        text(clip(&name, 30)).size(13).color(color).font(style::semibold()).wrapping(text::Wrapping::None),
+        text(clip(&name, fitting(room, 13.0))).size(13).color(color).font(style::semibold()).wrapping(text::Wrapping::None),
         Space::new().width(Fill),
     ]
     .spacing(6)
@@ -560,23 +579,29 @@ fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> El
         (false, false) => TEXT,
     };
     let since = if ended || matches!(s.phase(), Phase::Asleep) { s.last_activity_ms } else { s.phase_since_ms() };
+    let pinned = brain.prefs.is_pinned(&s.key);
+    let conflict = brain.conflicts.get(&s.key).is_some_and(|c| !c.shared_files.is_empty());
+    // The name gets what the dot, the time ("59 min") and the markers leave.
+    let name_room = tree_inner(brain) - NAME - ROW_RIGHT - 52.0 - 18.0 * (pinned as u8 + conflict as u8) as f32;
     let mut head = row![
         state_dot(s, mark),
-        text(clip(&s.display_name(), 34)).size(13).color(name_color).font(if selected { style::medium() } else { UI }).wrapping(text::Wrapping::None),
+        text(clip(&s.display_name(), fitting(name_room, 13.0))).size(13).color(name_color).font(if selected { style::medium() } else { UI }).wrapping(text::Wrapping::None),
         Space::new().width(Fill),
     ]
     .spacing(8)
     .align_y(iced::Center);
-    if brain.prefs.is_pinned(&s.key) {
+    if pinned {
         head = head.push(marker("★", TURN));
     }
-    if brain.conflicts.get(&s.key).is_some_and(|c| !c.shared_files.is_empty()) {
+    if conflict {
         head = head.push(marker("⚠", CALLS));
     }
     head = head.push(text(ago(since, now)).size(11).color(TEXT_FAINT).font(UI));
     let mut body = column![container(head).height(tree::ROW_H).center_y(tree::ROW_H)];
     if let Some((prefix, line)) = status_line(s, mark) {
-        let line = text(clip(&line, 64)).size(12).color(TEXT_MUTED).font(UI).wrapping(text::Wrapping::None);
+        let prefix_w = prefix.as_ref().map_or(0.0, |p| p.chars().count() as f32 * 12.0 * 0.56 + 3.0);
+        let room = tree_inner(brain) - NAME - ROW_RIGHT - prefix_w;
+        let line = text(clip(&line, fitting(room, 12.0))).size(12).color(TEXT_MUTED).font(UI).wrapping(text::Wrapping::None);
         // "Frage:" and "Freigabe:" stand out in red; what follows is as quiet as any line.
         let line: Element<'a, Message> = match prefix {
             Some(prefix) => row![text(prefix).size(12).color(CALLS_SOFT).font(UI).wrapping(text::Wrapping::None), line].spacing(3).into(),
@@ -602,7 +627,7 @@ fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> El
     let content = container(body)
         .height(tree::row_height(mark))
         .width(Fill)
-        .padding(Padding { left: NEST, right: 8.0, ..Padding::ZERO })
+        .padding(Padding { left: NEST, right: ROW_RIGHT, ..Padding::ZERO })
         .clip(true)
         .style(move |_| boxed(background, Color::TRANSPARENT, 6.0));
     iced::widget::tooltip(clickable(content.into(), s), tooltip_card(brain, s, now), iced::widget::tooltip::Position::Right).gap(8).into()
@@ -742,9 +767,9 @@ fn notes_head<'a>(project: Option<&str>, count: usize, open: bool) -> Element<'a
 }
 
 /// A note for later: a click starts it as a new session in its folder, the check-off removes it.
-fn note_row<'a>(note: &later::Item) -> Element<'a, Message> {
+fn note_row<'a>(note: &later::Item, inner: f32) -> Element<'a, Message> {
     let id = note.id.clone();
-    let start = mouse_area(text(clip(&note.text, 40)).size(12).color(TEXT_MUTED).font(UI).wrapping(text::Wrapping::None))
+    let start = mouse_area(text(clip(&note.text, fitting(inner - NAME - 30.0, 12.0))).size(12).color(TEXT_MUTED).font(UI).wrapping(text::Wrapping::None))
         .on_press(Message::StartNote(id.clone()))
         .interaction(iced::mouse::Interaction::Pointer);
     let hint = container(text(t("Klick startet die Aufgabe als neue Session", "Click starts the task as a new session")).size(11.5).color(TEXT).font(UI))
