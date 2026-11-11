@@ -1,0 +1,861 @@
+<title>Brain Hauptfenster</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: Entwurfsblatt mit drei umschaltbaren Mac-Fenstern (1440x900, skaliert), darunter Menü-Referenz und Empfehlung.
+   Bewusst nur dunkel: Brains eigene Tokens aus style.rs. */
+:root{
+  color-scheme: dark;
+  --ink:#0f1322; --chrome:#121728; --surface:#161b2c; --raised:#1d2338; --line:#232a40; --line-strong:#2e3654;
+  --text:#d5d9e6; --strong:#f1f3f9; --muted:#8c93aa; --faint:#5d6580;
+  --calls:#ff5c6c; --turn:#f2b84b; --working:#5aa9ff; --agents:#8f9cf5; --done:#45d19a; --ended:#4a5272;
+  --acc-main:#5fc8c0; --acc-second:#e08cc6;
+  --tl-red:#ff5f57; --tl-yellow:#febc2e; --tl-green:#28c840;
+  --menubar:#151a2ecc; --menu-bg:#272c40f5; --menu-line:#ffffff1a; --menu-hl:#3a6fd8; --menu-key:#9aa1b8;
+  --desk-a:#2b2456; --desk-b:#0e3044; --desk-c:#0a0d18;
+  --shadow:#00000099;
+  --ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+body{background:var(--ink);color:var(--text);font-family:var(--ui);font-size:15px;line-height:1.5}
+*{box-sizing:border-box}
+.page{max-width:1500px;margin:0 auto;padding-block:40px 96px;padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px));display:flex;flex-direction:column;gap:40px}
+h1{font-size:clamp(26px,3.4vw,38px);line-height:1.12;letter-spacing:-.02em;font-weight:700;color:var(--strong);margin:0;text-wrap:balance}
+h2{font-size:24px;letter-spacing:-.01em;margin:0;color:var(--strong);text-wrap:balance}
+h3{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0;font-weight:600}
+p{margin:0}
+.lede{max-width:70ch;color:var(--muted);font-size:16px}
+.head{display:flex;flex-direction:column;gap:14px}
+.eyebrow{font-family:var(--mono);font-size:12px;color:var(--agents);letter-spacing:.04em}
+
+.legend{display:flex;flex-wrap:wrap;gap:8px 20px;font-size:13px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:8px}
+
+.seg{display:inline-flex;gap:4px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:4px;flex-wrap:wrap}
+.seg button{all:unset;cursor:pointer;padding:8px 16px;border-radius:7px;color:var(--muted);font-size:14px;font-weight:500;display:inline-flex;gap:10px;align-items:baseline}
+.seg button b{font-family:var(--mono);color:var(--faint);font-weight:500}
+.seg button[aria-pressed="true"]{background:var(--raised);color:var(--strong);box-shadow:0 0 0 1px var(--line-strong)}
+.seg button[aria-pressed="true"] b{color:var(--agents)}
+.seg button:focus-visible{outline:2px solid var(--working);outline-offset:2px}
+
+.variant{display:flex;flex-direction:column;gap:22px}
+.vhead{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+.vhead .letter{font-family:var(--mono);font-size:14px;color:var(--agents)}
+.facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px}
+.facts div{display:flex;flex-direction:column;gap:6px;min-width:0}
+.facts p{font-size:14.5px;color:var(--text);max-width:52ch}
+.try{font-size:13px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px 18px}
+.try span::before{content:"→ ";color:var(--faint)}
+@media (max-width:820px){.facts{grid-template-columns:1fr}}
+
+.stage{position:relative;width:100%;aspect-ratio:1440/900;max-width:100%;overflow:hidden;border-radius:10px;box-shadow:0 0 0 1px var(--line)}
+.screen{position:absolute;top:0;left:0;width:1440px;height:900px;transform:scale(var(--s,0.5));transform-origin:0 0;overflow:hidden;font-family:var(--ui);font-size:13px;line-height:1.35;color:var(--text);
+  background:radial-gradient(1200px 700px at 15% 10%, var(--desk-a), transparent 60%),radial-gradient(1000px 800px at 90% 90%, var(--desk-b), transparent 60%),var(--desk-c)}
+
+/* ---------- macOS-Menüleiste ---------- */
+.menubar{position:absolute;inset:0 0 auto 0;height:25px;background:var(--menubar);backdrop-filter:blur(18px);display:flex;align-items:center;padding:0 10px;gap:1px;color:var(--strong);font-size:13px;z-index:40}
+.mb-logo{width:14px;height:14px;border-radius:50%;background:var(--strong);opacity:.85;margin:0 10px 0 6px}
+.mb-item{padding:2px 9px;border-radius:4px;cursor:default;user-select:none}
+.mb-item.bold{font-weight:700}
+.mb-item.open{background:var(--menu-hl)}
+.mb-right{margin-left:auto;display:flex;align-items:center;gap:16px;padding-right:6px;font-size:13px}
+.mb-status{display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:4px;cursor:default}
+.mb-status.open{background:var(--menu-hl)}
+.mb-status .badge{background:var(--calls);color:var(--ink);font-size:10px;font-weight:700;border-radius:7px;padding:0 5px;line-height:14px}
+.brainmark{display:grid;grid-template-columns:repeat(3,3px);gap:2px}
+.brainmark i{width:3px;height:3px;border-radius:50%;background:var(--strong)}
+.brainmark i:nth-child(5){background:var(--calls)}
+
+.menu{position:absolute;top:24px;min-width:270px;background:var(--menu-bg);backdrop-filter:blur(24px);border:1px solid var(--menu-line);border-radius:8px;padding:5px;box-shadow:0 12px 34px var(--shadow);z-index:60;font-size:13px;color:var(--strong)}
+.mi{display:grid;grid-template-columns:16px 1fr auto;align-items:center;gap:6px;padding:3px 10px 3px 6px;border-radius:4px;white-space:nowrap}
+.mi:hover,.mi.hl{background:var(--menu-hl)}
+.mi .mk{color:var(--menu-key);padding-left:26px;font-size:12.5px}
+.mi:hover .mk,.mi.hl .mk{color:var(--strong)}
+.mi .ck{text-align:center;font-size:11px}
+.mi.dis{color:var(--faint)}
+.mi.dis .mk{color:var(--faint)}
+.mi.x{color:var(--calls)}
+.mi .hint{color:var(--menu-key);font-size:11.5px;margin-left:6px}
+.msep{height:1px;background:var(--menu-line);margin:5px 8px}
+
+/* ---------- Status-Item-Menü ---------- */
+.sdrop{position:absolute;top:24px;width:360px;background:var(--menu-bg);backdrop-filter:blur(24px);border:1px solid var(--menu-line);border-radius:10px;padding:8px;box-shadow:0 12px 34px var(--shadow);z-index:60;color:var(--strong);font-size:13px}
+.sd-head{display:flex;justify-content:space-between;align-items:baseline;padding:4px 8px 8px}
+.sd-head span{color:var(--menu-key);font-size:12px}
+.sd-sec{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--menu-key);padding:6px 8px 4px}
+.sd-row{display:grid;grid-template-columns:12px 1fr auto;gap:8px;padding:6px 8px;border-radius:6px;align-items:start}
+.sd-row:hover{background:#ffffff0d}
+.sd-row .dot{margin-top:4px}
+.sd-row .n{font-weight:600}
+.sd-row .p{color:var(--menu-key);font-weight:400;font-size:12px;margin-left:4px}
+.sd-row .q{color:var(--text);font-size:12.5px;margin-top:2px}
+.sd-row .age{color:var(--menu-key);font-size:11.5px;font-variant-numeric:tabular-nums}
+.btns{display:flex;gap:6px;margin-top:7px}
+.b{font-size:12px;padding:2px 10px;border-radius:5px;background:#ffffff14;border:1px solid var(--menu-line)}
+.b.pri{background:var(--menu-hl);border-color:transparent}
+.sd-usage{display:flex;flex-direction:column;gap:6px;padding:4px 8px}
+
+/* ---------- gemeinsame Bausteine ---------- */
+.win{position:absolute;left:8px;top:33px;width:1424px;height:859px;border-radius:11px;overflow:hidden;background:var(--ink);box-shadow:0 0 0 1px var(--line-strong),0 24px 60px var(--shadow);display:flex}
+.tl{display:inline-flex;gap:8px}
+.tl i{width:12px;height:12px;border-radius:50%;background:var(--tl-red)}
+.tl i:nth-child(2){background:var(--tl-yellow)}
+.tl i:nth-child(3){background:var(--tl-green)}
+.grow{flex:1}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;display:inline-block}
+.d-calls{background:var(--calls);box-shadow:0 0 0 3px color-mix(in srgb,var(--calls) 25%,transparent)}
+.d-turn{background:var(--turn)}
+.d-working{background:var(--working);animation:pulse 1.6s ease-in-out infinite}
+.d-agents{background:var(--agents);box-shadow:0 0 0 2px color-mix(in srgb,var(--agents) 30%,transparent)}
+.d-ended{background:var(--ended)}
+.d-seen{background:transparent;box-shadow:inset 0 0 0 1.5px var(--muted)}
+.d-quiet{background:transparent;box-shadow:inset 0 0 0 1.5px var(--ended)}
+@keyframes pulse{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.d-working{animation:none}}
+.acc{font-size:10.5px;font-weight:600;padding:0 6px;border-radius:4px;line-height:16px;white-space:nowrap}
+.acc.m{color:var(--acc-main);background:color-mix(in srgb,var(--acc-main) 14%,transparent)}
+.acc.s{color:var(--acc-second);background:color-mix(in srgb,var(--acc-second) 14%,transparent)}
+.ibtn{width:26px;height:26px;border-radius:6px;display:inline-grid;place-items:center;color:var(--muted)}
+.ibtn:hover{background:var(--raised)}
+.ibtn svg{width:15px;height:15px}
+kbd{font-family:var(--ui);font-size:10.5px;color:var(--faint);border:1px solid var(--line-strong);border-radius:4px;padding:0 4px;line-height:15px}
+.bar{display:inline-block;width:46px;height:4px;border-radius:2px;background:var(--line-strong);position:relative;overflow:hidden;vertical-align:middle}
+.bar i{position:absolute;inset:0 auto 0 0;background:var(--muted);border-radius:2px}
+.bar.m i{background:var(--acc-main)}
+.bar.s i{background:var(--acc-second)}
+.num{font-variant-numeric:tabular-nums}
+.chip{font-size:11.5px;color:var(--muted);display:inline-flex;align-items:center;gap:5px}
+.add{color:var(--done)}
+.del{color:var(--calls)}
+
+/* Terminal */
+.term{flex:1;min-height:0;padding:10px 20px 12px;font-family:var(--mono);font-size:13px;line-height:19px;white-space:pre;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end;color:var(--text);background:var(--ink);user-select:text}
+.term .u{color:var(--muted)}
+.term .ub{background:var(--surface);color:var(--text);display:block;margin:0 -20px;padding:4px 20px}
+.term .g{color:var(--done)}
+.term .w{color:var(--strong)}
+.term .b{color:var(--strong);font-weight:700;background:none;border:0;padding:0;font-size:13px}
+.term .d{color:var(--faint)}
+.term .c{color:var(--agents)}
+.term .k{color:var(--working)}
+.term .ok{color:var(--done)}
+.term .ask{border:1px solid var(--agents);border-radius:6px;padding:8px 14px;margin:6px 0 4px;display:block}
+.term .sel{color:var(--working)}
+.term .foot{display:flex;justify-content:space-between;color:var(--faint);padding:2px 2px 0}
+.term .foot .c{color:var(--agents)}
+
+/* Diff */
+.diff{font-family:var(--mono);font-size:12px;line-height:18px;white-space:pre;overflow:hidden}
+.diff div{padding:0 12px}
+.diff .h{color:var(--agents);background:color-mix(in srgb,var(--agents) 8%,transparent)}
+.diff .a{background:color-mix(in srgb,var(--done) 13%,transparent);color:var(--strong)}
+.diff .a::first-letter{color:var(--done)}
+.diff .r{background:color-mix(in srgb,var(--calls) 13%,transparent)}
+.diff .r::first-letter{color:var(--calls)}
+.diff .n{color:var(--muted)}
+
+/* ============ A: Werkbank ============ */
+.a-sb{width:264px;flex:none;background:var(--chrome);border-right:1px solid var(--line);display:flex;flex-direction:column}
+.a-top{height:44px;display:flex;align-items:center;gap:4px;padding:0 10px 0 14px}
+.a-search{margin:0 12px 6px;height:28px;border-radius:7px;background:var(--surface);border:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 8px;color:var(--faint);font-size:12.5px}
+.a-list{flex:1;overflow:hidden;padding:4px 0}
+.a-proj{padding:2px 0 8px}
+.a-ph{display:flex;align-items:center;gap:7px;padding:8px 14px 4px;font-size:12px;font-weight:600;color:var(--strong)}
+.a-ph .padd{color:var(--muted);font-size:15px;line-height:1;opacity:0}
+.a-ph.hover .padd{opacity:1}
+.a-ph .cnt{color:var(--faint);font-weight:500;font-size:11.5px}
+.a-sr{display:grid;grid-template-columns:10px minmax(0,1fr) auto;gap:9px;align-items:start;margin:1px 8px;padding:5px 8px;border-radius:7px}
+.a-sr .dot{margin-top:5px}
+.a-sr .sn{font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.a-sr .ss{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.a-sr .age{font-size:11px;color:var(--faint);padding-top:2px}
+.a-sr.sel{background:var(--raised)}
+.a-sr.sel .sn{color:var(--strong);font-weight:500}
+.a-sr.calls{background:color-mix(in srgb,var(--calls) 8%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--calls) 45%,transparent)}
+.a-sr.calls .ss{color:var(--text)}
+.a-sr.turn .ss{color:var(--text)}
+.a-sr.end .sn{color:var(--faint)}
+.a-later{display:flex;gap:8px;align-items:baseline;margin:2px 8px 0 26px;padding:2px 0;font-size:11.5px;color:var(--muted)}
+.lbl{font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--turn);opacity:.85;flex:none}
+.a-none{margin:1px 8px;padding:3px 8px 3px 27px;font-size:11.5px;color:var(--faint)}
+.a-newproj{padding:6px 22px 10px;font-size:12px;color:var(--muted)}
+.a-usage{border-top:1px solid var(--line);padding:10px 14px 12px;display:flex;flex-direction:column;gap:6px;font-size:11.5px;color:var(--muted)}
+.u-row{display:grid;grid-template-columns:50px 24px 46px 34px 38px 46px auto;align-items:center;gap:6px}
+.u-row .l{color:var(--faint)}
+.u-note{color:var(--faint);font-size:11px}
+.a-main{flex:1;min-width:0;display:flex;flex-direction:column}
+.a-bar{height:44px;flex:none;display:flex;align-items:center;gap:12px;padding:0 14px 0 20px;border-bottom:1px solid var(--line)}
+.a-bar .t{font-weight:600;color:var(--strong)}
+.a-bar .meta{color:var(--muted);font-size:12px;display:flex;gap:10px;align-items:center}
+.ctx{display:inline-flex;align-items:center;gap:6px}
+.toggle{display:inline-flex;align-items:center;gap:8px;height:26px;padding:0 10px;border-radius:6px;border:1px solid var(--line-strong);background:var(--surface);font-size:12px;color:var(--text);cursor:pointer}
+.toggle.on{background:var(--raised);border-color:var(--agents)}
+.a-body{flex:1;min-height:0;display:flex}
+.a-drawer{width:0;overflow:hidden;border-left:1px solid var(--line);background:var(--chrome);display:flex;flex-direction:column;transition:width .2s ease}
+.a-drawer.open{width:380px}
+@media (prefers-reduced-motion:reduce){.a-drawer{transition:none}}
+.dr-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px 8px;min-width:380px}
+.dr-head b{color:var(--strong);font-size:12.5px}
+.files{display:flex;flex-direction:column;min-width:380px;padding:0 6px 8px}
+.fr{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;padding:5px 8px;border-radius:6px;font-size:12.5px;align-items:baseline}
+.fr .fp{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fr .fp span{color:var(--faint)}
+.fr .fs{font-family:var(--mono);font-size:11.5px}
+.fr .ft{font-size:11px;color:var(--faint)}
+.fr.sel{background:var(--raised)}
+.dr-diff{flex:1;min-width:380px;border-top:1px solid var(--line);padding:8px 0;background:var(--ink)}
+.dr-diff .cap{font-size:11.5px;color:var(--muted);padding:0 14px 6px;display:flex;justify-content:space-between}
+
+/* ============ B: Lage ============ */
+.b-win{flex-direction:column}
+.b-title{height:40px;flex:none;display:flex;align-items:center;gap:16px;padding:0 16px;background:var(--chrome);border-bottom:1px solid var(--line)}
+.b-title .name{font-weight:700;color:var(--strong);display:flex;align-items:center;gap:8px}
+.b-title .counts{display:flex;gap:14px;font-size:12px;color:var(--muted)}
+.b-title .counts span{display:inline-flex;align-items:center;gap:6px}
+.b-usage{display:flex;gap:18px;font-size:11.5px;color:var(--muted);align-items:center}
+.b-usage .u{display:inline-flex;align-items:center;gap:6px}
+.b-usage .l{color:var(--faint)}
+.b-row{flex:1;min-height:0;display:flex}
+.b-sb{width:318px;flex:none;background:var(--chrome);border-right:1px solid var(--line);display:flex;flex-direction:column}
+.b-list{flex:1;overflow:hidden;padding:6px 0}
+.gh{display:flex;align-items:center;gap:8px;padding:10px 16px 5px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.gh .n{color:var(--faint);font-weight:500}
+.gh.fold{color:var(--faint)}
+.b-sr{margin:1px 8px;padding:7px 10px;border-radius:8px;display:grid;grid-template-columns:10px minmax(0,1fr) auto;gap:4px 9px;align-items:center}
+.b-sr .sn{color:var(--text);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.b-sr .age{font-size:11px;color:var(--faint)}
+.b-sr .l2{grid-column:2 / 4;display:flex;gap:7px;align-items:baseline;min-width:0;font-size:11.5px}
+.b-sr .pj{color:var(--muted);flex:none}
+.b-sr .sum{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.b-sr.sel{background:var(--raised)}
+.b-sr.sel .sn{color:var(--strong);font-weight:500}
+.b-sr.calls{background:color-mix(in srgb,var(--calls) 8%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--calls) 40%,transparent)}
+.b-sr.calls .sum,.b-sr.turn .sum,.b-sr.sel .sum{color:var(--text)}
+.b-projs{border-top:1px solid var(--line);padding:6px 0 4px}
+.pr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:4px 16px;font-size:12.5px;align-items:center}
+.pr .pn{display:flex;gap:7px;align-items:center;white-space:nowrap}
+.pr .pc{font-size:11px;color:var(--faint);display:flex;gap:8px;align-items:center}
+.pr .pc .lt{color:var(--turn)}
+.pr.open{background:var(--surface)}
+.pr-sub{background:var(--surface);padding:2px 16px 8px 16px;display:flex;flex-direction:column;gap:3px;font-size:11.5px;color:var(--muted)}
+.pr-sub .newhere{color:var(--working);margin-top:3px}
+.pr .dim{color:var(--faint)}
+.b-new{margin:8px 12px 12px;height:30px;border-radius:7px;border:1px solid var(--line-strong);display:flex;align-items:center;justify-content:center;gap:10px;font-size:12.5px;color:var(--text);background:var(--surface)}
+.b-main{flex:1;min-width:0;display:flex;flex-direction:column}
+.b-head{height:44px;flex:none;display:flex;align-items:center;gap:12px;padding:0 16px 0 20px;border-bottom:1px solid var(--line)}
+.b-head .t{font-weight:600;color:var(--strong)}
+.b-head .meta{color:var(--muted);font-size:12px;display:flex;gap:10px;align-items:center}
+.b-changes{flex:none;border-top:1px solid var(--line-strong);background:var(--chrome);display:flex;flex-direction:column}
+.b-cbar{height:34px;display:flex;align-items:center;gap:14px;padding:0 16px;font-size:12px;color:var(--muted);cursor:pointer}
+.b-cbar b{color:var(--strong);font-weight:600}
+.b-cbar .last{color:var(--faint)}
+.b-cbody{height:250px;display:flex;border-top:1px solid var(--line)}
+.b-cbody .files{min-width:0;width:340px;border-right:1px solid var(--line);padding-top:6px}
+.b-cbody .diffwrap{flex:1;min-width:0;background:var(--ink);padding:8px 0}
+.b-changes.closed .b-cbody{display:none}
+.chev{display:inline-block;transition:transform .15s}
+.closed .chev{transform:rotate(180deg)}
+
+/* ============ C: Baum ============ */
+.c-win{flex-direction:column}
+.c-row{flex:1;min-height:0;display:flex}
+.c-sb{width:292px;flex:none;background:var(--chrome);border-right:1px solid var(--line);display:flex;flex-direction:column}
+.c-top{height:44px;display:flex;align-items:center;gap:4px;padding:0 10px 0 14px}
+.tree{flex:1;overflow:hidden;padding:2px 6px;font-size:12.5px}
+.tn{display:flex;align-items:center;gap:6px;height:24px;padding-right:8px;border-radius:5px;white-space:nowrap}
+.tn .tw{width:12px;color:var(--faint);font-size:9px;text-align:center;flex:none}
+.tn .ic{width:14px;flex:none;color:var(--muted);display:inline-grid;place-items:center}
+.tn .ic svg{width:13px;height:13px}
+.tn .nm{overflow:hidden;text-overflow:ellipsis}
+.tn .rt{margin-left:auto;display:flex;gap:8px;align-items:center;font-size:11px;color:var(--faint)}
+.tn.proj .nm{font-weight:600;color:var(--strong)}
+.tn.sel{background:var(--raised)}
+.tn.sel .nm{color:var(--strong);font-weight:500}
+.tn.calls{background:color-mix(in srgb,var(--calls) 9%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--calls) 42%,transparent)}
+.tn.file{cursor:pointer}
+.tn.file .nm{color:var(--text);font-family:var(--mono);font-size:11.5px}
+.tn.file .fs{font-family:var(--mono);font-size:11px}
+.tn.file:hover{background:var(--surface)}
+.tn.file.sel{background:color-mix(in srgb,var(--working) 18%,transparent)}
+.tn.sub{color:var(--muted);font-size:11px;height:20px}
+.tn.note .nm{color:var(--muted);font-size:12px}
+.tn.end .nm{color:var(--faint)}
+.tn.later .nm{color:var(--turn)}
+.c-main{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
+.c-bar{height:44px;flex:none;display:flex;align-items:center;gap:10px;padding:0 14px 0 20px;border-bottom:1px solid var(--line)}
+.crumb{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:12.5px}
+.crumb b{color:var(--strong);font-weight:600}
+.ql{position:absolute;right:28px;bottom:26px;width:640px;background:var(--raised);border:1px solid var(--line-strong);border-radius:12px;box-shadow:0 18px 50px var(--shadow);overflow:hidden;display:flex;flex-direction:column}
+.ql[hidden]{display:none}
+.ql-head{display:flex;align-items:center;gap:10px;padding:9px 12px 9px 14px;border-bottom:1px solid var(--line);font-size:12.5px}
+.ql-head b{font-family:var(--mono);font-weight:500;color:var(--strong)}
+.ql-head .hint{color:var(--faint);font-size:11.5px}
+.ql-btn{font-size:11.5px;padding:2px 9px;border-radius:5px;border:1px solid var(--line-strong);color:var(--text)}
+.ql .diff{padding:8px 0;background:var(--ink)}
+.c-status{height:26px;flex:none;display:flex;align-items:center;gap:18px;padding:0 14px;background:var(--chrome);border-top:1px solid var(--line);font-size:11.5px;color:var(--muted)}
+.c-status .seg2{display:inline-flex;align-items:center;gap:6px}
+.c-status .sep2{width:1px;height:12px;background:var(--line-strong)}
+.c-status .l{color:var(--faint)}
+
+/* ---------- Referenz und Empfehlung ---------- */
+.menu-ref{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:16px;align-items:start}
+.menu-ref figure{margin:0;display:flex;flex-direction:column;gap:8px;min-width:0}
+.menu-ref figcaption{font-size:13px;font-weight:600;color:var(--strong)}
+.menu.static{position:static;min-width:0;width:100%;box-shadow:none;overflow-x:auto}
+.ref-note{font-size:14px;color:var(--muted);max-width:75ch}
+.rec{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:28px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:28px}
+.rec p,.rec li{font-size:15px;max-width:62ch}
+.rec ol{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px}
+.rec .verdict{font-size:20px;color:var(--strong);font-weight:600;letter-spacing:-.01em;margin-bottom:10px;text-wrap:balance}
+@media (max-width:820px){.rec{grid-template-columns:1fr;padding:20px}}
+section.block{display:flex;flex-direction:column;gap:16px}
+</style>
+
+<div class="page">
+  <header class="head">
+    <div class="eyebrow">Brain · Entwurf · 11. Nov. 2026</div>
+    <h1>Drei Richtungen für Brains Hauptfenster</h1>
+    <p class="lede">Alle drei geben dem Terminal die Hauptrolle, behalten die Projekte dauerhaft in der Seitenleiste und machen jeden Befehl über die Menüleiste erreichbar. Sie unterscheiden sich darin, wie die Seitenleiste ordnet und wie nah die Änderungen einer Session rücken. Inhalte sind erfunden.</p>
+    <div class="legend" aria-label="Zustände">
+      <span><i class="dot d-calls"></i>fragt oder braucht Freigabe</span>
+      <span><i class="dot d-turn"></i>fertig, noch nicht angesehen</span>
+      <span><i class="dot d-working"></i>arbeitet</span>
+      <span><i class="dot d-agents"></i>Turn zu Ende, Subagents laufen</span>
+      <span><i class="dot d-seen"></i>angesehen, du bist dran</span>
+      <span><i class="dot d-quiet"></i>ruht</span>
+      <span><i class="dot d-ended"></i>beendet</span>
+    </div>
+  </header>
+
+  <nav class="seg" aria-label="Richtung wählen">
+    <button type="button" id="tab-a" data-v="a" aria-pressed="true"><b>A</b>Werkbank</button>
+    <button type="button" id="tab-b" data-v="b" aria-pressed="false"><b>B</b>Lage</button>
+    <button type="button" id="tab-c" data-v="c" aria-pressed="false"><b>C</b>Baum</button>
+  </nav>
+
+  <!-- ===================== A ===================== -->
+  <article class="variant" id="v-a">
+    <div class="vhead"><span class="letter">A</span><h2>Werkbank: ruhige Seitenleiste, Terminal maximal</h2></div>
+    <div class="facts">
+      <div><h3>Idee</h3><p>Eine ruhige Seitenleiste wie in cmux. Projekte sind feste Überschriften, darunter stehen die Sessions mit Zustandspunkt und einer Zeile Status. Alles andere tritt zurück, das Terminal bekommt die restliche Fläche.</p></div>
+      <div><h3>Was du gewinnst</h3><p>Das liegt am nächsten an deinem heutigen Arbeiten und gibt dem Terminal den meisten Platz. Was dich braucht, trägt einen roten Ring an der Session. ⇧⌘U springt hin, und das Status-Item zeigt es auch bei verdecktem Fenster.</p></div>
+      <div><h3>Was es kostet</h3><p>Die Änderungen sind eine Schublade von rechts (⌥⌘0), die du selbst öffnen musst. Das ist nah am alten Dateien-Tab, den du nie benutzt hast. Bei vielen Projekten musst du scrollen, um alle Ringe zu sehen.</p></div>
+    </div>
+    <div class="stage"><div class="screen" data-menu="session" data-hl="Nächste, die dich braucht" data-status="open">
+      <div class="win">
+        <aside class="a-sb">
+          <div class="a-top"><span class="tl"><i></i><i></i><i></i></span><span class="grow"></span>
+            <span class="ibtn" title="Seitenleiste ⌃⌘S"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M6 2.5v11"/></svg></span>
+            <span class="ibtn" title="Neue Session ⌘N"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3v10M3 8h10"/></svg></span>
+          </div>
+          <div class="a-search">Sessions suchen <kbd>⌥⌘F</kbd></div>
+          <div class="a-list">
+            <section class="a-proj">
+              <div class="a-ph hover">api-gateway <span class="acc m">main</span><span class="grow"></span><span class="padd" title="Neue Session in api-gateway ⌥⌘N">+</span></div>
+              <div class="a-sr sel"><i class="dot d-seen"></i><div style="min-width:0"><div class="sn">Rate-Limits</div><div class="ss">Fragt: pro Mandant oder global?</div></div><span class="age num">6 min</span></div>
+              <div class="a-sr end"><i class="dot d-ended"></i><div style="min-width:0"><div class="sn">Health-Check aufräumen</div></div><span class="age">gestern</span></div>
+              <div class="a-later"><span class="lbl">Später</span><span>Retry-After auch bei 503 setzen</span></div>
+            </section>
+            <section class="a-proj">
+              <div class="a-ph">checkout-redesign <span class="acc s">second</span></div>
+              <div class="a-sr calls"><i class="dot d-calls"></i><div style="min-width:0"><div class="sn">Stripe Elements</div><div class="ss">Braucht Freigabe: Bash(npm run e2e)</div></div><span class="age num">3 min</span></div>
+              <div class="a-sr"><i class="dot d-working"></i><div style="min-width:0"><div class="sn">Warenkorb-Tests</div><div class="ss">Schreibt Snapshot-Tests für den Warenkorb</div></div><span class="age num">21 min</span></div>
+            </section>
+            <section class="a-proj">
+              <div class="a-ph">docs-site <span class="acc m">main</span></div>
+              <div class="a-sr turn"><i class="dot d-turn"></i><div style="min-width:0"><div class="sn">Changelog-Suche</div><div class="ss">Suche findet jetzt auch Changelogs, Build grün.</div></div><span class="age num">12 min</span></div>
+              <div class="a-later"><span class="lbl">Später</span><span>Algolia-Index nachts neu bauen</span></div>
+              <div class="a-later"><span class="lbl">Später</span><span>Kaputte Links im Archiv prüfen</span></div>
+            </section>
+            <section class="a-proj">
+              <div class="a-ph">billing-service <span class="acc m">main</span></div>
+              <div class="a-sr"><i class="dot d-working"></i><div style="min-width:0"><div class="sn">UUID-Migration</div><div class="ss">Stellt Rechnungstabellen auf UUIDs um</div></div><span class="age num">48 min</span></div>
+            </section>
+            <section class="a-proj">
+              <div class="a-ph">infra-terraform <span class="acc m">main</span></div>
+              <div class="a-sr"><i class="dot d-agents"></i><div style="min-width:0"><div class="sn">Staging-Cluster</div><div class="ss">2 Subagents laufen noch</div></div><span class="age num">1 h</span></div>
+            </section>
+            <section class="a-proj">
+              <div class="a-ph">mobile-onboarding <span class="acc s">second</span></div>
+              <div class="a-sr"><i class="dot d-quiet"></i><div style="min-width:0"><div class="sn">Onboarding-Flow</div><div class="ss">Screens 1 bis 4 fertig</div></div><span class="age num">2 h</span></div>
+            </section>
+            <section class="a-proj">
+              <div class="a-ph">legacy-shop <span class="acc m">main</span></div>
+              <div class="a-none">Keine Session · zuletzt vor 3 Wochen</div>
+              <div class="a-later"><span class="lbl">Später</span><span>PHP 8.4 prüfen</span></div>
+            </section>
+            <div class="a-newproj">+ Neues Projekt …</div>
+          </div>
+          <div class="a-usage">
+            <div class="u-row"><span class="acc m">main</span><span class="l">5 h</span><span class="bar m"><i style="width:46%"></i></span><span class="num">46 %</span><span class="l">Woche</span><span class="bar m"><i style="width:21%"></i></span><span class="num">21 %</span></div>
+            <div class="u-row"><span class="acc s">second</span><span class="l">5 h</span><span class="bar s"><i style="width:12%"></i></span><span class="num">12 %</span><span class="l">Woche</span><span class="bar s"><i style="width:34%"></i></span><span class="num">34 %</span></div>
+            <div class="u-note">main voll ~Do 14:00 · second hat Platz</div>
+          </div>
+        </aside>
+        <main class="a-main">
+          <div class="a-bar">
+            <span class="t">Rate-Limits</span>
+            <span class="meta"><span>api-gateway</span><span>⎇ feat/rate-limit</span><span class="acc m">main</span><span class="ctx">Kontext <span class="bar"><i style="width:38%"></i></span> 38 %</span></span>
+            <span class="grow"></span>
+            <span class="toggle" data-toggle="a-drawer" title="Änderungen ein-/ausblenden ⌥⌘0">Änderungen <b class="num">4</b> <span class="add num">+259</span> <span class="del num">−3</span> <kbd>⌥⌘0</kbd></span>
+          </div>
+          <div class="a-body">
+            <div class="term" data-term></div>
+            <div class="a-drawer" id="a-drawer">
+              <div class="dr-head"><b>Änderungen dieser Session</b><span class="chip">neueste oben</span></div>
+              <div class="files" data-files></div>
+              <div class="dr-diff"><div class="cap"><span>src/config.rs</span><span>In PhpStorm öffnen</span></div><div class="diff" data-diff></div></div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div></div>
+    <div class="try"><span>Klick auf „Änderungen 4“ öffnet die Schublade</span><span>Menütitel oben sind anklickbar</span><span>Status-Item oben rechts ist aufgeklappt</span></div>
+  </article>
+
+  <!-- ===================== B ===================== -->
+  <article class="variant" id="v-b" hidden>
+    <div class="vhead"><span class="letter">B</span><h2>Lage: geordnet nach dem, was zu tun ist</h2></div>
+    <div class="facts">
+      <div><h3>Idee</h3><p>Wie Agent View ordnet die Seitenleiste nach Zustand: Braucht dich, Arbeitet, Fertig. Das Projekt steht als Zweitinfo an jeder Zeile. Darunter stehen alle Projekte fest, mit ihren Später-Notizen und „Neue Session hier“.</p></div>
+      <div><h3>Was du gewinnst</h3><p>Ein Blick nach oben links genügt, und du arbeitest die Liste von oben ab. Die Änderungen liegen als Leiste unter dem Terminal und sind mit einem Klick offen. Usage sitzt ruhig in der Titelleiste.</p></div>
+      <div><h3>Was es kostet</h3><p>Sessions wandern zwischen den Gruppen, wenn sich ihr Zustand ändert, die Liste bewegt sich also unter der Maus. Du gehst nicht mehr „in ein Projekt“, und mit offenen Änderungen verliert das Terminal rund ein Drittel seiner Höhe.</p></div>
+    </div>
+    <div class="stage"><div class="screen" data-menu="ablage" data-hl="Neue Session …">
+      <div class="win b-win">
+        <div class="b-title">
+          <span class="tl"><i></i><i></i><i></i></span>
+          <span class="name"><span class="brainmark"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>Brain</span>
+          <span class="counts"><span><i class="dot d-calls"></i>1 braucht dich</span><span><i class="dot d-working"></i>3 arbeiten</span><span><i class="dot d-turn"></i>1 fertig</span></span>
+          <span class="grow"></span>
+          <span class="b-usage">
+            <span class="u"><span class="acc m">main</span><span class="l">5 h</span><span class="bar m"><i style="width:46%"></i></span><span class="num">46 %</span><span class="l">Wo</span><span class="num">21 %</span><span class="l">· voll ~Do 14:00</span></span>
+            <span class="u"><span class="acc s">second</span><span class="l">5 h</span><span class="bar s"><i style="width:12%"></i></span><span class="num">12 %</span><span class="l">Wo</span><span class="num">34 %</span></span>
+          </span>
+        </div>
+        <div class="b-row">
+          <aside class="b-sb">
+            <div class="b-list">
+              <div class="gh"><i class="dot d-calls"></i>Braucht dich <span class="n">2</span></div>
+              <div class="b-sr calls"><i class="dot d-calls"></i><span class="sn">Stripe Elements</span><span class="age num">3 min</span>
+                <div class="l2"><span class="pj">checkout-redesign</span><span class="sum">Freigabe: Bash(npm run e2e)</span></div></div>
+              <div class="b-sr sel"><i class="dot d-seen"></i><span class="sn">Rate-Limits</span><span class="age num">6 min</span>
+                <div class="l2"><span class="pj">api-gateway</span><span class="sum">Pro Mandant oder global?</span></div></div>
+              <div class="gh"><i class="dot d-working"></i>Arbeitet <span class="n">3</span></div>
+              <div class="b-sr"><i class="dot d-working"></i><span class="sn">UUID-Migration</span><span class="age num">48 min</span>
+                <div class="l2"><span class="pj">billing-service</span><span class="sum">Rechnungstabellen auf UUIDs</span></div></div>
+              <div class="b-sr"><i class="dot d-working"></i><span class="sn">Warenkorb-Tests</span><span class="age num">21 min</span>
+                <div class="l2"><span class="pj">checkout-redesign</span><span class="sum">Snapshot-Tests</span></div></div>
+              <div class="b-sr"><i class="dot d-agents"></i><span class="sn">Staging-Cluster</span><span class="age num">1 h</span>
+                <div class="l2"><span class="pj">infra-terraform</span><span class="sum">2 Subagents laufen</span></div></div>
+              <div class="gh"><i class="dot d-turn"></i>Fertig <span class="n">2</span></div>
+              <div class="b-sr turn"><i class="dot d-turn"></i><span class="sn">Changelog-Suche</span><span class="age num">12 min</span>
+                <div class="l2"><span class="pj">docs-site</span><span class="sum">Changelogs gefunden, Build grün</span></div></div>
+              <div class="b-sr"><i class="dot d-quiet"></i><span class="sn">Onboarding-Flow</span><span class="age num">2 h</span>
+                <div class="l2"><span class="pj">mobile-onboarding</span><span class="sum">Screens 1 bis 4 fertig</span></div></div>
+              <div class="gh fold">▸ Beendet <span class="n">1</span></div>
+            </div>
+            <div class="b-projs">
+              <div class="gh">Projekte <span class="n">7</span></div>
+              <div class="pr open"><span class="pn">▾ api-gateway <span class="acc m">main</span></span><span class="pc">2 Sessions <span class="lt">1 später</span></span></div>
+              <div class="pr-sub"><span><span class="lbl">Später</span> Retry-After auch bei 503 setzen</span><span class="newhere">+ Neue Session hier  ⌥⌘N</span></div>
+              <div class="pr"><span class="pn">▸ billing-service <span class="acc m">main</span></span><span class="pc">1</span></div>
+              <div class="pr"><span class="pn">▸ checkout-redesign <span class="acc s">second</span></span><span class="pc">2</span></div>
+              <div class="pr"><span class="pn">▸ docs-site <span class="acc m">main</span></span><span class="pc">1 <span class="lt">2 später</span></span></div>
+              <div class="pr"><span class="pn">▸ infra-terraform <span class="acc m">main</span></span><span class="pc">1</span></div>
+              <div class="pr"><span class="pn">▸ legacy-shop <span class="acc m">main</span></span><span class="pc"><span class="dim">ruht</span> <span class="lt">1 später</span></span></div>
+              <div class="pr"><span class="pn">▸ mobile-onboarding <span class="acc s">second</span></span><span class="pc">1</span></div>
+            </div>
+            <div class="b-new">+ Neue Session … <kbd>⌘N</kbd></div>
+          </aside>
+          <main class="b-main">
+            <div class="b-head">
+              <span class="t">Rate-Limits</span>
+              <span class="meta"><span>api-gateway</span><span>⎇ feat/rate-limit</span><span class="acc m">main</span><span class="ctx">Kontext <span class="bar"><i style="width:38%"></i></span> 38 %</span></span>
+            </div>
+            <div class="term" data-term></div>
+            <div class="b-changes" id="b-changes">
+              <div class="b-cbar" data-toggle-b title="Änderungen ein-/ausklappen ⌥⌘0"><span class="chev">▾</span><b>Änderungen dieser Session</b><span class="num">4 Dateien</span><span class="add num">+259</span><span class="del num">−3</span><span class="last">zuletzt src/config.rs vor 1 min</span><span class="grow"></span><kbd>⌥⌘0</kbd></div>
+              <div class="b-cbody"><div class="files" data-files></div><div class="diffwrap"><div class="diff" data-diff></div></div></div>
+            </div>
+          </main>
+        </div>
+      </div>
+    </div></div>
+    <div class="try"><span>Klick auf die Leiste „Änderungen dieser Session“ klappt sie ein</span><span>Menü „Ablage“ ist offen</span><span>Klick aufs Status-Item oben rechts</span></div>
+  </article>
+
+  <!-- ===================== C ===================== -->
+  <article class="variant" id="v-c" hidden>
+    <div class="vhead"><span class="letter">C</span><h2>Baum: Projekt, Session, Dateien an einem Ort</h2></div>
+    <div class="facts">
+      <div><h3>Idee</h3><p>Ein Baum wie im Finder oder in PhpStorm: Projekt, Session, Dateien. Die Session, die du ansiehst, klappt ihre geänderten Dateien direkt unter sich auf. Ein Klick zeigt den Diff als schwebende Vorschau über dem Terminal, wie Quick Look.</p></div>
+      <div><h3>Was du gewinnst</h3><p>Die Änderungen sind kein Ort mehr, den du besuchen musst. Sie stehen dort, wo dein Blick ohnehin ist, und das Terminal behält immer seine volle Größe. Usage, die Zahl der Wartenden und der Zoom stehen in einer Statuszeile unten.</p></div>
+      <div><h3>Was es kostet</h3><p>C ist dichter und technischer als A. Die Statuszeile pro Session steht nur bei Sessions, die dich brauchen, sonst siehst du sie erst beim Überfahren. Die Statuszeile unten kostet 26 Pixel Höhe.</p></div>
+    </div>
+    <div class="stage"><div class="screen" data-menu="darstellung" data-hl="Änderungen unter der Session zeigen">
+      <div class="win c-win">
+        <div class="c-row">
+          <aside class="c-sb">
+            <div class="c-top"><span class="tl"><i></i><i></i><i></i></span><span class="grow"></span>
+              <span class="ibtn" title="Sessions suchen ⌥⌘F"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg></span>
+              <span class="ibtn" title="Neue Session ⌘N"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3v10M3 8h10"/></svg></span>
+            </div>
+            <div class="tree">
+              <div class="tn proj"><span class="tw">▾</span><span class="ic" data-folder></span><span class="nm">api-gateway</span><span class="rt"><span class="acc m">main</span></span></div>
+              <div class="tn sel" style="padding-left:18px"><span class="tw">▾</span><i class="dot d-seen"></i><span class="nm">Rate-Limits</span><span class="rt num">6 min</span></div>
+              <div class="tn sub" style="padding-left:56px"><span class="nm">Änderungen · 4 · <span class="add">+259</span> <span class="del">−3</span></span></div>
+              <div class="tn file sel" style="padding-left:56px" data-ql data-path="src/config.rs"><span class="nm">config.rs</span><span class="rt"><span class="fs add">+18</span><span class="fs del">−2</span></span></div>
+              <div class="tn file" style="padding-left:56px" data-ql data-path="tests/rate_limit.rs"><span class="nm">tests/rate_limit.rs</span><span class="rt"><span class="fs add">+96</span></span></div>
+              <div class="tn file" style="padding-left:56px" data-ql data-path="src/middleware/rate_limit.rs"><span class="nm">middleware/rate_limit.rs</span><span class="rt"><span class="fs add">+142</span></span></div>
+              <div class="tn file" style="padding-left:56px" data-ql data-path="src/middleware/mod.rs"><span class="nm">middleware/mod.rs</span><span class="rt"><span class="fs add">+3</span><span class="fs del">−1</span></span></div>
+              <div class="tn end" style="padding-left:18px"><span class="tw">▸</span><i class="dot d-ended"></i><span class="nm">Health-Check aufräumen</span><span class="rt">gestern</span></div>
+              <div class="tn later" style="padding-left:18px"><span class="tw">▸</span><span class="ic" data-note></span><span class="nm">Für später · 1</span></div>
+
+              <div class="tn proj"><span class="tw">▾</span><span class="ic" data-folder></span><span class="nm">checkout-redesign</span><span class="rt"><span class="acc s">second</span></span></div>
+              <div class="tn calls" style="padding-left:18px"><span class="tw">▸</span><i class="dot d-calls"></i><span class="nm">Stripe Elements</span><span class="rt num">3 min</span></div>
+              <div class="tn sub" style="padding-left:56px;color:var(--text)"><span class="nm">Freigabe: Bash(npm run e2e)</span></div>
+              <div class="tn" style="padding-left:18px"><span class="tw">▸</span><i class="dot d-working"></i><span class="nm">Warenkorb-Tests</span><span class="rt num">21 min</span></div>
+
+              <div class="tn proj"><span class="tw">▾</span><span class="ic" data-folder></span><span class="nm">docs-site</span><span class="rt"><span class="acc m">main</span></span></div>
+              <div class="tn" style="padding-left:18px"><span class="tw">▸</span><i class="dot d-turn"></i><span class="nm">Changelog-Suche</span><span class="rt num">12 min</span></div>
+              <div class="tn sub" style="padding-left:56px;color:var(--text)"><span class="nm">Suche findet jetzt auch Changelogs, Build grün.</span></div>
+              <div class="tn later" style="padding-left:18px"><span class="tw">▾</span><span class="ic" data-note></span><span class="nm">Für später · 2</span></div>
+              <div class="tn note" style="padding-left:56px"><span class="nm">Algolia-Index nachts neu bauen</span></div>
+              <div class="tn note" style="padding-left:56px"><span class="nm">Kaputte Links im Archiv prüfen</span></div>
+
+              <div class="tn proj"><span class="tw">▾</span><span class="ic" data-folder></span><span class="nm">billing-service</span><span class="rt"><span class="acc m">main</span></span></div>
+              <div class="tn" style="padding-left:18px"><span class="tw">▸</span><i class="dot d-working"></i><span class="nm">UUID-Migration</span><span class="rt num">48 min</span></div>
+
+              <div class="tn proj"><span class="tw">▾</span><span class="ic" data-folder></span><span class="nm">infra-terraform</span><span class="rt"><span class="acc m">main</span></span></div>
+              <div class="tn" style="padding-left:18px"><span class="tw">▸</span><i class="dot d-agents"></i><span class="nm">Staging-Cluster</span><span class="rt">2 Subagents · 1 h</span></div>
+
+              <div class="tn proj"><span class="tw">▾</span><span class="ic" data-folder></span><span class="nm">mobile-onboarding</span><span class="rt"><span class="acc s">second</span></span></div>
+              <div class="tn" style="padding-left:18px"><span class="tw">▸</span><i class="dot d-quiet"></i><span class="nm">Onboarding-Flow</span><span class="rt num">2 h</span></div>
+
+              <div class="tn proj"><span class="tw">▸</span><span class="ic" data-folder></span><span class="nm">legacy-shop</span><span class="rt">ruht · <span style="color:var(--turn)">1 später</span></span></div>
+              <div class="tn" style="padding-left:6px;color:var(--muted)"><span class="tw"></span><span class="nm">+ Neues Projekt …</span></div>
+            </div>
+          </aside>
+          <main class="c-main">
+            <div class="c-bar">
+              <span class="crumb"><span>api-gateway</span><span>›</span><b>Rate-Limits</b><span>⎇ feat/rate-limit</span><span class="acc m">main</span></span>
+              <span class="grow"></span>
+              <span class="chip ctx">Kontext <span class="bar"><i style="width:38%"></i></span> 38 %</span>
+            </div>
+            <div class="term" data-term></div>
+            <div class="ql" id="c-ql">
+              <div class="ql-head"><b>src/config.rs</b><span class="add num">+18</span><span class="del num">−2</span><span class="hint">vor 1 min · Rate-Limits</span><span class="grow"></span><span class="ql-btn">In PhpStorm öffnen</span><span class="ql-btn" data-ql-close>Schließen  esc</span></div>
+              <div class="diff" data-diff></div>
+            </div>
+          </main>
+        </div>
+        <footer class="c-status">
+          <span class="seg2"><i class="dot d-calls"></i>1 braucht dich <kbd>⇧⌘U</kbd></span>
+          <span class="seg2"><i class="dot d-turn"></i>1 fertig</span>
+          <span class="seg2"><i class="dot d-working"></i>3 arbeiten</span>
+          <span class="grow"></span>
+          <span class="seg2"><span class="acc m">main</span><span class="l">5 h</span><span class="bar m"><i style="width:46%"></i></span><span class="num">46 %</span><span class="l">Woche</span><span class="num">21 %</span><span class="l">voll ~Do 14:00</span></span>
+          <span class="sep2"></span>
+          <span class="seg2"><span class="acc s">second</span><span class="l">5 h</span><span class="bar s"><i style="width:12%"></i></span><span class="num">12 %</span><span class="l">Woche</span><span class="num">34 %</span><span class="l">hat Platz</span></span>
+          <span class="sep2"></span>
+          <span class="seg2 num">100 %</span>
+        </footer>
+      </div>
+    </div></div>
+    <div class="try"><span>Klick auf eine Datei im Baum öffnet die Vorschau, „Schließen“ schließt sie</span><span>Menü „Darstellung“ ist offen</span><span>Klick aufs Status-Item oben rechts</span></div>
+  </article>
+
+  <section class="block" aria-labelledby="mr">
+    <h2 id="mr">Die Menüleiste, für alle drei gleich</h2>
+    <p class="ref-note">Jeder Befehl, der heute nur über ⌘K, Einzeltasten oder das Kontextmenü geht, hat hier einen festen Platz. Kürzel liegen auf ⌘ oder ⌥⌘, damit sie nicht mit Eingaben ins Terminal kollidieren. Was nicht passt, ist ausgegraut, etwa „Erlauben“, wenn die Session eine Frage stellt statt eine Freigabe zu wollen. Die Palette bleibt als Abkürzung.</p>
+    <div class="menu-ref" id="menu-ref"></div>
+  </section>
+
+  <section class="block" aria-labelledby="rc">
+    <h2 id="rc">Empfehlung</h2>
+    <div class="rec">
+      <div>
+        <p class="verdict">C als Grundlage, mit der Ruhe von A.</p>
+        <p>Du arbeitest projektweise: rein ins Projekt, Session auf, weiterreden. C und A bilden das ab, B nicht. Nur C bringt die Änderungen wirklich näher, statt ihnen einen neuen Ort zu geben, und das Terminal bleibt dabei in voller Größe.</p>
+      </div>
+      <ol>
+        <li>Aus C den Baum mit den Dateien unter der aktiven Session übernehmen, dazu die Vorschau per Klick und die Statuszeile mit Usage und Wartenden.</li>
+        <li>Aus A übernehmen: Die Statuszeile pro Session steht nur bei Rot und Amber, dazu der rote Ring. So bleibt der Baum ruhig.</li>
+        <li>Aus B übernehmen: Die Ordnung „Braucht dich, Fertig, Arbeitet“ gehört ins Status-Item und hinter ⇧⌘U, nicht in die Seitenleiste.</li>
+        <li>Die Menüleiste in jeder Richtung so bauen wie oben gezeigt. Sie ist unabhängig vom Layout und kann zuerst kommen.</li>
+      </ol>
+    </div>
+  </section>
+</div>
+
+<template id="tpl-term"><span class="ub"><span class="u">&gt; </span>Bau ein Rate-Limit fürs Gateway. Token-Bucket, pro Route konfigurierbar, 429 mit Retry-After. Tests dazu.</span>
+
+<span class="w">●</span> Ich schaue mir zuerst die Middleware-Kette an.
+
+<span class="g">●</span> <span class="b">Read</span>(src/middleware/mod.rs)
+  <span class="d">⎿  Read 84 lines</span>
+
+<span class="g">●</span> <span class="b">Search</span>(pattern: "Layer|ServiceBuilder", path: "src")
+  <span class="d">⎿  Found 6 files</span>
+
+<span class="g">●</span> <span class="b">Write</span>(src/middleware/rate_limit.rs)
+  <span class="d">⎿  Wrote 142 lines to src/middleware/rate_limit.rs</span>
+     <span class="d">use std::time::{Duration, Instant};</span>
+     <span class="d">use dashmap::DashMap;</span>
+     <span class="d">… +138 lines (ctrl+o to expand)</span>
+
+<span class="g">●</span> <span class="b">Update</span>(src/config.rs)
+  <span class="d">⎿  Updated src/config.rs with 18 additions and 2 removals</span>
+
+<span class="g">●</span> <span class="b">Write</span>(tests/rate_limit.rs)
+  <span class="d">⎿  Wrote 96 lines to tests/rate_limit.rs</span>
+
+<span class="g">●</span> <span class="b">Bash</span>(cargo test -p gateway rate_limit)
+  <span class="d">⎿  running 14 tests</span>
+     <span class="d">test rate_limit::refills_after_window ... </span><span class="ok">ok</span>
+     <span class="d">test rate_limit::returns_429_with_retry_after ... </span><span class="ok">ok</span>
+     <span class="d">… +11 lines</span>
+     <span class="d">test result: </span><span class="ok">ok</span><span class="d">. 14 passed; 0 failed; finished in 0.41s</span>
+
+<span class="w">●</span> Der Limiter steht und ist getestet:
+  • Token-Bucket mit <span class="k">burst</span> und <span class="k">refill_per_sec</span>
+  • antwortet <span class="k">429</span> mit <span class="k">Retry-After</span>
+  • 14 neue Tests, alle grün
+
+  Offen ist eine Entscheidung.
+<span class="ask"><span class="c">☐ Limits</span>
+<span class="w">Sollen die Limits pro Mandant oder global gelten?</span>
+
+<span class="sel">❯ 1. Pro Mandant</span>      <span class="d">Große Kunden bremsen sich nicht gegenseitig</span>
+  2. Global           <span class="d">Einfacher zu betreiben, eine Zahl</span>
+  3. Beides           <span class="d">Pro Mandant, global als Obergrenze</span>
+  4. Etwas anderes eingeben …
+
+<span class="d">Enter to select · ↑/↓ to navigate · Esc to cancel</span></span><span class="foot"><span><span class="c">⏵⏵ accept edits on</span> (shift+tab to cycle)</span><span>ctx 38% · opus</span></span></template>
+
+<template id="tpl-diff"><div class="h">@@ -41,6 +41,22 @@ pub struct GatewayConfig {</div><div class="n">     pub listen: SocketAddr,</div><div class="n">     pub upstreams: Vec&lt;Upstream&gt;,</div><div class="r">-    pub timeout_ms: u64,</div><div class="a">+    pub timeout: Duration,</div><div class="a">+    #[serde(default)]</div><div class="a">+    pub rate_limit: RateLimitConfig,</div><div class="n"> }</div><div class="a">+</div><div class="a">+#[derive(Debug, Clone, Deserialize)]</div><div class="a">+pub struct RateLimitConfig {</div><div class="a">+    pub burst: u32,</div><div class="a">+    pub refill_per_sec: u32,</div><div class="a">+    #[serde(default)]</div><div class="a">+    pub routes: HashMap&lt;String, RouteLimit&gt;,</div><div class="a">+}</div></template>
+
+<template id="tpl-files"><div class="fr sel"><span class="fp"><span>src/</span>config.rs</span><span class="fs"><span class="add">+18</span> <span class="del">−2</span></span><span class="ft">1 min</span></div><div class="fr"><span class="fp"><span>tests/</span>rate_limit.rs</span><span class="fs"><span class="add">+96</span></span><span class="ft">3 min</span></div><div class="fr"><span class="fp"><span>src/middleware/</span>rate_limit.rs</span><span class="fs"><span class="add">+142</span></span><span class="ft">5 min</span></div><div class="fr"><span class="fp"><span>src/middleware/</span>mod.rs</span><span class="fs"><span class="add">+3</span> <span class="del">−1</span></span><span class="ft">7 min</span></div></template>
+
+<template id="tpl-status"><div class="sdrop">
+  <div class="sd-head"><b>Brain</b><span>1 braucht dich · 1 fertig · 3 arbeiten</span></div>
+  <div class="sd-sec">Braucht dich</div>
+  <div class="sd-row"><i class="dot d-calls"></i><div><div class="n">Stripe Elements<span class="p">checkout-redesign</span></div><div class="q">Freigabe für Bash: npm run e2e</div><div class="btns"><span class="b pri">Erlauben</span><span class="b">Ablehnen</span><span class="b">Ansehen</span></div></div><span class="age">3 min</span></div>
+  <div class="sd-sec">Fertig, nicht angesehen</div>
+  <div class="sd-row"><i class="dot d-turn"></i><div><div class="n">Changelog-Suche<span class="p">docs-site</span></div><div class="q">Suche findet jetzt auch Changelogs, Build grün.</div></div><span class="age">12 min</span></div>
+  <div class="msep"></div>
+  <div class="sd-sec">Konten</div>
+  <div class="sd-usage">
+    <div class="u-row"><span class="acc m">main</span><span class="l">5 h</span><span class="bar m"><i style="width:46%"></i></span><span class="num">46 %</span><span class="l">Woche</span><span class="bar m"><i style="width:21%"></i></span><span class="num">21 %</span></div>
+    <div class="u-row"><span class="acc s">second</span><span class="l">5 h</span><span class="bar s"><i style="width:12%"></i></span><span class="num">12 %</span><span class="l">Woche</span><span class="bar s"><i style="width:34%"></i></span><span class="num">34 %</span></div>
+    <div class="u-note">main voll ~Do 14:00 · neue Sessions besser in second</div>
+  </div>
+  <div class="msep"></div>
+  <div class="mi"><span class="ck"></span><span>Neue Session …</span><span class="mk">⌘N</span></div>
+  <div class="mi"><span class="ck"></span><span>Brain öffnen</span><span class="mk"></span></div>
+  <div class="mi"><span class="ck"></span><span>Benachrichtigungen pausieren</span><span class="mk">▸</span></div>
+  <div class="msep"></div>
+  <div class="mi"><span class="ck"></span><span>Brain beenden</span><span class="mk">⌘Q</span></div>
+</div></template>
+
+<script>
+(function(){
+  // [Text, Kürzel, Flags]  Flags: c = Haken, s = Untermenü, d = ausgegraut, x = gefährlich
+  var MENUS = [
+    {id:'brain', label:'Brain', bold:true, items:[
+      ['Über Brain'], '-',
+      ['Einstellungen …','⌘,'],
+      ['Claude-Konten …'],
+      ['Neues Claude-Konto einrichten …'],
+      ['Konten abgleichen …','','',"Einstellungen, Skills, Gedächtnis"],
+      ['iPhone koppeln (Brain Link) …'], '-',
+      ['Brain ausblenden','⌘H'], ['Andere ausblenden','⌥⌘H'], '-',
+      ['Brain beenden','⌘Q']]},
+    {id:'ablage', label:'Ablage', items:[
+      ['Neue Session …','⌘N'],
+      ['Neue Session in „api-gateway“','⌥⌘N'],
+      ['Neues Projekt …','⇧⌘N'], '-',
+      ['Session fortsetzen …','⌘O'],
+      ['Aus iTerm nach Brain holen …','⌥⌘O'], '-',
+      ['Für später notieren …','⌘L'],
+      ['Später-Notizen des Projekts','⇧⌘L'], '-',
+      ['Aufräumen …'],
+      ['Projekt „api-gateway“ ausblenden'], '-',
+      ['Fenster schließen','⌘W']]},
+    {id:'bearbeiten', label:'Bearbeiten', items:[
+      ['Widerrufen','⌘Z'], ['Wiederholen','⇧⌘Z'], '-',
+      ['Ausschneiden','⌘X'], ['Kopieren','⌘C'], ['Einsetzen','⌘V'],
+      ['Bildschirmfoto einsetzen','⌃⌘V'],
+      ['Alles auswählen','⌘A'], '-',
+      ['Im Terminal suchen …','⌘F'],
+      ['Sessions suchen …','⌥⌘F'], '-',
+      ['Kopieren beim Markieren (aus)','']]},
+    {id:'session', label:'Session', items:[
+      ['Erlauben','⌘Y','d'], ['Ablehnen','⇧⌘Y','d'], '-',
+      ['Nächste, die dich braucht','⇧⌘U'],
+      ['Nächste Session','⌃⇥'], ['Vorherige Session','⌃⇧⇥'], '-',
+      ['Umbenennen …','⌘R'],
+      ['Anheften','⌥⌘P'],
+      ['Stummschalten','⌥⌘M'],
+      ['Pausieren','','s'], '-',
+      ['In anderes Konto','','s'],
+      ['Forken in','','s'],
+      ['In anderes Projekt','','s'],
+      ['Neu starten mit … (z. B. --chrome)'],
+      ['In iTerm öffnen','⌥⌘I'], '-',
+      ['Session beenden','⌥⌘X'],
+      ['Hart beenden (Prozess stoppen)','','x'],
+      ['In den Papierkorb','⌘⌫','x']]},
+    {id:'darstellung', label:'Darstellung', items:[
+      ['Befehlspalette …','⌘K'], '-',
+      ['Seitenleiste','⌃⌘S','c'],
+      ['Änderungen unter der Session zeigen','⌥⌘0','c'],
+      ['Terminal teilen','⌘D'],
+      ['Alle Terminals im Überblick','⇧⌘A'], '-',
+      ['Beendete Sessions zeigen','','c'],
+      ['Ruhige Hintergrund-Sessions zeigen',''],
+      ['Automatisch gestartete Sessions zeigen',''], '-',
+      ['Größer','⌘+'], ['Kleiner','⌘−'], ['Originalgröße','⌘0'], '-',
+      ['Vollbild','⌃⌘F']]},
+    {id:'fenster', label:'Fenster', items:[
+      ['Im Dock ablegen','⌘M'], ['Zoomen'], '-',
+      ['Rate-Limits · api-gateway','⌘1','c'],
+      ['Stripe Elements · checkout-redesign','⌘2'],
+      ['Changelog-Suche · docs-site','⌘3'], '-',
+      ['Alle nach vorne bringen']]},
+    {id:'hilfe', label:'Hilfe', items:[
+      ['Alle Tasten …','⌘?'],
+      ['Log öffnen'],
+      ['Gärtner: kaputte Sessions finden …'], '-',
+      ['Was ist neu in Brain']]}
+  ];
+
+  function itemHTML(it, hl){
+    if (it === '-') return '<div class="msep"></div>';
+    var f = it[2] || '';
+    var cls = 'mi' + (f.indexOf('d')>-1?' dis':'') + (f.indexOf('x')>-1?' x':'') + (it[0]===hl?' hl':'');
+    var key = f.indexOf('s')>-1 ? '▸' : (it[1]||'');
+    var hint = it[3] ? '<span class="hint">'+it[3]+'</span>' : '';
+    return '<div class="'+cls+'"><span class="ck">'+(f.indexOf('c')>-1?'✓':'')+'</span><span>'+it[0]+hint+'</span><span class="mk">'+key+'</span></div>';
+  }
+  function menuBody(m, hl){ return m.items.map(function(it){return itemHTML(it, hl);}).join(''); }
+
+  var tplStatus = document.getElementById('tpl-status').innerHTML;
+
+  document.querySelectorAll('.screen').forEach(function(screen){
+    var bar = document.createElement('div');
+    bar.className = 'menubar';
+    var html = '<span class="mb-logo" aria-hidden="true"></span>';
+    MENUS.forEach(function(m){ html += '<span class="mb-item'+(m.bold?' bold':'')+'" data-m="'+m.id+'">'+m.label+'</span>'; });
+    html += '<span class="mb-right"><span class="mb-status" data-status-btn><span class="brainmark"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="badge">1</span></span>'
+         + '<span aria-hidden="true">◔</span><span>Mi. 11. Nov. 14:32</span></span>';
+    bar.innerHTML = html;
+    screen.appendChild(bar);
+
+    var menuEl = null, statusEl = null;
+    var hl = screen.dataset.hl || '';
+    function closeMenu(){ if(menuEl){menuEl.remove();menuEl=null;} bar.querySelectorAll('.mb-item.open').forEach(function(e){e.classList.remove('open');}); }
+    function openMenu(id){
+      closeMenu();
+      var m = MENUS.filter(function(x){return x.id===id;})[0];
+      var t = bar.querySelector('[data-m="'+id+'"]');
+      t.classList.add('open');
+      menuEl = document.createElement('div');
+      menuEl.className = 'menu';
+      menuEl.style.left = t.offsetLeft + 'px';
+      menuEl.innerHTML = menuBody(m, hl);
+      screen.appendChild(menuEl);
+      hl = '';
+    }
+    function closeStatus(){ if(statusEl){statusEl.remove();statusEl=null;} bar.querySelector('[data-status-btn]').classList.remove('open'); }
+    function openStatus(){
+      var btn = bar.querySelector('[data-status-btn]');
+      btn.classList.add('open');
+      var wrap = document.createElement('div'); wrap.innerHTML = tplStatus;
+      statusEl = wrap.firstElementChild;
+      statusEl.style.left = Math.min(btn.offsetLeft + bar.offsetLeft, 1440 - 370) + 'px';
+      screen.appendChild(statusEl);
+    }
+    bar.addEventListener('click', function(e){
+      var t = e.target.closest('.mb-item');
+      if (t){ e.stopPropagation(); if (t.classList.contains('open')) closeMenu(); else openMenu(t.dataset.m); return; }
+      var s = e.target.closest('[data-status-btn]');
+      if (s){ e.stopPropagation(); if (statusEl) closeStatus(); else openStatus(); }
+    });
+    screen.addEventListener('click', function(e){
+      if (menuEl && !menuEl.contains(e.target)) closeMenu();
+      if (statusEl && !statusEl.contains(e.target) && !e.target.closest('[data-status-btn]')) closeStatus();
+    });
+    screen._open = function(){
+      if (screen.dataset.menu && !menuEl) openMenu(screen.dataset.menu);
+      if (screen.dataset.status === 'open' && !statusEl) openStatus();
+    };
+  });
+
+  // Inhalte aus Vorlagen
+  var term = document.getElementById('tpl-term').innerHTML;
+  var diff = document.getElementById('tpl-diff').innerHTML;
+  var files = document.getElementById('tpl-files').innerHTML;
+  document.querySelectorAll('[data-term]').forEach(function(e){ e.innerHTML = term; });
+  document.querySelectorAll('[data-diff]').forEach(function(e){ e.innerHTML = diff; });
+  document.querySelectorAll('[data-files]').forEach(function(e){ e.innerHTML = files; });
+  var folder = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.6l1.4 1.5h6a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"/></svg>';
+  var note = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M4 1.5h8v13l-4-3-4 3z"/></svg>';
+  document.querySelectorAll('[data-folder]').forEach(function(e){ e.innerHTML = folder; });
+  document.querySelectorAll('[data-note]').forEach(function(e){ e.innerHTML = note; });
+
+  // Interaktion in den Mockups
+  document.querySelectorAll('[data-toggle="a-drawer"]').forEach(function(btn){
+    btn.addEventListener('click', function(){ var d = document.getElementById('a-drawer'); d.classList.toggle('open'); btn.classList.toggle('on', d.classList.contains('open')); });
+  });
+  document.querySelectorAll('[data-toggle-b]').forEach(function(btn){
+    btn.addEventListener('click', function(){ document.getElementById('b-changes').classList.toggle('closed'); });
+  });
+  var ql = document.getElementById('c-ql');
+  document.querySelectorAll('[data-ql]').forEach(function(f){
+    f.addEventListener('click', function(){
+      var was = f.classList.contains('sel') && !ql.hidden;
+      document.querySelectorAll('[data-ql]').forEach(function(x){x.classList.remove('sel');});
+      if (was){ ql.hidden = true; return; }
+      f.classList.add('sel'); ql.hidden = false;
+      ql.querySelector('b').textContent = f.dataset.path;
+    });
+  });
+  document.querySelector('[data-ql-close]').addEventListener('click', function(){ ql.hidden = true; });
+
+  // Menü-Referenz
+  var ref = document.getElementById('menu-ref');
+  MENUS.forEach(function(m){
+    var fig = document.createElement('figure');
+    fig.innerHTML = '<figcaption>'+m.label+'</figcaption><div class="menu static">'+menuBody(m,'')+'</div>';
+    ref.appendChild(fig);
+  });
+
+  // Skalieren und Umschalten
+  function fit(){
+    document.querySelectorAll('.stage').forEach(function(st){
+      var w = st.clientWidth; if (!w) return;
+      st.querySelector('.screen').style.setProperty('--s', (w/1440).toFixed(4));
+    });
+  }
+  function show(v){
+    if (['a','b','c'].indexOf(v) < 0) v = 'a';
+    ['a','b','c'].forEach(function(k){
+      document.getElementById('v-'+k).hidden = (k !== v);
+      document.getElementById('tab-'+k).setAttribute('aria-pressed', k===v ? 'true' : 'false');
+    });
+    fit();
+    var sc = document.querySelector('#v-'+v+' .screen'); if (sc && sc._open) sc._open();
+  }
+  document.querySelectorAll('.seg button').forEach(function(b){
+    b.addEventListener('click', function(){ if (location.hash !== '#'+b.dataset.v) location.hash = b.dataset.v; else show(b.dataset.v); });
+  });
+  window.addEventListener('hashchange', function(){ show(location.hash.slice(1)); });
+  window.addEventListener('resize', fit);
+  if (window.ResizeObserver){ var ro = new ResizeObserver(fit); document.querySelectorAll('.stage').forEach(function(s){ ro.observe(s); }); }
+  show(location.hash.slice(1));
+})();
+</script>
