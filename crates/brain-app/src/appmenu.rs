@@ -184,6 +184,13 @@ impl AppMenu {
         }
     }
 
+    /// A menu for a status item: its items send their ids like the bar's.
+    pub fn menu(&self, entries: &[Entry]) -> Retained<NSMenu> {
+        let menu = new_menu("", self.mtm);
+        fill(&menu, entries, &self.target, self.mtm);
+        menu
+    }
+
     fn rebuild(&mut self, app: &NSApplication, menus: &[Menu]) {
         let bar = NSMenu::new(self.mtm);
         bar.setAutoenablesItems(false);

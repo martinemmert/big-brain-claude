@@ -1600,9 +1600,6 @@ impl Brain {
             tasks.push(self.bring_forward());
             tasks.push(self.scroll_to_selected());
         }
-        if MenuBar::take_click() {
-            tasks.push(self.bring_forward());
-        }
         tasks.push(self.continue_takeover());
         tasks.push(self.continue_restart());
         if self.status.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(6)) {

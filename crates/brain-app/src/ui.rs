@@ -2047,16 +2047,71 @@ fn status_line_bar<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Eleme
         .into()
 }
 
+/// What an account's limits come to now: the status line and the status item both show it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UsageNow {
+    /// Percent of the five-hour and the weekly limit used.
+    pub five_hour: Option<f64>,
+    pub week: Option<f64>,
+    /// When the first of the limits runs out at the pace so far (epoch seconds).
+    pub runs_out: Option<i64>,
+    /// Neither window is half used.
+    pub has_room: bool,
+}
+
+pub fn usage_now(brain: &Brain, account: &str, now: i64) -> Option<UsageNow> {
+    let snapshot = brain_core::usage::account_limits(&brain.model.usage, account)?;
+    let history = brain.model.usage_history.get(account).map(Vec::as_slice).unwrap_or_default();
+    let runs_out = [snapshot.five_hour.and_then(|l| five_hour_runs_out(l, now)), snapshot.seven_day.and_then(|l| seven_day_runs_out(l, history, now))]
+        .into_iter()
+        .flatten()
+        .min();
+    Some(UsageNow {
+        five_hour: snapshot.five_hour.map(|l| l.used_percentage.clamp(0.0, 100.0)),
+        week: snapshot.seven_day.map(|l| l.used_percentage),
+        runs_out,
+        has_room: snapshot.five_hour.is_none_or(|l| l.used_percentage < 50.0) && snapshot.seven_day.is_none_or(|l| l.used_percentage < 50.0),
+    })
+}
+
+/// When a limit runs out: the time within a day, otherwise the weekday and time.
+fn runs_out_label(at: i64, now_ms: i64) -> String {
+    let when = chrono::DateTime::from_timestamp(at, 0).map(|t| t.with_timezone(&chrono::Local));
+    match when {
+        Some(t) if at * 1000 - now_ms < 24 * 3600 * 1000 => t.format("%H:%M").to_string(),
+        Some(t) => t.format("%a %H:%M").to_string(),
+        None => String::new(),
+    }
+}
+
+/// An account's limits as one line of text: `main  5 h 46 %  ·  Woche 21 %  ·  voll ~Do 14:00`.
+pub fn usage_text(account: &str, usage: &UsageNow, now_ms: i64) -> String {
+    let mut parts = Vec::new();
+    if let Some(used) = usage.five_hour {
+        parts.push(format!("5 h {used:.0} %"));
+    }
+    if let Some(used) = usage.week {
+        parts.push(format!("{} {used:.0} %", t("Woche", "week")));
+    }
+    match usage.runs_out {
+        Some(at) => {
+            let when = runs_out_label(at, now_ms);
+            parts.push(tr!("voll ~{when}", "full ~{when}"));
+        }
+        None if usage.has_room => parts.push(t("hat Platz", "has room").to_string()),
+        None => {}
+    }
+    format!("{account}  {}", parts.join("  ·  "))
+}
+
 /// An account's limits: `main 5 h ▓▓░ 46 % Woche 21 % · voll ~Do 14:00`, or "hat Platz" when
 /// neither window is half used.
 fn usage_segment<'a>(brain: &Brain, account: &str, now: i64) -> Option<Element<'a, Message>> {
-    let snapshot = brain_core::usage::account_limits(&brain.model.usage, account)?;
-    let history = brain.model.usage_history.get(account).map(Vec::as_slice).unwrap_or_default();
+    let usage = usage_now(brain, account, now)?;
     let faint = |label: String| text(label).size(11.5).color(TEXT_FAINT).font(UI);
     let num = |label: String| text(label).size(11.5).color(TEXT).font(UI);
     let mut line = row![account_badge(account, brain.account_index(account))].spacing(6).align_y(iced::Center);
-    if let Some(limit) = snapshot.five_hour {
-        let used = limit.used_percentage.clamp(0.0, 100.0);
+    if let Some(used) = usage.five_hour {
         let color = if used >= 90.0 { CALLS } else if used >= 70.0 { TURN } else { WORKING };
         let bar = stack![
             container(Space::new().width(40).height(4)).style(|_| boxed(RAISED, Color::TRANSPARENT, 2.0)),
@@ -2064,25 +2119,15 @@ fn usage_segment<'a>(brain: &Brain, account: &str, now: i64) -> Option<Element<'
         ];
         line = line.push(faint("5 h".into())).push(bar).push(num(format!("{used:.0} %")));
     }
-    if let Some(limit) = snapshot.seven_day {
-        line = line.push(faint(t("Woche", "week").into())).push(num(format!("{:.0} %", limit.used_percentage)));
+    if let Some(used) = usage.week {
+        line = line.push(faint(t("Woche", "week").into())).push(num(format!("{used:.0} %")));
     }
-    let runs_out = [snapshot.five_hour.and_then(|l| five_hour_runs_out(l, now)), snapshot.seven_day.and_then(|l| seven_day_runs_out(l, history, now))]
-        .into_iter()
-        .flatten()
-        .min();
-    let has_room = snapshot.five_hour.is_none_or(|l| l.used_percentage < 50.0) && snapshot.seven_day.is_none_or(|l| l.used_percentage < 50.0);
-    match runs_out {
+    match usage.runs_out {
         Some(at) => {
-            let when = chrono::DateTime::from_timestamp(at, 0).map(|t| t.with_timezone(&chrono::Local));
-            let when = match when {
-                Some(t) if at * 1000 - now < 24 * 3600 * 1000 => t.format("%H:%M").to_string(),
-                Some(t) => t.format("%a %H:%M").to_string(),
-                None => String::new(),
-            };
+            let when = runs_out_label(at, now);
             line = line.push(text(tr!("voll ~{when}", "full ~{when}")).size(11.5).color(TURN).font(style::semibold()));
         }
-        None if has_room => line = line.push(text(t("hat Platz", "has room")).size(11.5).color(DONE).font(UI)),
+        None if usage.has_room => line = line.push(text(t("hat Platz", "has room")).size(11.5).color(DONE).font(UI)),
         None => {}
     }
     Some(line.into())
@@ -2156,4 +2201,23 @@ fn keys_sheet(_brain: &Brain) -> Element<'_, Message> {
         .spacing(18)
         .padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 })
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_status_item_shows_each_accounts_limits_as_one_line() {
+        let now_ms = 1_790_000_000_000;
+        let busy = UsageNow { five_hour: Some(46.0), week: Some(21.0), runs_out: Some(now_ms / 1000 + 3600), has_room: false };
+        let line = usage_text("main", &busy, now_ms);
+        assert!(line.starts_with("main"), "{line}");
+        assert!(line.contains("5 h 46 %") && line.contains("21 %"), "{line}");
+        assert!(line.contains('~'), "a forecast says when it runs out: {line}");
+
+        let idle = UsageNow { five_hour: Some(3.0), week: None, runs_out: None, has_room: true };
+        let line = usage_text("second", &idle, now_ms);
+        assert!(line.contains("5 h 3 %") && !line.contains('~'), "{line}");
+    }
 }

@@ -1,46 +1,19 @@
-//! A menu bar item with the number of sessions waiting for you; a click brings Brain forward.
+//! A menu bar item with the number of sessions waiting for you; a click opens a menu with who
+//! needs you, who finished, the usage of each account and a new session.
 //! GPUI has no status item API, so this talks to AppKit directly.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
-use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2::{define_class, msg_send, sel, MainThreadMarker, MainThreadOnly};
+use objc2::MainThreadMarker;
 use objc2_app_kit::{NSStatusBar, NSStatusItem, NSVariableStatusItemLength};
-use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
+use objc2_foundation::NSString;
 
-static CLICKED: AtomicBool = AtomicBool::new(false);
-
-define_class!(
-    // SAFETY: NSObject has no subclassing requirements; no Drop impl.
-    #[unsafe(super(NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[name = "BrainStatusItemTarget"]
-    #[ivars = ()]
-    struct Target;
-
-    unsafe impl NSObjectProtocol for Target {}
-
-    impl Target {
-        #[unsafe(method(clicked:))]
-        fn clicked(&self, _sender: Option<&AnyObject>) {
-            CLICKED.store(true, Ordering::SeqCst);
-        }
-    }
-);
-
-impl Target {
-    fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(());
-        unsafe { msg_send![super(this), init] }
-    }
-}
+use crate::appmenu::{AppMenu, Entry};
 
 pub struct MenuBar {
-    item: Retained<NSStatusItem>,
-    _target: Retained<Target>,
+    item: objc2::rc::Retained<NSStatusItem>,
     mtm: MainThreadMarker,
     title: String,
+    /// What the item's menu lists now.
+    entries: Vec<Entry>,
 }
 
 impl MenuBar {
@@ -48,16 +21,7 @@ impl MenuBar {
     pub fn new() -> Option<Self> {
         let mtm = MainThreadMarker::new()?;
         let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
-        let target = Target::new(mtm);
-        if let Some(button) = item.button(mtm) {
-            let target_object: &AnyObject = &target;
-            // SAFETY: `target` lives as long as the item (kept in `_target`) and answers `clicked:`.
-            unsafe {
-                button.setTarget(Some(target_object));
-                button.setAction(Some(sel!(clicked:)));
-            }
-        }
-        let mut bar = Self { item, _target: target, mtm, title: String::new() };
+        let mut bar = Self { item, mtm, title: String::new(), entries: Vec::new() };
         bar.show(0, 0);
         Some(bar)
     }
@@ -78,8 +42,12 @@ impl MenuBar {
         self.title = title;
     }
 
-    /// Whether the item was clicked since the last call.
-    pub fn take_click() -> bool {
-        CLICKED.swap(false, Ordering::SeqCst)
+    /// Makes a click open this menu; builds it again only when its entries changed.
+    pub fn show_menu(&mut self, entries: &[Entry], menus: &AppMenu) {
+        if self.entries == entries {
+            return;
+        }
+        self.item.setMenu(Some(&menus.menu(entries)));
+        self.entries = entries.to_vec();
     }
 }
