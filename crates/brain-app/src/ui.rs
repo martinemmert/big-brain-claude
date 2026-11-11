@@ -54,8 +54,9 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         .interaction(iced::mouse::Interaction::ResizingHorizontally);
         // The pointer is followed over the list only (that's where context menus open); the list
         // starts below the title bar and its divider.
+        let titlebar_height = crate::chrome::TITLEBAR_HEIGHT / brain.zoom();
         let left = mouse_area(container(left).width(Length::Fixed(width - 3.0)).height(Fill).style(|_| style::fill(CHROME)))
-            .on_move(|p| Message::Pointer(iced::Point::new(p.x, p.y + crate::chrome::TITLEBAR_HEIGHT + 1.0)));
+            .on_move(move |p| Message::Pointer(iced::Point::new(p.x, p.y + titlebar_height + 1.0)));
         row![left, grip, detail]
     };
     let window = container(column![titlebar(brain, groups.deciding()), divider(), body.height(Fill), divider(), status_line_bar(brain, &groups, now)])
@@ -354,7 +355,7 @@ fn divider<'a>() -> Element<'a, Message> {
 
 fn titlebar(brain: &Brain, waiting: usize) -> Element<'_, Message> {
     let mut bar = row![
-        Space::new().width(TRAFFIC_LIGHTS),
+        Space::new().width(TRAFFIC_LIGHTS / brain.zoom()),
         brand_mark(waiting > 0),
         text("Brain").size(14).color(TEXT_STRONG).font(style::bold()),
         Space::new().width(Fill),
@@ -384,7 +385,9 @@ fn titlebar(brain: &Brain, waiting: usize) -> Element<'_, Message> {
     accounts.extend(brain.model.accounts.iter().map(|a| (a.id.clone(), brain.filter.as_deref() == Some(&a.id), Message::Filter(Some(a.id.clone())))));
     bar = bar.push(segmented(accounts));
 
-    mouse_area(container(bar).height(crate::chrome::TITLEBAR_HEIGHT).center_y(crate::chrome::TITLEBAR_HEIGHT).padding(Padding { left: 0.0, right: 14.0, top: 0.0, bottom: 0.0 }).style(|_| style::fill(CHROME)))
+    // The native title bar keeps its size in points when the window is zoomed.
+    let titlebar_height = crate::chrome::TITLEBAR_HEIGHT / brain.zoom();
+    mouse_area(container(bar).height(titlebar_height).center_y(titlebar_height).padding(Padding { left: 0.0, right: 14.0, top: 0.0, bottom: 0.0 }).style(|_| style::fill(CHROME)))
         .on_press(Message::DragWindow)
         .on_double_click(Message::ZoomWindow)
         .into()
@@ -2030,6 +2033,11 @@ fn status_line_bar<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Eleme
         line = line.push(text(clip(message, 110)).size(11.5).color(TEXT_STRONG).font(style::semibold()).wrapping(text::Wrapping::None));
     }
     line = line.push(Space::new().width(Fill));
+    // Not at 100 %: the size says so, and a click brings it back.
+    if brain.zoom() != 1.0 {
+        let percent = (brain.zoom() * 100.0).round() as u32;
+        line = line.push(style::text_button(format!("{percent} %"), false, Message::Menu(crate::app::MenuCommand::ZoomReset)));
+    }
     let usage: Vec<Element<'a, Message>> = brain.model.accounts.iter().filter_map(|account| usage_segment(brain, &account.id, now)).collect();
     for (i, segment) in usage.into_iter().enumerate() {
         if i > 0 {
@@ -2181,6 +2189,7 @@ fn keys_sheet(_brain: &Brain) -> Element<'_, Message> {
                 ("⌘D", t("Terminal teilen", "split the terminal")),
                 ("⌘⇧A", t("alle Terminals im Überblick", "all terminals at a glance")),
                 ("⌃⌘S", t("Seitenleiste ein-/ausblenden", "show / hide the sidebar")),
+                ("⌘+  ⌘−  ⌘0", t("größer · kleiner · Originalgröße", "larger · smaller · actual size")),
                 ("⌥⌘0", t("Änderungen unter der Session", "changes under the session")),
                 ("⌘-Klick", t("Pfad oder Link öffnen", "open a path or link")),
                 ("⌘C  ⌘V", t("kopieren · einsetzen im Terminal", "copy · paste in the terminal")),

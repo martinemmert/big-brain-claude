@@ -2808,6 +2808,11 @@ impl Brain {
         self.model.accounts.iter().position(|a| a.id == account).unwrap_or(0)
     }
 
+    /// How large the window is drawn: 1.0 is 100 %.
+    pub fn zoom(&self) -> f32 {
+        self.prefs.zoom.unwrap_or(1.0).clamp(ZOOM_STEPS[0], ZOOM_STEPS[ZOOM_STEPS.len() - 1])
+    }
+
     pub fn selected_session(&self) -> Option<&Session> {
         self.selected.as_ref().and_then(|k| self.model.board.get(k))
     }
@@ -4287,6 +4292,19 @@ fn movable(session: &Session) -> bool {
     }
 }
 
+/// The sizes ⌘+ and ⌘− step through.
+const ZOOM_STEPS: [f32; 12] = [0.5, 0.67, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
+
+/// The next larger (`up`) or smaller size after `current`; the ends stay.
+pub fn next_zoom(current: f32, up: bool) -> f32 {
+    const EPSILON: f32 = 0.005;
+    if up {
+        ZOOM_STEPS.iter().copied().find(|step| *step > current + EPSILON).unwrap_or(ZOOM_STEPS[ZOOM_STEPS.len() - 1])
+    } else {
+        ZOOM_STEPS.iter().copied().rev().find(|step| *step < current - EPSILON).unwrap_or(ZOOM_STEPS[0])
+    }
+}
+
 /// Tomorrow at 9:00, local time (epoch ms).
 fn tomorrow_morning() -> Option<i64> {
     (chrono::Local::now() + chrono::Duration::days(1))
@@ -4454,6 +4472,16 @@ mod tests {
         assert_eq!(kinds, [DiffKind::Hunk, DiffKind::Context, DiffKind::Added]);
         assert_eq!(cut, 1);
         assert_eq!(preview_lines("", 3), (vec![], 0));
+    }
+
+    #[test]
+    fn zoom_steps_up_and_down_from_any_size_and_stops_at_the_ends() {
+        assert_eq!(next_zoom(1.0, true), 1.1);
+        assert_eq!(next_zoom(1.0, false), 0.9);
+        assert_eq!(next_zoom(1.05, true), 1.1, "between two steps goes to the next one");
+        assert_eq!(next_zoom(1.05, false), 1.0);
+        assert_eq!(next_zoom(3.0, true), 3.0);
+        assert_eq!(next_zoom(0.5, false), 0.5);
     }
 
     #[test]

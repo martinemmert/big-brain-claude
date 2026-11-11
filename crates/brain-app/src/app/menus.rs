@@ -44,6 +44,10 @@ pub enum MenuCommand {
     FocusTerminal,
     FocusTree,
     ToggleSidebar,
+    /// ⌘+ (`true`) and ⌘−: the next larger or smaller size of the window.
+    Zoom(bool),
+    /// ⌘0: back to 100 %.
+    ZoomReset,
     /// A session from the status item's menu: Brain comes forward with it.
     OpenSession(SessionKey),
     /// "Neue Session …" of the status item: Brain comes forward with the dialog.
@@ -302,6 +306,10 @@ impl Brain {
             commands.menu(MenuCommand::FocusTerminal, t("Terminal fokussieren", "Focus the terminal"), "focus-terminal").keys("j", CMD).into(),
             commands.menu(MenuCommand::FocusTree, t("Baum fokussieren", "Focus the tree"), "focus-tree").keys("[", CMD).into(),
             Entry::Separator,
+            commands.menu(MenuCommand::Zoom(true), t("Größer", "Zoom in"), "zoom-in").keys("+", CMD).into(),
+            commands.menu(MenuCommand::Zoom(false), t("Kleiner", "Zoom out"), "zoom-out").keys("-", CMD).into(),
+            commands.menu(MenuCommand::ZoomReset, t("Originalgröße", "Actual size"), "zoom-reset").keys("0", CMD).enabled(self.zoom() != 1.0).into(),
+            Entry::Separator,
             commands.item(t("Beendete Sessions zeigen", "Show ended sessions"), "show-older", Message::ToggleOlder).checked(self.prefs.show_older).into(),
             commands.palette(PaletteCommand::ToggleBackground, t("Ruhige Hintergrund-Sessions zeigen", "Show quiet background sessions"), "show-background").checked(self.prefs.show_background).into(),
             commands.palette(PaletteCommand::ToggleAutomated, t("Automatisch gestartete Sessions zeigen", "Show sessions started by programs"), "show-automated").checked(self.prefs.show_automated).into(),
@@ -491,6 +499,14 @@ impl Brain {
             }
             MenuCommand::NewSessionInFront => Task::batch([self.bring_forward(), self.open_new_session_dialog()]),
             MenuCommand::BringForward => self.bring_forward(),
+            MenuCommand::Zoom(up) => {
+                self.set_zoom(super::next_zoom(self.zoom(), up));
+                Task::none()
+            }
+            MenuCommand::ZoomReset => {
+                self.set_zoom(1.0);
+                Task::none()
+            }
             MenuCommand::Copy => self.copy_from_terminal(),
             MenuCommand::Paste => self.paste_into_terminal(),
             MenuCommand::PasteScreenshot => {
@@ -502,6 +518,13 @@ impl Brain {
                 Task::none()
             }
         }
+    }
+
+    fn set_zoom(&mut self, zoom: f32) {
+        self.prefs.zoom = (zoom != 1.0).then_some(zoom);
+        self.prefs.save();
+        let percent = (zoom * 100.0).round() as u32;
+        self.set_status(tr!("Darstellung auf {percent} %.", "Zoom {percent} %."));
     }
 
     /// `~/.claude-brain/config.json` in the text editor, created empty if it isn't there yet.

@@ -35,6 +35,7 @@ fn main() -> iced::Result {
         .title(app::Brain::title)
         .subscription(app::Brain::subscription)
         .theme(|_: &app::Brain| style::theme())
+        .scale_factor(|brain: &app::Brain| brain.zoom())
         .default_font(style::UI)
         .window(iced::window::Settings {
             size: iced::Size::new(1180.0, 760.0),

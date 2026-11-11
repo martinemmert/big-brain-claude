@@ -64,6 +64,9 @@ pub struct Prefs {
     /// Leave out the files a session changed, which stand under it in the tree.
     #[serde(default)]
     pub hide_changes: bool,
+    /// How large the window is drawn, as a factor (View → Larger, Smaller); none is 100 %.
+    #[serde(default)]
+    pub zoom: Option<f32>,
     /// Leave out the sidebar with the tree (View → Sidebar).
     #[serde(default)]
     pub hide_sidebar: bool,
