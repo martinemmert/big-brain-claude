@@ -93,6 +93,7 @@ impl Brain {
     fn main_menus(&self, commands: &mut Commands, needing: &[(SessionKey, String)]) -> Vec<Menu> {
         let session = self.selected_session();
         // A dialog on top takes the keys; the menus that act on a session wait for it to close.
+        // (The new-session dialog has its own ⌘O and ⇧⌘N: those items stay off, the keys reach it.)
         let acts = matches!(self.mode, Mode::Normal | Mode::Search);
         let on_session = session.filter(|_| acts);
         let in_terminal = self.mode == Mode::Normal && (self.focused_terminal.is_some() || (self.shell_visible && self.focused_shell.is_some()));
@@ -138,9 +139,9 @@ impl Brain {
                 .into(),
             None => Item::new(t("Neue Session im Projekt", "New session in the project"), "new-session-in").keys("n", CMD | OPT).enabled(false).into(),
         });
-        entries.push(commands.item(t("Neues Projekt …", "New project …"), "new-project", Message::NewProject).keys("n", CMD | SHIFT).into());
+        entries.push(commands.item(t("Neues Projekt …", "New project …"), "new-project", Message::NewProject).keys("n", CMD | SHIFT).enabled(acts).into());
         entries.push(Entry::Separator);
-        entries.push(commands.menu(MenuCommand::ResumeSearch, t("Session fortsetzen …", "Resume a session …"), "resume").keys("o", CMD).into());
+        entries.push(commands.menu(MenuCommand::ResumeSearch, t("Session fortsetzen …", "Resume a session …"), "resume").keys("o", CMD).enabled(acts).into());
         let takes_over = session.is_some_and(|s| s.agent.is_none() && (s.phase() == Phase::Ended || s.accepts_input()));
         entries.push(
             commands.act(Action::TakeOver, t("Aus iTerm nach Brain holen …", "Move from iTerm into Brain …"), "take-over").keys("o", CMD | OPT).enabled(takes_over && acts).into(),
