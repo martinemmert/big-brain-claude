@@ -64,6 +64,9 @@ pub struct Prefs {
     /// Leave out the files a session changed, which stand under it in the tree.
     #[serde(default)]
     pub hide_changes: bool,
+    /// Leave out the sidebar with the tree (View → Sidebar).
+    #[serde(default)]
+    pub hide_sidebar: bool,
     /// Projects whose "for later" notes are unfolded in the tree.
     #[serde(default)]
     open_notes: BTreeSet<String>,

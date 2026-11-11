@@ -90,6 +90,11 @@ impl Terminal {
         self.backend.text()
     }
 
+    /// Brain: the text selected with the mouse (empty when nothing is), what ⌘C copies.
+    pub fn selection_text(&self) -> String {
+        self.backend.selectable_content()
+    }
+
     pub fn handle(&mut self, cmd: Command) -> Action {
         let mut action = Action::default();
 

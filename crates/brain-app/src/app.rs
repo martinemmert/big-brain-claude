@@ -18,12 +18,14 @@ pub use relaunch::{Relaunch, RELAUNCH_FLAGS};
 mod sync;
 mod garden;
 mod link;
+mod menus;
 
 pub use account::ACCOUNT_NAME;
 use crate::conversation::Conversation;
 use crate::format::{ago, clock, now_ms, plain, shell_quote};
 use crate::i18n::t;
 use crate::menubar::MenuBar;
+pub use menus::MenuCommand;
 use crate::model::Model;
 use crate::notify::{self, Notifier};
 use crate::prefs::Prefs;
@@ -374,6 +376,12 @@ pub enum Message {
     SidebarDrag,
     SidebarTo(f32),
     SidebarDone,
+    /// An item of the menu bar was chosen (its id).
+    MenuPicked(String),
+    /// A menu item without a message of its own.
+    Menu(MenuCommand),
+    /// The clipboard's text, on its way into the terminal that has the keyboard.
+    PasteText(Option<String>),
 }
 
 impl Message {
@@ -576,6 +584,11 @@ pub struct Brain {
     pub prefs: Prefs,
     notifier: Notifier,
     menubar: Option<MenuBar>,
+    /// The menu bar of the app, and what its items stand for.
+    appmenu: Option<crate::appmenu::AppMenu>,
+    menu_commands: HashMap<String, Message>,
+    /// ⌘O: the session search lists the ended sessions too.
+    resume_search: bool,
     /// `None` shows every account.
     pub filter: Option<String>,
     pub selected: Option<SessionKey>,
@@ -771,6 +784,9 @@ impl Brain {
             prefs,
             notifier: Notifier::new(),
             menubar: MenuBar::new(),
+            appmenu: crate::appmenu::AppMenu::new(),
+            menu_commands: HashMap::new(),
+            resume_search: false,
             filter: None,
             selected: None,
             hovered: None,
@@ -901,6 +917,7 @@ impl Brain {
             keys,
             iced::time::every(Duration::from_millis(800)).map(|_| Message::Tick),
             Subscription::run(crate::hotkey::presses).map(|_| Message::QuickTerminal),
+            Subscription::run(crate::appmenu::picks).map(Message::MenuPicked),
         ];
         if self.dragging_sidebar {
             // Pointer moves only while the divider is held; otherwise every move would redraw.
@@ -1065,6 +1082,12 @@ impl Brain {
                 Task::none()
             }
             Message::Do(action) => self.act(action),
+            Message::MenuPicked(id) => self.menu_picked(&id),
+            Message::Menu(command) => self.run_menu(command),
+            Message::PasteText(text) => {
+                self.paste_text(text);
+                Task::none()
+            }
             Message::CleanupAge(index) => {
                 self.cleanup_age = index;
                 Task::none()
@@ -1310,6 +1333,7 @@ impl Brain {
                 } else if self.focused_shell.as_ref() == Some(&key) {
                     self.focused_shell = None;
                 }
+                self.refresh_menus();
                 Task::none()
             }
             Message::ToggleShell => self.toggle_shell(),
@@ -1339,6 +1363,7 @@ impl Brain {
                 } else if self.focused_terminal.as_ref() == Some(&key) {
                     self.focused_terminal = None;
                 }
+                self.refresh_menus();
                 Task::none()
             }
             Message::ToggleSplit => {
@@ -1509,6 +1534,7 @@ impl Brain {
         }
         let now = now_ms();
         let refreshed = self.model.refresh();
+        self.refresh_menus();
         self.refresh_later();
         self.refresh_questions();
         if !self.model.is_demo() {
@@ -2591,13 +2617,22 @@ impl Brain {
     // ---- the list ---------------------------------------------------------------
 
     pub fn groups(&self, now: i64) -> Groups<'_> {
-        self.groups_for(now, &self.search, self.filter.as_deref())
+        self.groups_with(now, &self.search, self.filter.as_deref(), self.searching())
+    }
+
+    /// Whether the list is being searched: text typed, or ⌘O waiting for it (which lists the
+    /// ended sessions too).
+    pub fn searching(&self) -> bool {
+        !self.search.is_empty() || (self.resume_search && self.mode == Mode::Search)
     }
 
     /// The list as grouped for a search and an account (none: every account). The phone gets it
     /// without the Mac's search and account filter: it has its own.
     pub(super) fn groups_for(&self, now: i64, search: &str, account: Option<&str>) -> Groups<'_> {
-        let searching = !search.is_empty();
+        self.groups_with(now, search, account, !search.is_empty())
+    }
+
+    fn groups_with(&self, now: i64, search: &str, account: Option<&str>, searching: bool) -> Groups<'_> {
         let mut groups = Groups {
             saved: vec![],
             decide: vec![],
@@ -2695,7 +2730,7 @@ impl Brain {
 
     /// The tree on the left: the listed projects with their sessions, the others at the end.
     pub fn tree<'a>(&'a self, groups: &Groups<'a>) -> Tree<'a> {
-        let searching = !self.search.is_empty();
+        let searching = self.searching();
         let query = self.search.to_lowercase();
         let notes = self.later.iter().filter(|(note, project)| {
             query.split_whitespace().all(|term| format!("{} {project}", note.text).to_lowercase().contains(term))
@@ -2726,7 +2761,7 @@ impl Brain {
         let tree = self.tree(&groups);
         let first = tree.navigable().first().map(|s| s.key.clone());
         let mut top = tree::TOP;
-        for node in tree.nodes(!self.search.is_empty(), self.tree_changes()) {
+        for node in tree.nodes(self.searching(), self.tree_changes()) {
             let height = node.height();
             if matches!(&node, tree::Node::Session(row) if row.session.key == key) {
                 let bottom = top + height;
@@ -2845,29 +2880,6 @@ impl Brain {
             }
             return Task::none();
         }
-        // ⌘2 / ⌘J: keyboard into the terminal; ⌘1 / ⌘[: back to the session list.
-        if cmd && matches!(character.as_deref(), Some("2") | Some("j")) {
-            return if self.has_terminal() { self.focus_terminal() } else { Task::none() };
-        }
-        // ⌘D splits the terminal, ⌘⇧A shows all of them: also from inside a terminal.
-        if cmd && character.as_deref() == Some("d") {
-            return self.update(Message::ToggleSplit);
-        }
-        if cmd && modifiers.shift() && character.as_deref() == Some("a") {
-            return self.update(Message::ToggleOverview);
-        }
-        // ⌘T: the session's shell, also from inside a terminal.
-        if cmd && character.as_deref() == Some("t") && self.mode == Mode::Normal {
-            return self.toggle_shell();
-        }
-        // ⌘K: the command palette, ⌘E: the composer, also from inside the terminal.
-        if cmd && character.as_deref() == Some("k") {
-            return self.open_palette();
-        }
-        // Only from the normal view: in the new-session dialog ⌘E opens the template in an editor.
-        if cmd && character.as_deref() == Some("e") && self.mode == Mode::Normal {
-            return self.open_composer();
-        }
         if self.mode == Mode::Composer {
             if cmd && named == Some(Named::Enter) {
                 return self.send_composer();
@@ -2899,14 +2911,6 @@ impl Brain {
             if let Some(task) = self.enter_picked_folder() {
                 return task;
             }
-        }
-        if cmd && matches!(character.as_deref(), Some("1") | Some("[")) {
-            self.focused_terminal = None;
-            self.focused_shell = None;
-            if self.mode == Mode::Search {
-                self.mode = Mode::Normal;
-            }
-            return unfocus();
         }
         // While the terminal has the keyboard, Brain's shortcuts are off: everything is Claude's.
         // A dialog on top (clean-up, new session) has the keys, though.
@@ -2961,18 +2965,8 @@ impl Brain {
             _ => {}
         }
 
-        if cmd && character.as_deref() == Some("f") {
-            return self.start_find();
-        }
         if cmd && modifiers.shift() && character.as_deref() == Some("c") {
             return self.act(Action::CopyAnswer);
-        }
-        if cmd && character.as_deref() == Some("n") {
-            return self.open_new_session_dialog();
-        }
-        if cmd && named == Some(Named::Backspace) {
-            self.trash_selected(false);
-            return Task::none();
         }
         if cmd || modifiers.control() {
             return Task::none();
@@ -3309,13 +3303,6 @@ impl Brain {
 
     fn start_rename(&mut self) -> Task<Message> {
         let Some(session) = self.selected_session() else { return Task::none() };
-        if !session.waits_for_input() {
-            self.set_status(t(
-                "Umbenennen geht nur, wenn die Session fertig ist und auf dich wartet.",
-                "Renaming works only while the session has finished and waits for you.",
-            ));
-            return Task::none();
-        }
         if !self.can_type_into_selected() {
             self.set_status(self.why_brain_cant_send());
             return Task::none();
@@ -3325,14 +3312,19 @@ impl Brain {
         Task::batch([operation::focus(RENAME), operation::select_all(RENAME)])
     }
 
+    /// `/rename` goes through the session's mod, which submits it once the session is idle: a
+    /// working session can be renamed too.
     fn submit_rename(&mut self) -> Task<Message> {
         self.mode = Mode::Normal;
         let name = self.rename.trim().to_string();
-        let mut typed = Task::none();
         if !name.is_empty() && !self.blocked_in_demo() {
-            typed = self.type_into_selected(&format!("/rename {name}"), tr!("„{name}“ an die Session geschickt.", "Sent “{name}” to the session."));
+            if let Some(key) = self.selected.clone() {
+                if self.send_text(&key, &format!("/rename {name}")) {
+                    self.set_status(tr!("„{name}“ an die Session geschickt.", "Sent “{name}” to the session."));
+                }
+            }
         }
-        Task::batch([typed, unfocus()])
+        unfocus()
     }
 
     /// Sends text, but only if the session still waits for input right now.
@@ -3415,11 +3407,7 @@ impl Brain {
             return;
         }
         let now = now_ms();
-        let tomorrow = (chrono::Local::now() + chrono::Duration::days(1))
-            .date_naive()
-            .and_hms_opt(9, 0, 0)
-            .and_then(|t| t.and_local_timezone(chrono::Local).single())
-            .map(|t| t.timestamp_millis());
+        let tomorrow = tomorrow_morning();
         let current = self.prefs.snoozed_until(&key, now);
         let quarter = now + 15 * 60 * 1000;
         let hour = now + 60 * 60 * 1000;
@@ -4331,6 +4319,15 @@ fn movable(session: &Session) -> bool {
         phase if session.agent.is_some() => phase != Phase::Working,
         _ => session.accepts_input(),
     }
+}
+
+/// Tomorrow at 9:00, local time (epoch ms).
+fn tomorrow_morning() -> Option<i64> {
+    (chrono::Local::now() + chrono::Duration::days(1))
+        .date_naive()
+        .and_hms_opt(9, 0, 0)
+        .and_then(|t| t.and_local_timezone(chrono::Local).single())
+        .map(|t| t.timestamp_millis())
 }
 
 /// Takes the keyboard focus away from every text field.

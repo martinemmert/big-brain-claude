@@ -39,24 +39,25 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::NewSession => new_session(brain),
         _ => detail(brain),
     };
-    let left = column![search(brain), tree(brain, &groups, now)];
-    let width = brain.prefs.sidebar_width.unwrap_or(app::SIDEBAR_DEFAULT);
-    let edge = if brain.dragging_sidebar { WORKING } else { LINE };
-    // A 7 pt grab area around the 1 pt divider line.
-    let grip = mouse_area(
-        container(container(Space::new().width(1).height(Fill)).style(move |_| style::fill(edge))).width(7).height(Fill).center_x(7),
-    )
-    .on_press(Message::SidebarDrag)
-    .interaction(iced::mouse::Interaction::ResizingHorizontally);
-    // The pointer is followed over the list only (that's where context menus open); the list
-    // starts below the title bar and its divider.
-    let left = mouse_area(container(left).width(Length::Fixed(width - 3.0)).height(Fill).style(|_| style::fill(CHROME)))
-        .on_move(|p| Message::Pointer(iced::Point::new(p.x, p.y + crate::chrome::TITLEBAR_HEIGHT + 1.0)));
-    let body = row![
-        left,
-        grip,
-        container(detail).width(Fill).height(Fill).style(|_| style::fill(INK)),
-    ];
+    let detail = container(detail).width(Fill).height(Fill).style(|_| style::fill(INK));
+    let body = if brain.prefs.hide_sidebar {
+        row![detail]
+    } else {
+        let left = column![search(brain), tree(brain, &groups, now)];
+        let width = brain.prefs.sidebar_width.unwrap_or(app::SIDEBAR_DEFAULT);
+        let edge = if brain.dragging_sidebar { WORKING } else { LINE };
+        // A 7 pt grab area around the 1 pt divider line.
+        let grip = mouse_area(
+            container(container(Space::new().width(1).height(Fill)).style(move |_| style::fill(edge))).width(7).height(Fill).center_x(7),
+        )
+        .on_press(Message::SidebarDrag)
+        .interaction(iced::mouse::Interaction::ResizingHorizontally);
+        // The pointer is followed over the list only (that's where context menus open); the list
+        // starts below the title bar and its divider.
+        let left = mouse_area(container(left).width(Length::Fixed(width - 3.0)).height(Fill).style(|_| style::fill(CHROME)))
+            .on_move(|p| Message::Pointer(iced::Point::new(p.x, p.y + crate::chrome::TITLEBAR_HEIGHT + 1.0)));
+        row![left, grip, detail]
+    };
     let window = container(column![titlebar(brain, groups.deciding()), divider(), body.height(Fill), divider(), status_line_bar(brain, &groups, now)])
         .width(Fill)
         .height(Fill)
@@ -442,7 +443,7 @@ fn field_style(_: &iced::Theme, status: text_input::Status) -> text_input::Style
 
 /// The tree: the projects as headings, their sessions below, the others at the end.
 fn tree<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Message> {
-    let searching = !brain.search.is_empty();
+    let searching = brain.searching();
     let tree = brain.tree(groups);
     let items: Vec<Element<'a, Message>> = tree
         .nodes(searching, brain.tree_changes())
