@@ -94,8 +94,6 @@ pub enum PaletteCommand {
     Find,
     Cleanup,
     Later,
-    /// The selected session goes on as an agent team (true) or without one.
-    Team(bool),
     ToggleEnded,
     ToggleBackground,
     /// Show or hide sessions programs started (SDK reviews, `claude -p`).
@@ -151,9 +149,6 @@ pub enum DetailTab {
     Files,
     /// Claude's questions and the answers given.
     Questions,
-    /// The session's agents (an agent team, subagents), their messages and questions to the
-    /// person, and the team's guide (shown once the session has agents).
-    Team,
     /// The councils of the konsil skill (shown once the session has one).
     Konsil,
     /// A real terminal running the session inside Brain (`claude attach` / `claude --resume`).
@@ -268,8 +263,6 @@ pub enum Message {
     NewPick(usize),
     /// A click on a task for later picks it.
     LaterPick(usize),
-    /// Answer a team member's question to the person (its name).
-    TeamAnswer(String),
     Filter(Option<String>),
     ToggleBackground,
     ToggleAutomated,
@@ -349,8 +342,6 @@ pub enum Message {
     /// A background session restarted with new flags goes on as Claude Code's copy under a new
     /// id: the original, then the copy's account and short id, or why not.
     Replaced(SessionKey, String, Result<String, String>),
-    /// An agent team started in tmux (its tmux session), or why not.
-    TeamStarted(Result<String, String>),
     /// A Markdown file was handed to YAMV (`true`), or to the text editor because YAMV is missing.
     MarkdownOpened(String, bool),
     MousePressed,
@@ -395,8 +386,6 @@ pub enum Message {
     NewPlace(bool),
     /// The new session's output style; none keeps the account's.
     NewStyle(Option<String>),
-    /// The new session as an agent team or not.
-    NewTeam(bool),
     /// The new-account dialog: the name typed, its preview, create, and the outcome.
     AccountSetupName(String),
     AccountSetupPlanned(u64, brain_core::account_setup::Plan),
@@ -478,8 +467,6 @@ pub struct NewSession {
     pub in_iterm: bool,
     /// ⇧⇥: the output style it starts with; none keeps what the account's settings say.
     pub style: Option<String>,
-    /// ⌘T: as an agent team, led by the configured agent (`claude-team`).
-    pub team: bool,
 }
 
 pub struct Chosen {
@@ -736,22 +723,6 @@ pub struct Brain {
     pub show_hidden_projects: bool,
     /// The clean-up dialog's age choice (index into CLEANUP_DAYS).
     pub cleanup_age: usize,
-    /// Each session's agents and their messages, as its mod reported them, and when each
-    /// session's file was read.
-    pub teams: HashMap<SessionKey, brain_core::teams::Team>,
-    /// The tmux panes of agent teams Brain started (Claude's pid → tmux session), read every
-    /// few seconds, and when.
-    team_panes: HashMap<u32, String>,
-    team_panes_read: Option<Instant>,
-    teams_read: HashMap<String, std::time::SystemTime>,
-    /// The team guide while the Team tab shows.
-    pub team_guide: Option<String>,
-    /// What each of the selected session's agents used, while the Team tab shows.
-    pub team_usage: Vec<brain_core::teams::MemberUsage>,
-    /// The state of the selected session's task as its team's lead wrote it, while the Team tab
-    /// shows, and for which session and when it was read.
-    pub team_state: Option<String>,
-    team_state_read: Option<(SessionKey, Instant)>,
     /// The tasks for later while their dialog is open, and the picked one.
     pub later: Vec<brain_core::later::Item>,
     pub later_pick: usize,
@@ -961,14 +932,6 @@ impl Brain {
             show_snoozed: false,
             show_hidden_projects: false,
             cleanup_age: 1,
-            teams: HashMap::new(),
-            team_panes: HashMap::new(),
-            team_panes_read: None,
-            teams_read: HashMap::new(),
-            team_guide: None,
-            team_usage: Vec::new(),
-            team_state: None,
-            team_state_read: None,
             later: Vec::new(),
             later_pick: 0,
             status: None,
@@ -1219,7 +1182,6 @@ impl Brain {
                 self.later_pick = index;
                 Task::none()
             }
-            Message::TeamAnswer(from) => self.answer_team_question(&from),
             Message::Filter(filter) => {
                 self.filter = filter;
                 Task::none()
@@ -1565,17 +1527,6 @@ impl Brain {
                 }
                 self.update(Message::Started(account, result))
             }
-            Message::TeamStarted(result) => {
-                match result {
-                    Ok(tmux) => {
-                        self.team_panes_read = None;
-                        self.model.relist_transcripts();
-                        self.set_status(tr!("Team läuft in tmux ({tmux}) – es erscheint gleich.", "The team runs in tmux ({tmux}) – it shows up in a moment."));
-                    }
-                    Err(why) => self.set_status(tr!("Konnte das Team nicht starten: {why}", "Couldn't start the team: {why}")),
-                }
-                Task::none()
-            }
             Message::MousePressed => {
                 // Clicks move the keyboard in or out of a terminal; ask each shown one.
                 let mut asks: Vec<Task<Message>> = self
@@ -1793,10 +1744,6 @@ impl Brain {
                 self.new_session.style = style;
                 Task::none()
             }
-            Message::NewTeam(team) => {
-                self.new_session.team = team;
-                Task::none()
-            }
             Message::NewPlace(in_iterm) => {
                 self.new_session.in_iterm = in_iterm;
                 Task::none()
@@ -1849,8 +1796,7 @@ impl Brain {
             self.notifier.post(&key, &session.display_name(), &subtitle, &body, true);
         }
         // Only what asks the person directly notifies: a question, a permission, a `--waiting`
-        // question of an idle session. A turn that just ended, or a team member's question (the
-        // lead asks the person itself), shows in the list.
+        // question of an idle session. A turn that just ended shows in the list.
         for item in refreshed {
             if self.prefs.snoozed_until(&item.key, now).is_some() || self.prefs.is_muted(&item.key) || self.is_quiet(&item.key) || self.real_ask(&item.key).is_none() {
                 continue;
@@ -1876,7 +1822,6 @@ impl Brain {
                 notify::Response::Reply(key, text) => tasks.push(self.reply_from_notification(key, text)),
             }
         }
-        self.refresh_teams();
         tasks.push(self.serve_link(now));
         self.refresh_sync_conflicts();
         self.garden_count = self.garden_findings().iter().filter(|f| f.sure).count();
@@ -2007,42 +1952,6 @@ impl Brain {
         Task::none()
     }
 
-    /// Reads the teams the sessions' mods reported, only files that changed. Their questions to
-    /// the person show in the Team tab; they don't notify (the lead asks the person itself).
-    fn refresh_teams(&mut self) {
-        if self.team_panes_read.is_none_or(|at| at.elapsed() > Duration::from_secs(5)) {
-            self.team_panes = brain_core::agents::team_panes();
-            self.team_panes_read = Some(Instant::now());
-        }
-        let home = brain_core::account::home_dir();
-        let by_id: HashMap<String, SessionKey> = self.model.board.keys().map(|k| (k.id.clone(), k.clone())).collect();
-        for entry in std::fs::read_dir(home.join(".claude-brain/teams")).into_iter().flatten().flatten() {
-            let path = entry.path();
-            let Some(id) = path.file_stem().and_then(|s| s.to_str()).filter(|_| path.extension().is_some_and(|e| e == "json")) else { continue };
-            let Some(key) = by_id.get(id) else { continue };
-            let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else { continue };
-            if self.teams_read.get(id) == Some(&modified) {
-                continue;
-            }
-            if let Some(team) = brain_core::teams::load(&home, id) {
-                self.teams.insert(key.clone(), team);
-                self.teams_read.insert(id.to_string(), modified);
-            }
-        }
-        self.teams.retain(|k, _| by_id.contains_key(&k.id));
-        if self.tab == DetailTab::Team {
-            self.team_guide = std::fs::read_to_string(config::team_guide()).ok();
-            self.team_usage = self.selected.as_ref().and_then(|k| self.model.transcript_path(k)).map(|t| brain_core::teams::usage(&t)).unwrap_or_default();
-            // Finding the state file asks for the branch: every few seconds, not on every tick.
-            let fresh = self.team_state_read.as_ref().is_some_and(|(k, at)| Some(k) == self.selected.as_ref() && at.elapsed() < Duration::from_secs(3));
-            if let (false, Some(key)) = (fresh, self.selected.clone()) {
-                let cwd = self.model.board.get(&key).and_then(|s| s.cwd.clone());
-                self.team_state = cwd.and_then(|c| brain_core::teams::state_file(&config::team_state_dir(), std::path::Path::new(&c))).and_then(|f| std::fs::read_to_string(f).ok());
-                self.team_state_read = Some((key, Instant::now()));
-            }
-        }
-    }
-
     /// Reminds again about sessions that still ask for a decision: every `remind_after_minutes`,
     /// at most three times per waiting period, never for muted or snoozed ones, and never for a
     /// guess at a question or a report.
@@ -2079,22 +1988,6 @@ impl Brain {
             let body = plain(headline.as_deref().unwrap_or(""));
             self.notifier.post(&key, &name, &subtitle, &body, true);
         }
-    }
-
-    /// Whether the selected session has agents or team messages, so the Team tab shows.
-    pub fn has_team(&self) -> bool {
-        self.selected.as_ref().is_some_and(|k| self.in_team(k) || self.teams.get(k).is_some_and(|t| !t.members.is_empty() || !t.messages.is_empty()))
-    }
-
-    /// "Answer" on a question to the person in the Team tab: the reply field, addressed to the
-    /// member who asked; the lead (the session itself) passes it on.
-    fn answer_team_question(&mut self, from: &str) -> Task<Message> {
-        let task = self.start_reply();
-        if self.mode != Mode::Reply {
-            return task;
-        }
-        self.reply = tr!("Antwort an {from}: ", "Answer to {from}: ");
-        Task::batch([task, operation::move_cursor_to_end(REPLY)])
     }
 
     /// Live sessions with a folder, for the background PR lookup.
@@ -2368,11 +2261,6 @@ impl Brain {
             }
             all.push((t("In ein anderes Konto oder forken …", "Into another account or fork …").to_string(), "A", PaletteCommand::Act(Action::Relaunch)));
             all.push((t("Neu starten mit … (z. B. --chrome)", "Restart with … (e.g. --chrome)").to_string(), "", PaletteCommand::Act(Action::RestartWith)));
-            if self.in_team(&session.key) {
-                all.push((t("Ohne Team fortsetzen", "Go on without the team").to_string(), "", PaletteCommand::Team(false)));
-            } else {
-                all.push((t("Als Agenten-Team fortsetzen", "Go on as an agent team").to_string(), "", PaletteCommand::Team(true)));
-            }
             all.push((t("Beenden / Hintergrund-Session stoppen", "End / stop the background session").to_string(), "X", PaletteCommand::Act(Action::End)));
             all.push((t("Ausblenden", "Hide").to_string(), "⌫", PaletteCommand::Act(Action::Hide)));
             all.push((t("In den Papierkorb", "Move to Trash").to_string(), "⌘⌫", PaletteCommand::Act(Action::Trash)));
@@ -2476,19 +2364,6 @@ impl Brain {
                 self.open_later();
                 Task::none()
             }
-            PaletteCommand::Team(on) => {
-                let Some(key) = self.selected.clone() else { return Task::none() };
-                if self.blocked_in_demo() {
-                    return Task::none();
-                }
-                match self.switch_team(key, on) {
-                    Ok(task) => task,
-                    Err(err) => {
-                        self.set_status(err);
-                        Task::none()
-                    }
-                }
-            }
             PaletteCommand::SetUpAccount => self.open_account_setup(),
             PaletteCommand::SyncAccounts => self.open_sync(),
             PaletteCommand::Garden => self.open_garden(),
@@ -2585,31 +2460,16 @@ impl Brain {
         }
         if let Some(waking) = self.waking.get_mut(key) {
             waking.texts.push(text.to_string());
-            self.answered_through_lead(key, text);
             return true;
         }
         if let Some(id) = self.request_taker(key) {
-            let sent = self.send_request(&id, brain_core::requests::Request::Prompt { text: text.to_string() });
-            if sent {
-                self.answered_through_lead(key, text);
-            }
-            return sent;
+            return self.send_request(&id, brain_core::requests::Request::Prompt { text: text.to_string() });
         }
         if self.wake(key, text) {
-            self.answered_through_lead(key, text);
             return true;
         }
         self.refuse(self.why_brain_cant_send());
         false
-    }
-
-    /// "Antwort an <member>: …" from Brain or the phone answers that member's open questions to
-    /// the person, whether or not the lead passes it on in a way its mod sees.
-    fn answered_through_lead(&mut self, key: &SessionKey, text: &str) {
-        let Some(asker) = brain_core::teams::answered_asker(text) else { return };
-        if let Err(err) = brain_core::teams::mark_answered(&brain_core::account::home_dir(), &key.id, asker) {
-            brain_core::log::write(&brain_core::account::home_dir(), "team", &format!("{asker}: answer not marked – {err}"));
-        }
     }
 
     /// Wakes an asleep session (`claude respawn`, off the UI thread), with `text` waiting for it.
@@ -2820,10 +2680,6 @@ impl Brain {
         if let Some(agent) = &session.agent {
             return Some(("claude", vec!["attach".into(), agent.id.clone()], cwd));
         }
-        // An agent team Brain started runs in tmux: its terminal joins that.
-        if let Some(tmux) = self.team_panes.get(&session.pid).filter(|_| session.phase() != Phase::Ended) {
-            return Some(("tmux", vec!["attach".into(), "-t".into(), tmux.clone()], cwd));
-        }
         if session.phase() == Phase::Ended {
             // A restart's flags come after the resume.
             let mut args = vec!["--resume".into(), self.conversation_id(session)?];
@@ -2837,7 +2693,7 @@ impl Brain {
     fn selection_state(&self) -> Option<(SessionKey, bool)> {
         let attachable = self
             .selected_session()
-            .is_some_and(|s| s.agent.as_ref().is_some_and(|a| !matches!(a.state.as_str(), "failed" | "stopped")) || (self.team_panes.contains_key(&s.pid) && s.phase() != Phase::Ended));
+            .is_some_and(|s| s.agent.as_ref().is_some_and(|a| !matches!(a.state.as_str(), "failed" | "stopped")) );
         self.selected.clone().map(|k| (k, attachable))
     }
 
@@ -3608,9 +3464,8 @@ impl Brain {
             Some(Named::ArrowRight) => {
                 self.tab = match self.tab {
                     DetailTab::Messages | DetailTab::Timeline | DetailTab::Questions => DetailTab::Files,
-                    DetailTab::Files | DetailTab::Changes if self.has_team() => DetailTab::Team,
-                    DetailTab::Files | DetailTab::Changes | DetailTab::Team if self.has_konsil() => DetailTab::Konsil,
-                    DetailTab::Files | DetailTab::Changes | DetailTab::Team | DetailTab::Konsil => DetailTab::Terminal,
+                    DetailTab::Files | DetailTab::Changes if self.has_konsil() => DetailTab::Konsil,
+                    DetailTab::Files | DetailTab::Changes | DetailTab::Konsil => DetailTab::Terminal,
                     DetailTab::Terminal => DetailTab::Messages,
                 };
                 return Task::batch([self.load_changes(), self.load_files()]);
@@ -3619,11 +3474,8 @@ impl Brain {
                 self.tab = match self.tab {
                     DetailTab::Messages | DetailTab::Timeline | DetailTab::Questions => DetailTab::Terminal,
                     DetailTab::Files | DetailTab::Changes => DetailTab::Messages,
-                    DetailTab::Team => DetailTab::Files,
-                    DetailTab::Konsil if self.has_team() => DetailTab::Team,
                     DetailTab::Konsil => DetailTab::Files,
                     DetailTab::Terminal if self.has_konsil() => DetailTab::Konsil,
-                    DetailTab::Terminal if self.has_team() => DetailTab::Team,
                     DetailTab::Terminal => DetailTab::Files,
                 };
                 return Task::batch([self.load_changes(), self.load_files()]);
@@ -4615,10 +4467,6 @@ impl Brain {
             self.new_session.in_iterm = !self.new_session.in_iterm;
             return Task::none();
         }
-        if cmd && character == Some("t") {
-            self.new_session.team = !self.new_session.team;
-            return Task::none();
-        }
         if cmd && shift && character == Some("n") {
             let dir = brain_core::templates::templates_dir(&brain_core::account::home_dir());
             let prompt = t(
@@ -4753,7 +4601,6 @@ impl Brain {
         let name = chosen.map(|c| c.template.name.clone());
         let in_iterm = self.new_session.in_iterm;
         let style = self.new_session.style.clone();
-        let team = self.new_session.team.then(config::team_start);
         self.mode = Mode::Normal;
         let Some(account) = self.model.accounts.get(self.new_session.account).cloned() else { return unfocus() };
         if self.blocked_in_demo() {
@@ -4761,12 +4608,6 @@ impl Brain {
         }
         if in_iterm {
             let mut command = String::from("claude");
-            if let Some(team) = &team {
-                command = format!("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 ENABLE_STOP_REVIEW=0 claude --agent {}", shell_quote(&team.lead));
-                if let Some(dir) = &team.plugin_dir {
-                    command.push_str(&format!(" --plugin-dir {}", shell_quote(&dir.display().to_string())));
-                }
-            }
             if let Some(model) = &model {
                 command.push_str(&format!(" --model {}", shell_quote(model)));
             }
@@ -4781,13 +4622,7 @@ impl Brain {
             self.report(outcome, Some(t("Neue Session in iTerm gestartet.", "Started a new session in iTerm.").into()));
             return unfocus();
         }
-        let options = brain_core::agents::Start { model, name, style, prompt, team, resume: None };
-        // A team needs an interactive session: in tmux, which Brain's terminal joins.
-        if options.team.is_some() {
-            self.set_status(t("Starte das Team in tmux …", "Starting the team in tmux …"));
-            let started = off_thread(move || brain_core::agents::start_team(&account, std::path::Path::new(&folder), &options));
-            return Task::batch([unfocus(), Task::perform(started, Message::TeamStarted)]);
-        }
+        let options = brain_core::agents::Start { model, name, style, prompt, resume: None };
         self.set_status(t("Starte die Session in Brain …", "Starting the session in Brain …"));
         let id = account.id.clone();
         let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), &options));

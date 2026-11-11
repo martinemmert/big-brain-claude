@@ -102,21 +102,9 @@ Die Tabs (`←` `→`):
   in Brains Terminal weiter, auch wenn Brain beendet wird.
 - **Antwort-Profil wechseln:** `⌘K` → „Antwort-Profil von …“ tippt `/output-style <Name>` in die
   Session; es gilt ab der nächsten Nachricht.
-- **Agenten-Team:** `⌘T` im Neue-Session-Dialog startet die Session als Team wie `claude-team`
-  (Agent `team_agent`, Standard `dirigent`; Plugin-Ordner `team_plugin_dir`, Standard
-  `~/.claude-mods/team-chat`). Ein Team braucht eine interaktive Session: Brain startet es in einer
-  unsichtbaren tmux-Session (`brain-team-…`), sein Terminal-Tab hängt sich daran, und es läuft weiter,
-  wenn Brain beendet wird. Startest du eine Session oder ein Team vom Handy in einem Ordner, dem das
-  Konto noch nicht vertraut, stellt das Handy Claudes Frage „Vertraust du diesem Ordner?“; erst nach
-  „Vertrauen und starten“ trägt Brain ihn ein und startet (sonst startet Claude im Hintergrund gar
-  nicht, und in tmux sähe die Frage niemand). `⌘K` → „Als Agenten-Team fortsetzen“ / „Ohne Team fortsetzen“ schaltet eine
-  laufende Session um (sie startet dafür neu, das Gespräch bleibt). Hat eine Session Agenten, zeigt der Tab **Team** ihre Fragen an dich
-  („Frage an Martin: …“, ohne Mitteilung, der Lead fragt dich selbst; „Antworten“ schreibt dem Lead, der gibt es weiter), wer
-  arbeitet und wer wartet, was jeder verbraucht hat (Tokens rein/raus, aus den Transkripten der
-  Mitglieder), den Stand der Aufgabe (die Datei des Leads unter `team_state_dir`, Standard
-  `~/.claude-mods/team-state/<repo>/<branch>.md`), ihre Nachrichten mit Typ (`[BLOCKER]`, `[EINWAND]`
-  rot) und die Anleitung (`team_guide`, Standard
-  `~/.claude-mods/agenten-team-anleitung.md`).
+- **Vom Handy in einem neuen Ordner starten:** Trägt das Konto den Ordner noch nicht als vertraut ein,
+  stellt das Handy Claudes Frage „Vertraust du diesem Ordner?“; erst nach „Vertrauen und starten“
+  trägt Brain ihn ein und startet (sonst startet Claude im Hintergrund gar nicht).
 - **Öffnen:** `⏎` oder Doppelklick. Läuft die Session in Brain, öffnet sie sich hier; eine beendete
   wird hier fortgesetzt. `⌥⏎` öffnet sie stattdessen in iTerm.
 - **Aus iTerm holen:** `I` holt eine Session aus ihrem iTerm-Tab nach Brain, ohne dass das
@@ -156,8 +144,8 @@ Die Tabs (`←` `→`):
 - **Befehlspalette:** `⌘K`. Alle Aktionen; Slash-Befehle wie `/compact`, `/context`, `/model`
   für die Session. Freier Text geht an die Session oder an alle, die auf dich warten.
 - **Benachrichtigungen:** Nur wenn eine Session dich direkt fragt (eine Frage, eine Freigabe oder
-  ein `brain report --waiting`). Eine fertige Runde („du bist dran“) und Fragen von Team-Mitgliedern
-  stehen nur in der Liste. Auf dem iPhone gilt dasselbe. Wartet eine Session weiter auf eine Entscheidung, erinnert Brain nach
+  ein `brain report --waiting`). Eine fertige Runde („du bist dran“)
+  steht nur in der Liste. Auf dem iPhone gilt dasselbe. Wartet eine Session weiter auf eine Entscheidung, erinnert Brain nach
   `remind_after_minutes` (Standard 10, 0 schaltet aus), höchstens dreimal; nie bei „Frage?“
   und nie bei Berichten. Direkt in der Mitteilung kannst du
   antworten (nur am entsperrten Mac), öffnen oder 15 Minuten pausieren.

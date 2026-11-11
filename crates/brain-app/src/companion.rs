@@ -86,15 +86,6 @@ pub struct View {
     pub question: Option<brain_core::qa::OpenQuestion>,
     /// Brain can deliver a reply (its terminal, an iTerm tab, or a background session).
     pub can_reply: bool,
-    /// Questions of the session's team members to the person, not answered yet; the phone
-    /// answers with a reply "Antwort an <from>: …", which the lead passes on.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub team_questions: Vec<brain_core::teams::TeamMessage>,
-    /// How many of its agents still work or wait (none: no agents).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub team_active: Option<usize>,
-    /// It runs as an agent team Brain started (in tmux): the phone offers to go on without.
-    pub in_team: bool,
     /// It can move to another account now (as `A` in Brain): ended, or not in the middle of a turn.
     pub movable: bool,
 }
@@ -109,7 +100,7 @@ pub enum Command {
     /// A new background session in one of the offered folders, with an optional first prompt and
     /// output style.
     /// `trust`: the person answered yes to Claude's question whether it trusts the folder.
-    Start { account: String, folder: String, prompt: Option<String>, style: Option<String>, team: bool, trust: bool },
+    Start { account: String, folder: String, prompt: Option<String>, style: Option<String>, trust: bool },
     /// `since_ms`: when the dialog the user answered opened ([`View::permission_since_ms`]).
     Permission { key: SessionKey, allow: bool, since_ms: i64 },
     /// Continue the session in another account, as `A` in Brain.
@@ -124,8 +115,6 @@ pub enum Command {
     Restart { key: SessionKey, flags: Vec<String> },
     /// A background session stops (its conversation stays), any other gets `/exit`.
     End { key: SessionKey },
-    /// The session goes on as an agent team (true) or without one: a restart, as with flags.
-    Team { key: SessionKey, on: bool },
 }
 
 /// What became of a command, as Brain said it in its status line: `ok` false when Brain
@@ -165,7 +154,7 @@ pub struct Picked {
 }
 
 /// What this Brain Link offers beyond the first version, for the phone to show only what works.
-const FEATURES: [&str; 18] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands", "team", "move", "outcome", "projects", "regroup", "trust", "remote"];
+const FEATURES: [&str; 17] = ["files", "attachments", "wait", "control", "answers", "history", "folders", "rename", "end", "styles", "commands", "move", "outcome", "projects", "regroup", "trust", "remote"];
 /// How long a read with `wait` waits for something new before it answers anyway.
 const WAIT: Duration = Duration::from_secs(25);
 /// How often a waiting read looks again.
@@ -250,7 +239,6 @@ impl Link {
             version: AtomicU64::new(1),
             usage: RwLock::new(Vec::new()),
             places: RwLock::new(Places::default()),
-            folders: RwLock::new(Default::default()),
             commands: Mutex::new(sender),
             remote_since: AtomicI64::new(0),
         });
@@ -283,13 +271,6 @@ impl Link {
         }
         if let Ok(mut current) = self.state.places.write() {
             *current = places;
-        }
-    }
-
-    /// Each session's folder by its id: where its team's state file is looked for.
-    pub fn publish_folders(&self, folders: std::collections::HashMap<String, PathBuf>) {
-        if let Ok(mut current) = self.state.folders.write() {
-            *current = folders;
         }
     }
 
@@ -591,8 +572,6 @@ struct State {
     version: AtomicU64,
     usage: RwLock<Vec<UsageView>>,
     places: RwLock<Places>,
-    /// Each session's folder by its id, for the team's state file.
-    folders: RwLock<std::collections::HashMap<String, PathBuf>>,
     commands: Mutex<Sender<(Command, Responder)>>,
     /// When the phone turned Tailscale on (epoch ms), 0 while it's off or not Brain's doing.
     remote_since: AtomicI64,
@@ -718,10 +697,8 @@ async fn handle(req: Request<Incoming>, state: Arc<State>, peer: std::net::IpAdd
             let prompt = field("prompt").filter(|p| !p.trim().is_empty());
             // Brain checks the style against the account's when it starts the session.
             let style = field("output_style").filter(|s| !s.trim().is_empty());
-            // As an agent team (`claude-team`), led by the configured agent.
-            let team = body.get("team").and_then(|t| t.as_bool()).unwrap_or(false);
             let trust = body.get("trust").and_then(|t| t.as_bool()).unwrap_or(false);
-            send_command(&state, Command::Start { account, folder, prompt, style, team, trust }).await
+            send_command(&state, Command::Start { account, folder, prompt, style, trust }).await
         }
         // `wait=<version>`: answers once the transcript changed (its size is the version).
         (Method::GET, ["v1", "sessions", account, id, "messages"]) => {
@@ -787,7 +764,6 @@ async fn handle(req: Request<Incoming>, state: Arc<State>, peer: std::net::IpAdd
                     Some(account) => Command::Move { account: account.to_string(), key },
                     None => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "account" }))),
                 },
-                Some("team") => Command::Team { key, on: body.get("on").and_then(|o| o.as_bool()).unwrap_or(true) },
                 // A project's name, as for a session's; none puts it back into its own.
                 Some("project") => Command::Project { key, project: body.get("name").and_then(|n| n.as_str()).and_then(session_name) },
                 Some("style") => match body.get("name").and_then(|n| n.as_str()).and_then(session_name) {
@@ -803,20 +779,6 @@ async fn handle(req: Request<Incoming>, state: Arc<State>, peer: std::net::IpAdd
                 _ => return Ok(reply(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": "action" }))),
             };
             send_command(&state, command).await
-        }
-        // The session's agents and their messages, as its mod reported them.
-        (Method::GET, ["v1", "sessions", account, id, "team"]) => {
-            let Some(key) = session_key(&state, account, id) else { return Ok(not_found()) };
-            off_thread(state.clone(), move |state| {
-                let team = brain_core::teams::load(&home_dir(), &key.id).unwrap_or_default();
-                // Tokens per agent, from their transcripts beside the session's.
-                let usage = transcript_of(state, &key).map(|t| brain_core::teams::usage(&t)).unwrap_or_default();
-                // The task's state as the team's lead wrote it (Markdown), when there is one.
-                let folder = state.folders.read().ok().and_then(|f| f.get(&key.id).cloned());
-                let task = folder.and_then(|f| brain_core::teams::state_file(&crate::config::team_state_dir(), &f)).and_then(|f| std::fs::read_to_string(f).ok());
-                reply(StatusCode::OK, &serde_json::json!({ "members": team.members, "messages": team.messages, "usage": usage, "state": task }))
-            })
-            .await
         }
         // What `/…` completes to (as the session's mod reported it) and the styles it can switch to.
         (Method::GET, ["v1", "sessions", account, id, "commands"]) => {
@@ -1374,9 +1336,6 @@ mod tests {
             permission_since_ms: None,
             question: None,
             can_reply: true,
-            team_questions: Vec::new(),
-            team_active: None,
-            in_team: false,
             movable: true,
         }]);
         let token = std::fs::read_to_string(dir.join("token")).unwrap();
@@ -1419,7 +1378,7 @@ mod tests {
         assert!(curl(&["-H", &bearer, "-d", "{\"account\":\"main\",\"folder\":\"/w/fin\",\"prompt\":\"los\"}", "BASE/v1/sessions"]).ends_with("202"));
         // Steering: interrupt, compact and rename (typed as the session's commands), resume, restart with flags, end.
         let control = |body: &str| curl(&["-H", &bearer, "-d", body, "BASE/v1/sessions/main/0331-ab/control"]);
-        for body in ["{\"action\":\"interrupt\"}", "{\"action\":\"compact\"}", "{\"action\":\"resume\"}", "{\"action\":\"restart\",\"flags\":\"--model opus\"}", "{\"action\":\"rename\",\"name\":\"Neue\\nAusgabe\"}", "{\"action\":\"end\"}", "{\"action\":\"style\",\"name\":\"Concise\"}", "{\"action\":\"team\",\"on\":true}", "{\"action\":\"move\",\"account\":\"second\"}"] {
+        for body in ["{\"action\":\"interrupt\"}", "{\"action\":\"compact\"}", "{\"action\":\"resume\"}", "{\"action\":\"restart\",\"flags\":\"--model opus\"}", "{\"action\":\"rename\",\"name\":\"Neue\\nAusgabe\"}", "{\"action\":\"end\"}", "{\"action\":\"style\",\"name\":\"Concise\"}", "{\"action\":\"move\",\"account\":\"second\"}"] {
             assert!(control(body).ends_with("202"), "{body}");
         }
         // Brain's own flags and unknown actions are refused.
@@ -1451,7 +1410,7 @@ mod tests {
                     call: "toolu_2".into(),
                     answers: vec![Picked { picks: vec![0, 2], other: None }, Picked { picks: vec![], other: Some("lieber so".into()) }],
                 },
-                Command::Start { account: "main".into(), folder: "/w/fin".into(), prompt: Some("los".into()), style: None, team: false, trust: false },
+                Command::Start { account: "main".into(), folder: "/w/fin".into(), prompt: Some("los".into()), style: None, trust: false },
                 Command::Interrupt { key: key.clone() },
                 Command::Reply { key: key.clone(), text: "/compact".into() },
                 Command::Resume { key: key.clone() },
@@ -1459,7 +1418,6 @@ mod tests {
                 Command::Reply { key: key.clone(), text: "/rename Neue Ausgabe".into() },
                 Command::End { key: key.clone() },
                 Command::Reply { key: key.clone(), text: "/output-style Concise".into() },
-                Command::Team { key: key.clone(), on: true },
                 Command::Move { key, account: "second".into() },
             ]
         );
@@ -1725,9 +1683,6 @@ mod tests {
             permission_since_ms: (phase == "needs_you").then_some(now - minutes * 60_000),
             question: None,
             can_reply: phase != "ended",
-            team_questions: Vec::new(),
-            team_active: None,
-            in_team: false,
             movable: true,
         };
         link.publish(vec![

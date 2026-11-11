@@ -113,84 +113,20 @@ pub struct Start {
     /// Its output style (`--settings {"outputStyle": …}`).
     pub style: Option<String>,
     pub prompt: Option<String>,
-    /// As an agent team, led by this agent.
-    pub team: Option<TeamStart>,
     /// The conversation it continues (`--resume <session id>`).
     pub resume: Option<String>,
 }
 
-/// An agent team (experimental in Claude Code): the lead agent and a plugin folder to load with
-/// it (a team chat), as `claude --agent <lead>` with agent teams turned on.
-#[derive(Debug, Clone)]
-pub struct TeamStart {
-    pub lead: String,
-    pub plugin_dir: Option<std::path::PathBuf>,
-}
-
 /// Starts a background session in `cwd` (`claude --bg`); returns its short id, or what `claude`
-/// said (e.g. an untrusted folder). An agent team needs an interactive session: see
-/// [`start_team`].
+/// said (e.g. an untrusted folder).
 pub fn start(account: &Account, cwd: &Path, options: &Start) -> Result<String, String> {
     let mut args: Vec<String> = vec!["--bg".into()];
     args.extend(start_args(options));
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let mut command = claude(account, &args);
-    if options.team.is_some() {
-        command.envs(TEAM_ENV);
-    }
-    started(command.current_dir(cwd))
+    started(claude(account, &args).current_dir(cwd))
 }
 
-/// What `claude-team` sets: agent teams on, the security plugin's stop review off.
-const TEAM_ENV: [(&str, &str); 2] = [("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1"), ("ENABLE_STOP_REVIEW", "0")];
-
-/// tmux sessions Brain starts an agent team in are named `brain-team-<when>`.
-pub const TEAM_TMUX_PREFIX: &str = "brain-team-";
-
-/// Starts an agent team: Claude Code makes teammates only in an interactive session, so it
-/// runs in a detached tmux session (`brain-team-…`), Claude itself as the pane's program, and
-/// goes on when Brain quits. Returns the tmux session's name.
-pub fn start_team(account: &Account, cwd: &Path, options: &Start) -> Result<String, String> {
-    let name = format!("{TEAM_TMUX_PREFIX}{}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
-    let mut command = Command::new("tmux");
-    command.args(["new-session", "-d", "-s", &name, "-x", "200", "-y", "50", "-c"]).arg(cwd);
-    if account.id != "main" {
-        command.arg("-e").arg(format!("CLAUDE_CONFIG_DIR={}", account.config_dir.display()));
-    }
-    for (key, value) in TEAM_ENV {
-        command.arg("-e").arg(format!("{key}={value}"));
-    }
-    // Several arguments: tmux runs them as they are, no shell in between.
-    command.arg("claude").args(start_args(options));
-    let out = command.output().map_err(|e| e.to_string())?;
-    if out.status.success() {
-        // The largest client sizes the window: Brain's terminal joins it hidden too (for a reply
-        // from the phone), and a hidden one is tiny.
-        let _ = Command::new("tmux").args(["set-window-option", "-t", &name, "window-size", "largest"]).output();
-        Ok(name)
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-    }
-}
-
-/// The panes of Brain's team sessions in tmux: the pid of the program each runs (Claude) and
-/// the tmux session's name. Empty without tmux or without such sessions.
-pub fn team_panes() -> std::collections::HashMap<u32, String> {
-    // A space between them: without a UTF-8 locale tmux writes a tab as `_`. Brain's names have
-    // no space.
-    let Ok(out) = Command::new("tmux").args(["list-panes", "-a", "-F", "#{session_name} #{pane_pid}"]).output() else {
-        return Default::default();
-    };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|line| {
-            let (session, pid) = line.rsplit_once(' ')?;
-            session.starts_with(TEAM_TMUX_PREFIX).then(|| Some((pid.trim().parse().ok()?, session.to_string()))).flatten()
-        })
-        .collect()
-}
-
-/// The arguments for a new session's options, after `--bg` or as an interactive one.
+/// The arguments for a new session's options, after `--bg`.
 fn start_args(options: &Start) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     if let Some(session_id) = &options.resume {
@@ -204,13 +140,6 @@ fn start_args(options: &Start) -> Vec<String> {
     }
     if let Some(style) = &options.style {
         args.extend(["--settings".into(), crate::styles::settings(style)]);
-    }
-    if let Some(team) = &options.team {
-        args.extend(["--agent".into(), team.lead.clone()]);
-        // A flag, not CLAUDE_CODE_PLUGIN_DIRS: the settings' value of that (Brain's mod) wins.
-        if let Some(dir) = &team.plugin_dir {
-            args.extend(["--plugin-dir".into(), dir.display().to_string()]);
-        }
     }
     // After `--` the prompt is never an option, even one that starts with `-` (a task for later,
     // a prompt from the phone).

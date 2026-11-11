@@ -73,80 +73,6 @@ async function reportCommands($) {
   } catch {}
 }
 
-// Agents of this session (an agent team's members, subagents) and what they write each other,
-// for Brain's Team tab. Messages asking the person ("Frage an Martin: …") are questions there.
-const LEAD = 'lead'
-// A member's own question starts so; the lead asks the person itself, and a message that only
-// quotes one asks nothing.
-const QUESTION = /^\s*frage an martin/i
-let teamMessages = []
-
-async function reportTeam($) {
-  try {
-    const members = (await $.agent.list()).map((a) => ({
-      id: String(a.id),
-      name: a.name ?? a.description ?? String(a.id).slice(0, 8),
-      type: a.type ?? '',
-      status: a.status ?? '',
-      teammate: a.teammateId ?? null,
-    }))
-    if (members.length === 0 && teamMessages.length === 0) return
-    await handOver($, 'team', { session_id: await $.session.id(), members, messages: teamMessages })
-  } catch {}
-}
-
-// Each agent's name by its id, kept once seen: an agent that finished is no longer listed, and
-// the lead answers it by id while its question was recorded under its name.
-const agentNames = new Map()
-
-async function nameOfLoop($, agentId) {
-  if (agentId === undefined) return LEAD
-  const agent = (await $.agent.list()).find((one) => one.id === agentId)
-  const name = agent?.name ?? agent?.description ?? agentNames.get(agentId) ?? String(agentId).slice(0, 8)
-  agentNames.set(agentId, name)
-  return name
-}
-
-// Whom a message goes to, by the name its questions were recorded under: an agent's id, its
-// name or a teammate address (`name@team`).
-async function nameOfRecipient($, to) {
-  const address = String(to).split('@')[0]
-  const agent = (await $.agent.list()).find((one) => one.id === address || one.name === address || one.teammateId === address)
-  if (agent) return agent.name ?? agent.description ?? address
-  return agentNames.get(address) ?? address
-}
-
-// The person answers a member's question through the lead: "Antwort an <name>: …" (what Brain
-// and the phone send). Their answer settles that member's open questions at once, whether or
-// not the lead passes it on in a way Brain sees.
-async function answeredByPerson($, text) {
-  const match = /^\s*Antwort an ([^:\n]+):/.exec(text ?? '')
-  if (!match) return
-  const asker = match[1].trim()
-  let changed = false
-  teamMessages = teamMessages.map((m) => {
-    if (m.question && !m.answered && m.from === asker) {
-      changed = true
-      return { ...m, answered: true }
-    }
-    return m
-  })
-  if (changed) await reportTeam($)
-}
-
-// In an agent team the lead is `team-lead`: the same as the main conversation here.
-const member = (name) => (name === 'team-lead' ? LEAD : name)
-
-async function recordMessage($, sender, recipient, text) {
-  const from = member(sender)
-  const to = member(recipient)
-  const at = await $.clock.now()
-  // A message from the lead to someone answers that someone's open questions.
-  if (from === LEAD) teamMessages = teamMessages.map((m) => (m.question && m.from === to ? { ...m, answered: true } : m))
-  teamMessages = [...teamMessages, { id: `${at}-${from}-${to}`, from, to, text: text.trim().slice(0, 2000), at, question: from !== LEAD && QUESTION.test(text), answered: false }].slice(-200)
-  await reportTeam($)
-}
-
 // What Brain asks of this session (a reply, a slash command, an interrupt), so nothing has to be
 // typed into a terminal. Brain writes `~/.claude-brain/requests/<session id>.json`:
 // `{ items: [{ seq, kind: 'prompt', text } | { seq, kind: 'interrupt' }] }`. The mod takes each
@@ -214,7 +140,6 @@ async function carryOut($, item) {
     return
   }
   if (item.kind !== 'prompt' || typeof item.text !== 'string' || !item.text.trim()) return
-  await answeredByPerson($, item.text)
   // Queued: it starts a turn once the session is idle, as the person's own words. The mod's own
   // `prompt.submit` hook doesn't see what it submits itself, so the prompt is reported here, at
   // once: a reload of the mod while the prompt waits for its turn would lose a later report.
@@ -272,7 +197,6 @@ export function register(on) {
     // Prompts a mod submits aren't the user's (Brain's own requests report themselves).
     if (e.origin?.kind !== 'plugin') {
       await hook($, 'UserPromptSubmit', { prompt: e.text })
-      await answeredByPerson($, e.text)
     }
     return next(e)
   }).catch(passOn)
@@ -310,27 +234,8 @@ export function register(on) {
       runningTurn = undefined
       await hook($, 'Stop', { last_assistant_message: e.answer ?? '', background_tasks: await runningAgents($) })
     }
-    // Who works and who waits now, the lead's turn and each member's.
-    await reportTeam($)
     return next(e)
   })
-
-  // What the session's agents write each other (the lead is the main conversation).
-  on('session.send', async ($, e, next) => {
-    const result = await next(e)
-    if (result.isDelivered) await recordMessage($, await nameOfLoop($, e.agentId), await nameOfRecipient($, e.to), e.text ?? '')
-    return result
-  }).catch(passOn)
-
-  // A teammate in a pane of its own sends from its own process: only its delivery shows here.
-  on('session.receive', async ($, e, next) => {
-    const result = await next(e)
-    const origin = e.origin ?? {}
-    if ('teammate' in origin && !origin.isVerified && result.consumed === undefined) {
-      await recordMessage($, String(origin.teammate).split('@')[0], await nameOfLoop($, e.agentId), e.text ?? '')
-    }
-    return result
-  }).catch(passOn)
 
   on('session.measure', async ($, e, next) => {
     await handOver($, 'statusline', statusline(await $.session.id(), e))

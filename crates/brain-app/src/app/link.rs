@@ -116,7 +116,6 @@ impl Brain {
         let Some(link) = &self.link else { return Task::none() };
         link.publish(self.link_views(now));
         link.publish_more(self.link_usage(now), self.link_places());
-        link.publish_folders(self.model.board.keys().filter_map(|k| Some((k.id.clone(), std::path::PathBuf::from(self.model.board.get(k)?.cwd.clone()?)))).collect());
         let commands = link.take_commands();
         let mut tasks = Vec::new();
         // Each command's outcome goes back to the phone, in Brain's own words.
@@ -242,9 +241,6 @@ impl Brain {
             permission_since_ms: (s.awaiting_permission() && question.is_none()).then(|| s.phase_since_ms()),
             question,
             can_reply: phase != Phase::Ended && (self.can_send(&s.key) || s.agent.as_ref().is_some_and(|a| a.is_active())),
-            team_questions: self.teams.get(&s.key).map(|t| t.open_questions().cloned().collect()).unwrap_or_default(),
-            team_active: self.teams.get(&s.key).filter(|t| !t.members.is_empty()).map(|t| t.active().count()),
-            in_team: self.in_team(&s.key),
             movable: self.model.accounts.len() > 1 && movable(s) && s.session_id.is_some() && s.cwd.is_some(),
         }
     }
@@ -264,9 +260,8 @@ impl Brain {
             | Command::Project { key, .. }
             | Command::Resume { key }
             | Command::Restart { key, .. }
-            | Command::End { key }
-            | Command::Team { key, .. } => key.clone(),
-            Command::Start { account, folder, prompt, style, team, trust } => return self.link_start(account, folder, prompt.clone(), style.clone(), *team, *trust),
+            | Command::End { key } => key.clone(),
+            Command::Start { account, folder, prompt, style, trust } => return self.link_start(account, folder, prompt.clone(), style.clone(), *trust),
             Command::Move { key, account } => return self.link_move(key.clone(), account),
         };
         let Some(session) = self.model.board.get(&key) else {
@@ -278,8 +273,7 @@ impl Brain {
         let permission_open = session.awaiting_permission();
         let permission_since = permission_open.then(|| session.phase_since_ms());
         let pid = session.pid;
-        // A team in tmux too: Brain's terminal joins it first (tmux attach), like `claude attach`.
-        let in_background = session.agent.as_ref().is_some_and(|a| a.is_active()) || self.in_team(&key);
+        let in_background = session.agent.as_ref().is_some_and(|a| a.is_active());
         match command {
             Command::Reply { text, .. } => {
                 // A question dialog is open too while the status file says waiting.
@@ -391,13 +385,6 @@ impl Brain {
                 }
                 self.resume_in_background(&key, Vec::new())
             }
-            Command::Team { on, .. } => match self.switch_team(key, on) {
-                Ok(task) => task,
-                Err(err) => {
-                    self.refuse(tr!("Vom Handy: Team umschalten geht nicht – {err}", "From the phone: can't switch the team – {err}"));
-                    Task::none()
-                }
-            },
             Command::End { .. } => {
                 // Asleep, it has no process to stop: out of the list, until it wakes.
                 if phase == Phase::Asleep {
@@ -480,14 +467,12 @@ impl Brain {
 impl Brain {
     /// A session started from the phone runs in the background; Brain lists it without taking
     /// the selection on the Mac.
-    fn link_start(&mut self, account: &str, folder: &str, prompt: Option<String>, style: Option<String>, team: bool, trust: bool) -> Task<Message> {
-        let team = team.then(crate::config::team_start);
+    fn link_start(&mut self, account: &str, folder: &str, prompt: Option<String>, style: Option<String>, trust: bool) -> Task<Message> {
         let Some(account) = self.model.account(account).cloned() else {
             self.refuse(t("Dieses Konto kennt Brain nicht.", "Brain doesn't know this account."));
             return Task::none();
         };
-        // Claude asks whether it trusts a folder it hasn't been in: a team in tmux shows the
-        // question where nobody sees it, a background session refuses to start ("Workspace not
+        // Claude asks whether it trusts a folder it hasn't been in: a background session refuses to start ("Workspace not
         // trusted"). The phone asks it, and only a yes is recorded.
         if !brain_core::account_setup::trusts(&account, &brain_core::account::home_dir(), folder) {
             if !trust {
@@ -511,12 +496,7 @@ impl Brain {
         let folder_name = folder.rsplit('/').find(|p| !p.is_empty()).unwrap_or(folder).to_string();
         self.set_status(tr!("Vom Handy: neue Session in {folder_name} …", "From the phone: new session in {folder_name} …"));
         let folder = folder.to_string();
-        let options = brain_core::agents::Start { style, prompt, team, ..Default::default() };
-        // A team needs an interactive session: in tmux, which Brain's terminal joins.
-        if options.team.is_some() {
-            let started = off_thread(move || brain_core::agents::start_team(&account, std::path::Path::new(&folder), &options));
-            return Task::perform(started, Message::TeamStarted);
-        }
+        let options = brain_core::agents::Start { style, prompt, ..Default::default() };
         let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), &options));
         Task::perform(started, Message::LinkStarted)
     }
