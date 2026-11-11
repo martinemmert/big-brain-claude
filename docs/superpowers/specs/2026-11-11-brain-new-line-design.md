@@ -161,7 +161,7 @@ Removed from the UI and, where nothing else needs it, from the code:
   `team_panes` polling, the tmux attach path, `brain_core::teams` where unused afterwards.
 - **Konsil** entirely: the tab, `konsil.rs` in brain-app and brain-core.
 - The screenshot offer above the footer (paste with ⌘V / drag stays).
-- Single-letter keys that act on a session while the terminal has focus (see *Open questions*).
+- Single-letter keys on the list (see *Answers*, 4).
 
 ## Performance (independent of the layout, can go first)
 
@@ -195,7 +195,7 @@ hot path for free.
 - The phone companion apps (separate repos: `brain-companion-ios`, `brain-companion-native`) read
   Brain Link (`companion.rs`, `app/link.rs`). Removing teams and Konsil must not break them.
 - `brain konsil …` is called by the konsil skill (another repository). It must not fail a session's
-  Bash call after the removal (see *Open questions*).
+  Bash call after the removal (see *Answers*, 8).
 - The interface follows the macOS language (German / English) as today; every new string in both.
 - iTerm sessions are not a focus (Martin avoids iTerm). They still show in the tree and keep "Aus
   iTerm nach Brain holen" and "In iTerm öffnen"; they get no special UI.
@@ -243,6 +243,42 @@ hot path for free.
   ships working.
 - Whether `brain_core` code only the removed features used is deleted or left.
 
-## Open questions
+## Answers after the builder check
 
-(Filled after the builder check.)
+Decided by Martin (2026-11-11):
+
+1. **Which projects are in the tree: only by hand.** A project is in the tree when Martin adds it
+   ("+ Neues Projekt …": folder picker) or starts a session in it from Brain (⌘N / ⌥⌘N). It stays
+   until he hides it. A new persisted project list (prefs) holds them; worktrees count as their main
+   checkout (as `project_of` does today); "In anderes Projekt" moves a session into a listed project
+   (or adds the named one). *My call:* sessions living in a folder that is not in the list (started
+   in iTerm, by `claude --bg` from a shell, programs) show in a section **"Weitere"** at the end of
+   the tree, each with "Als Projekt behalten"; they are not lost.
+2. **Red goes away only when answered.** A permission, an options question or `brain report
+   --waiting` keeps the red ring, status line, badge and ⇧⌘U/⌘1…⌘9 target until answered. Amber
+   (finished, unseen) goes away on viewing; the yellow "Question?" guess too, as today.
+3. **Copy: select, then ⌘C.** Brain holds the text Claude Code copies via OSC 52 right after a mouse
+   selection in the terminal (Brain already tracks `last_terminal_release`) and writes it to the
+   clipboard only on ⌘C. An OSC 52 copy without a preceding mouse release (e.g. `/copy`) goes to the
+   clipboard at once, as today. Brain's own selection (outside mouse mode) copies on ⌘C as today.
+   No "copy on select" toggle in the menu.
+
+My calls (Martin can overrule):
+
+4. **Focus:** a click on a session hands the keyboard to its terminal. Single-letter keys on the
+   list go away; their actions live in the menu bar with ⌘ / ⌥⌘ shortcuts and in the context menu.
+   ↑/↓ and ⏎ in the tree work while the tree has focus (after ⌃⌘S-focus or a click on a project row
+   or a later-note).
+5. **Menu items without a feature today:** "Einstellungen … ⌘," opens `~/.claude-brain/config.json`
+   in the editor; "Neues Projekt … ⇧⌘N" opens a folder picker and adds the project; "Session
+   fortsetzen … ⌘O" focuses the session search with ended sessions shown; "Über Brain" is the
+   standard macOS About panel; "Was ist neu" is dropped.
+6. **Shortcut clashes:** keys the terminal uses win while it has focus. "In den Papierkorb" moves
+   to ⌥⌘⌫ (⌘⌫ deletes the line in the terminal). ⌘H stays macOS's Hide, like in every Mac terminal.
+7. **Status item:** a standard NSMenu (sessions that need Martin with Erlauben / Ablehnen as
+   submenu items, finished unseen ones, usage as text lines, "Neue Session …"). The mockup's custom
+   panel is not built now.
+8. **`brain konsil …`** keeps reporting start/end as doing/done and exits 0; `stand` becomes a
+   no-op. Only the tab and its parsing go.
+9. **Phone:** remove "team" from `FEATURES` in `companion.rs` and leave the team fields empty; the
+   native companion only shows team UI when the feature is advertised (checked by the builder).
