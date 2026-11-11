@@ -434,6 +434,7 @@ impl Message {
         !matches!(
             self,
             Message::Term(_)
+                | Message::HostFound(..)
                 | Message::Pointer(_)
                 | Message::WindowSized(_)
                 | Message::Hover(_)
