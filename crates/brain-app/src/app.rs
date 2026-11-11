@@ -423,6 +423,27 @@ pub enum Message {
     SidebarDone,
 }
 
+impl Message {
+    /// Whether handling this message can change what `sync` keeps in step (the selection, the
+    /// terminals, the conversation). Terminal output, pointer moves, hovering and scrolling can't;
+    /// a terminal's shutdown, title and bell sync themselves. "Seen" marking runs in `sync`, so
+    /// the next tick catches up with it.
+    fn may_change_synced_state(&self) -> bool {
+        !matches!(
+            self,
+            Message::Term(_)
+                | Message::Pointer(_)
+                | Message::WindowSized(_)
+                | Message::Hover(_)
+                | Message::ListScrolled(_)
+                | Message::MessagesScrolled(_)
+                | Message::FileHover(_)
+                | Message::MousePressed
+                | Message::MouseReleased
+        )
+    }
+}
+
 /// The session list's width bounds when dragged.
 pub const SIDEBAR_DEFAULT: f32 = 460.0;
 const SIDEBAR_MIN: f32 = 300.0;
@@ -1108,6 +1129,7 @@ impl Brain {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let syncs = message.may_change_synced_state();
         let task = match message {
             Message::Tick => self.tick(),
             Message::Key(event, captured) => self.on_key(event, captured),
@@ -1458,11 +1480,15 @@ impl Brain {
                         if self.focused_shell.as_ref() == Some(&key) {
                             self.focused_shell = None;
                         }
+                        return self.sync();
                     }
                     return Task::none();
                 }
                 let key = self.terminals.iter().find(|(_, term)| term.id == id).map(|(key, _)| key.clone());
                 let mut task = Task::none();
+                // Output only moves the terminal's own screen; shutdown, a title and a bell change
+                // what the list and the detail show, so those sync.
+                let mut sync = false;
                 if let Some(key) = key {
                     // Only the terminal on screen copies its screen per event; the others catch
                     // up when they're shown (`sync_shown_terminal`).
@@ -1470,12 +1496,14 @@ impl Brain {
                     let command = iced_term::Command::ProxyToBackend(command);
                     match self.terminals.get_mut(&key).map(|term| if shown { term.handle(command) } else { term.handle_quiet(command) }) {
                         Some(iced_term::actions::Action::Shutdown) => {
+                            sync = true;
                             let lines = self.terminals.remove(&key).map(|term| term.text()).unwrap_or_default();
                             self.terminal_titles.remove(&key);
                             self.session_terminal_closed(&key, lines);
                         }
                         Some(iced_term::actions::Action::OpenLink(link)) => task = self.open_link(&key, &link),
                         Some(iced_term::actions::Action::ChangeTitle(title)) => {
+                            sync = true;
                             let title = title.trim().to_string();
                             if title.is_empty() {
                                 self.terminal_titles.remove(&key);
@@ -1484,6 +1512,7 @@ impl Brain {
                             }
                         }
                         Some(iced_term::actions::Action::Bell) if self.selected.as_ref() != Some(&key) => {
+                            sync = true;
                             let name = self.model.board.get(&key).map(|s| s.display_name()).unwrap_or_default();
                             self.set_status(tr!("„{name}“ klingelt.", "“{name}” rang the bell."));
                             self.bells.insert(key);
@@ -1503,7 +1532,7 @@ impl Brain {
                         _ => {}
                     }
                 }
-                task
+                if sync { Task::batch([task, self.sync()]) } else { task }
             }
             Message::Started(account, result) => match result {
                 Ok(id) => {
@@ -1768,6 +1797,9 @@ impl Brain {
                 Task::none()
             }
         };
+        if !syncs {
+            return task;
+        }
         let synced = self.sync();
         Task::batch([task, synced])
     }
@@ -4989,6 +5021,15 @@ mod tests {
     use super::*;
     use brain_core::event::{Event, Kind, Source};
     use chrono::TimeZone;
+
+    #[test]
+    fn pointer_and_scroll_messages_skip_sync_but_ticks_and_selection_keep_it() {
+        assert!(!Message::Hover(None).may_change_synced_state());
+        assert!(!Message::Pointer(iced::Point::ORIGIN).may_change_synced_state());
+        assert!(!Message::MousePressed.may_change_synced_state());
+        assert!(Message::Tick.may_change_synced_state());
+        assert!(Message::Close.may_change_synced_state());
+    }
 
     fn finished_session() -> Session {
         let ev = |secs: i64, kind: Kind, text: &str| Event {
