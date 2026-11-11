@@ -461,7 +461,7 @@ fn tree<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Mess
             Node::Footer => tree_footer(brain, &tree),
             Node::NewProject => new_project_row(),
             Node::ChangesHead { count, added, removed } => changes_head(count, added, removed),
-            Node::Change(change) => change_row(change),
+            Node::Change(change) => change_row(change, brain.preview.as_ref().is_some_and(|p| p.change.path == change.path)),
         })
         .collect();
     scrollable(column(items).spacing(tree::GAP).padding(Padding { top: tree::TOP, right: 8.0, bottom: 16.0, left: 8.0 }))
@@ -651,7 +651,7 @@ fn changes_head<'a>(count: usize, added: u64, removed: u64) -> Element<'a, Messa
 
 /// A file the selected session changed: its path from the project, with the lines added and
 /// removed.
-fn change_row<'a>(change: &SessionChange) -> Element<'a, Message> {
+fn change_row<'a>(change: &SessionChange, open: bool) -> Element<'a, Message> {
     let line = row![
         text(clip_start(&change.relative, 30)).size(11.5).color(TEXT).font(MONO).wrapping(text::Wrapping::None),
         Space::new().width(Fill),
@@ -659,7 +659,12 @@ fn change_row<'a>(change: &SessionChange) -> Element<'a, Message> {
     ]
     .spacing(6)
     .align_y(iced::Center);
-    container(line).height(tree::NOTE_H).center_y(tree::NOTE_H).padding(Padding { left: NEST + 26.0, right: 6.0, ..Padding::ZERO }).into()
+    let padded = container(line)
+        .height(tree::NOTE_H)
+        .center_y(tree::NOTE_H)
+        .padding(Padding { left: NEST + 26.0, right: 6.0, ..Padding::ZERO })
+        .style(move |_| boxed(if open { RAISED } else { Color::TRANSPARENT }, Color::TRANSPARENT, 6.0));
+    mouse_area(padded).on_press(Message::OpenPreview(change.path.clone())).interaction(iced::mouse::Interaction::Pointer).into()
 }
 
 /// `+18 −2`; what git doesn't know is left out.
@@ -910,7 +915,82 @@ fn session_pane(brain: &Brain) -> Element<'_, Message> {
     } else {
         column![find_bar(brain), whole_session(brain)].spacing(8).height(Fill).into()
     };
+    let content = match brain.preview.as_ref().filter(|p| p.key == s.key) {
+        Some(preview) => stack![content, diff_preview(s, preview)].into(),
+        None => content,
+    };
     column![header(brain, s, None), content].spacing(2).padding(Padding { top: 0.0, right: 12.0, bottom: 0.0, left: 12.0 }).height(Fill).into()
+}
+
+/// The diff of a changed file, floating over the terminal like Quick Look. It takes no room from
+/// the terminal; a click beside it, or esc, closes it.
+fn diff_preview<'a>(s: &Session, preview: &'a app::Preview) -> Element<'a, Message> {
+    use brain_core::changes::DiffKind;
+    let font = crate::chat_font::get();
+    let change = &preview.change;
+    let session = clip(&s.display_name(), 28);
+    let mut head = row![
+        text(clip_start(&change.relative, 48)).size(12.5).color(TEXT_STRONG).font(MONO).wrapping(text::Wrapping::None),
+        counts(change.added, change.removed),
+    ]
+    .spacing(10)
+    .align_y(iced::Center);
+    let when = if change.last_ms > 0 { format!("{} · {session}", ago_phrase(change.last_ms, now_ms())) } else { session };
+    head = head.push(text(when).size(11.5).color(TEXT_FAINT).font(UI).wrapping(text::Wrapping::None));
+    head = head.push(Space::new().width(Fill));
+    head = head.push(action(t("Im Editor öffnen", "Open in editor"), "", false, preview.exists.then_some(Message::PreviewInEditor)));
+    head = head.push(action(t("Schließen", "Close"), "esc", false, Some(Message::ClosePreview)));
+    let head = container(head).padding([9, 12]).width(Fill);
+
+    let line = |kind: DiffKind, content: &str| -> Element<'a, Message> {
+        let (color, tint) = match kind {
+            DiffKind::Added => (DONE, alpha(DONE, 0x1a)),
+            DiffKind::Removed => (CALLS_SOFT, alpha(CALLS, 0x1a)),
+            DiffKind::Hunk => (TEXT_FAINT, Color::TRANSPARENT),
+            DiffKind::Meta | DiffKind::Context => (TEXT_MUTED, Color::TRANSPARENT),
+        };
+        // An empty line still takes its height.
+        let shown = if content.is_empty() { " ".to_string() } else { content.to_string() };
+        container(text(shown).size(font.size).color(color).font(font.regular).wrapping(text::Wrapping::None))
+            .width(Fill)
+            .padding([0, 14])
+            .style(move |_| style::fill(tint))
+            .into()
+    };
+    let body: Element<'a, Message> = match &preview.lines {
+        None => container(hint(t("Lade den Diff …", "Reading the diff …"))).padding(14).into(),
+        Some(lines) if lines.is_empty() => {
+            container(hint(t("Gegen HEAD hat sich an dieser Datei nichts geändert.", "This file does not differ from HEAD."))).padding(14).into()
+        }
+        Some(lines) => {
+            let mut rows: Vec<Element<'a, Message>> = lines.iter().map(|(kind, content)| line(*kind, content)).collect();
+            if preview.cut > 0 {
+                let cut = preview.cut;
+                rows.push(container(hint(tr!("… {cut} weitere Zeilen", "… {cut} more lines"))).padding([6, 14]).into());
+            }
+            scrollable(column(rows).padding(Padding { top: 8.0, bottom: 8.0, ..Padding::ZERO }))
+                .direction(scrollable::Direction::Both { vertical: scrollable::Scrollbar::default(), horizontal: scrollable::Scrollbar::default() })
+                .style(scrollbar)
+                .into()
+        }
+    };
+    let card = container(column![head, container(Space::new().width(Fill).height(1)).style(|_| style::fill(LINE)), container(body).style(|_| style::fill(INK))])
+        .width(Length::Fixed(680.0))
+        .height(Length::Fixed(440.0))
+        .clip(true)
+        .style(|_| container::Style {
+            shadow: iced::Shadow { color: alpha(Color::BLACK, 0x99), offset: iced::Vector::new(0.0, 18.0), blur_radius: 50.0 },
+            ..boxed(RAISED, LINE_STRONG, 12.0)
+        });
+    // The backdrop closes the card; the card itself swallows its clicks.
+    let backdrop = mouse_area(Space::new().width(Fill).height(Fill)).on_press(Message::ClosePreview);
+    let floating = container(mouse_area(card).on_press(Message::PreviewClicked))
+        .width(Fill)
+        .height(Fill)
+        .align_x(iced::alignment::Horizontal::Right)
+        .align_y(iced::alignment::Vertical::Bottom)
+        .padding(Padding { top: 0.0, right: 28.0, bottom: 26.0, left: 0.0 });
+    stack![backdrop, floating].into()
 }
 
 /// One slim line above a terminal: project › session, branch, account, how full the context is,

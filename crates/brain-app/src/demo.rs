@@ -54,6 +54,8 @@ pub struct Demo {
     pub messages: HashMap<SessionKey, Vec<Message>>,
     /// The files each session changed, newest first.
     pub changes: HashMap<SessionKey, Vec<brain_core::changes::SessionChange>>,
+    /// Their diffs, by path.
+    pub diffs: HashMap<String, String>,
 }
 
 struct Spec {
@@ -312,27 +314,144 @@ pub fn build() -> Demo {
         snapshot("second", 4102, 12.0, 34.0, 30.0, 0.92),
     ];
 
-    let changes = HashMap::from([(SessionKey { account: "main".into(), id: "demo-4101".into() }, rate_limit_changes(now.timestamp_millis()))]);
+    let (files, diffs) = rate_limit_changes(now.timestamp_millis());
+    let changes = HashMap::from([(SessionKey { account: "main".into(), id: "demo-4101".into() }, files)]);
 
-    Demo { accounts, board, usage, messages, changes }
+    Demo { accounts, board, usage, messages, changes, diffs }
 }
 
-/// The files "Rate-Limits" changed, newest first.
-fn rate_limit_changes(now_ms: i64) -> Vec<brain_core::changes::SessionChange> {
+/// The files "Rate-Limits" changed, newest first, and their made-up diffs by path. The counts
+/// are those of the diffs.
+fn rate_limit_changes(now_ms: i64) -> (Vec<brain_core::changes::SessionChange>, HashMap<String, String>) {
     let root = "~/Projects/api-gateway";
-    let file = |relative: &str, minutes: i64, added: u64, removed: u64| brain_core::changes::SessionChange {
-        path: format!("{root}/{relative}"),
-        relative: relative.to_string(),
-        last_ms: now_ms - minutes * 60_000,
-        added: Some(added),
-        removed: Some(removed),
-        root: PathBuf::from(root),
-        git: None,
-    };
-    vec![
-        file("src/config.rs", 7, 18, 2),
-        file("tests/rate_limit.rs", 11, 96, 0),
-        file("src/middleware/rate_limit.rs", 19, 142, 0),
-        file("src/middleware/mod.rs", 24, 3, 1),
-    ]
+    let files = [
+        ("src/config.rs", 7, CONFIG_DIFF.to_string()),
+        ("tests/rate_limit.rs", 11, new_file("tests/rate_limit.rs", TEST_BODY)),
+        ("src/middleware/rate_limit.rs", 19, new_file("src/middleware/rate_limit.rs", LIMITER_BODY)),
+        ("src/middleware/mod.rs", 24, MOD_DIFF.to_string()),
+    ];
+    let mut changes = Vec::new();
+    let mut diffs = HashMap::new();
+    for (relative, minutes, diff) in files {
+        let count = |sign: char, header: &str| diff.lines().filter(|l| l.starts_with(sign) && !l.starts_with(header)).count() as u64;
+        let path = format!("{root}/{relative}");
+        changes.push(brain_core::changes::SessionChange {
+            path: path.clone(),
+            relative: relative.to_string(),
+            last_ms: now_ms - minutes * 60_000,
+            added: Some(count('+', "+++")),
+            removed: Some(count('-', "---")),
+            root: PathBuf::from(root),
+            git: None,
+        });
+        diffs.insert(path, diff);
+    }
+    (changes, diffs)
 }
+
+/// A new file's diff: every line added.
+fn new_file(relative: &str, body: &str) -> String {
+    let count = body.lines().count();
+    let added: String = body.lines().map(|l| format!("+{l}\n")).collect();
+    format!("diff --git a/{relative} b/{relative}\nnew file mode 100644\n--- /dev/null\n+++ b/{relative}\n@@ -0,0 +1,{count} @@\n{added}")
+}
+
+const CONFIG_DIFF: &str = r#"diff --git a/src/config.rs b/src/config.rs
+index 3f2a1c4..9b7e0d2 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -12,7 +12,23 @@ pub struct Config {
+     pub listen: SocketAddr,
+     pub upstream: Url,
+-    pub timeout_secs: u64,
++    pub timeout: Duration,
++    pub rate_limit: RateLimitConfig,
+ }
+
++/// How many requests a client may make per second, and how many it may save up.
++#[derive(Debug, Clone, Deserialize)]
++pub struct RateLimitConfig {
++    pub per_second: u32,
++    pub burst: u32,
++    pub scope: Scope,
++}
++
++#[derive(Debug, Clone, Copy, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum Scope {
++    Global,
++    Tenant,
++}
+@@ -41,6 +57,10 @@ impl Config {
+     pub fn load(path: &Path) -> Result<Self> {
+         let text = std::fs::read_to_string(path)?;
+-        Ok(toml::from_str(&text)?)
++        let config: Self = toml::from_str(&text)?;
++        anyhow::ensure!(config.rate_limit.burst >= config.rate_limit.per_second, "burst must not be below per_second");
++        Ok(config)
+     }
+ }
+"#;
+
+const MOD_DIFF: &str = r#"diff --git a/src/middleware/mod.rs b/src/middleware/mod.rs
+index 51d0a77..c3e8f19 100644
+--- a/src/middleware/mod.rs
++++ b/src/middleware/mod.rs
+@@ -1,6 +1,8 @@
+ mod auth;
+ mod logging;
+-mod timeout;
++mod rate_limit;
++mod timeout;
+
+ pub use auth::Auth;
+ pub use logging::Logging;
++pub use rate_limit::RateLimit;
+"#;
+
+const LIMITER_BODY: &str = r#"use std::time::Instant;
+
+/// A token bucket: it fills at `per_second` and holds at most `burst`.
+pub struct Bucket {
+    tokens: f64,
+    per_second: f64,
+    burst: f64,
+    updated: Instant,
+}
+
+impl Bucket {
+    pub fn new(per_second: u32, burst: u32) -> Self {
+        Self { tokens: burst as f64, per_second: per_second as f64, burst: burst as f64, updated: Instant::now() }
+    }
+
+    /// Takes one token if there is one.
+    pub fn take(&mut self) -> bool {
+        let now = Instant::now();
+        let gained = now.duration_since(self.updated).as_secs_f64() * self.per_second;
+        self.tokens = (self.tokens + gained).min(self.burst);
+        self.updated = now;
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}"#;
+
+const TEST_BODY: &str = r#"use gateway::middleware::rate_limit::Bucket;
+
+#[test]
+fn a_full_bucket_lets_a_burst_through_and_then_says_no() {
+    let mut bucket = Bucket::new(1, 3);
+    assert!(bucket.take() && bucket.take() && bucket.take());
+    assert!(!bucket.take());
+}
+
+#[test]
+fn a_bucket_fills_up_again_with_time() {
+    let mut bucket = Bucket::new(100, 1);
+    assert!(bucket.take());
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    assert!(bucket.take());
+}"#;

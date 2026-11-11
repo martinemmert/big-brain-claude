@@ -142,6 +142,21 @@ pub struct ChangesCache {
     pub files: Vec<brain_core::changes::SessionChange>,
 }
 
+/// The floating card over the terminal with one changed file's diff.
+pub struct Preview {
+    pub key: SessionKey,
+    pub change: brain_core::changes::SessionChange,
+    /// The diff's lines without git's file header; `None` while it is read.
+    pub lines: Option<Vec<(brain_core::changes::DiffKind, String)>>,
+    /// Lines left out because the diff is longer than the card shows.
+    pub cut: usize,
+    /// The file is still there to open in the editor.
+    pub exists: bool,
+}
+
+/// The most diff lines the card draws.
+const PREVIEW_LINES: usize = 1200;
+
 /// The reading of a session's files is repeated at most this often while its transcript grows.
 const CHANGES_EVERY: Duration = Duration::from_secs(4);
 
@@ -266,6 +281,14 @@ pub enum Message {
     ChangesLoaded(SessionKey, u64, Vec<brain_core::changes::SessionChange>),
     /// Show or leave out the changed files under the selected session.
     ToggleChanges,
+    /// A changed file clicked in the tree: its diff floats over the terminal (again: closes).
+    OpenPreview(String),
+    /// The file's diff against HEAD, read in the background.
+    PreviewLoaded(SessionKey, String, Option<String>),
+    ClosePreview,
+    PreviewInEditor,
+    /// A click on the card itself, which must not reach the backdrop that closes it.
+    PreviewClicked,
     /// A search hit or a prompt clicked open (its index in the history), or closed again.
     Expand(Option<usize>),
     CopyText(String),
@@ -591,6 +614,8 @@ pub struct Brain {
     /// The files the selected session changed, for the tree.
     pub changes: Option<ChangesCache>,
     changes_loading: bool,
+    /// The diff card over the terminal; while it is open the terminal gets no keys.
+    pub preview: Option<Preview>,
     pub expanded: Option<usize>,
     pub mode: Mode,
     pub search: String,
@@ -786,6 +811,7 @@ impl Brain {
             history: None,
             changes: None,
             changes_loading: false,
+            preview: None,
             history_loading: false,
             expanded: None,
             bells: HashSet::new(),
@@ -1121,6 +1147,26 @@ impl Brain {
                 self.prefs.save();
                 Task::none()
             }
+            Message::OpenPreview(path) => self.open_preview(&path),
+            Message::PreviewLoaded(key, path, diff) => {
+                if let Some(preview) = self.preview.as_mut().filter(|p| p.key == key && p.change.path == path) {
+                    let (lines, cut) = preview_lines(diff.as_deref().unwrap_or_default(), PREVIEW_LINES);
+                    preview.cut = cut;
+                    preview.lines = Some(lines);
+                }
+                Task::none()
+            }
+            Message::ClosePreview => {
+                self.preview = None;
+                Task::none()
+            }
+            Message::PreviewInEditor => {
+                if let Some(preview) = self.preview.as_ref().filter(|p| p.exists) {
+                    open_in_text_editor(std::path::Path::new(&preview.change.path));
+                }
+                Task::none()
+            }
+            Message::PreviewClicked => Task::none(),
             Message::Expand(index) => {
                 self.expanded = index;
                 Task::none()
@@ -1575,6 +1621,9 @@ impl Brain {
                 }
             }
         }
+        if self.preview.as_ref().is_some_and(|p| self.selected.as_ref() != Some(&p.key)) {
+            self.preview = None;
+        }
         self.sync_conversation();
         let attach = self.sync_terminal();
         self.sync_shown_terminal();
@@ -1739,6 +1788,37 @@ impl Brain {
         Task::perform(off_thread(move || brain_core::changes::session_changes(&path, std::path::Path::new(&cwd))), move |files| {
             Message::ChangesLoaded(key.clone(), len, files)
         })
+    }
+
+    /// Opens the card for a file of the selected session's changes, or closes it when that file's
+    /// card is open already. The terminal gives up the keyboard: esc and the rest are the card's.
+    fn open_preview(&mut self, path: &str) -> Task<Message> {
+        if self.preview.as_ref().is_some_and(|p| p.change.path == path) {
+            self.preview = None;
+            return Task::none();
+        }
+        let Some(key) = self.selected.clone() else { return Task::none() };
+        let Some(change) = self.changes.as_ref().filter(|c| c.key == key).and_then(|c| c.files.iter().find(|f| f.path == path)).cloned() else {
+            return Task::none();
+        };
+        let exists = !self.model.is_demo() && std::path::Path::new(&change.path).is_file();
+        let demo_diff = self.model.is_demo().then(|| self.model.demo_diffs.get(&change.path).cloned());
+        self.focused_terminal = None;
+        self.focused_shell = None;
+        let task = match demo_diff {
+            Some(diff) => {
+                self.preview = Some(Preview { key: key.clone(), change: change.clone(), lines: None, cut: 0, exists });
+                return Task::batch([unfocus(), self.update(Message::PreviewLoaded(key, change.path, diff))]);
+            }
+            None => {
+                let (loaded_key, loaded_path, reading) = (key.clone(), change.path.clone(), change.clone());
+                Task::perform(off_thread(move || brain_core::changes::session_diff(&reading)), move |diff| {
+                    Message::PreviewLoaded(loaded_key.clone(), loaded_path.clone(), diff)
+                })
+            }
+        };
+        self.preview = Some(Preview { key, change, lines: None, cut: 0, exists });
+        Task::batch([unfocus(), task])
     }
 
     /// The selected session and the files it changed, once they are read: they stand under its
@@ -2266,6 +2346,7 @@ impl Brain {
         let Some(key) = self.selected.clone() else { return Task::none() };
         match self.terminals.get(&key) {
             Some(term) => {
+                self.preview = None;
                 let task = iced_term::TerminalView::focus(term.widget_id().clone());
                 self.focused_terminal = Some(key);
                 task
@@ -2735,6 +2816,11 @@ impl Brain {
             return Task::none();
         }
 
+        // The diff card has the keyboard while it is open: esc closes it and goes no further.
+        if named == Some(Named::Escape) && self.preview.is_some() && self.mode == Mode::Normal && !self.overview {
+            self.preview = None;
+            return Task::none();
+        }
         // A focused terminal keeps Esc (it interrupts Claude); ⌘[ leaves it.
         // Esc always leaves a dialog or view on top (clean-up, new session, palette, overview);
         // only in the normal view does a terminal with the keyboard keep it (it interrupts Claude).
@@ -4285,6 +4371,22 @@ fn open_in_editor(path: &std::path::Path) {
     let _ = std::process::Command::new("open").arg(path).spawn();
 }
 
+/// What the diff card draws: the diff without git's file header, at most `limit` lines, and how
+/// many lines were left out.
+fn preview_lines(diff: &str, limit: usize) -> (Vec<(brain_core::changes::DiffKind, String)>, usize) {
+    let mut lines = brain_core::changes::diff_lines(diff);
+    lines.retain(|(kind, _)| *kind != brain_core::changes::DiffKind::Meta);
+    let cut = lines.len().saturating_sub(limit);
+    lines.truncate(limit);
+    (lines, cut)
+}
+
+/// A file a session changed, in the default text editor (`open -t`, never plain `open`: the path
+/// came from a transcript, and a `.command` or `.app` would run).
+fn open_in_text_editor(path: &std::path::Path) {
+    let _ = std::process::Command::new("open").arg("-t").arg(path).spawn();
+}
+
 /// "In editor" for a file from the reader. The path came from a session's output, so it never
 /// goes to plain `open` (a `.command` or `.app` would run): text opens in the default text
 /// editor (`open -t`), pictures and PDFs in Preview, anything else not at all.
@@ -4377,6 +4479,19 @@ mod tests {
     use super::*;
     use brain_core::event::{Event, Kind, Source};
     use chrono::TimeZone;
+
+    #[test]
+    fn the_diff_card_drops_gits_file_header_and_cuts_a_long_diff() {
+        use brain_core::changes::DiffKind;
+        let diff = "diff --git a/a.txt b/a.txt\nindex 1..2 100644\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1,3 @@\n one\n+two\n+three\n";
+
+        let (lines, cut) = preview_lines(diff, 3);
+
+        let kinds: Vec<DiffKind> = lines.iter().map(|(k, _)| *k).collect();
+        assert_eq!(kinds, [DiffKind::Hunk, DiffKind::Context, DiffKind::Added]);
+        assert_eq!(cut, 1);
+        assert_eq!(preview_lines("", 3), (vec![], 0));
+    }
 
     #[test]
     fn pointer_and_scroll_messages_skip_sync_but_ticks_and_selection_keep_it() {

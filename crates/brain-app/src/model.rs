@@ -77,6 +77,8 @@ pub struct Model {
     pub demo_messages: Option<HashMap<SessionKey, Vec<Message>>>,
     /// The files the demo's sessions changed.
     pub demo_changes: HashMap<SessionKey, Vec<brain_core::changes::SessionChange>>,
+    /// Their diffs, by path.
+    pub demo_diffs: HashMap<String, String>,
 }
 
 impl Model {
@@ -104,6 +106,7 @@ impl Model {
             usage_history_read: None,
             demo_messages: None,
             demo_changes: HashMap::new(),
+            demo_diffs: HashMap::new(),
         };
         if demo::enabled() {
             let demo = demo::build();
@@ -112,6 +115,7 @@ impl Model {
             model.usage = demo.usage;
             model.demo_messages = Some(demo.messages);
             model.demo_changes = demo.changes;
+            model.demo_diffs = demo.diffs;
             return model;
         }
         for back in (1..history_days(&model.accounts)).rev() {
