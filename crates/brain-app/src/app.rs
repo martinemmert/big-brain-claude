@@ -342,6 +342,8 @@ pub enum Message {
     DragWindow,
     ZoomWindow,
     Term(iced_term::Event),
+    /// What Brain can do with the terminal hosting a process (its pid).
+    HostFound(u32, Capabilities),
     /// A background session Brain started or took over: its account and short id, or why not.
     Started(String, Result<String, String>),
     /// A background session restarted with new flags goes on as Claude Code's copy under a new
@@ -802,8 +804,11 @@ pub struct Brain {
     pub reply: String,
     /// The selected session's slash commands while its reply field is open, for completing `/…`.
     reply_commands: Vec<brain_core::commands::SlashCommand>,
-    /// The terminal hosting the selected session and what Brain can do with it.
-    host: Option<(SessionKey, Capabilities)>,
+    /// What Brain can do with the terminal hosting a session's process, by pid (found off the UI
+    /// thread, once per pid).
+    hosts: HashMap<u32, Capabilities>,
+    /// The pids whose host is being looked up.
+    hosts_pending: HashSet<u32>,
     /// Project name and worktree per session.
     pub projects: HashMap<SessionKey, (String, Option<String>)>,
     /// The checked-out working tree per session (for conflicts and PR lookups).
@@ -970,7 +975,8 @@ impl Brain {
             rename: String::new(),
             reply: String::new(),
             reply_commands: Vec::new(),
-            host: None,
+            hosts: HashMap::new(),
+            hosts_pending: HashSet::new(),
             projects: HashMap::new(),
             checkouts: HashMap::new(),
             prs: HashMap::new(),
@@ -1468,6 +1474,11 @@ impl Brain {
                 self.update = update;
                 Task::none()
             }
+            Message::HostFound(pid, caps) => {
+                self.hosts_pending.remove(&pid);
+                self.hosts.insert(pid, caps);
+                Task::none()
+            }
             Message::DragWindow => window::latest().and_then(window::drag),
             Message::ZoomWindow => window::latest().and_then(window::toggle_maximize),
             Message::Term(event) => {
@@ -1934,7 +1945,7 @@ impl Brain {
             self.messages_at_bottom = true;
             scroll = operation::snap_to_end(MESSAGES);
         }
-        self.sync_host();
+        let host = self.sync_host();
         self.sync_projects();
         self.conflicts = self.compute_conflicts();
         let deciding = self.deciding();
@@ -1947,7 +1958,7 @@ impl Brain {
         let qa = self.load_qa();
         let konsil = self.load_konsil();
         let brief = self.load_brief();
-        Task::batch([scroll, attach, files, history, qa, konsil, brief])
+        Task::batch([scroll, attach, host, files, history, qa, konsil, brief])
     }
 
     /// Background sessions open in Brain's terminal: when one gets selected (or Brain started it
@@ -3008,18 +3019,20 @@ impl Brain {
         Task::none()
     }
 
-    /// Looks up the terminal of a newly selected session (one `ps` call per selection).
-    fn sync_host(&mut self) {
-        let Some(key) = self.selected.clone() else {
-            self.host = None;
-            return;
-        };
-        if self.model.is_demo() || self.host.as_ref().is_some_and(|(k, _)| *k == key) {
-            return;
+    /// Looks up the terminal hosting a newly selected session's process, in the background (`ps`
+    /// takes 100 ms). A session in Brain's own terminal needs none; a pid is looked up once.
+    fn sync_host(&mut self) -> Task<Message> {
+        if self.model.is_demo() || self.has_terminal() {
+            return Task::none();
         }
-        let Some(pid) = self.model.board.get(&key).map(|s| s.pid) else { return };
-        let caps = terminal::host_of(pid).map(|host| terminal::capabilities(&host)).unwrap_or(Capabilities { focus: false, keys: false });
-        self.host = Some((key, caps));
+        let Some(pid) = self.selected_session().map(|s| s.pid) else { return Task::none() };
+        if self.hosts.contains_key(&pid) || !self.hosts_pending.insert(pid) {
+            return Task::none();
+        }
+        Task::perform(
+            off_thread(move || terminal::host_of(pid).map(|host| terminal::capabilities(&host)).unwrap_or(Capabilities { focus: false, keys: false })),
+            move |caps| Message::HostFound(pid, caps),
+        )
     }
 
     /// Project names for the sessions (git is asked once per directory).
@@ -3367,10 +3380,7 @@ impl Brain {
         if self.model.is_demo() {
             return Capabilities { focus: true, keys: true };
         }
-        match &self.host {
-            Some((key, caps)) if Some(key) == self.selected.as_ref() => *caps,
-            _ => Capabilities { focus: false, keys: false },
-        }
+        self.selected_session().and_then(|s| self.hosts.get(&s.pid)).copied().unwrap_or(Capabilities { focus: false, keys: false })
     }
 
     // ---- keys -------------------------------------------------------------------
