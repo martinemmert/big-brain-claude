@@ -96,6 +96,18 @@ pub fn clip(text: &str, max: usize) -> String {
     format!("{}…", cut.trim_end())
 }
 
+/// A path shortened from the left, so its end (the file) stays: `…/middleware/rate_limit.rs`.
+pub fn clip_start(path: &str, max: usize) -> String {
+    let count = path.chars().count();
+    if count <= max {
+        return path.to_string();
+    }
+    let tail: String = path.chars().skip(count - max.saturating_sub(1)).collect();
+    // Start at a folder boundary when there is one in the kept part.
+    let tail = tail.split_once('/').map_or(tail.as_str(), |(_, rest)| rest);
+    format!("…/{tail}")
+}
+
 /// "2 subagents, 1 shell running" from a stop's background tasks.
 pub fn background_summary(tasks: &[brain_core::event::BackgroundTask]) -> String {
     let count = |kind: &str| tasks.iter().filter(|t| t.kind == kind).count();
@@ -138,6 +150,12 @@ pub fn shell_quote(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_path_keeps_its_end_from_a_folder_on() {
+        assert_eq!(clip_start("src/config.rs", 30), "src/config.rs");
+        assert_eq!(clip_start("src/middleware/limits/rate_limit.rs", 24), "…/limits/rate_limit.rs");
+    }
 
     #[test]
     fn tables_in_one_line_previews_keep_their_cells() {

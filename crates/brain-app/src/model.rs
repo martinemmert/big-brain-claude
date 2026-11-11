@@ -75,6 +75,8 @@ pub struct Model {
     usage_history_read: Option<Instant>,
     /// Fixed conversations in demo mode; `None` reads real transcripts.
     pub demo_messages: Option<HashMap<SessionKey, Vec<Message>>>,
+    /// The files the demo's sessions changed.
+    pub demo_changes: HashMap<SessionKey, Vec<brain_core::changes::SessionChange>>,
 }
 
 impl Model {
@@ -101,6 +103,7 @@ impl Model {
             usage_history: HashMap::new(),
             usage_history_read: None,
             demo_messages: None,
+            demo_changes: HashMap::new(),
         };
         if demo::enabled() {
             let demo = demo::build();
@@ -108,6 +111,7 @@ impl Model {
             model.board = demo.board;
             model.usage = demo.usage;
             model.demo_messages = Some(demo.messages);
+            model.demo_changes = demo.changes;
             return model;
         }
         for back in (1..history_days(&model.accounts)).rev() {

@@ -1,5 +1,6 @@
 //! Everything Brain draws: title bar, session list, detail pane, dialogs, footer.
 
+use brain_core::changes::SessionChange;
 use brain_core::later;
 use brain_core::state::{Ask, Phase, Session};
 use iced::widget::{button, column, container, mouse_area, row, scrollable, stack, text, text_input, Space};
@@ -8,7 +9,7 @@ use iced::{Background, Border, Color, Element, Fill, Length, Padding};
 use crate::companion::Command;
 use crate::app::{self, Action, Brain, Choice, Groups, Message, Mode, CLEANUP_DAYS};
 use crate::tree::{self, Mark, Node, Project, Tree};
-use crate::format::{ago, ago_phrase, background_summary, clip, clock, format_tokens, now_ms, plain, short_model, tilde};
+use crate::format::{ago, ago_phrase, background_summary, clip, clip_start, clock, format_tokens, now_ms, plain, short_model, tilde};
 use crate::i18n::t;
 use crate::markdown;
 use crate::style::{
@@ -444,7 +445,7 @@ fn tree<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Mess
     let searching = !brain.search.is_empty();
     let tree = brain.tree(groups);
     let items: Vec<Element<'a, Message>> = tree
-        .nodes(searching)
+        .nodes(searching, brain.tree_changes())
         .into_iter()
         .map(|node| match node {
             Node::Hint(true) => {
@@ -459,6 +460,8 @@ fn tree<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Mess
             Node::OthersHead { count, open } => others_head(count, open),
             Node::Footer => tree_footer(brain, &tree),
             Node::NewProject => new_project_row(),
+            Node::ChangesHead { count, added, removed } => changes_head(count, added, removed),
+            Node::Change(change) => change_row(change),
         })
         .collect();
     scrollable(column(items).spacing(tree::GAP).padding(Padding { top: tree::TOP, right: 8.0, bottom: 16.0, left: 8.0 }))
@@ -634,6 +637,41 @@ fn tooltip_card<'a>(brain: &'a Brain, s: &'a Session, now: i64) -> Element<'a, M
         card = card.push(row(markers).spacing(8).wrap());
     }
     container(card).padding([8, 10]).style(|_| boxed(RAISED, LINE_STRONG, 8.0)).into()
+}
+
+/// "Änderungen · n · +a −b" under the selected session.
+fn changes_head<'a>(count: usize, added: u64, removed: u64) -> Element<'a, Message> {
+    let label = row![
+        text(format!("{} · {count} ·", t("Änderungen", "Changes"))).size(11.5).color(TEXT_MUTED).font(UI),
+        counts(Some(added), Some(removed)),
+    ]
+    .spacing(4);
+    container(label).height(tree::NOTE_H).center_y(tree::NOTE_H).padding(Padding { left: NEST + 26.0, ..Padding::ZERO }).into()
+}
+
+/// A file the selected session changed: its path from the project, with the lines added and
+/// removed.
+fn change_row<'a>(change: &SessionChange) -> Element<'a, Message> {
+    let line = row![
+        text(clip_start(&change.relative, 30)).size(11.5).color(TEXT).font(MONO).wrapping(text::Wrapping::None),
+        Space::new().width(Fill),
+        counts(change.added, change.removed),
+    ]
+    .spacing(6)
+    .align_y(iced::Center);
+    container(line).height(tree::NOTE_H).center_y(tree::NOTE_H).padding(Padding { left: NEST + 26.0, right: 6.0, ..Padding::ZERO }).into()
+}
+
+/// `+18 −2`; what git doesn't know is left out.
+fn counts<'a>(added: Option<u64>, removed: Option<u64>) -> Element<'a, Message> {
+    let mut line = row![].spacing(5);
+    if let Some(added) = added.filter(|a| *a > 0 || removed.unwrap_or(0) == 0) {
+        line = line.push(text(format!("+{added}")).size(11).color(DONE).font(MONO));
+    }
+    if let Some(removed) = removed.filter(|r| *r > 0) {
+        line = line.push(text(format!("−{removed}")).size(11).color(CALLS_SOFT).font(MONO));
+    }
+    line.into()
 }
 
 fn notes_head<'a>(project: Option<&str>, count: usize, open: bool) -> Element<'a, Message> {

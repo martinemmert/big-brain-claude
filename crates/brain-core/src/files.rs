@@ -37,6 +37,12 @@ impl SessionFile {
     pub fn has(&self, touch: Touch) -> bool {
         self.touches.contains(&touch)
     }
+
+    /// Whether the session itself wrote or edited the file (reading or being handed it is not
+    /// changing it).
+    pub fn changed(&self) -> bool {
+        self.has(Touch::Written) || self.has(Touch::Edited)
+    }
 }
 
 /// Every file the transcript mentions, most recently touched first. Reads the file line by

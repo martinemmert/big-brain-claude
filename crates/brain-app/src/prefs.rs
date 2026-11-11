@@ -61,6 +61,9 @@ pub struct Prefs {
     /// in Brain, once.
     #[serde(default)]
     projects_seeded: bool,
+    /// Leave out the files a session changed, which stand under it in the tree.
+    #[serde(default)]
+    pub hide_changes: bool,
     /// Projects whose "for later" notes are unfolded in the tree.
     #[serde(default)]
     open_notes: BTreeSet<String>,

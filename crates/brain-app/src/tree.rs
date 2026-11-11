@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use brain_core::changes::SessionChange;
 use brain_core::later;
 use brain_core::state::{Ask, Phase, Session, SessionKey};
 
@@ -219,6 +220,10 @@ pub enum Node<'t, 'a> {
     OthersHead { count: usize, open: bool },
     Footer,
     NewProject,
+    /// "Änderungen · n · +a −b" under the selected session.
+    ChangesHead { count: usize, added: u64, removed: u64 },
+    /// One file the selected session changed.
+    Change(&'t SessionChange),
 }
 
 impl Node<'_, '_> {
@@ -227,7 +232,7 @@ impl Node<'_, '_> {
             Node::Hint(_) => HINT_H,
             Node::Project(_) => PROJECT_H,
             Node::Session(row) => row_height(row.mark),
-            Node::NotesHead { .. } | Node::Note { .. } | Node::OthersHead { .. } => NOTE_H,
+            Node::NotesHead { .. } | Node::Note { .. } | Node::OthersHead { .. } | Node::ChangesHead { .. } | Node::Change(_) => NOTE_H,
             Node::Footer => FOOTER_H,
             Node::NewProject => PROJECT_H,
         }
@@ -245,8 +250,9 @@ pub fn row_height(mark: Mark) -> f32 {
 }
 
 impl<'a> Tree<'a> {
-    /// The tree line by line. `searching` with nothing found says so.
-    pub fn nodes(&self, searching: bool) -> Vec<Node<'_, 'a>> {
+    /// The tree line by line. `searching` with nothing found says so. `changes`: the selected
+    /// session and the files it changed, which stand under its row.
+    pub fn nodes<'t>(&'t self, searching: bool, changes: Option<(&SessionKey, &'t [SessionChange])>) -> Vec<Node<'t, 'a>> {
         let mut nodes = Vec::new();
         let nothing = self.sessions().is_empty() && self.projects.iter().all(|p| p.notes.is_empty()) && self.other_notes.is_empty();
         if nothing && (searching || self.projects.is_empty()) {
@@ -257,7 +263,9 @@ impl<'a> Tree<'a> {
             if project.folded {
                 continue;
             }
-            nodes.extend(project.rows.iter().map(Node::Session));
+            for row in &project.rows {
+                push_session(&mut nodes, row, changes);
+            }
             if !project.notes.is_empty() {
                 nodes.push(Node::NotesHead { project: Some(&project.name), count: project.notes.len(), open: project.notes_open });
                 if project.notes_open {
@@ -269,7 +277,9 @@ impl<'a> Tree<'a> {
         if others > 0 {
             nodes.push(Node::OthersHead { count: self.others.len(), open: self.others_open });
             if self.others_open {
-                nodes.extend(self.others.iter().map(Node::Session));
+                for row in &self.others {
+                    push_session(&mut nodes, row, changes);
+                }
                 if !self.other_notes.is_empty() {
                     nodes.push(Node::NotesHead { project: None, count: self.other_notes.len(), open: true });
                     nodes.extend(self.other_notes.iter().map(|note| Node::Note { note }));
@@ -286,6 +296,15 @@ impl<'a> Tree<'a> {
     pub fn has_footer(&self) -> bool {
         self.hidden_projects > 0 || [self.paused, self.background, self.automated, self.older].iter().any(|c| c.count > 0)
     }
+}
+
+/// A session's row, and under it the files it changed when it is the one `changes` is about.
+fn push_session<'t, 'a>(nodes: &mut Vec<Node<'t, 'a>>, row: &'t Row<'a>, changes: Option<(&SessionKey, &'t [SessionChange])>) {
+    nodes.push(Node::Session(row));
+    let Some((_, files)) = changes.filter(|(key, files)| **key == row.session.key && !files.is_empty()) else { return };
+    let sum = |value: fn(&SessionChange) -> Option<u64>| files.iter().filter_map(value).sum::<u64>();
+    nodes.push(Node::ChangesHead { count: files.len(), added: sum(|c| c.added), removed: sum(|c| c.removed) });
+    nodes.extend(files.iter().map(Node::Change));
 }
 
 /// A session's place among its project's: running ones in the order they were started, then the
@@ -451,6 +470,38 @@ mod tests {
         let tree = Tree::build(&groups(vec![], vec![], vec![], vec![]), &listed(&["api"]), &by_folder, &notes, &views(), false);
         assert_eq!(tree.projects[0].notes.len(), 1);
         assert_eq!(tree.other_notes.len(), 1);
+    }
+
+    #[test]
+    fn the_changed_files_stand_under_the_selected_session_only() {
+        let (first, second) = (session("first", "/w/api", 1, false), session("second", "/w/api", 2, false));
+        let change = |relative: &str, added: u64, removed: u64| SessionChange {
+            path: format!("/w/api/{relative}"),
+            relative: relative.into(),
+            last_ms: 0,
+            added: Some(added),
+            removed: Some(removed),
+            root: "/w/api".into(),
+            git: None,
+        };
+        let files = vec![change("src/a.rs", 10, 2), change("b.rs", 5, 0)];
+        let tree = Tree::build(&groups(vec![], vec![], vec![&first, &second], vec![]), &listed(&["api"]), &by_folder, [], &views(), false);
+
+        let nodes = tree.nodes(false, Some((&second.key, &files)));
+
+        let shape: Vec<String> = nodes
+            .iter()
+            .map(|n| match n {
+                Node::Project(_) => "project".to_string(),
+                Node::Session(row) => row.session.key.id.clone(),
+                Node::ChangesHead { count, added, removed } => format!("changes {count} +{added} -{removed}"),
+                Node::Change(c) => c.relative.clone(),
+                _ => "other".to_string(),
+            })
+            .collect();
+        assert_eq!(shape, ["project", "first", "second", "changes 2 +15 -2", "src/a.rs", "b.rs", "other"]);
+        // No files read yet, or none changed: the tree is as it was.
+        assert_eq!(tree.nodes(false, Some((&second.key, &[]))).len(), tree.nodes(false, None).len());
     }
 
     #[test]

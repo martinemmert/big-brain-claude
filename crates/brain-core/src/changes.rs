@@ -1,7 +1,7 @@
 //! What a session changed in its working directory, from git.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,6 +138,80 @@ pub fn diff_lines(diff: &str) -> Vec<(DiffKind, String)> {
         .collect()
 }
 
+/// A file one session wrote or edited, with what git says about it now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionChange {
+    /// Absolute path, as the repository sees it.
+    pub path: String,
+    /// Relative to the session's folder, else to the repository, else absolute.
+    pub relative: String,
+    /// When the session last wrote it (Unix ms); 0 when the transcript has no time.
+    pub last_ms: i64,
+    pub added: Option<u64>,
+    pub removed: Option<u64>,
+    /// The repository the file is in (the folder to run git in).
+    pub root: PathBuf,
+    /// Its entry in git's status; `None` when it equals HEAD (or isn't in a repository).
+    pub git: Option<FileChange>,
+}
+
+/// The files the session behind `transcript` wrote or edited (not those it only read), newest
+/// first, with the lines added and removed against HEAD where git knows them. A new, untracked
+/// file counts all its lines as added.
+pub fn session_changes(transcript: &Path, cwd: &Path) -> Vec<SessionChange> {
+    let files: Vec<crate::files::SessionFile> = crate::files::session_files(transcript).into_iter().filter(|f| f.changed()).collect();
+    if files.is_empty() {
+        return Vec::new();
+    }
+    let root = git(cwd, &["rev-parse", "--show-toplevel"]).map(|r| PathBuf::from(r.trim()));
+    let git_root = root.as_deref().unwrap_or(cwd);
+    let in_git = root.is_some();
+    let status = if in_git { changes_of(git_root).map(|c| c.files).unwrap_or_default() } else { Vec::new() };
+    let cwd_canonical = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    files
+        .into_iter()
+        .map(|file| {
+            let path = std::fs::canonicalize(&file.path).unwrap_or_else(|_| PathBuf::from(&file.path));
+            let relative_to_root = path.strip_prefix(git_root).ok().map(|p| p.display().to_string());
+            let mut entry = relative_to_root.as_ref().filter(|_| in_git).and_then(|rel| status.iter().find(|c| c.path == *rel).cloned());
+            // A new file in a new folder is listed by git as that folder.
+            if let (None, Some(rel), true) = (&entry, &relative_to_root, in_git) {
+                let untracked = git(git_root, &["ls-files", "--others", "--exclude-standard", "--", rel]).is_some_and(|out| !out.trim().is_empty());
+                if untracked {
+                    entry = Some(FileChange { path: rel.clone(), status: "??".into(), added: None, removed: None });
+                }
+            }
+            let (mut added, mut removed) = entry.as_ref().map_or((None, None), |c| (c.added, c.removed));
+            if entry.as_ref().is_some_and(|c| c.status == "??") {
+                added = line_count(&path);
+                removed = added.map(|_| 0);
+            }
+            let relative = path
+                .strip_prefix(&cwd_canonical)
+                .ok()
+                .map(|p| p.display().to_string())
+                .or(relative_to_root)
+                .unwrap_or_else(|| path.display().to_string());
+            SessionChange { path: path.display().to_string(), relative, last_ms: file.last_ms, added, removed, root: git_root.to_path_buf(), git: entry }
+        })
+        .collect()
+}
+
+/// The diff of a session's file against HEAD; `None` when it equals HEAD or git can't tell.
+pub fn session_diff(change: &SessionChange) -> Option<String> {
+    diff_of(&change.root, change.git.as_ref()?)
+}
+
+/// Lines of a text file of up to 4 MB; `None` for anything else.
+fn line_count(path: &Path) -> Option<u64> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > 4 << 20 {
+        return None;
+    }
+    let text = String::from_utf8(std::fs::read(path).ok()?).ok()?;
+    Some(text.lines().count() as u64)
+}
+
 /// Whether Brain offers to discard the change: a modified, deleted, added or untracked file
 /// (not renames or conflicts, which need git by hand).
 pub fn discardable(change: &FileChange) -> bool {
@@ -243,6 +317,72 @@ mod tests {
         std::fs::remove_file(dir.path().join("a.txt")).unwrap();
         restore_from_head(dir.path(), modified).unwrap();
         assert_eq!(std::fs::read_to_string(dir.path().join("a.txt")).unwrap(), "one\n");
+    }
+
+    fn commit_all(dir: &Path) {
+        let run = |args: &[&str]| Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        run(&["add", "."]);
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]);
+    }
+
+    fn tool(name: &str, path: &Path, ts: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"{ts}","message":{{"role":"assistant","content":[{{"type":"tool_use","name":"{name}","input":{{"file_path":{}}}}}]}}}}"#,
+            serde_json::to_string(&path.display().to_string()).unwrap()
+        )
+    }
+
+    #[test]
+    fn a_sessions_changes_are_what_it_wrote_or_edited_newest_first_and_never_what_it_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        Command::new("git").arg("-C").arg(&root).args(["init", "-q"]).output().unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/config.rs"), "one\ntwo\n").unwrap();
+        std::fs::write(root.join("src/read_only.rs"), "x\n").unwrap();
+        std::fs::write(root.join("src/committed.rs"), "y\n").unwrap();
+        commit_all(&root);
+        std::fs::write(root.join("src/config.rs"), "one\nthree\nfour\n").unwrap();
+        std::fs::create_dir_all(root.join("tests/new")).unwrap();
+        std::fs::write(root.join("tests/new/limit.rs"), "a\nb\nc\n").unwrap();
+
+        let transcript = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            transcript.path(),
+            [
+                tool("Edit", &root.join("src/config.rs"), "2026-10-09T10:00:00Z"),
+                tool("Read", &root.join("src/read_only.rs"), "2026-10-09T10:01:00Z"),
+                tool("Edit", &root.join("src/committed.rs"), "2026-10-09T10:02:00Z"),
+                tool("Write", &root.join("tests/new/limit.rs"), "2026-10-09T10:03:00Z"),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let changes = session_changes(transcript.path(), &root);
+
+        let rows: Vec<(&str, Option<u64>, Option<u64>)> = changes.iter().map(|c| (c.relative.as_str(), c.added, c.removed)).collect();
+        // The file only read is absent; the new file in a new folder counts all its lines; the
+        // file that equals HEAD again is listed without counts.
+        assert_eq!(rows, [("tests/new/limit.rs", Some(3), Some(0)), ("src/committed.rs", None, None), ("src/config.rs", Some(2), Some(1))]);
+        assert!(session_diff(&changes[0]).unwrap().contains("+a"));
+        assert!(session_diff(&changes[1]).is_none());
+        assert!(session_diff(&changes[2]).unwrap().contains("-two"));
+    }
+
+    #[test]
+    fn a_file_outside_any_repository_is_listed_without_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = std::fs::canonicalize(dir.path()).unwrap().join("notes.txt");
+        std::fs::write(&file, "x\n").unwrap();
+        let transcript = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(transcript.path(), tool("Write", &file, "2026-10-09T10:00:00Z")).unwrap();
+
+        let changes = session_changes(transcript.path(), dir.path());
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!((changes[0].relative.as_str(), changes[0].added), ("notes.txt", None));
+        assert!(session_diff(&changes[0]).is_none());
     }
 
     #[test]

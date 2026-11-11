@@ -92,6 +92,7 @@ pub enum PaletteCommand {
     Cleanup,
     Later,
     ToggleBackground,
+    ToggleChanges,
     /// Show or hide sessions programs started (SDK reviews, `claude -p`).
     ToggleAutomated,
     Split,
@@ -132,6 +133,17 @@ pub struct HistoryCache {
     pub len: u64,
     pub messages: Vec<brain_core::transcript::Message>,
 }
+
+/// The files the selected session changed, as of a transcript size.
+pub struct ChangesCache {
+    pub key: SessionKey,
+    pub len: u64,
+    pub loaded: Instant,
+    pub files: Vec<brain_core::changes::SessionChange>,
+}
+
+/// The reading of a session's files is repeated at most this often while its transcript grows.
+const CHANGES_EVERY: Duration = Duration::from_secs(4);
 
 /// Buttons in the detail pane and the list's context menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,6 +262,10 @@ pub enum Message {
     /// The find field (⌘F).
     Find(String),
     HistoryLoaded(SessionKey, u64, Vec<brain_core::transcript::Message>),
+    /// The files the session changed, read in the background for a transcript of this size.
+    ChangesLoaded(SessionKey, u64, Vec<brain_core::changes::SessionChange>),
+    /// Show or leave out the changed files under the selected session.
+    ToggleChanges,
     /// A search hit or a prompt clicked open (its index in the history), or closed again.
     Expand(Option<usize>),
     CopyText(String),
@@ -572,6 +588,9 @@ pub struct Brain {
     /// The whole conversation, loaded for finding.
     pub history: Option<HistoryCache>,
     history_loading: bool,
+    /// The files the selected session changed, for the tree.
+    pub changes: Option<ChangesCache>,
+    changes_loading: bool,
     pub expanded: Option<usize>,
     pub mode: Mode,
     pub search: String,
@@ -765,6 +784,8 @@ impl Brain {
             palette_styles: Vec::new(),
             find_open: false,
             history: None,
+            changes: None,
+            changes_loading: false,
             history_loading: false,
             expanded: None,
             bells: HashSet::new(),
@@ -1088,6 +1109,16 @@ impl Brain {
             Message::HistoryLoaded(key, len, messages) => {
                 self.history = Some(HistoryCache { key, len, messages });
                 self.history_loading = false;
+                Task::none()
+            }
+            Message::ChangesLoaded(key, len, files) => {
+                self.changes = Some(ChangesCache { key, len, loaded: Instant::now(), files });
+                self.changes_loading = false;
+                Task::none()
+            }
+            Message::ToggleChanges => {
+                self.prefs.hide_changes = !self.prefs.hide_changes;
+                self.prefs.save();
                 Task::none()
             }
             Message::Expand(index) => {
@@ -1562,7 +1593,8 @@ impl Brain {
         // The find results follow the transcript as it grows.
         let history = self.load_history();
         let brief = self.load_brief();
-        Task::batch([attach, host, branches, history, brief])
+        let changes = self.load_changes();
+        Task::batch([attach, host, branches, history, brief, changes])
     }
 
     /// Background sessions open in Brain's terminal: when one gets selected (or Brain started it
@@ -1679,6 +1711,42 @@ impl Brain {
         Task::perform(off_thread(move || brain_core::transcript::read_all_messages(&path)), move |messages| {
             Message::HistoryLoaded(key.clone(), len, messages)
         })
+    }
+
+    /// Reads the files the selected session changed when it is selected and when its transcript
+    /// grew (at most every few seconds: the reading runs git).
+    fn load_changes(&mut self) -> Task<Message> {
+        if self.prefs.hide_changes || self.changes_loading {
+            return Task::none();
+        }
+        let Some(key) = self.selected.clone() else { return Task::none() };
+        if self.model.is_demo() {
+            if self.changes.as_ref().is_none_or(|c| c.key != key) {
+                let files = self.model.demo_changes.get(&key).cloned().unwrap_or_default();
+                self.changes = Some(ChangesCache { key, len: 0, loaded: Instant::now(), files });
+            }
+            return Task::none();
+        }
+        let Some((path, len)) = self.conversation.as_ref().filter(|c| c.key == key).and_then(|c| c.transcript()) else {
+            return Task::none();
+        };
+        if self.changes.as_ref().is_some_and(|c| c.key == key && (c.len == len || c.loaded.elapsed() < CHANGES_EVERY)) {
+            return Task::none();
+        }
+        let Some(cwd) = self.selected_session().and_then(|s| s.cwd.clone()) else { return Task::none() };
+        let path = path.to_path_buf();
+        self.changes_loading = true;
+        Task::perform(off_thread(move || brain_core::changes::session_changes(&path, std::path::Path::new(&cwd))), move |files| {
+            Message::ChangesLoaded(key.clone(), len, files)
+        })
+    }
+
+    /// The selected session and the files it changed, once they are read: they stand under its
+    /// row in the tree.
+    pub fn tree_changes(&self) -> Option<(&SessionKey, &[brain_core::changes::SessionChange])> {
+        let key = self.selected.as_ref()?;
+        let cache = self.changes.as_ref().filter(|c| c.key == *key && !self.prefs.hide_changes)?;
+        Some((key, cache.files.as_slice()))
     }
 
     /// Writes the selected session's conversation to `~/.claude-brain/exports/` as Markdown.
@@ -1865,6 +1933,7 @@ impl Brain {
         all.push((t("Alle Tasten", "All keys").to_string(), "?", PaletteCommand::Keys));
         all.push((t("Gärtner: kaputte Sessions finden und beenden", "Gardener: find and end broken sessions").to_string(), "", PaletteCommand::Garden));
         all.push((t("Log öffnen (Meldungen und Fehler)", "Open the log (messages and errors)").to_string(), "", PaletteCommand::OpenLog));
+        all.push((t("Änderungen unter der Session zeigen / verbergen", "Show / hide the changes under the session").to_string(), "", PaletteCommand::ToggleChanges));
         all.push((t("Ruhige Hintergrund-Sessions auf- / zuklappen", "Open / fold quiet background sessions").to_string(), "B", PaletteCommand::ToggleBackground));
         all.push((t("Automatisch gestartete Sessions (Reviews, Skripte) auf- / zuklappen", "Open / fold sessions started by programs (reviews, scripts)").to_string(), "U", PaletteCommand::ToggleAutomated));
 
@@ -1966,6 +2035,7 @@ impl Brain {
                 self.toggle_background();
                 Task::none()
             }
+            PaletteCommand::ToggleChanges => self.update(Message::ToggleChanges),
             PaletteCommand::ToggleAutomated => {
                 self.toggle_automated();
                 Task::none()
@@ -2575,7 +2645,7 @@ impl Brain {
         let tree = self.tree(&groups);
         let first = tree.navigable().first().map(|s| s.key.clone());
         let mut top = tree::TOP;
-        for node in tree.nodes(!self.search.is_empty()) {
+        for node in tree.nodes(!self.search.is_empty(), self.tree_changes()) {
             let height = node.height();
             if matches!(&node, tree::Node::Session(row) if row.session.key == key) {
                 let bottom = top + height;

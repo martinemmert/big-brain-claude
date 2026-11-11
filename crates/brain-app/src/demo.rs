@@ -52,6 +52,8 @@ pub struct Demo {
     pub board: Board,
     pub usage: Vec<Snapshot>,
     pub messages: HashMap<SessionKey, Vec<Message>>,
+    /// The files each session changed, newest first.
+    pub changes: HashMap<SessionKey, Vec<brain_core::changes::SessionChange>>,
 }
 
 struct Spec {
@@ -310,5 +312,27 @@ pub fn build() -> Demo {
         snapshot("second", 4102, 12.0, 34.0, 30.0, 0.92),
     ];
 
-    Demo { accounts, board, usage, messages }
+    let changes = HashMap::from([(SessionKey { account: "main".into(), id: "demo-4101".into() }, rate_limit_changes(now.timestamp_millis()))]);
+
+    Demo { accounts, board, usage, messages, changes }
+}
+
+/// The files "Rate-Limits" changed, newest first.
+fn rate_limit_changes(now_ms: i64) -> Vec<brain_core::changes::SessionChange> {
+    let root = "~/Projects/api-gateway";
+    let file = |relative: &str, minutes: i64, added: u64, removed: u64| brain_core::changes::SessionChange {
+        path: format!("{root}/{relative}"),
+        relative: relative.to_string(),
+        last_ms: now_ms - minutes * 60_000,
+        added: Some(added),
+        removed: Some(removed),
+        root: PathBuf::from(root),
+        git: None,
+    };
+    vec![
+        file("src/config.rs", 7, 18, 2),
+        file("tests/rate_limit.rs", 11, 96, 0),
+        file("src/middleware/rate_limit.rs", 19, 142, 0),
+        file("src/middleware/mod.rs", 24, 3, 1),
+    ]
 }
