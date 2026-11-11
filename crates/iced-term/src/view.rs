@@ -255,7 +255,7 @@ impl<'a> TerminalView<'a> {
             cursor_x,
             cursor_y,
             &terminal_content.terminal_size,
-            terminal_content.grid.display_offset(),
+            terminal_content.screen.display_offset(),
         );
 
         // Handle command or selection update based on terminal mode and modifiers
@@ -499,8 +499,8 @@ impl<'a> TerminalView<'a> {
 
         let content = self.term.backend.renderable_content();
         let terminal_size = content.terminal_size;
-        let cursor_point = content.grid.cursor.point;
-        let display_offset = content.grid.display_offset() as f32;
+        let cursor_point = content.screen.cursor_point();
+        let display_offset = content.screen.display_offset() as f32;
         let cell_width = terminal_size.cell_width as f32;
         let cell_height = terminal_size.cell_height as f32;
         let x = layout.position().x + (cursor_point.column.0 as f32 * cell_width);
@@ -1534,7 +1534,7 @@ fn paint_grid(
     let layout_offset_y = origin.y;
 
         // Precompute constants used in the inner loop
-        let display_offset = content.grid.display_offset() as f32;
+        let display_offset = content.screen.display_offset() as f32;
         let cell_size = Size::new(cell_width, cell_height);
         let half_w = cell_width * 0.5;
         let half_h = cell_height * 0.5;
@@ -1547,7 +1547,7 @@ fn paint_grid(
         let mut last_line: Option<i32> = None;
         let mut bg_batch_rect = BackgroundRect::default();
 
-        for indexed in content.grid.display_iter() {
+        for indexed in content.screen.display_iter() {
             // Compute per-cell geometry cheaply
             let line = indexed.point.line.0;
             let col = indexed.point.column.0 as f32;
@@ -1663,7 +1663,7 @@ fn paint_grid(
             }
 
             // Handle cursor rendering
-            if content.grid.cursor.point == indexed.point
+            if content.screen.cursor_point() == indexed.point
                 && content.terminal_mode.contains(TermMode::SHOW_CURSOR)
             {
                 let cursor_color =
@@ -1681,7 +1681,7 @@ fn paint_grid(
                 // APP_CURSOR, a keypad mode unrelated to rendering —
                 // made the glyph invisible whenever the cell was
                 // INVERSE or inside a selection.
-                if content.grid.cursor.point == indexed.point
+                if content.screen.cursor_point() == indexed.point
                     && content.terminal_mode.contains(TermMode::SHOW_CURSOR)
                 {
                     fg = cell_bg;

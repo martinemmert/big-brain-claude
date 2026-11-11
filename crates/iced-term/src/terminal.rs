@@ -99,6 +99,8 @@ impl Terminal {
             },
             Command::ChangeFont(font_settings) => {
                 self.font = TermFont::new(font_settings);
+                self.backend
+                    .handle(backend::Command::Resize(None, Some(self.font.measure)));
             },
             Command::AddBindings(bindings) => {
                 self.bindings.add_bindings(bindings);
@@ -137,15 +139,8 @@ impl Terminal {
     }
 
     fn sync_and_redraw(&mut self) {
-        self.sync_font();
         self.backend.sync();
         self.redraw();
-    }
-
-    fn sync_font(&mut self) {
-        self.font.sync();
-        self.backend
-            .handle(backend::Command::Resize(None, Some(self.font.measure)));
     }
 
     fn redraw(&mut self) {

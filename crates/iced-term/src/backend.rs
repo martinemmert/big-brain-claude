@@ -12,7 +12,8 @@ use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 use alacritty_terminal::term::{
     self, cell::Cell, test::TermSize, viewport_to_point, Term, TermMode,
 };
-use alacritty_terminal::{tty, Grid};
+use alacritty_terminal::grid::Indexed;
+use alacritty_terminal::tty;
 use iced::keyboard::Modifiers;
 use iced_core::Size;
 use std::borrow::Cow;
@@ -78,7 +79,7 @@ pub enum LinkAction {
     Open,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TerminalSize {
     pub cell_width: u16,
     pub cell_height: u16,
@@ -166,7 +167,7 @@ impl Backend {
         let cursor = term.grid_mut().cursor_cell().clone();
 
         let initial_content = RenderableContent {
-            grid: term.grid().clone(),
+            screen: Screen::default(),
             selectable_range: None,
             terminal_mode: *term.mode(),
             terminal_size,
@@ -266,19 +267,21 @@ impl Backend {
             LinkAction::Clear => {
                 self.last_content.hovered_hyperlink = None;
             },
-            LinkAction::Open => return self.open_link(),
+            LinkAction::Open => return self.open_link(terminal),
         };
         None
     }
 
-    /// The hovered link's text; Brain opens it (URLs in the browser, paths in its reader).
-    fn open_link(&self) -> Option<String> {
+    /// The hovered link's text; Brain opens it (URLs in the browser, paths in its reader). It's
+    /// read from the terminal itself: the link may start above what the snapshot holds.
+    fn open_link(&self, terminal: &Term<EventProxy>) -> Option<String> {
         if let Some(range) = &self.last_content.hovered_hyperlink {
             let start = range.start();
             let end = range.end();
 
-            let mut url = String::from(self.last_content.grid.index(*start).c);
-            for indexed in self.last_content.grid.iter_from(*start) {
+            let grid = terminal.grid();
+            let mut url = String::from(grid.index(*start).c);
+            for indexed in grid.iter_from(*start) {
                 url.push(indexed.c);
                 if indexed.point == *end {
                     break;
@@ -438,6 +441,7 @@ impl Backend {
         layout_size: Option<Size<f32>>,
         font_measure: Option<Size<f32>>,
     ) {
+        let before = self.size;
         if let Some(size) = layout_size {
             self.size.layout_height = size.height;
             self.size.layout_width = size.width;
@@ -448,6 +452,10 @@ impl Backend {
             self.size.cell_width = size.width as u16;
         }
 
+        // Asked after every event: only a real change reaches the PTY and the grid.
+        if self.size == before {
+            return;
+        }
         let lines = (self.size.layout_height / self.size.cell_height as f32)
             .floor() as u16;
         let cols = (self.size.layout_width / self.size.cell_width as f32)
@@ -529,7 +537,7 @@ impl Backend {
         };
 
         let cursor = terminal.grid_mut().cursor_cell().clone();
-        self.last_content.grid = terminal.grid().clone();
+        self.last_content.screen.copy_from(terminal.grid());
         self.last_content.selectable_range = selectable_range;
         self.last_content.cursor = cursor.clone();
         self.last_content.terminal_mode = *terminal.mode();
@@ -573,8 +581,41 @@ fn visible_regex_match_iter<'a>(
         .take_while(move |rm| rm.start().line <= viewport_end)
 }
 
+/// What is on the screen: the displayed lines (scrolled back by the display offset) and where the
+/// cursor is. The scrollback stays in the terminal, so a snapshot per event copies one screen, not
+/// ten thousand lines.
+#[derive(Default)]
+pub struct Screen {
+    /// Row by row, as displayed: the first line is `Line(-display_offset)`.
+    cells: Vec<Indexed<Cell>>,
+    display_offset: usize,
+    cursor_point: Point,
+}
+
+impl Screen {
+    fn copy_from(&mut self, grid: &alacritty_terminal::Grid<Cell>) {
+        self.display_offset = grid.display_offset();
+        self.cursor_point = grid.cursor.point;
+        self.cells.clear();
+        self.cells.extend(grid.display_iter().map(|indexed| Indexed { point: indexed.point, cell: indexed.cell.clone() }));
+    }
+
+    pub fn display_offset(&self) -> usize {
+        self.display_offset
+    }
+
+    pub fn cursor_point(&self) -> Point {
+        self.cursor_point
+    }
+
+    /// The displayed cells, top-left first.
+    pub fn display_iter(&self) -> impl Iterator<Item = Indexed<&Cell>> {
+        self.cells.iter().map(|indexed| Indexed { point: indexed.point, cell: &indexed.cell })
+    }
+}
+
 pub struct RenderableContent {
-    pub grid: Grid<Cell>,
+    pub screen: Screen,
     pub hovered_hyperlink: Option<RangeInclusive<Point>>,
     pub selectable_range: Option<SelectionRange>,
     pub cursor: Cell,
@@ -585,7 +626,7 @@ pub struct RenderableContent {
 impl Default for RenderableContent {
     fn default() -> Self {
         Self {
-            grid: Grid::new(0, 0, 0),
+            screen: Screen::default(),
             hovered_hyperlink: None,
             selectable_range: None,
             cursor: Cell::default(),
@@ -607,5 +648,31 @@ pub struct EventProxy(mpsc::Sender<Event>);
 impl EventListener for EventProxy {
     fn send_event(&self, event: Event) {
         let _ = self.0.try_send(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::Settings;
+    use alacritty_terminal::vte::ansi::Handler;
+
+    #[test]
+    fn snapshot_holds_the_screen_and_not_the_scrollback() {
+        let mut backend = Backend::new(0, mpsc::channel(8).0, Settings::default().backend).expect("a terminal starts");
+        {
+            // Ten thousand lines of history under the screen.
+            let mut term = backend.term.lock();
+            for _ in 0..10_000 {
+                term.input('x');
+                term.linefeed();
+            }
+            assert!(term.history_size() > 1000);
+        }
+        backend.sync();
+        let size = backend.renderable_content().terminal_size;
+        let screen = &backend.renderable_content().screen;
+        assert_eq!(screen.display_iter().count(), size.num_lines as usize * size.num_cols as usize);
+        assert_eq!(screen.display_offset(), 0);
     }
 }
