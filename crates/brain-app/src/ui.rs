@@ -1030,7 +1030,6 @@ fn session_pane(brain: &Brain, now: i64) -> Element<'_, Message> {
         DetailTab::Messages | DetailTab::Timeline | DetailTab::Questions => messages(brain, s),
         DetailTab::Changes => column![files_bar(brain, s), changes(brain, s)].spacing(10).height(Fill).into(),
         DetailTab::Files => with_reader(brain, files(brain, s)),
-        DetailTab::Konsil => scrollable(crate::konsil::view(brain, &s.key)).height(Fill).style(scrollbar).into(),
         DetailTab::Terminal => terminal(brain, s),
     };
     column![
@@ -1255,12 +1254,7 @@ fn conflict_lines<'a>(brain: &'a Brain, s: &Session) -> Vec<Element<'a, Message>
 fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
     let message_count = brain.conversation.as_ref().map_or(0, |c| c.messages.len());
     let file_count = brain.files.as_ref().filter(|f| f.key == s.key).map(|f| f.files.len());
-    let konsil_count = brain.konsil.as_ref().filter(|k| k.key == s.key).map_or(0, |k| k.councils.len());
     let mut tabs = vec![(DetailTab::Messages, t("Nachrichten", "Messages"), Some(message_count)), (DetailTab::Files, t("Dateien", "Files"), file_count)];
-    // Only sessions that held a council have the tab.
-    if konsil_count > 0 || brain.tab == DetailTab::Konsil {
-        tabs.push((DetailTab::Konsil, "Konsil", Some(konsil_count)));
-    }
     tabs.push((DetailTab::Terminal, "Terminal", None));
     // The lenses count as Messages, the git changes as Files.
     let shown = match brain.tab {

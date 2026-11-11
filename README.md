@@ -47,9 +47,6 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   Markdown files it created. A click opens one. The last segment, *Git changes*, shows the
   folder's branch, ahead/behind and changed files; a click shows a diff, "Discard change" (twice)
   puts the current version in the Trash and restores HEAD's.
-- **Konsil.** A council of the konsil skill (the lazy senior against his buddy) as a stage: both
-  figures, where they agree and where they still fight, every round in full. The skill marks it
-  with `brain konsil start|stand|end`; the Konsil tab shows once a session held one.
 - **Composer.** `⌘E`: a large editor for a longer prompt, with your templates, dictation and
   screenshots pasted with `⌘V`; `⌘⏎` sends it as one paste.
 - **Screenshots, offered.** A new screenshot shows above the footer: into the waiting session's
@@ -364,7 +361,7 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `⌘⇧A` | all terminals as live previews |
 | `⌘`-click | open a path (Markdown in YAMV, else the reader) or URL from the terminal output |
 | `⌘V` | paste a copied screenshot into the terminal |
-| `←` `→` | switch tabs: messages, files, (Konsil,) terminal |
+| `←` `→` | switch tabs: messages, files, terminal |
 | `⌘K` | command palette: everything, also what has no key (mute, open/fold sections, sync accounts …) |
 | `?` | every key |
 | `esc` | close a dialog or the find bar; clear the search |

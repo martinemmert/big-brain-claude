@@ -15,7 +15,6 @@ pub mod folders;
 pub mod garden;
 pub mod github;
 pub mod history;
-pub mod konsil;
 pub mod later;
 pub mod hook;
 pub mod install;

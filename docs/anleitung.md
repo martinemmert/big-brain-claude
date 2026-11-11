@@ -90,7 +90,6 @@ Die Tabs (`←` `→`):
 |---|---|
 | **Nachrichten** | Die letzten Nachrichten im Terminal-Look. `⌘F` öffnet darüber die Suchleiste für die ganze Session, mit den Ansichten **Gespräch**, **Deine Prompts** (alles, was du gefragt hast), **Fragen** (jede Rückfrage von Claude mit deiner Antwort; offene sind markiert) und **Ereignisse** (Start, Prompts, Freigaben, Turn-Enden, Meldungen). `esc` schließt sie. `⌘⇧C` kopiert die letzte Antwort, ⌘K → „Gespräch als Markdown öffnen“ öffnet es in YAMV. |
 | **Dateien** | Jede Datei, die die Session geschrieben, geändert, gelesen oder bekommen hat, neueste zuerst. So findest du z. B. erzeugte Markdown-Dateien. Klick öffnet sie. Der letzte Abschnitt, **Git-Änderungen**, zeigt Branch und geänderte Dateien; ein Klick zeigt den Diff, „Änderung verwerfen“ (zweimal) legt die jetzige Fassung in den Papierkorb und holt die aus HEAD zurück. |
-| **Konsil** | Nur bei Sessions, die ein Konsil gehalten haben: die Beratung als Bühne, Runde für Runde. |
 | **Terminal** | Die Session selbst, in Brains Terminal (siehe unten). Bei einer beendeten Session steht hier vorher ein **Steckbrief**: Anfang, letzte Frage, letzte Antwort, offene Rückfrage, geänderte Dateien. |
 
 ## Sessions in Brain laufen lassen

@@ -64,8 +64,8 @@ enum Command {
         #[arg(long)]
         json_file: std::path::PathBuf,
     },
-    /// Mark a council of the konsil skill; Brain reads its course from the transcript and shows
-    /// it in the Konsil tab.
+    /// Mark a council of the konsil skill: start and end are reported as doing and done, `stand`
+    /// does nothing (the konsil skill still calls all three).
     Konsil {
         #[command(subcommand)]
         step: KonsilStep,

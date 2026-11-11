@@ -118,12 +118,6 @@ fn short_tool_name(tool: &str) -> String {
 
 // ---- Markdown ------------------------------------------------------------------------
 
-/// Markdown in the system font (code in Menlo), for text that isn't part of the terminal-like
-/// conversation.
-pub fn prose<'a, M: 'a>(source: &str, size: f32) -> Element<'a, M> {
-    body_in(&ChatFont { regular: UI, bold: style::semibold(), code: style::MONO, size }, source)
-}
-
 fn body_in<'a, M: 'a>(font: &ChatFont, source: &str) -> Element<'a, M> {
     column(markdown::parse(source).into_iter().map(|b| block(font, b))).spacing(font.size * 0.6).into()
 }
