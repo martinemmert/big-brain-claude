@@ -15,6 +15,17 @@ pub fn enabled() -> bool {
     std::env::var_os("BRAIN_DEMO").is_some()
 }
 
+/// The projects the demo's tree lists; "legacy-shop" has no session, "release-notes" and
+/// "design-tokens" are not listed on purpose (they show under "Weitere").
+const LISTED: [&str; 7] = ["api-gateway", "checkout-redesign", "docs-site", "billing-service", "infra-terraform", "mobile-onboarding", "legacy-shop"];
+
+pub fn list_projects(prefs: &mut crate::prefs::Prefs) -> bool {
+    for name in LISTED {
+        prefs.list_project(name, Some(&format!("~/Projects/{name}")));
+    }
+    false
+}
+
 pub struct Demo {
     pub accounts: Vec<Account>,
     pub board: Board,

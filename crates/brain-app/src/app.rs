@@ -790,6 +790,10 @@ impl Brain {
             }
         }
         restore_saved(&mut model, &prefs);
+        let seeded = if demo { crate::demo::list_projects(&mut prefs) } else { seed_project_list(&mut model, &mut prefs) };
+        if seeded {
+            prefs.save();
+        }
         let mut brain = Self {
             model,
             prefs,
@@ -1920,9 +1924,8 @@ impl Brain {
         all.push((t("Automatisch gestartete Sessions (Reviews, Skripte) auf- / zuklappen", "Open / fold sessions started by programs (reviews, scripts)").to_string(), "U", PaletteCommand::ToggleAutomated));
 
         // Leave a project out of the list, or bring it back.
-        for block in &self.groups(now_ms()).projects {
-            let name = block.name.clone();
-            let label = if block.hidden { tr!("Projekt „{name}“ wieder einblenden", "Show project “{name}” again") } else { tr!("Projekt „{name}“ ausblenden", "Hide project “{name}”") };
+        for name in self.project_names() {
+            let label = if self.prefs.is_project_hidden(&name) { tr!("Projekt „{name}“ wieder einblenden", "Show project “{name}” again") } else { tr!("Projekt „{name}“ ausblenden", "Hide project “{name}”") };
             all.push((label, "", PaletteCommand::HideProject(name)));
         }
         // Into another project: each one that has sessions, back into its own, or a new one typed.
@@ -1947,7 +1950,7 @@ impl Brain {
         let text = self.palette.trim();
         if !text.is_empty() {
             // Not for a project that exists, nor for the word the menu fills in to list them.
-            let offers_new = !self.project_names().iter().any(|p| p == text) && !text.eq_ignore_ascii_case(t("Projekt", "project"));
+            let offers_new = !self.prefs.is_project_listed(text) && !text.eq_ignore_ascii_case(t("Projekt", "project"));
             if let Some(session) = self.selected_session().filter(|_| offers_new) {
                 let name = session.display_name();
                 shown.push((tr!("„{name}“ ins neue Projekt „{text}“ verschieben", "Move “{name}” to a new project “{text}”"), "", PaletteCommand::Project(Some(text.to_string()))));
@@ -2431,11 +2434,22 @@ impl Brain {
         self.projects.get(&s.key).map(|(n, _)| n.clone()).unwrap_or_else(|| s.display_name())
     }
 
-    /// Every project a live session is listed under, by name.
+    /// The projects of the tree, by name.
     pub fn project_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.groups(now_ms()).projects.iter().map(|b| b.name.clone()).collect();
+        let mut names: Vec<String> = self.prefs.listed_projects().iter().map(|p| p.name.clone()).collect();
         names.sort_by_key(|n| n.to_lowercase());
         names
+    }
+
+    /// Puts the project of a folder in the tree, a worktree as its main checkout. Returns whether
+    /// it was new.
+    fn list_project_of(&mut self, folder: &str) -> bool {
+        let (name, root) = listed_entry(self.model.project(folder));
+        let added = self.prefs.list_project(&name, Some(&root));
+        if added {
+            self.prefs.save();
+        }
+        added
     }
 
     /// Lists the session under `project`, or under its own again (`None`, or its own name).
@@ -2451,6 +2465,9 @@ impl Brain {
             Some(p) => tr!("„{name}“ steht jetzt im Projekt „{p}“.", "“{name}” is now in project “{p}”."),
             None => tr!("„{name}“ steht wieder im Projekt „{own}“.", "“{name}” is back in project “{own}”."),
         };
+        if let Some(project) = &project {
+            self.prefs.list_project(project, None);
+        }
         self.prefs.set_project(key, project);
         self.prefs.save();
         self.set_status(status);
@@ -3748,6 +3765,7 @@ impl Brain {
         if self.blocked_in_demo() {
             return Task::none();
         }
+        self.list_project_of(&folder);
         let _ = brain_core::later::done(&brain_core::later::file(&brain_core::account::home_dir()), &task.id);
         self.mode = Mode::Normal;
         self.set_status(t("Starte die Aufgabe als neue Session …", "Starting the task as a new session …"));
@@ -4024,6 +4042,7 @@ impl Brain {
         if self.blocked_in_demo() {
             return unfocus();
         }
+        self.list_project_of(&folder);
         if in_iterm {
             let mut command = String::from("claude");
             if let Some(model) = &model {
@@ -4126,6 +4145,34 @@ impl Brain {
     pub(super) fn goes_on_from_elsewhere(&self, key: &SessionKey) -> bool {
         self.model.board.get(key).is_some_and(|s| self.conversation_id(s).is_some_and(|id| Some(&id) != s.session_id.as_ref()))
     }
+}
+
+/// A project as the tree lists it: its name and the folder of its main checkout.
+fn listed_entry(project: &brain_core::project::Project) -> (String, String) {
+    (project.name.clone(), project.root.display().to_string())
+}
+
+/// The first start with a project list: the projects of the sessions running in Brain right now
+/// (background sessions, which is what Brain's terminals attach to) go in, once; nothing else.
+fn seed_project_list(model: &mut Model, prefs: &mut Prefs) -> bool {
+    let running: Vec<(SessionKey, String)> = model
+        .board
+        .sorted()
+        .into_iter()
+        .filter(|s| s.agent.is_some() && s.phase() != Phase::Ended)
+        .filter_map(|s| Some((s.key.clone(), s.cwd.clone()?)))
+        .collect();
+    let projects: Vec<(String, Option<String>)> = running
+        .into_iter()
+        .map(|(key, cwd)| {
+            let (name, root) = listed_entry(model.project(&cwd));
+            match prefs.project(&key) {
+                Some(moved) => (moved.to_string(), None),
+                None => (name, Some(root)),
+            }
+        })
+        .collect();
+    prefs.seed_projects(projects)
 }
 
 /// Saved sessions Brain has no events for (they ended before its hooks, or the hooks never
@@ -4378,6 +4425,13 @@ mod tests {
         let prefs = Prefs::default();
         let now = 1_790_001_000_000;
         assert_eq!(place(&session, Some(Place::Quiet), true, &prefs, now), Place::Decide(Ask::Options));
+    }
+
+    #[test]
+    fn a_worktree_is_listed_as_its_main_checkout() {
+        use brain_core::project::from_rev_parse;
+        let linked = from_rev_parse(std::path::Path::new("/w/app/.worktrees/fix"), "/w/app/.git\n/w/app/.worktrees/fix\n");
+        assert_eq!(listed_entry(&linked), ("app".to_string(), "/w/app".to_string()));
     }
 
     #[test]

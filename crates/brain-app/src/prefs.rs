@@ -53,6 +53,23 @@ pub struct Prefs {
     /// Show the sessions that ended over a day ago, at the end of the list.
     #[serde(default)]
     pub show_older: bool,
+    /// The projects in the tree on the left: only those the user added by hand or started a
+    /// session in from Brain. They stay until hidden.
+    #[serde(default)]
+    listed_projects: Vec<ListedProject>,
+    /// The first start with the project list took over the projects of the sessions then running
+    /// in Brain, once.
+    #[serde(default)]
+    projects_seeded: bool,
+}
+
+/// A project in the tree: its name (a worktree counts as its main checkout) and the folder of
+/// that checkout, if known (a project named in "move to project" has none).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListedProject {
+    pub name: String,
+    #[serde(default)]
+    pub folder: Option<String>,
 }
 
 /// Sessions are remembered by account and session id, so a pin outlives the process.
@@ -226,6 +243,44 @@ impl Prefs {
         }
     }
 
+    /// The projects of the tree, in the order they were added.
+    pub fn listed_projects(&self) -> &[ListedProject] {
+        &self.listed_projects
+    }
+
+    pub fn is_project_listed(&self, name: &str) -> bool {
+        self.listed_projects.iter().any(|p| p.name == name)
+    }
+
+    /// Adds a project to the tree; one that is there keeps its place but learns its folder.
+    /// Returns whether anything changed.
+    pub fn list_project(&mut self, name: &str, folder: Option<&str>) -> bool {
+        match self.listed_projects.iter_mut().find(|p| p.name == name) {
+            Some(listed) if listed.folder.is_none() && folder.is_some() => {
+                listed.folder = folder.map(str::to_string);
+                true
+            }
+            Some(_) => false,
+            None => {
+                self.listed_projects.push(ListedProject { name: name.to_string(), folder: folder.map(str::to_string) });
+                true
+            }
+        }
+    }
+
+    /// The first start with a project list: takes over `projects` (those of the sessions running
+    /// in Brain right now), once. Returns whether anything changed.
+    pub fn seed_projects(&mut self, projects: impl IntoIterator<Item = (String, Option<String>)>) -> bool {
+        if self.projects_seeded {
+            return false;
+        }
+        self.projects_seeded = true;
+        for (name, folder) in projects {
+            self.list_project(&name, folder.as_deref());
+        }
+        true
+    }
+
     pub fn is_section_folded(&self, section: &str) -> bool {
         self.folded_sections.contains(section)
     }
@@ -313,6 +368,29 @@ mod tests {
         let prefs: Prefs = serde_json::from_str(r#"{"pinned":["main:abc"],"layout":"projects","show_background":true}"#).unwrap();
         assert!(prefs.is_pinned(&SessionKey { account: "main".into(), id: "abc".into() }));
         assert!(prefs.show_background);
+    }
+
+    #[test]
+    fn a_project_is_listed_once_and_learns_its_folder_later() {
+        let mut prefs = Prefs::default();
+        assert!(prefs.list_project("api", None));
+        assert!(!prefs.list_project("api", None), "nothing to write twice");
+        assert!(prefs.list_project("api", Some("/w/api")), "the folder is new");
+        assert!(!prefs.list_project("api", Some("/elsewhere")), "the first folder stays");
+        assert_eq!(prefs.listed_projects(), &[ListedProject { name: "api".into(), folder: Some("/w/api".into()) }]);
+        assert!(prefs.is_project_listed("api") && !prefs.is_project_listed("docs"));
+    }
+
+    #[test]
+    fn the_list_is_seeded_once_and_an_old_state_file_starts_empty() {
+        let mut prefs: Prefs = serde_json::from_str(r#"{"pinned":["main:abc"]}"#).unwrap();
+        assert!(prefs.listed_projects().is_empty());
+        assert!(prefs.seed_projects([("api".to_string(), Some("/w/api".to_string()))]));
+        assert!(prefs.is_project_listed("api"));
+        assert!(!prefs.seed_projects([("docs".to_string(), None)]), "only the first start takes over");
+        assert!(!prefs.is_project_listed("docs"));
+        let again: Prefs = serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
+        assert!(again.is_project_listed("api"));
     }
 
     #[test]
