@@ -6,7 +6,7 @@ use iced::widget::{button, column, container, mouse_area, row, scrollable, stack
 use iced::{Background, Border, Color, Element, Fill, Length, Padding};
 
 use crate::companion::{Command, Picked};
-use crate::app::{self, Action, Brain, Choice, DetailTab, Item, Message, Mode, CLEANUP_DAYS};
+use crate::app::{self, Action, Brain, Choice, DetailTab, Groups, Item, Message, Mode, CLEANUP_DAYS};
 use crate::config;
 use crate::format::{ago, ago_phrase, background_summary, clip, clock, format_tokens, now_ms, phase_label, plain, short_model, tilde};
 use crate::i18n::t;
@@ -23,6 +23,8 @@ const TRAFFIC_LIGHTS: f32 = 78.0;
 
 pub fn view(brain: &Brain) -> Element<'_, Message> {
     let now = now_ms();
+    // The list, the title bar and the footer all read the same grouping: made once per view.
+    let groups = brain.groups(now);
     let detail = match brain.mode {
         _ if brain.overview => overview(brain),
         Mode::Cleanup => cleanup(brain),
@@ -36,7 +38,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::NewSession => new_session(brain),
         _ => detail(brain, now),
     };
-    let mut left = column![search(brain), list(brain, now)];
+    let mut left = column![search(brain), list(brain, &groups, now)];
     if let Some(usage) = usage(brain, now) {
         left = left.push(usage);
     }
@@ -57,7 +59,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         grip,
         container(detail).width(Fill).height(Fill).style(|_| style::fill(INK)),
     ];
-    let mut chrome = column![titlebar(brain), divider(), body.height(Fill), divider()];
+    let mut chrome = column![titlebar(brain, groups.deciding()), divider(), body.height(Fill), divider()];
     if let Some(offer) = screenshot_offer(brain) {
         chrome = chrome.push(offer);
     }
@@ -351,9 +353,7 @@ fn divider<'a>() -> Element<'a, Message> {
 
 // ---- title bar --------------------------------------------------------------------
 
-fn titlebar(brain: &Brain) -> Element<'_, Message> {
-    let groups = brain.groups(now_ms());
-    let waiting = groups.deciding();
+fn titlebar(brain: &Brain, waiting: usize) -> Element<'_, Message> {
     let summary = match waiting {
         0 => t("nichts wartet", "nothing waiting").to_string(),
         1 => t("1 wartet auf dich", "1 waiting for you").to_string(),
@@ -449,10 +449,9 @@ fn field_style(_: &iced::Theme, status: text_input::Status) -> text_input::Style
     }
 }
 
-fn list(brain: &Brain, now: i64) -> Element<'_, Message> {
-    let groups = brain.groups(now);
-    let items: Vec<Element<'_, Message>> = brain
-        .items(&groups, now)
+fn list<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Message> {
+    let items: Vec<Element<'a, Message>> = brain
+        .items(groups, now)
         .into_iter()
         .map(|item| match item {
             Item::Section { title, count, alert, action, fold } => {
@@ -477,7 +476,7 @@ fn list(brain: &Brain, now: i64) -> Element<'_, Message> {
             Item::Report(s, _) => report(brain, s, now),
             Item::Row(s, _) => list_row(brain, s, now),
             Item::Project(head) => project_title(head),
-            Item::Footer => list_footer(brain),
+            Item::Footer => list_footer(brain, groups),
         })
         .collect();
     scrollable(column(items).spacing(app::LIST_GAP).padding(Padding { top: app::LIST_TOP, right: 12.0, bottom: 16.0, left: 12.0 }))
@@ -794,8 +793,7 @@ fn session_card<'a>(brain: &'a Brain, s: &'a Session, now: i64, line: String) ->
 }
 
 /// Under the projects: ended, background and automated sessions, each folded away.
-fn list_footer(brain: &Brain) -> Element<'_, Message> {
-    let groups = brain.groups(now_ms());
+fn list_footer<'a>(brain: &'a Brain, groups: &Groups<'a>) -> Element<'a, Message> {
     let mut line = row![].spacing(6).align_y(iced::Center);
     if !groups.ended.is_empty() {
         let (n, arrow) = (groups.ended.len(), if brain.include_ended() { "▾" } else { "▸" });

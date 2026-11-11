@@ -279,6 +279,9 @@ impl Session {
     /// Whether the session matches every whitespace-separated term of `query`
     /// in its name, path, account or headline (case-insensitive).
     pub fn matches(&self, query: &str) -> bool {
+        if query.trim().is_empty() {
+            return true;
+        }
         let haystack = format!(
             "{} {} {} {}",
             self.display_name(),
@@ -730,6 +733,8 @@ mod tests {
         board.apply_event(&ev(1, Source::Report, Kind::Done, Some("SVG-Export fertig")));
         let s = board.get(&key()).unwrap();
 
+        assert!(s.matches(""));
+        assert!(s.matches("  "));
         assert!(s.matches("CHECKOUT svg"));
         assert!(s.matches("second /w/"));
         assert!(!s.matches("checkout pdf"));

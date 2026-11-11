@@ -805,6 +805,9 @@ pub struct Brain {
     pub reply: String,
     /// The selected session's slash commands while its reply field is open, for completing `/…`.
     reply_commands: Vec<brain_core::commands::SlashCommand>,
+    /// How many sessions wait for a decision (not counting a question that is only a guess), as of
+    /// the last sync: the window title and the menu bar read it.
+    deciding: usize,
     /// What Brain can do with the terminal hosting a session's process, by pid (found off the UI
     /// thread, once per pid).
     hosts: HashMap<u32, Capabilities>,
@@ -976,6 +979,7 @@ impl Brain {
             rename: String::new(),
             reply: String::new(),
             reply_commands: Vec::new(),
+            deciding: 0,
             hosts: HashMap::new(),
             hosts_pending: HashSet::new(),
             projects: HashMap::new(),
@@ -1091,7 +1095,7 @@ impl Brain {
     }
 
     pub fn title(&self) -> String {
-        let waiting = self.deciding();
+        let waiting = self.deciding;
         if waiting > 0 { tr!("Brain – {waiting} warten", "Brain – {waiting} waiting") } else { "Brain".into() }
     }
 
@@ -1128,11 +1132,6 @@ impl Brain {
             subscriptions.push(iced::time::every(Duration::from_secs(24 * 60 * 60)).map(|_| Message::CheckUpdate));
         }
         Subscription::batch(subscriptions)
-    }
-
-    /// How many sessions wait for a decision (not counting a question that is only a guess).
-    pub fn deciding(&self) -> usize {
-        self.groups(now_ms()).deciding()
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -1914,12 +1913,16 @@ impl Brain {
         if selected_ended && !self.include_ended() {
             self.show_ended = true;
         }
-        let visible: Vec<SessionKey> = self.groups(now).navigable(self.include_ended()).iter().map(|s| s.key.clone()).collect();
+        let (visible, mut deciding) = {
+            let groups = self.groups(now);
+            (groups.navigable(self.include_ended()).iter().map(|s| s.key.clone()).collect::<Vec<SessionKey>>(), groups.deciding())
+        };
         if self.selected.as_ref().is_none_or(|k| !visible.contains(k)) {
             self.selected = visible.first().cloned();
         }
         // Where the newly selected session stood, before looking at it makes it seen.
-        if self.held.as_ref().map(|(key, _)| key) != self.selected.as_ref() {
+        let held_changes = self.held.as_ref().map(|(key, _)| key) != self.selected.as_ref();
+        if held_changes {
             self.held = self.selected.clone().and_then(|key| {
                 let session = self.model.board.get(&key)?;
                 let open_question = self.questions.get(&key).is_some_and(|(_, q)| q.is_some());
@@ -1949,7 +1952,11 @@ impl Brain {
         let host = self.sync_host();
         self.sync_projects();
         self.conflicts = self.compute_conflicts();
-        let deciding = self.deciding();
+        // The grouping above stands unless the selection changed where a session is placed.
+        if held_changes {
+            deciding = self.groups(now).deciding();
+        }
+        self.deciding = deciding;
         if let Some(menubar) = self.menubar.as_mut() {
             menubar.show(deciding, deciding);
         }
