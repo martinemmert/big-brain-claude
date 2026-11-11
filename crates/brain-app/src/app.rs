@@ -261,6 +261,8 @@ pub enum Message {
     Term(iced_term::Event),
     /// What Brain can do with the terminal hosting a process (its pid).
     HostFound(u32, Capabilities),
+    /// The branch a session's folder has checked out (none outside git).
+    BranchFound(SessionKey, Option<String>),
     /// A background session Brain started or took over: its account and short id, or why not.
     Started(String, Result<String, String>),
     /// A background session restarted with new flags goes on as Claude Code's copy under a new
@@ -345,6 +347,7 @@ impl Message {
             self,
             Message::Term(_)
                 | Message::HostFound(..)
+                | Message::BranchFound(..)
                 | Message::Pointer(_)
                 | Message::WindowSized(_)
                 | Message::Hover(_)
@@ -583,6 +586,9 @@ pub struct Brain {
     hosts_pending: HashSet<u32>,
     /// Project name and worktree per session.
     pub projects: HashMap<SessionKey, (String, Option<String>)>,
+    /// The checked-out branch per shown session, asked in the background every so often.
+    pub branches: HashMap<SessionKey, (Option<String>, Instant)>,
+    branches_pending: HashSet<SessionKey>,
     /// The checked-out working tree per session (for conflicts and PR lookups).
     checkouts: HashMap<SessionKey, std::path::PathBuf>,
     /// The PR of each session's branch, refreshed every two minutes in the background.
@@ -739,6 +745,8 @@ impl Brain {
             hosts: HashMap::new(),
             hosts_pending: HashSet::new(),
             projects: HashMap::new(),
+            branches: HashMap::new(),
+            branches_pending: HashSet::new(),
             checkouts: HashMap::new(),
             prs: HashMap::new(),
             conflicts: HashMap::new(),
@@ -1105,6 +1113,11 @@ impl Brain {
             Message::CheckUpdate => Task::perform(off_thread(crate::links::check_for_update), Message::UpdateFound),
             Message::UpdateFound(update) => {
                 self.update = update;
+                Task::none()
+            }
+            Message::BranchFound(key, branch) => {
+                self.branches_pending.remove(&key);
+                self.branches.insert(key, (branch, Instant::now()));
                 Task::none()
             }
             Message::HostFound(pid, caps) => {
@@ -1535,6 +1548,7 @@ impl Brain {
         let attach = self.sync_terminal();
         self.sync_shown_terminal();
         let host = self.sync_host();
+        let branches = self.sync_branches();
         self.sync_projects();
         self.conflicts = self.compute_conflicts();
         // The grouping above stands unless the selection changed where a session is placed.
@@ -1548,7 +1562,7 @@ impl Brain {
         // The find results follow the transcript as it grows.
         let history = self.load_history();
         let brief = self.load_brief();
-        Task::batch([attach, host, history, brief])
+        Task::batch([attach, host, branches, history, brief])
     }
 
     /// Background sessions open in Brain's terminal: when one gets selected (or Brain started it
@@ -2331,6 +2345,29 @@ impl Brain {
             off_thread(move || terminal::host_of(pid).map(|host| terminal::capabilities(&host)).unwrap_or(Capabilities { focus: false, keys: false })),
             move |caps| Message::HostFound(pid, caps),
         )
+    }
+
+    /// Asks git for the branch of the sessions on screen (the selected one and a split's other),
+    /// in the background, again after twenty seconds.
+    fn sync_branches(&mut self) -> Task<Message> {
+        if self.model.is_demo() {
+            return Task::none();
+        }
+        let wanted: Vec<(SessionKey, String)> = self
+            .selected
+            .iter()
+            .chain(self.split.iter())
+            .filter(|k| !self.branches_pending.contains(*k) && self.branches.get(*k).is_none_or(|(_, at)| at.elapsed() > Duration::from_secs(20)))
+            .filter_map(|k| Some((k.clone(), self.model.board.get(k)?.cwd.clone()?)))
+            .collect();
+        let tasks: Vec<Task<Message>> = wanted
+            .into_iter()
+            .map(|(key, cwd)| {
+                self.branches_pending.insert(key.clone());
+                Task::perform(off_thread(move || brain_core::changes::branch_of(std::path::Path::new(&cwd))), move |branch| Message::BranchFound(key.clone(), branch))
+            })
+            .collect();
+        Task::batch(tasks)
     }
 
     /// Project names for the sessions (git is asked once per directory).

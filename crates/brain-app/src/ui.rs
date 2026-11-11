@@ -953,29 +953,11 @@ fn detail(brain: &Brain) -> Element<'_, Message> {
 /// The split's other session: its header and its terminal. A click (or typing into it) makes
 /// it the active one.
 fn other_pane<'a>(brain: &'a Brain, s: &'a Session) -> Element<'a, Message> {
-    let mut header = row![
-        text(clip(&s.display_name(), 40)).size(18).color(TEXT_STRONG).font(style::bold()).wrapping(text::Wrapping::None),
-        account_badge(&s.key.account, brain.account_index(&s.key.account)),
-    ]
-    .spacing(10)
-    .align_y(iced::Center);
-    for m in markers(brain, s) {
-        header = header.push(m);
-    }
-    header = header
-        .push(Space::new().width(Fill))
-        .push(button(text("✕").size(13).color(TEXT_MUTED)).padding([4, 8]).on_press(Message::ToggleSplit).style(|_, _| button::Style::default()));
-    let head = mouse_area(column![header, subtitle(brain, s)].spacing(10))
-        .on_press(Message::ActivatePane)
-        .interaction(iced::mouse::Interaction::Pointer);
-    column![head, terminal_or_hint(brain, s)]
-        .spacing(14)
-        .padding(Padding { top: 20.0, right: 20.0, bottom: 0.0, left: 28.0 })
-        .height(Fill)
-        .into()
+    let head = mouse_area(header(brain, s, Some(Message::ToggleSplit))).on_press(Message::ActivatePane).interaction(iced::mouse::Interaction::Pointer);
+    column![head, terminal_or_hint(brain, s)].spacing(2).padding(Padding { top: 0.0, right: 12.0, bottom: 0.0, left: 12.0 }).height(Fill).into()
 }
 
-/// The selected session: header, details and its terminal.
+/// The selected session: its slim header line and its terminal, which gets all the rest.
 fn session_pane(brain: &Brain) -> Element<'_, Message> {
     let Some(s) = brain.selected_session() else {
         return container(
@@ -992,11 +974,6 @@ fn session_pane(brain: &Brain) -> Element<'_, Message> {
         .center(Fill)
         .into();
     };
-    let mut header = row![name(brain, s), account_badge(&s.key.account, brain.account_index(&s.key.account))].spacing(10).align_y(iced::Center);
-    for m in markers(brain, s) {
-        header = header.push(m);
-    }
-
     let content: Element<'_, Message> = if !brain.find_open {
         terminal(brain, s)
     } else if brain.find.trim().is_empty() {
@@ -1004,33 +981,120 @@ fn session_pane(brain: &Brain) -> Element<'_, Message> {
     } else {
         column![find_bar(brain), whole_session(brain)].spacing(8).height(Fill).into()
     };
-    let mut pane = column![header, subtitle(brain, s)].spacing(14);
-    for line in conflict_lines(brain, s) {
-        pane = pane.push(line);
-    }
-    pane.push(content)
-    .padding(Padding { top: 20.0, right: 28.0, bottom: 0.0, left: 28.0 })
-    .height(Fill)
-    .into()
+    column![header(brain, s, None), content].spacing(2).padding(Padding { top: 0.0, right: 12.0, bottom: 0.0, left: 12.0 }).height(Fill).into()
 }
 
-fn name<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
-    if brain.mode == Mode::Rename {
-        return text_input("", &brain.rename)
+/// One slim line above a terminal: project › session, branch, account, how full the context is,
+/// a sign when it edits the same files as another session. Everything else on hover.
+fn header<'a>(brain: &'a Brain, s: &'a Session, close: Option<Message>) -> Element<'a, Message> {
+    let renaming = brain.mode == Mode::Rename && brain.selected.as_ref() == Some(&s.key);
+    let name: Element<'a, Message> = if renaming {
+        text_input("", &brain.rename)
             .id(app::RENAME)
             .on_input(Message::Rename)
             .on_submit(Message::RenameSubmit)
-            .size(20)
-            .font(style::bold())
-            .padding([1, 8])
-            .width(Length::Fixed(420.0))
+            .size(13)
+            .font(style::semibold())
+            .padding([1, 6])
+            .width(Length::Fixed(320.0))
             .style(field_style)
-            .into();
+            .into()
+    } else {
+        mouse_area(text(clip(&s.display_name(), 48)).size(13).color(TEXT_STRONG).font(style::semibold()).wrapping(text::Wrapping::None))
+            .on_press(Message::Do(Action::StartRename))
+            .interaction(iced::mouse::Interaction::Pointer)
+            .into()
+    };
+    let mut line = row![
+        text(clip(&brain.project_name(s), 28)).size(12.5).color(TEXT_MUTED).font(UI).wrapping(text::Wrapping::None),
+        text("›").size(12.5).color(TEXT_FAINT).font(UI),
+        name,
+    ]
+    .spacing(8)
+    .align_y(iced::Center);
+    if renaming {
+        line = line.push(text(t("⏎ schickt /rename an die Session, esc bricht ab", "⏎ sends /rename to the session, esc cancels")).size(11.5).color(TEXT_FAINT).font(UI));
     }
-    mouse_area(row![text(clip(&s.display_name(), 48)).size(20).color(TEXT_STRONG).font(style::bold()).wrapping(text::Wrapping::None), text("✎").size(13).color(TEXT_FAINT)].spacing(8).align_y(iced::Center))
-        .on_press(Message::Do(Action::StartRename))
-        .interaction(iced::mouse::Interaction::Pointer)
+    if let Some(branch) = brain.branches.get(&s.key).and_then(|(branch, _)| branch.as_ref()) {
+        line = line.push(text(format!("⎇ {}", clip(branch, 32))).size(11.5).color(TEXT_MUTED).font(MONO).wrapping(text::Wrapping::None));
+    }
+    line = line.push(account_badge(&s.key.account, brain.account_index(&s.key.account)));
+    line = line.push(Space::new().width(Fill));
+    if let Some(warning) = conflict_text(brain, s) {
+        let card = container(text(warning).size(12).color(TEXT).font(UI)).padding([6, 10]).max_width(420).style(|_| boxed(RAISED, LINE_STRONG, 8.0));
+        line = line.push(iced::widget::tooltip(text("⚠").size(13).color(CALLS).font(UI), card, iced::widget::tooltip::Position::Bottom).gap(6));
+    }
+    if let Some(percent) = brain.model.snapshot(&s.key).and_then(|status| status.context_percent) {
+        line = line.push(context_gauge(brain, s, percent));
+    } else if let Some(tokens) = s.insight.context_tokens {
+        let tokens = format_tokens(tokens);
+        line = line.push(text(tr!("{tokens} Kontext", "{tokens} context")).size(11.5).color(TEXT_MUTED).font(UI));
+    }
+    if let Some(close) = close {
+        line = line.push(button(text("✕").size(12).color(TEXT_MUTED)).padding([2, 6]).on_press(close).style(|_, _| button::Style::default()));
+    }
+    let bar = container(line).height(HEADER_H).center_y(HEADER_H).padding([0, 6]).width(Fill).clip(true);
+    iced::widget::tooltip(bar, detail_card(brain, s), iced::widget::tooltip::Position::Bottom).gap(2).into()
+}
+
+/// The height of the line above a terminal.
+const HEADER_H: f32 = 32.0;
+
+/// What the line above a terminal leaves out: folder, model, mode, cost, pid, start, PR, the days
+/// an ended session can still be resumed.
+fn detail_card<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
+    let info = &s.insight;
+    let mut lines: Vec<String> = vec![s.cwd.as_deref().map(tilde).unwrap_or_default()];
+    let mut facts: Vec<String> = Vec::new();
+    if let Some(model) = &info.model {
+        facts.push(short_model(model));
+    }
+    if let Some(mode) = info.permission_mode.as_deref().filter(|m| *m != "default") {
+        facts.push(mode.to_string());
+    }
+    if let Some(cost) = brain.model.snapshot(&s.key).and_then(|s| s.cost_usd).or(info.cost_usd) {
+        facts.push(format!("${cost:.2}"));
+    }
+    if s.alive {
+        facts.push(format!("pid {}", s.pid));
+    }
+    if let Some(started) = s.started_ms {
+        let at = clock(started);
+        facts.push(tr!("seit {at}", "since {at}"));
+    }
+    if !s.alive {
+        if let Some(days) = brain.model.days_left(s, now_ms()) {
+            facts.push(tr!("noch {days} Tage fortsetzbar", "resumable for {days} more days"));
+        }
+    }
+    if !facts.is_empty() {
+        lines.push(facts.join("  ·  "));
+    }
+    if let Some(pr) = brain.prs.get(&s.key) {
+        let (symbol, _) = pr_look(pr);
+        lines.push(format!("PR #{} {symbol} {}", pr.number, pr.state.to_lowercase()));
+    }
+    container(column(lines.into_iter().map(|l| text(l).size(11.5).color(TEXT).font(UI).into())).spacing(3))
+        .padding([6, 10])
+        .style(|_| boxed(RAISED, LINE_STRONG, 8.0))
         .into()
+}
+
+/// "Edits the same files as X: a.rs, b.rs" and "Works in the same checkout as Y", one per line.
+fn conflict_text(brain: &Brain, s: &Session) -> Option<String> {
+    let conflict = brain.conflicts.get(&s.key)?;
+    let name = |key| brain.model.board.get(key).map(|o: &Session| o.display_name()).unwrap_or_default();
+    let mut out: Vec<String> = Vec::new();
+    for (other, files) in &conflict.shared_files {
+        let other = name(other);
+        let list = files.iter().map(|f| f.rsplit('/').next().unwrap_or(f)).collect::<Vec<_>>().join(", ");
+        out.push(tr!("Bearbeitet dieselben Dateien wie {other}: {list}", "Edits the same files as {other}: {list}"));
+    }
+    if !conflict.same_checkout.is_empty() {
+        let others = conflict.same_checkout.iter().map(name).collect::<Vec<_>>().join(", ");
+        out.push(tr!("Ändert Dateien im selben Checkout wie {others}", "Changes files in the same checkout as {others}"));
+    }
+    (!out.is_empty()).then(|| out.join("\n"))
 }
 
 /// How full the context is, as a bar: amber from 80 %, red from 90 %, with a button that
@@ -1056,80 +1120,6 @@ fn context_gauge<'a>(brain: &'a Brain, s: &Session, percent: f64) -> Element<'a,
         line = line.push(style::text_button("/compact", false, Message::SendTo(s.key.clone(), "/compact".to_string())));
     }
     line.into()
-}
-
-/// One quiet line under the name: where it runs, the model, how full the context is, what to
-/// know (a permission mode, days left to resume, the pull request). Cost, pid and start time
-/// on hover: they are for looking up, not for deciding.
-fn subtitle<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
-    if brain.mode == Mode::Rename {
-        return text(t("⏎ schickt /rename an die Session, esc bricht ab", "⏎ sends /rename to the session, esc cancels")).size(12).color(TEXT_MUTED).font(UI).into();
-    }
-    let info = &s.insight;
-    let status = brain.model.snapshot(&s.key);
-    let quiet = |label: String| -> Element<'a, Message> { text(label).size(12).color(TEXT_MUTED).font(UI).into() };
-    let mut parts: Vec<Element<'a, Message>> = vec![text(s.cwd.as_deref().map(tilde).unwrap_or_default()).size(11.5).color(TEXT_MUTED).font(MONO).into()];
-    if let Some(model) = &info.model {
-        parts.push(quiet(short_model(model)));
-    }
-    // The status line knows the real fill level; the transcript only the token count.
-    if let Some(percent) = status.and_then(|s| s.context_percent) {
-        parts.push(context_gauge(brain, s, percent));
-    } else if let Some(tokens) = info.context_tokens {
-        let tokens = format_tokens(tokens);
-        parts.push(quiet(tr!("{tokens} Kontext", "{tokens} context")));
-    }
-    if let Some(mode) = info.permission_mode.as_deref().filter(|m| *m != "default") {
-        parts.push(text(mode.to_string()).size(12).color(TURN).font(UI).into());
-    }
-    if !s.alive {
-        if let Some(days) = brain.model.days_left(s, now_ms()) {
-            parts.push(quiet(tr!("noch {days} Tage fortsetzbar", "resumable for {days} more days")));
-        }
-    }
-    let mut line = row![].spacing(8).align_y(iced::Center);
-    for (i, part) in parts.into_iter().enumerate() {
-        if i > 0 {
-            line = line.push(text("·").size(12).color(TEXT_FAINT));
-        }
-        line = line.push(part);
-    }
-    if let Some(pr) = brain.prs.get(&s.key) {
-        line = line.push(pr_chip(pr));
-    }
-    let mut details = Vec::new();
-    if let Some(cost) = status.and_then(|s| s.cost_usd).or(info.cost_usd) {
-        details.push(format!("${cost:.2}"));
-    }
-    if s.alive {
-        details.push(format!("pid {}", s.pid));
-    }
-    if let Some(started) = s.started_ms {
-        let at = clock(started);
-        details.push(tr!("seit {at}", "since {at}"));
-    }
-    if details.is_empty() {
-        return line.into();
-    }
-    let card = container(text(details.join("  ·  ")).size(12).color(TEXT).font(UI)).padding([5, 9]).style(|_| boxed(RAISED, LINE_STRONG, 6.0));
-    iced::widget::tooltip(line, card, iced::widget::tooltip::Position::Bottom).gap(6).into()
-}
-
-/// "Edits the same files as X: a.rs, b.rs" and "Works in the same checkout as Y".
-fn conflict_lines<'a>(brain: &'a Brain, s: &Session) -> Vec<Element<'a, Message>> {
-    let Some(conflict) = brain.conflicts.get(&s.key) else { return Vec::new() };
-    let name = |key| brain.model.board.get(key).map(|o: &Session| o.display_name()).unwrap_or_default();
-    let mut out = Vec::new();
-    for (other, files) in &conflict.shared_files {
-        let other = name(other);
-        let list = files.iter().map(|f| f.rsplit('/').next().unwrap_or(f)).collect::<Vec<_>>().join(", ");
-        out.push(text(tr!("⚠ Bearbeitet dieselben Dateien wie {other}: {list}", "⚠ Edits the same files as {other}: {list}")).size(12).color(CALLS_SOFT).font(UI).into());
-    }
-    if !conflict.same_checkout.is_empty() {
-        let others = conflict.same_checkout.iter().map(name).collect::<Vec<_>>().join(", ");
-        out.push(text(tr!("Ändert Dateien im selben Checkout wie {others}", "Changes files in the same checkout as {others}")).size(12).color(TURN).font(UI).into());
-    }
-    out
 }
 
 /// A real terminal running the session inside Brain, or why there is none.
@@ -1463,33 +1453,6 @@ fn pr_look(pr: &brain_core::github::PullRequest) -> (&'static str, Color) {
         (_, Checks::Passing) => ("✓", DONE),
         (_, Checks::None) => ("", TEXT_MUTED),
     }
-}
-
-/// A chip that opens the PR in the browser.
-fn pr_chip<'a>(pr: &brain_core::github::PullRequest) -> Element<'a, Message> {
-    let (symbol, color) = pr_look(pr);
-    let failing = pr.failing.len();
-    let mut label = format!("PR #{} {symbol}", pr.number);
-    if failing > 0 {
-        label.push_str(&tr!(" · {failing} Checks rot", " · {failing} checks failing"));
-    }
-    if pr.draft {
-        label.push_str(t(" · Entwurf", " · draft"));
-    }
-    match pr.review.as_deref() {
-        Some("APPROVED") => label.push_str(t(" · freigegeben", " · approved")),
-        Some("CHANGES_REQUESTED") => label.push_str(t(" · Änderungen gewünscht", " · changes requested")),
-        _ => {}
-    }
-    button(text(label).size(11.5).color(color).font(UI))
-        .padding([2, 7])
-        .on_press(Message::OpenUrl(pr.url.clone()))
-        .style(move |_, _| button::Style {
-            background: Some(Background::Color(alpha(color, 0x1c))),
-            border: Border { color: alpha(color, 0x55), width: 1.0, radius: 5.0.into() },
-            ..button::Style::default()
-        })
-        .into()
 }
 
 // ---- dialogs ----------------------------------------------------------------------
