@@ -194,17 +194,18 @@ impl<'a> Tree<'a> {
     }
 }
 
-pub const PROJECT_H: f32 = 28.0;
-pub const ROW_H: f32 = 26.0;
+/// A project's head, with room above its name that sets the projects apart.
+pub const PROJECT_H: f32 = 42.0;
+pub const ROW_H: f32 = 30.0;
 /// The line under a session that asks or has finished unseen.
-pub const STATUS_H: f32 = 18.0;
+pub const STATUS_H: f32 = 20.0;
 /// Allow and Deny under a permission.
-pub const BUTTONS_H: f32 = 30.0;
-pub const NOTE_H: f32 = 24.0;
+pub const BUTTONS_H: f32 = 38.0;
+pub const NOTE_H: f32 = 26.0;
 pub const FOOTER_H: f32 = 30.0;
 pub const HINT_H: f32 = 34.0;
-pub const GAP: f32 = 1.0;
-pub const TOP: f32 = 4.0;
+pub const GAP: f32 = 2.0;
+pub const TOP: f32 = 0.0;
 
 /// One line of the tree in drawing order, so the list's height is known (to keep the selected
 /// session in view).
@@ -232,7 +233,8 @@ impl Node<'_, '_> {
             Node::Hint(_) => HINT_H,
             Node::Project(_) => PROJECT_H,
             Node::Session(row) => row_height(row.mark),
-            Node::NotesHead { .. } | Node::Note { .. } | Node::OthersHead { .. } | Node::ChangesHead { .. } | Node::Change(_) => NOTE_H,
+            Node::NotesHead { .. } | Node::Note { .. } | Node::ChangesHead { .. } | Node::Change(_) => NOTE_H,
+            Node::OthersHead { .. } => PROJECT_H,
             Node::Footer => FOOTER_H,
             Node::NewProject => PROJECT_H,
         }

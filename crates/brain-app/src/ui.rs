@@ -476,8 +476,25 @@ fn tree<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Mess
         .into()
 }
 
-/// Indentation of a session under its project: the head's arrow and its gap.
-const NEST: f32 = 18.0;
+/// Where a project's name starts: its padding, the fold arrow and the gap after it. A session's
+/// dot stands there, under the name.
+const NEST: f32 = 26.0;
+/// Where a session's name starts (its dot and the gap after it): its status line and what stands
+/// under it (changes, notes) begin there.
+const NAME: f32 = NEST + 16.0;
+/// One step further in: the files and notes under such a head.
+const LEAF: f32 = NAME + 14.0;
+
+/// A tree head's line (project, "Weitere"): sits at the bottom of its row, so the room above it
+/// parts it from what comes before.
+fn head_cell<'a>(line: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
+    container(line).height(tree::PROJECT_H).align_y(iced::Bottom).padding(Padding { left: 6.0, right: 6.0, bottom: 5.0, top: 0.0 }).width(Fill).clip(true)
+}
+
+/// The fold arrow of a head.
+fn fold_arrow<'a>(folded: bool) -> Element<'a, Message> {
+    text(if folded { "▸" } else { "▾" }).size(11).color(TEXT_MUTED).font(UI).width(14).into()
+}
 
 /// A project's head: fold arrow, name, and at the right what is going on in it. A click folds it,
 /// a right click opens its menu.
@@ -485,8 +502,8 @@ fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Messa
     let name = project.name.clone();
     let color = if project.hidden { TEXT_FAINT } else { TEXT_STRONG };
     let mut line = row![
-        text(if project.folded { "▸" } else { "▾" }).size(9).color(TEXT_FAINT).font(UI).width(12),
-        text(clip(&name, 30)).size(12.5).color(color).font(style::semibold()).wrapping(text::Wrapping::None),
+        fold_arrow(project.folded),
+        text(clip(&name, 30)).size(13).color(color).font(style::semibold()).wrapping(text::Wrapping::None),
         Space::new().width(Fill),
     ]
     .spacing(6)
@@ -524,7 +541,7 @@ fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Messa
                 ..button::Style::default()
             }),
     );
-    mouse_area(container(line).height(tree::PROJECT_H).center_y(tree::PROJECT_H).padding([0, 6]).width(Fill).clip(true))
+    mouse_area(head_cell(line))
         .on_press(Message::ToggleProjectFolded(name.clone()))
         .on_right_press(Message::ProjectMenu(name))
         .interaction(iced::mouse::Interaction::Pointer)
@@ -546,10 +563,10 @@ fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> El
     let since = if ended || matches!(s.phase(), Phase::Asleep) { s.last_activity_ms } else { s.phase_since_ms() };
     let mut head = row![
         state_dot(s, mark),
-        text(clip(&s.display_name(), 34)).size(12.5).color(name_color).font(if selected { style::medium() } else { UI }).wrapping(text::Wrapping::None),
+        text(clip(&s.display_name(), 34)).size(13).color(name_color).font(if selected { style::medium() } else { UI }).wrapping(text::Wrapping::None),
         Space::new().width(Fill),
     ]
-    .spacing(7)
+    .spacing(8)
     .align_y(iced::Center);
     if brain.prefs.is_pinned(&s.key) {
         head = head.push(marker("★", TURN));
@@ -561,17 +578,19 @@ fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> El
     let mut body = column![container(head).height(tree::ROW_H).center_y(tree::ROW_H)];
     if let Some((line, color)) = status_line(s, mark) {
         body = body.push(
-            container(text(clip(&line, 64)).size(11).color(color).font(UI).wrapping(text::Wrapping::None))
+            container(text(clip(&line, 64)).size(12).color(color).font(UI).wrapping(text::Wrapping::None))
                 .height(tree::STATUS_H)
-                .padding(Padding { left: 15.0, ..Padding::ZERO }),
+                .align_y(iced::Top)
+                .padding(Padding { left: NAME - NEST, ..Padding::ZERO }),
         );
     }
     if mark == Mark::Asks(Ask::Permission) {
         let answer = |allow: bool| Message::Steer(Command::Permission { key: s.key.clone(), allow, since_ms: s.phase_since_ms() });
         body = body.push(
-            container(row![action(t("Erlauben", "Allow"), "", true, Some(answer(true))), action(t("Ablehnen", "Deny"), "", false, Some(answer(false)))].spacing(6))
+            container(row![action(t("Erlauben", "Allow"), "", true, Some(answer(true))), action(t("Ablehnen", "Deny"), "", false, Some(answer(false)))].spacing(8))
                 .height(tree::BUTTONS_H)
-                .padding(Padding { left: 15.0, ..Padding::ZERO }),
+                .align_y(iced::Center)
+                .padding(Padding { left: NAME - NEST, ..Padding::ZERO }),
         );
     }
     let background = if selected { RAISED } else if hovered { style::HOVER } else if asking { alpha(CALLS, 0x12) } else { Color::TRANSPARENT };
@@ -579,7 +598,7 @@ fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> El
     let content = container(body)
         .height(tree::row_height(mark))
         .width(Fill)
-        .padding(Padding { left: NEST - 6.0, right: 8.0, ..Padding::ZERO })
+        .padding(Padding { left: NEST, right: 8.0, ..Padding::ZERO })
         .clip(true)
         .style(move |_| boxed(background, edge, 6.0));
     iced::widget::tooltip(clickable(content.into(), s), tooltip_card(brain, s, now), iced::widget::tooltip::Position::Right).gap(8).into()
@@ -650,7 +669,7 @@ fn changes_head<'a>(count: usize, added: u64, removed: u64) -> Element<'a, Messa
         counts(Some(added), Some(removed)),
     ]
     .spacing(4);
-    container(label).height(tree::NOTE_H).center_y(tree::NOTE_H).padding(Padding { left: NEST + 26.0, ..Padding::ZERO }).into()
+    container(label).height(tree::NOTE_H).center_y(tree::NOTE_H).padding(Padding { left: NAME, ..Padding::ZERO }).into()
 }
 
 /// A file the selected session changed: its path from the project, with the lines added and
@@ -666,7 +685,7 @@ fn change_row<'a>(change: &SessionChange, open: bool) -> Element<'a, Message> {
     let padded = container(line)
         .height(tree::NOTE_H)
         .center_y(tree::NOTE_H)
-        .padding(Padding { left: NEST + 26.0, right: 6.0, ..Padding::ZERO })
+        .padding(Padding { left: LEAF, right: 8.0, ..Padding::ZERO })
         .style(move |_| boxed(if open { RAISED } else { Color::TRANSPARENT }, Color::TRANSPARENT, 6.0));
     mouse_area(padded).on_press(Message::OpenPreview(change.path.clone())).interaction(iced::mouse::Interaction::Pointer).into()
 }
@@ -689,7 +708,7 @@ fn notes_head<'a>(project: Option<&str>, count: usize, open: bool) -> Element<'a
         .color(TURN)
         .font(UI)
         .wrapping(text::Wrapping::None);
-    let head = container(label).height(tree::NOTE_H).center_y(tree::NOTE_H).padding(Padding { left: NEST + 3.0, ..Padding::ZERO });
+    let head = container(label).height(tree::NOTE_H).center_y(tree::NOTE_H).padding(Padding { left: NEST - 3.0, ..Padding::ZERO });
     match project {
         Some(project) => mouse_area(head).on_press(Message::ToggleNotes(project.to_string())).interaction(iced::mouse::Interaction::Pointer).into(),
         None => head.into(),
@@ -717,13 +736,13 @@ fn note_row<'a>(note: &later::Item) -> Element<'a, Message> {
             }),
     ]
     .align_y(iced::Center);
-    container(line).height(tree::NOTE_H).center_y(tree::NOTE_H).padding(Padding { left: NEST + 26.0, right: 4.0, ..Padding::ZERO }).into()
+    container(line).height(tree::NOTE_H).center_y(tree::NOTE_H).padding(Padding { left: NAME, right: 4.0, ..Padding::ZERO }).into()
 }
 
 /// "Weitere": sessions of folders that are not projects of the tree.
 fn others_head<'a>(count: usize, open: bool) -> Element<'a, Message> {
-    let label = text(format!("{} {} · {count}", if open { "▾" } else { "▸" }, t("Weitere", "Others"))).size(12.5).color(TEXT_MUTED).font(style::semibold());
-    mouse_area(container(label).height(tree::PROJECT_H).center_y(tree::PROJECT_H).padding([0, 6]))
+    let label = row![fold_arrow(!open), text(format!("{} · {count}", t("Weitere", "Others"))).size(13).color(TEXT_MUTED).font(style::semibold())].spacing(6).align_y(iced::Center);
+    mouse_area(head_cell(label))
         .on_press(Message::ToggleSection("others"))
         .interaction(iced::mouse::Interaction::Pointer)
         .into()
@@ -761,7 +780,8 @@ fn tree_footer<'a>(brain: &'a Brain, tree: &Tree<'_>) -> Element<'a, Message> {
 }
 
 fn new_project_row<'a>() -> Element<'a, Message> {
-    button(text(t("+ Neues Projekt …", "+ New project …")).size(12.5).font(UI))
+    let label = container(text(t("+ Neues Projekt …", "+ New project …")).size(13).font(UI)).height(Fill).align_y(iced::Bottom).padding(Padding { bottom: 5.0, ..Padding::ZERO });
+    button(label)
         .padding([0, 6])
         .height(tree::PROJECT_H)
         .width(Fill)
