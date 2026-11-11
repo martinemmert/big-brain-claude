@@ -1,18 +1,13 @@
-//! The detail pane's content: the conversation, drawn like Claude Code in the terminal (in the
-//! terminal's font), and the event timeline.
+//! The conversation, drawn like Claude Code in the terminal (in the terminal's font).
 
-use brain_core::event::{Event, Kind, Source};
 use brain_core::markdown::{self, Block, Inline, Span};
-use brain_core::state::Session;
-use brain_core::transcript::{classify_prompt, Message, Prompt, Role};
-use chrono::Local;
+use brain_core::transcript::{Message, Role};
 use iced::widget::{column, container, rich_text, row, span, text, Space};
 use iced::{Border, Color, Element, Fill, Length, Padding};
 
 use crate::chat_font::{self, ChatFont};
-use crate::format::{clip, note, plain, tilde};
-use crate::i18n::t;
-use crate::style::{self, alpha, boxed, DONE, LINE, SURFACE, TEXT, TEXT_FAINT, TEXT_MUTED, TEXT_STRONG, TURN, UI, WORKING};
+use crate::format::{clip, note, tilde};
+use crate::style::{self, alpha, boxed, DONE, LINE, SURFACE, TEXT, TEXT_FAINT, TEXT_MUTED, TEXT_STRONG, WORKING};
 use crate::tr;
 
 /// Consecutive tool calls are shown as one block; long runs are cut to this many rows.
@@ -194,51 +189,3 @@ fn styled<'a, M: 'a>(font: &ChatFont, inline: &Inline, color: Color, strong: boo
     rich_text(spans).size(font.size).line_height(1.45).into()
 }
 
-// ---- Timeline ------------------------------------------------------------------------
-
-pub fn timeline<'a, M: 'a>(s: &Session) -> Vec<Element<'a, M>> {
-    if s.timeline.is_empty() {
-        return vec![style::hint(t(
-            "Noch keine Ereignisse. Sie erscheinen, sobald die Hooks aktiv sind (brain install).",
-            "No events yet. They appear once the hooks are installed (brain install).",
-        ))];
-    }
-    s.timeline.iter().rev().take(80).map(timeline_entry).collect()
-}
-
-fn timeline_entry<'a, M: 'a>(event: &Event) -> Element<'a, M> {
-    let raw = event.text.clone().unwrap_or_default();
-    let (color, label): (Color, String) = match event.kind {
-        Kind::SessionStart => (style::ENDED, t("Session gestartet", "Session started").into()),
-        Kind::SessionEnd => (style::ENDED, t("Session beendet", "Session ended").into()),
-        Kind::Prompt => match classify_prompt(&raw) {
-            Some(Prompt::User(prompt)) => (TURN, format!("{}: {prompt}", t("Du", "You"))),
-            Some(Prompt::System(note_text)) => (style::ENDED, note(note_text.trim_matches(['[', ']']))),
-            None => (TURN, t("Neuer Prompt", "New prompt").into()),
-        },
-        Kind::Permission => (style::CALLS, if raw.is_empty() { t("Braucht Freigabe", "Needs permission").into() } else { plain(&raw) }),
-        Kind::Stop => (TEXT_FAINT, if raw.is_empty() { t("Turn beendet", "Turn ended").into() } else { plain(&raw) }),
-        Kind::Doing => (WORKING, raw),
-        Kind::Waiting => (style::CALLS, format!("{}: {raw}", t("Frage", "Question"))),
-        Kind::Done => (style::DONE, format!("{}: {raw}", t("Erledigt", "Done"))),
-    };
-    let reported = event.source == Source::Report;
-    let time = event.ts.with_timezone(&Local).format("%H:%M").to_string();
-    // Three lines at most, like the GPUI version's line clamp.
-    let label = clip(&label, 300);
-    let mut line = row![
-        container(text(time).size(11.5).color(TEXT_FAINT).font(UI)).width(36).padding(Padding { top: 1.0, ..Padding::ZERO }),
-        container(style::dot::<M>(color, 7.0)).padding(Padding { top: 6.0, ..Padding::ZERO }),
-        container(text(label).size(13).color(if reported { TEXT_STRONG } else { TEXT }).font(UI).line_height(1.45)).width(Fill),
-    ]
-    .spacing(12)
-    .padding([6, 0]);
-    if reported {
-        line = line.push(
-            container(text(t("gemeldet", "reported")).size(10.5).color(WORKING).font(UI))
-                .padding([0, 6])
-                .style(|_| boxed(alpha(WORKING, 0x1f), Color::TRANSPARENT, 4.0)),
-        );
-    }
-    line.into()
-}

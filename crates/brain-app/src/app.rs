@@ -47,7 +47,6 @@ pub const REPLY: &str = "reply";
 pub const RENAME: &str = "rename";
 pub const NEW_SESSION: &str = "new-session";
 pub const LIST: &str = "session-list";
-pub const MESSAGES: &str = "messages";
 pub const FIND: &str = "find";
 pub const PALETTE: &str = "palette";
 pub const COMPOSER: &str = "composer";
@@ -85,7 +84,6 @@ pub enum Mode {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaletteCommand {
     Act(Action),
-    Tab(DetailTab),
     /// Text (a slash command, a prompt) typed into the selected session.
     Send(String),
     /// A prompt typed into every session that waits for its turn.
@@ -130,59 +128,11 @@ const SLASH_COMMANDS: [(&str, &str, &str); 6] = [
     ("/clear", "Gespräch leeren", "clear the conversation"),
 ];
 
-/// What the Messages tab shows: the conversation, only your prompts, Claude's questions with
-/// the answers, or the session's events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lens {
-    Conversation,
-    Prompts,
-    Questions,
-    Events,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DetailTab {
-    Messages,
-    Timeline,
-    Changes,
-    /// Every file the session wrote, edited, read or was given.
-    Files,
-    /// Claude's questions and the answers given.
-    Questions,
-    /// A real terminal running the session inside Brain (`claude attach` / `claude --resume`).
-    Terminal,
-}
-
-/// Which files the Files tab lists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileFilter {
-    All,
-    /// Written or edited by Claude.
-    Changed,
-    Read,
-    /// Attached to the session or dropped into a prompt.
-    Given,
-}
-
 /// The whole conversation of one session, as of a transcript size.
 pub struct HistoryCache {
     pub key: SessionKey,
     pub len: u64,
     pub messages: Vec<brain_core::transcript::Message>,
-}
-
-/// The questions of one session, as of a transcript size.
-pub struct QaCache {
-    pub key: SessionKey,
-    pub len: u64,
-    pub exchanges: Vec<brain_core::qa::Exchange>,
-}
-
-/// The files of one session, as of a transcript size.
-pub struct FilesCache {
-    pub key: SessionKey,
-    pub len: u64,
-    pub files: Vec<brain_core::files::SessionFile>,
 }
 
 /// Buttons in the detail pane and the list's context menu.
@@ -275,22 +225,12 @@ pub enum Message {
     SeeAll,
     /// "Nur Bericht" on a maybe-question: it counts as a report, not as a question.
     OnlyReport(SessionKey),
-    Tab(DetailTab),
     Do(Action),
     CleanupAge(usize),
     OpenUrl(String),
     ListScrolled(scrollable::Viewport),
-    MessagesScrolled(scrollable::Viewport),
     CheckPrs,
     PrsLoaded(HashMap<SessionKey, brain_core::github::PullRequest>),
-    ChangesLoaded(SessionKey, Option<brain_core::changes::Changes>),
-    /// A changed file clicked in the Changes tab: show its diff (again: hide it).
-    ShowDiff(String),
-    DiffLoaded(SessionKey, String, Option<String>),
-    /// Discard a file's change (twice): its current version goes to the Trash first.
-    DiscardChange(String),
-    FilesLoaded(SessionKey, u64, Vec<brain_core::files::SessionFile>),
-    QaLoaded(SessionKey, u64, Vec<brain_core::qa::Exchange>),
     BriefLoaded(SessionKey, brain_core::brief::Brief),
     Palette(String),
     PaletteRun(PaletteCommand),
@@ -304,18 +244,13 @@ pub enum Message {
     PaletteClose,
     /// Bytes for a session's terminal, sent a moment after its text (the Return that submits).
     TerminalKeys(SessionKey, Vec<u8>),
-    /// The find field in the Messages tab.
+    /// The find field (⌘F).
     Find(String),
     HistoryLoaded(SessionKey, u64, Vec<brain_core::transcript::Message>),
     /// A search hit or a prompt clicked open (its index in the history), or closed again.
     Expand(Option<usize>),
     CopyText(String),
     Exported(Result<std::path::PathBuf, String>),
-    /// A lens of the Messages tab, from the find bar.
-    Lens(Lens),
-    FileFilter(FileFilter),
-    /// A file from the Files tab: Markdown opens in YAMV, the rest in the reader.
-    OpenFile(String),
     CheckUpdate,
     UpdateFound(Option<crate::links::Update>),
     DragWindow,
@@ -414,7 +349,6 @@ impl Message {
                 | Message::WindowSized(_)
                 | Message::Hover(_)
                 | Message::ListScrolled(_)
-                | Message::MessagesScrolled(_)
                 | Message::FileHover(_)
                 | Message::MousePressed
                 | Message::MouseReleased
@@ -465,13 +399,6 @@ pub struct Chosen {
 pub enum Choice {
     Template(usize),
     Folder(String),
-}
-
-/// The selected session's git changes, loaded off the UI thread.
-pub struct ChangesCache {
-    pub key: SessionKey,
-    pub loaded: Instant,
-    pub changes: Option<brain_core::changes::Changes>,
 }
 
 /// Where a running session stands in the list.
@@ -713,16 +640,10 @@ pub struct Brain {
     pub later: Vec<brain_core::later::Item>,
     pub later_pick: usize,
     pub status: Option<(String, Instant)>,
-    pub tab: DetailTab,
     pub conversation: Option<Conversation>,
-    pub files: Option<FilesCache>,
-    /// The changed file whose diff is open: session, path, and the diff once loaded.
-    pub diff: Option<(SessionKey, String, Option<Vec<(brain_core::changes::DiffKind, String)>>)>,
-    pub qa: Option<QaCache>,
     /// The selected ended session in a few lines (shown before resuming it).
     pub brief: Option<(SessionKey, brain_core::brief::Brief)>,
     brief_loading: Option<SessionKey>,
-    qa_loading: bool,
     pub palette: String,
     /// The composer's text, the screenshots pasted into it, and the templates it offers.
     /// A screenshot taken a moment ago, offered for a session.
@@ -740,16 +661,12 @@ pub struct Brain {
     palette_styles: Vec<String>,
     /// Text to find in the selected session's whole conversation (⌘F).
     pub find: String,
-    /// The Messages tab lists only the user's prompts, all of them.
-    pub prompts_only: bool,
-    /// The find bar over the conversation is open (⌘F, or a lens other than the conversation).
+    /// The find bar over the terminal is open (⌘F).
     pub find_open: bool,
-    /// The whole conversation, loaded for finding and the prompt list.
+    /// The whole conversation, loaded for finding.
     pub history: Option<HistoryCache>,
     history_loading: bool,
     pub expanded: Option<usize>,
-    files_loading: bool,
-    pub file_filter: FileFilter,
     pub mode: Mode,
     pub search: String,
     pub rename: String,
@@ -782,12 +699,9 @@ pub struct Brain {
     pub overview: bool,
     /// Sessions whose terminal rang the bell while another session was selected.
     pub bells: HashSet<SessionKey>,
-    pub changes: Option<ChangesCache>,
-    changes_loading: bool,
     pub new_session: NewSession,
     /// `A`, `X`, `⌫` or `⌘⌫` was pressed once on this session: a second press within 5 s acts.
     armed: Option<(char, SessionKey, Instant)>,
-    armed_path: Option<(String, SessionKey, Instant)>,
     /// Sessions a move just started for: until the board lists them as moved, a second move
     /// (a double tap on the phone) would fork them into the target twice.
     moving: HashMap<SessionKey, Instant>,
@@ -799,9 +713,8 @@ pub struct Brain {
     pub window_size: iced::Size,
     /// A newer release on GitHub, if the daily check found one.
     pub update: Option<crate::links::Update>,
-    /// What the list and the message pane show, to keep the selection and new messages in view.
+    /// What the list shows, to keep the selection in view.
     list_viewport: Option<(f32, f32)>,
-    messages_at_bottom: bool,
     /// Terminals running sessions inside Brain, per session; they keep running while another
     /// session is selected.
     pub terminals: HashMap<SessionKey, iced_term::Terminal>,
@@ -835,9 +748,6 @@ pub struct Brain {
     synced_selection: Option<(SessionKey, bool)>,
     /// The native title bar is set up once the window exists.
     titlebar_ready: bool,
-    /// What the detail pane showed last; when it changes, the message list is built anew and
-    /// starts at its newest message again.
-    detail_shape: (Mode, DetailTab),
     /// A click selected a session: once its terminal shows, it gets the keys.
     focus_on_select: bool,
     /// The new-account dialog.
@@ -915,7 +825,6 @@ impl Brain {
             later: Vec::new(),
             later_pick: 0,
             status: None,
-            tab: DetailTab::Messages,
             conversation: None,
             mode: Mode::Normal,
             search: String::new(),
@@ -933,12 +842,8 @@ impl Brain {
             shown_terminals: HashSet::new(),
             split: None,
             overview: false,
-            files: None,
-            diff: None,
-            qa: None,
             brief: None,
             brief_loading: None,
-            qa_loading: false,
             find: String::new(),
             palette: String::new(),
             screenshot_offer: None,
@@ -951,19 +856,13 @@ impl Brain {
             composer_templates: Vec::new(),
             palette_index: 0,
             palette_styles: Vec::new(),
-            prompts_only: false,
             find_open: false,
             history: None,
             history_loading: false,
             expanded: None,
-            files_loading: false,
-            file_filter: FileFilter::All,
             bells: HashSet::new(),
-            changes: None,
-            changes_loading: false,
             new_session: NewSession::default(),
             armed: None,
-            armed_path: None,
             moving: HashMap::new(),
             context_menu: None,
             before_menu: None,
@@ -971,7 +870,6 @@ impl Brain {
             window_size: iced::Size::new(1180.0, 760.0),
             update: None,
             list_viewport: None,
-            messages_at_bottom: true,
             terminals: HashMap::new(),
             next_terminal: 1,
             focused_terminal: None,
@@ -987,7 +885,6 @@ impl Brain {
             synced_selection: None,
             dragging_sidebar: false,
             titlebar_ready: false,
-            detail_shape: (Mode::Normal, DetailTab::Messages),
             focus_on_select: false,
             account_setup: account::AccountSetup::default(),
             questions: HashMap::new(),
@@ -1021,7 +918,6 @@ impl Brain {
         // For screenshots of the reader: `BRAIN_DEMO=1 BRAIN_DEMO_READER=notes.md`.
         if let Some(path) = std::env::var_os("BRAIN_DEMO_READER").filter(|_| demo) {
             brain.reader = Some(read_file(std::path::PathBuf::from(path)));
-            brain.tab = DetailTab::Terminal;
         }
         let checks = if demo { Task::none() } else { Task::batch([Task::done(Message::CheckPrs), Task::done(Message::CheckUpdate)]) };
         (brain, Task::batch([synced, checks]))
@@ -1212,10 +1108,6 @@ impl Brain {
                 self.toggle_ended();
                 Task::none()
             }
-            Message::Tab(tab) => {
-                self.tab = tab;
-                Task::batch([self.load_changes(), self.load_files()])
-            }
             Message::Do(action) => self.act(action),
             Message::CleanupAge(index) => {
                 self.cleanup_age = index;
@@ -1227,10 +1119,6 @@ impl Brain {
             }
             Message::ListScrolled(viewport) => {
                 self.list_viewport = Some((viewport.absolute_offset().y, viewport.bounds().height));
-                Task::none()
-            }
-            Message::MessagesScrolled(viewport) => {
-                self.messages_at_bottom = viewport.relative_offset().y >= 0.98 || viewport.content_bounds().height <= viewport.bounds().height;
                 Task::none()
             }
             Message::CheckPrs => {
@@ -1288,17 +1176,6 @@ impl Brain {
                 self.expanded = None;
                 self.load_history()
             }
-            Message::Lens(lens) => {
-                self.find_open = true;
-                self.prompts_only = lens == Lens::Prompts;
-                self.expanded = None;
-                self.tab = match lens {
-                    Lens::Questions => DetailTab::Questions,
-                    Lens::Events => DetailTab::Timeline,
-                    Lens::Conversation | Lens::Prompts => DetailTab::Messages,
-                };
-                self.load_history()
-            }
             Message::HistoryLoaded(key, len, messages) => {
                 self.history = Some(HistoryCache { key, len, messages });
                 self.history_loading = false;
@@ -1322,63 +1199,6 @@ impl Brain {
             Message::BriefLoaded(key, brief) => {
                 self.brief_loading = None;
                 self.brief = Some((key, brief));
-                Task::none()
-            }
-            Message::QaLoaded(key, len, exchanges) => {
-                self.qa = Some(QaCache { key, len, exchanges });
-                self.qa_loading = false;
-                Task::none()
-            }
-            Message::FilesLoaded(key, len, files) => {
-                self.files = Some(FilesCache { key, len, files });
-                self.files_loading = false;
-                Task::none()
-            }
-            Message::FileFilter(filter) => {
-                self.file_filter = filter;
-                self.tab = DetailTab::Files;
-                Task::none()
-            }
-            Message::OpenFile(path) => {
-                let path = std::path::PathBuf::from(path);
-                if !path.is_file() {
-                    self.set_status(t("Die Datei gibt es nicht mehr.", "That file no longer exists."));
-                    return Task::none();
-                }
-                if is_markdown(&path) {
-                    return open_markdown(path);
-                }
-                self.reader = Some(read_file(path));
-                Task::none()
-            }
-            Message::ShowDiff(path) => {
-                let Some(key) = self.selected.clone() else { return Task::none() };
-                if self.diff.as_ref().is_some_and(|(k, p, _)| *k == key && *p == path) {
-                    self.diff = None;
-                    return Task::none();
-                }
-                let (Some(cwd), Some(change)) = (self.selected_session().and_then(|s| s.cwd.clone()), self.change_of(&path)) else {
-                    return Task::none();
-                };
-                self.diff = Some((key.clone(), path.clone(), None));
-                Task::perform(off_thread(move || brain_core::changes::diff_of(std::path::Path::new(&cwd), &change)), move |diff| {
-                    Message::DiffLoaded(key.clone(), path.clone(), diff)
-                })
-            }
-            Message::DiffLoaded(key, path, diff) => {
-                if self.diff.as_ref().is_some_and(|(k, p, _)| *k == key && *p == path) {
-                    let lines = diff.map(|d| brain_core::changes::diff_lines(&d)).unwrap_or_default();
-                    self.diff = Some((key, path, Some(lines)));
-                }
-                Task::none()
-            }
-            Message::DiscardChange(path) => {
-                self.discard_change(&path);
-                self.load_changes()
-            }
-            Message::ChangesLoaded(key, changes) => {
-                self.changes = Some(ChangesCache { key, loaded: Instant::now(), changes });
-                self.changes_loading = false;
                 Task::none()
             }
             Message::CheckUpdate => Task::perform(off_thread(crate::links::check_for_update), Message::UpdateFound),
@@ -1509,7 +1329,6 @@ impl Brain {
                 if into_terminal {
                     if let Some(key) = target {
                         self.selected = Some(key);
-                        self.tab = DetailTab::Terminal;
                         let escaped = escape_path(&path.display().to_string()) + " ";
                         if let Some(term) = self.selected.as_ref().and_then(|k| self.terminals.get_mut(k)) {
                             term.paste(&escaped);
@@ -1653,7 +1472,6 @@ impl Brain {
             Message::OpenFromOverview(key) => {
                 self.overview = false;
                 self.selected = Some(key);
-                self.tab = DetailTab::Terminal;
                 self.open_terminal(true)
             }
             Message::MarkdownOpened(name, in_yamv) => {
@@ -1776,7 +1594,6 @@ impl Brain {
         self.refresh_sync_conflicts();
         self.garden_count = self.garden_findings().iter().filter(|f| f.sure).count();
         self.remind(now);
-        tasks.push(self.load_changes());
         let linked: Vec<SessionKey> = crate::links::take_sessions()
             .into_iter()
             .filter_map(|(account, pid)| Some(self.model.board.live_by_pid(&account, pid)?.key.clone()))
@@ -1835,15 +1652,9 @@ impl Brain {
                 }
             }
         }
-        let mut scroll = self.sync_conversation();
+        self.sync_conversation();
         let attach = self.sync_terminal();
         self.sync_shown_terminal();
-        let shape = (if matches!(self.mode, Mode::NewSession | Mode::Cleanup | Mode::Later) { self.mode } else { Mode::Normal }, self.tab);
-        if shape != self.detail_shape {
-            self.detail_shape = shape;
-            self.messages_at_bottom = true;
-            scroll = operation::snap_to_end(MESSAGES);
-        }
         let host = self.sync_host();
         self.sync_projects();
         self.conflicts = self.compute_conflicts();
@@ -1855,17 +1666,14 @@ impl Brain {
         if let Some(menubar) = self.menubar.as_mut() {
             menubar.show(deciding, deciding);
         }
-        // The Files tab and the find results follow the transcript as it grows.
-        let files = self.load_files();
+        // The find results follow the transcript as it grows.
         let history = self.load_history();
-        let qa = self.load_qa();
         let brief = self.load_brief();
-        Task::batch([scroll, attach, host, files, history, qa, brief])
+        Task::batch([attach, host, history, brief])
     }
 
     /// Background sessions open in Brain's terminal: when one gets selected (or Brain started it
-    /// a moment ago), the Terminal tab shows and attaches. Leaving it for a session without a
-    /// terminal goes back to the messages.
+    /// a moment ago), its terminal attaches.
     fn sync_terminal(&mut self) -> Task<Message> {
         let mut just_started = false;
         if let Some((account, id)) = self.pending_attach.clone() {
@@ -1890,13 +1698,9 @@ impl Brain {
         self.focused_terminal = None;
         let has_terminal = self.has_terminal();
         if attachable || has_terminal {
-            self.tab = DetailTab::Terminal;
             // Selecting a session with the keys shows its terminal but keeps the keys for the
             // list; a click, or a session started a moment ago, gives them to the terminal.
             return self.open_terminal(just_started || clicked);
-        }
-        if self.tab == DetailTab::Terminal {
-            self.tab = DetailTab::Messages;
         }
         Task::none()
     }
@@ -1964,25 +1768,10 @@ impl Brain {
         brain_core::conflicts::conflicts(&work)
     }
 
-    /// While the Changes tab is open: reloads the selected session's git changes every 5 s.
-    fn load_changes(&mut self) -> Task<Message> {
-        if self.tab != DetailTab::Changes || self.changes_loading || self.model.is_demo() {
-            return Task::none();
-        }
-        let Some(session) = self.selected_session() else { return Task::none() };
-        let fresh = self.changes.as_ref().is_some_and(|c| c.key == session.key && c.loaded.elapsed() < Duration::from_secs(5));
-        let Some(cwd) = session.cwd.clone().filter(|_| !fresh) else { return Task::none() };
-        let key = session.key.clone();
-        self.changes_loading = true;
-        Task::perform(off_thread(move || brain_core::changes::changes_of(std::path::Path::new(&cwd))), move |changes| {
-            Message::ChangesLoaded(key.clone(), changes)
-        })
-    }
-
-    /// Loads the selected session's whole conversation while the find field or the prompt list
-    /// needs it, again when the transcript grew.
+    /// Loads the selected session's whole conversation while the find field needs it, again when
+    /// the transcript grew.
     fn load_history(&mut self) -> Task<Message> {
-        if self.tab != DetailTab::Messages || self.history_loading || (self.find.trim().is_empty() && !self.prompts_only) {
+        if self.history_loading || self.find.trim().is_empty() {
             return Task::none();
         }
         let Some(key) = self.selected.clone() else { return Task::none() };
@@ -2106,7 +1895,6 @@ impl Brain {
             }
         }
         self.shell_visible = true;
-        self.tab = DetailTab::Terminal;
         self.focused_terminal = None;
         self.focused_shell = Some(key.clone());
         match self.shells.get(&key) {
@@ -2189,10 +1977,6 @@ impl Brain {
             all.push((t("Gespräch als Markdown öffnen", "Open the conversation as Markdown").to_string(), "", PaletteCommand::Act(Action::Export)));
             all.push((t("Shell im Projektordner", "Shell in the project folder").to_string(), "⌘T", PaletteCommand::Shell));
             all.push((t("In der Session suchen", "Find in the session").to_string(), "⌘F", PaletteCommand::Find));
-            all.push((t("Dateien der Session", "The session's files").to_string(), "", PaletteCommand::Tab(DetailTab::Files)));
-            all.push((t("Änderungen (git)", "Changes (git)").to_string(), "", PaletteCommand::Tab(DetailTab::Changes)));
-            all.push((t("Claudes Fragen und deine Antworten", "Claude's questions and your answers").to_string(), "", PaletteCommand::Tab(DetailTab::Questions)));
-            all.push((t("Ereignisse der Session (Verlauf)", "The session's events (timeline)").to_string(), "", PaletteCommand::Tab(DetailTab::Timeline)));
             all.push((t("Umbenennen", "Rename").to_string(), "R", PaletteCommand::Act(Action::StartRename)));
             all.push((t("Anheften / lösen", "Pin / unpin").to_string(), "P", PaletteCommand::Act(Action::Pin)));
             all.push((t("Stumm / laut", "Mute / unmute").to_string(), "", PaletteCommand::Act(Action::Mute)));
@@ -2281,10 +2065,6 @@ impl Brain {
                 Task::none()
             }
             PaletteCommand::Act(action) => self.act(action),
-            PaletteCommand::Tab(tab) => {
-                self.tab = tab;
-                Task::batch([self.load_changes(), self.load_files()])
-            }
             PaletteCommand::Send(text) => {
                 if let Some(key) = self.selected.clone() {
                     if self.send_text(&key, &text) {
@@ -2337,10 +2117,7 @@ impl Brain {
                 self.toggle_automated();
                 Task::none()
             }
-            PaletteCommand::Split => {
-                self.tab = DetailTab::Terminal;
-                self.update(Message::ToggleSplit)
-            }
+            PaletteCommand::Split => self.update(Message::ToggleSplit),
             PaletteCommand::Overview => self.update(Message::ToggleOverview),
             PaletteCommand::Composer => self.open_composer(),
             PaletteCommand::Shell => self.update(Message::ToggleShell),
@@ -2478,69 +2255,13 @@ impl Brain {
     /// ⌘F: find in the selected session's conversation.
     fn start_find(&mut self) -> Task<Message> {
         self.find_open = true;
-        if !matches!(self.tab, DetailTab::Messages | DetailTab::Timeline | DetailTab::Questions) {
-            self.tab = DetailTab::Messages;
-        }
         Task::batch([operation::focus(FIND), self.load_history()])
-    }
-
-    /// The selected session's change of `path`, from the Changes tab's last reading.
-    fn change_of(&self, path: &str) -> Option<brain_core::changes::FileChange> {
-        let key = self.selected.as_ref()?;
-        let cache = self.changes.as_ref().filter(|c| c.key == *key)?;
-        cache.changes.as_ref()?.files.iter().find(|f| f.path == path).cloned()
-    }
-
-    /// Twice: the file's current version goes to the Trash, then git brings back HEAD's (or
-    /// unstages a new file). Nothing is lost for good.
-    fn discard_change(&mut self, path: &str) {
-        let Some(session) = self.selected_session() else { return };
-        let key = session.key.clone();
-        let Some(cwd) = session.cwd.clone() else { return };
-        let Some(change) = self.change_of(path).filter(brain_core::changes::discardable) else { return };
-        if !self.arm_path(path, &key) {
-            self.set_status(tr!("Nochmal klicken verwirft die Änderung an {path} (die jetzige Fassung kommt in den Papierkorb).", "Click again to discard the change to {path} (the current version goes to the Trash)."));
-            return;
-        }
-        if self.blocked_in_demo() {
-            return;
-        }
-        let file = std::path::Path::new(&cwd).join(path);
-        // Only a file inside the session's folder, never the folder or something outside it.
-        let inside = match (std::path::Path::new(&cwd).canonicalize(), file.parent().and_then(|p| p.canonicalize().ok())) {
-            (Ok(root), Some(parent)) => parent.starts_with(&root) && !file.is_dir(),
-            _ => false,
-        };
-        if !inside {
-            self.set_status(tr!("{path} liegt nicht im Ordner der Session – nichts verworfen.", "{path} isn't inside the session's folder – nothing discarded."));
-            return;
-        }
-        if file.exists() {
-            if let Err(err) = crate::trash::move_to_trash(&file) {
-                self.set_status(tr!("Konnte {path} nicht in den Papierkorb legen: {err}", "Couldn't move {path} to the Trash: {err}"));
-                return;
-            }
-        }
-        match brain_core::changes::restore_from_head(std::path::Path::new(&cwd), &change) {
-            Ok(()) => self.set_status(tr!("Änderung an {path} verworfen – die alte Fassung liegt im Papierkorb.", "Discarded the change to {path} – the old version is in the Trash.")),
-            Err(err) => self.set_status(tr!("Verwerfen fehlgeschlagen: {err}", "Discarding failed: {err}")),
-        }
-        self.diff = None;
-        self.changes = None;
-        self.changes_loading = false;
-    }
-
-    /// Like `arm`, for a file of a session: the second click within 5 seconds confirms.
-    fn arm_path(&mut self, path: &str, key: &SessionKey) -> bool {
-        let confirmed = self.armed_path.as_ref().is_some_and(|(p, k, at)| p == path && k == key && at.elapsed() < Duration::from_secs(5));
-        self.armed_path = if confirmed { None } else { Some((path.to_string(), key.clone(), Instant::now())) };
-        confirmed
     }
 
     /// Sums up the selected session once it has ended, for the Terminal tab before resuming.
     fn load_brief(&mut self) -> Task<Message> {
         let Some(session) = self.selected_session() else { return Task::none() };
-        if session.phase() != Phase::Ended || self.tab != DetailTab::Terminal || self.has_terminal() {
+        if session.phase() != Phase::Ended || self.has_terminal() {
             return Task::none();
         }
         let key = session.key.clone();
@@ -2555,41 +2276,7 @@ impl Brain {
         Task::perform(off_thread(move || brain_core::brief::brief(&path)), move |brief| Message::BriefLoaded(key.clone(), brief))
     }
 
-    /// Reads the selected session's questions when their tab shows and the transcript grew.
-    fn load_qa(&mut self) -> Task<Message> {
-        if self.tab != DetailTab::Questions || self.qa_loading {
-            return Task::none();
-        }
-        let Some(key) = self.selected.clone() else { return Task::none() };
-        let Some((path, len)) = self.conversation.as_ref().filter(|c| c.key == key).and_then(|c| c.transcript()) else {
-            return Task::none();
-        };
-        if self.qa.as_ref().is_some_and(|q| q.key == key && q.len == len) {
-            return Task::none();
-        }
-        let path = path.to_path_buf();
-        self.qa_loading = true;
-        Task::perform(off_thread(move || brain_core::qa::exchanges(&path)), move |exchanges| Message::QaLoaded(key.clone(), len, exchanges))
-    }
-
-    /// Reads the selected session's files when the Files tab shows and its transcript grew.
-    fn load_files(&mut self) -> Task<Message> {
-        if self.tab != DetailTab::Files || self.files_loading {
-            return Task::none();
-        }
-        let Some(key) = self.selected.clone() else { return Task::none() };
-        let Some((path, len)) = self.conversation.as_ref().filter(|c| c.key == key).and_then(|c| c.transcript()) else {
-            return Task::none();
-        };
-        if self.files.as_ref().is_some_and(|f| f.key == key && f.len == len) {
-            return Task::none();
-        }
-        let path = path.to_path_buf();
-        self.files_loading = true;
-        Task::perform(off_thread(move || brain_core::files::session_files(&path)), move |files| Message::FilesLoaded(key.clone(), len, files))
-    }
-
-    /// What the Terminal tab would run for the selected session: `claude attach` for a
+    /// What the terminal would run for the selected session: `claude attach` for a
     /// background session, `claude --resume` for an ended one. Sessions running in an iTerm tab
     /// can't be joined from outside, so they get none.
     pub fn terminal_command(&self) -> Option<(&'static str, Vec<String>, String)> {
@@ -2614,7 +2301,7 @@ impl Brain {
     fn selection_state(&self) -> Option<(SessionKey, bool)> {
         let attachable = self
             .selected_session()
-            .is_some_and(|s| s.agent.as_ref().is_some_and(|a| !matches!(a.state.as_str(), "failed" | "stopped")) );
+            .is_some_and(|s| s.agent.as_ref().is_some_and(|a| !matches!(a.state.as_str(), "failed" | "stopped")));
         self.selected.clone().map(|k| (k, attachable))
     }
 
@@ -2623,7 +2310,6 @@ impl Brain {
     fn activate_split_pane(&mut self) {
         let Some(other) = self.split.clone() else { return };
         self.split = self.selected.replace(other);
-        self.tab = DetailTab::Terminal;
         // Already showing its terminal: don't let the selection change reset the keyboard.
         self.synced_selection = self.selection_state();
     }
@@ -2636,9 +2322,8 @@ impl Brain {
         let shown: HashSet<SessionKey> = if self.overview {
             self.terminals.keys().cloned().collect()
         } else {
-            // The split's other pane always shows its terminal; the active one on its tab.
-            let active = self.selected.iter().filter(|_| self.tab == DetailTab::Terminal);
-            active.chain(self.split.iter()).filter(|k| self.terminals.contains_key(*k)).cloned().collect()
+            // The active pane and the split's other one.
+            self.selected.iter().chain(self.split.iter()).filter(|k| self.terminals.contains_key(*k)).cloned().collect()
         };
         for key in shown.difference(&self.shown_terminals) {
             if let Some(term) = self.terminals.get_mut(key) {
@@ -2657,12 +2342,12 @@ impl Brain {
     fn focus_terminal(&mut self) -> Task<Message> {
         let Some(key) = self.selected.clone() else { return Task::none() };
         match self.terminals.get(&key) {
-            Some(term) if self.tab == DetailTab::Terminal => {
+            Some(term) => {
                 let task = iced_term::TerminalView::focus(term.widget_id().clone());
                 self.focused_terminal = Some(key);
                 task
             }
-            _ => Task::none(),
+            None => Task::none(),
         }
     }
 
@@ -2689,7 +2374,6 @@ impl Brain {
             return Task::none();
         }
         if self.write_to_terminal(&escaped) {
-            self.tab = DetailTab::Terminal;
             return self.focus_terminal();
         }
         self.set_status(t(
@@ -2728,7 +2412,7 @@ impl Brain {
     /// Starts the selected session's terminal on the Terminal tab (⏎ or the button), and
     /// focuses it.
     fn open_terminal(&mut self, focus: bool) -> Task<Message> {
-        if self.tab != DetailTab::Terminal || self.model.is_demo() {
+        if self.model.is_demo() {
             return Task::none();
         }
         let Some(key) = self.selected.clone() else { return Task::none() };
@@ -2779,29 +2463,23 @@ impl Brain {
         }
     }
 
-    /// Keeps the message list in step with the selected session. New messages scroll into view
-    /// unless the user scrolled up to read older ones.
-    fn sync_conversation(&mut self) -> Task<Message> {
+    /// Keeps the conversation in step with the selected session (⇧⌘C, the export and the find
+    /// results read it).
+    fn sync_conversation(&mut self) {
         let Some(key) = self.selected.clone() else {
             self.conversation = None;
-            return Task::none();
+            return;
         };
         let switched = self.conversation.as_ref().is_none_or(|c| c.key != key);
         if let Some(demo) = &self.model.demo_messages {
             if switched {
                 self.conversation = Some(Conversation::fixed(key.clone(), demo.get(&key).cloned().unwrap_or_default()));
-                return operation::snap_to_end(MESSAGES);
             }
-            return Task::none();
+            return;
         }
         let session_id = self.model.board.get(&key).and_then(|s| s.session_id.clone());
         let conversation = self.conversation.get_or_insert_with(|| Conversation::empty(key.clone()));
-        let changed = conversation.sync(&key, session_id.as_deref(), &self.model.accounts);
-        if switched || (changed && self.messages_at_bottom) {
-            self.messages_at_bottom = true;
-            return operation::snap_to_end(MESSAGES);
-        }
-        Task::none()
+        conversation.sync(&key, session_id.as_deref(), &self.model.accounts);
     }
 
     /// Looks up the terminal hosting a newly selected session's process, in the background (`ps`
@@ -3198,12 +2876,11 @@ impl Brain {
         // only in the normal view does a terminal with the keyboard keep it (it interrupts Claude).
         let terminal_keeps_keys = self.mode == Mode::Normal
             && !self.overview
-            && self.tab == DetailTab::Terminal
             && (self.focused_terminal.is_some() || (self.shell_visible && self.focused_shell.is_some()));
         if named == Some(Named::Escape) && !terminal_keeps_keys {
             return self.escape();
         }
-        if cmd && self.tab == DetailTab::Terminal && self.focused_terminal.is_some() && character.as_deref() == Some("v") {
+        if cmd && self.focused_terminal.is_some() && character.as_deref() == Some("v") {
             // A copied screenshot: the terminal pastes text only, so Brain saves the picture and
             // pastes its path, which Claude Code turns into an attachment.
             if let Some(path) = crate::clipboard::save_image() {
@@ -3220,15 +2897,10 @@ impl Brain {
         }
         // ⌘2 / ⌘J: keyboard into the terminal; ⌘1 / ⌘[: back to the session list.
         if cmd && matches!(character.as_deref(), Some("2") | Some("j")) {
-            return if self.has_terminal() {
-                self.tab = DetailTab::Terminal;
-                self.focus_terminal()
-            } else {
-                Task::none()
-            };
+            return if self.has_terminal() { self.focus_terminal() } else { Task::none() };
         }
         // ⌘D splits the terminal, ⌘⇧A shows all of them: also from inside a terminal.
-        if cmd && character.as_deref() == Some("d") && self.tab == DetailTab::Terminal {
+        if cmd && character.as_deref() == Some("d") {
             return self.update(Message::ToggleSplit);
         }
         if cmd && modifiers.shift() && character.as_deref() == Some("a") {
@@ -3370,8 +3042,8 @@ impl Brain {
         match named {
             Some(Named::ArrowDown) => return self.select_index(&list, next),
             Some(Named::ArrowUp) => return self.select_index(&list, previous),
-            // On the Terminal tab ⏎ gives the terminal the keyboard (starting it if needed).
-            Some(Named::Enter) if self.tab == DetailTab::Terminal && (self.has_terminal() || self.terminal_command().is_some()) => return self.open_terminal(true),
+            // ⏎ gives the terminal the keyboard (starting it if needed).
+            Some(Named::Enter) if (self.has_terminal() || self.terminal_command().is_some()) => return self.open_terminal(true),
             Some(Named::Enter) if modifiers.alt() => return self.act(Action::OpenInITerm),
             Some(Named::Enter) => return self.act(Action::Open),
             Some(Named::Tab) => {
@@ -3381,22 +3053,6 @@ impl Brain {
             Some(Named::Backspace) => {
                 self.hide_selected(false);
                 return Task::none();
-            }
-            Some(Named::ArrowRight) => {
-                self.tab = match self.tab {
-                    DetailTab::Messages | DetailTab::Timeline | DetailTab::Questions => DetailTab::Files,
-                    DetailTab::Files | DetailTab::Changes => DetailTab::Terminal,
-                    DetailTab::Terminal => DetailTab::Messages,
-                };
-                return Task::batch([self.load_changes(), self.load_files()]);
-            }
-            Some(Named::ArrowLeft) => {
-                self.tab = match self.tab {
-                    DetailTab::Messages | DetailTab::Timeline | DetailTab::Questions => DetailTab::Terminal,
-                    DetailTab::Files | DetailTab::Changes => DetailTab::Messages,
-                    DetailTab::Terminal => DetailTab::Files,
-                };
-                return Task::batch([self.load_changes(), self.load_files()]);
             }
             _ => {}
         }
@@ -3443,16 +3099,11 @@ impl Brain {
             self.overview = false;
             return Task::none();
         }
-        // The find bar and its lenses close back to the conversation.
-        let lens = matches!(self.tab, DetailTab::Timeline | DetailTab::Questions);
-        if self.mode == Mode::Normal && (!self.find.is_empty() || self.prompts_only || self.find_open || lens) {
+        // The find bar closes back to the terminal.
+        if self.mode == Mode::Normal && (!self.find.is_empty() || self.find_open) {
             self.find.clear();
-            self.prompts_only = false;
             self.find_open = false;
             self.expanded = None;
-            if lens {
-                self.tab = DetailTab::Messages;
-            }
             return unfocus();
         }
         if self.mode == Mode::Normal && self.reader.is_some() {
@@ -3574,7 +3225,6 @@ impl Brain {
         }
         self.overview = false;
         self.mode = Mode::Normal;
-        self.tab = DetailTab::Terminal;
         Task::batch([self.bring_forward(), self.open_terminal(true)])
     }
 
@@ -3601,7 +3251,6 @@ impl Brain {
             // Whatever Brain can run opens in its terminal: background sessions attach, ended
             // ones resume. Sessions that live in an iTerm tab come forward there; ⌥⏎ goes to iTerm.
             Action::Open | Action::Resume if self.has_terminal() || self.terminal_command().is_some() => {
-                self.tab = DetailTab::Terminal;
                 return self.open_terminal(true);
             }
             Action::Open => self.open_selected(),
@@ -3622,7 +3271,6 @@ impl Brain {
                     self.split = Some(kept);
                 }
                 self.overview = false;
-                self.tab = DetailTab::Terminal;
                 return self.open_terminal(true);
             }
             Action::CopyAnswer => {

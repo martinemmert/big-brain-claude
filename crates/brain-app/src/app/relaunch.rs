@@ -13,7 +13,7 @@ use brain_terminal::{self as terminal, Outcome};
 use iced::widget::operation;
 use iced::Task;
 
-use super::{off_thread, Brain, DetailTab, Message, Mode};
+use super::{off_thread, Brain, Message, Mode};
 use crate::format::{now_ms, shell_quote};
 use crate::i18n::t;
 use crate::tr;
@@ -252,7 +252,6 @@ impl Brain {
         self.terminals.remove(&key);
         self.restart_flags.insert(key.clone(), flags.clone());
         self.selected = Some(key.clone());
-        self.tab = DetailTab::Terminal;
         let started = self.spawn_terminal(&key);
         self.restart_flags.remove(&key);
         if !started {

@@ -6,13 +6,13 @@ use iced::widget::{button, column, container, mouse_area, row, scrollable, stack
 use iced::{Background, Border, Color, Element, Fill, Length, Padding};
 
 use crate::companion::{Command, Picked};
-use crate::app::{self, Action, Brain, Choice, DetailTab, Groups, Item, Message, Mode, CLEANUP_DAYS};
+use crate::app::{self, Action, Brain, Choice, Groups, Item, Message, Mode, CLEANUP_DAYS};
 use crate::config;
 use crate::format::{ago, ago_phrase, background_summary, clip, clock, format_tokens, now_ms, phase_label, plain, short_model, tilde};
 use crate::i18n::t;
 use crate::markdown;
 use crate::style::{
-    self, account_badge, action, alpha, boxed, chip, hint, kbd, marker, phase_color, rail, section_title, segmented, CALLS,
+    self, account_badge, action, alpha, boxed, hint, kbd, marker, phase_color, rail, section_title, segmented, CALLS,
     CALLS_SOFT, CHROME, DONE, INK, LINE, LINE_STRONG, MONO, RAISED, SURFACE, TEXT, TEXT_FAINT, TEXT_MUTED, TEXT_STRONG,
     TURN, UI, WORKING,
 };
@@ -1026,17 +1026,17 @@ fn session_pane(brain: &Brain, now: i64) -> Element<'_, Message> {
     }
     header = header.push(Space::new().width(Fill)).push(primary);
 
-    let content: Element<'_, Message> = match brain.tab {
-        DetailTab::Messages | DetailTab::Timeline | DetailTab::Questions => messages(brain, s),
-        DetailTab::Changes => column![files_bar(brain, s), changes(brain, s)].spacing(10).height(Fill).into(),
-        DetailTab::Files => with_reader(brain, files(brain, s)),
-        DetailTab::Terminal => terminal(brain, s),
+    let content: Element<'_, Message> = if !brain.find_open {
+        terminal(brain, s)
+    } else if brain.find.trim().is_empty() {
+        column![find_bar(brain), terminal(brain, s)].spacing(8).height(Fill).into()
+    } else {
+        column![find_bar(brain), whole_session(brain)].spacing(8).height(Fill).into()
     };
     column![
         header,
         subtitle(brain, s),
         callout(brain, s, now, caps),
-        tabs(brain, s),
         content,
     ]
     .spacing(14)
@@ -1251,35 +1251,6 @@ fn conflict_lines<'a>(brain: &'a Brain, s: &Session) -> Vec<Element<'a, Message>
     out
 }
 
-fn tabs<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
-    let message_count = brain.conversation.as_ref().map_or(0, |c| c.messages.len());
-    let file_count = brain.files.as_ref().filter(|f| f.key == s.key).map(|f| f.files.len());
-    let mut tabs = vec![(DetailTab::Messages, t("Nachrichten", "Messages"), Some(message_count)), (DetailTab::Files, t("Dateien", "Files"), file_count)];
-    tabs.push((DetailTab::Terminal, "Terminal", None));
-    // The lenses count as Messages, the git changes as Files.
-    let shown = match brain.tab {
-        DetailTab::Timeline | DetailTab::Questions => DetailTab::Messages,
-        DetailTab::Changes => DetailTab::Files,
-        tab => tab,
-    };
-    let buttons = tabs.into_iter().map(|(tab, label, count)| {
-        let active = shown == tab;
-        let content = column![
-            row![
-                text(label).size(13).font(if active { style::semibold() } else { style::medium() }).color(if active { TEXT_STRONG } else { TEXT_MUTED }),
-                text(count.map(|c| c.to_string()).unwrap_or_default()).size(11.5).color(TEXT_FAINT).font(UI),
-            ]
-            .spacing(6)
-            .align_y(iced::Center),
-            container(Space::new().width(Fill).height(2)).style(move |_| style::fill(if active { WORKING } else { Color::TRANSPARENT })),
-        ]
-        .spacing(7)
-        .width(Length::Shrink);
-        mouse_area(content).on_press(Message::Tab(tab)).interaction(iced::mouse::Interaction::Pointer).into()
-    });
-    column![row(buttons).spacing(18), divider()].into()
-}
-
 /// A real terminal running the session inside Brain, or why there is none.
 /// The Terminal tab; split (⌘D), the kept session's terminal beside it; an open file shows
 /// in the reader (also once the terminal ended).
@@ -1357,154 +1328,6 @@ fn with_reader<'a>(brain: &'a Brain, main: Element<'a, Message>) -> Element<'a, 
     match &brain.reader {
         Some(reader) => row![container(main).width(Length::FillPortion(11)).height(Fill), reader_pane(reader)].spacing(12).height(Fill).into(),
         None => main,
-    }
-}
-
-/// Every file the session wrote, edited, read or was given, newest first; a click opens it.
-fn files<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
-    use brain_core::files::Touch;
-    let Some(cache) = brain.files.as_ref().filter(|f| f.key == s.key) else {
-        let why = if brain.conversation.as_ref().and_then(|c| c.transcript()).is_some() {
-            t("Lade Dateien …", "Loading files …")
-        } else {
-            t("Zu dieser Session gibt es kein Transkript.", "This session has no transcript.")
-        };
-        return hint(why);
-    };
-    let filter = brain.file_filter;
-    let bar = files_bar(brain, s);
-    let now = now_ms();
-    let cwd = s.cwd.clone().unwrap_or_default();
-    let rows: Vec<Element<'a, Message>> = cache
-        .files
-        .iter()
-        .filter(|file| shows(filter, file))
-        .map(|file| {
-            let path = std::path::Path::new(&file.path);
-            let exists = path.exists();
-            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| file.path.clone());
-            // Inside the session's folder the path reads relative to it, elsewhere from ~.
-            let folder = path.parent().map(|p| p.display().to_string()).unwrap_or_default();
-            let folder = match folder.strip_prefix(&cwd) {
-                Some(rest) if !cwd.is_empty() => format!(".{rest}"),
-                _ => tilde(&folder),
-            };
-            let mut badges = row![].spacing(4);
-            for touch in &file.touches {
-                let (label, color) = match touch {
-                    Touch::Written => (t("geschrieben", "written"), DONE),
-                    Touch::Edited => (t("geändert", "edited"), TURN),
-                    Touch::Read => (t("gelesen", "read"), TEXT_FAINT),
-                    Touch::Attached => (t("angehängt", "attached"), style::BACKGROUND),
-                    Touch::Shared => (t("von dir", "from you"), WORKING),
-                };
-                badges = badges.push(marker(label, color));
-            }
-            if !exists {
-                badges = badges.push(marker(t("gelöscht", "deleted"), CALLS));
-            }
-            let line = row![
-                column![
-                    text(name).size(13).color(if exists { TEXT_STRONG } else { TEXT_FAINT }).font(style::medium()).wrapping(text::Wrapping::None),
-                    text(clip(&folder, 70)).size(11).color(TEXT_FAINT).font(MONO).wrapping(text::Wrapping::None),
-                ]
-                .spacing(2)
-                .width(Fill),
-                badges,
-                text(if file.last_ms > 0 { ago(file.last_ms, now) } else { String::new() }).size(11.5).color(TEXT_FAINT).font(UI),
-            ]
-            .spacing(10)
-            .align_y(iced::Center)
-            .padding([6, 8]);
-            button(line)
-                .padding(0)
-                .width(Fill)
-                .on_press_maybe(exists.then(|| Message::OpenFile(file.path.clone())))
-                .style(|_, status| button::Style {
-                    background: matches!(status, button::Status::Hovered).then_some(Background::Color(style::HOVER)),
-                    border: Border { radius: 6.0.into(), ..Border::default() },
-                    ..button::Style::default()
-                })
-                .into()
-        })
-        .collect();
-    let list: Element<'a, Message> = if rows.is_empty() {
-        hint(t("Keine Dateien in dieser Auswahl.", "No files in this view."))
-    } else {
-        scrollable(column(rows).spacing(1).padding(Padding { top: 0.0, right: 8.0, bottom: 20.0, left: 0.0 })).height(Fill).style(scrollbar).into()
-    };
-    column![container(bar).padding(Padding { top: 4.0, bottom: 8.0, ..Padding::ZERO }), list].height(Fill).into()
-}
-
-/// Claude's questions, newest first, each with the answer given (or "open").
-fn questions<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
-    use brain_core::qa::Asked;
-    let Some(cache) = brain.qa.as_ref().filter(|q| q.key == s.key) else {
-        let why = if brain.conversation.as_ref().and_then(|c| c.transcript()).is_some() {
-            t("Lade Fragen …", "Loading questions …")
-        } else {
-            t("Zu dieser Session gibt es kein Transkript.", "This session has no transcript.")
-        };
-        return hint(why);
-    };
-    if cache.exchanges.is_empty() {
-        return hint(t("Claude hat in dieser Session nichts gefragt.", "Claude asked nothing in this session."));
-    }
-    let now = now_ms();
-    let cards = cache.exchanges.iter().rev().map(|exchange| -> Element<'a, Message> {
-        let when = exchange.ts.map(|ts| ago(ts.timestamp_millis(), now)).unwrap_or_default();
-        let how = match exchange.asked {
-            Asked::Tool => t("Rückfrage", "asked"),
-            Asked::Text => t("im Text", "in the reply"),
-        };
-        let mut card = column![
-            row![text(how).size(11).color(TEXT_FAINT).font(UI), Space::new().width(Fill), text(when).size(11).color(TEXT_FAINT).font(UI)].align_y(iced::Center),
-            text(exchange.question.clone()).size(13).color(TEXT_STRONG).font(style::semibold()),
-        ]
-        .spacing(6);
-        if !exchange.options.is_empty() {
-            card = card.push(text(exchange.options.join(" · ")).size(11.5).color(TEXT_FAINT).font(UI));
-        }
-        card = card.push(match &exchange.answer {
-            Some(answer) => row![
-                text(t("Du:", "You:")).size(12.5).color(WORKING).font(style::semibold()),
-                text(clip(answer, 600)).size(12.5).color(TEXT).font(UI),
-            ]
-            .spacing(6),
-            None => row![text(t("noch offen", "still open")).size(12.5).color(TURN).font(style::semibold())],
-        });
-        container(card).padding([10, 12]).width(Fill).style(|_| boxed(SURFACE, LINE, 8.0)).into()
-    });
-    scrollable(column(cards).spacing(8).padding(Padding { top: 4.0, right: 12.0, bottom: 24.0, left: 0.0 })).height(Fill).style(scrollbar).into()
-}
-
-/// The Files tab's choice: the files the session touched, by how, or the folder's git changes.
-fn files_bar<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
-    let on_changes = brain.tab == DetailTab::Changes;
-    let cache = brain.files.as_ref().filter(|f| f.key == s.key);
-    let count = |f: app::FileFilter| cache.map_or(0, |c| c.files.iter().filter(|file| shows(f, file)).count());
-    let options = [
-        (app::FileFilter::All, t("Alle", "All")),
-        (app::FileFilter::Changed, t("Geschrieben", "Written")),
-        (app::FileFilter::Read, t("Gelesen", "Read")),
-        (app::FileFilter::Given, t("Mitgegeben", "Given")),
-    ];
-    let filters = segmented(options.into_iter().map(|(f, label)| (format!("{label} {}", count(f)), !on_changes && brain.file_filter == f, Message::FileFilter(f))).collect());
-    let changed = brain.changes.as_ref().filter(|c| c.key == s.key).and_then(|c| c.changes.as_ref()).map(|c| c.files.len());
-    let git = match changed {
-        Some(n) => tr!("Git-Änderungen {n}", "Git changes {n}"),
-        None => t("Git-Änderungen", "Git changes").to_string(),
-    };
-    row![filters, segmented(vec![(git, on_changes, Message::Tab(DetailTab::Changes))])].spacing(8).align_y(iced::Center).into()
-}
-
-fn shows(filter: app::FileFilter, file: &brain_core::files::SessionFile) -> bool {
-    use brain_core::files::Touch;
-    match filter {
-        app::FileFilter::All => true,
-        app::FileFilter::Changed => file.has(Touch::Written) || file.has(Touch::Edited),
-        app::FileFilter::Read => file.has(Touch::Read),
-        app::FileFilter::Given => file.has(Touch::Attached) || file.has(Touch::Shared),
     }
 }
 
@@ -1660,35 +1483,8 @@ fn reader_pane(reader: &crate::app::Reader) -> Element<'_, Message> {
         .into()
 }
 
-/// The latest messages; with text in the find field, the matches in the whole session; with
-/// "Your prompts", everything you asked.
-fn messages<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
-    let body: Element<'a, Message> = if brain.tab == DetailTab::Questions {
-        questions(brain, s)
-    } else if brain.tab == DetailTab::Timeline {
-        scrollable(column(markdown::timeline(s)).padding(Padding { top: 12.0, right: 8.0, bottom: 20.0, left: 0.0 })).height(Fill).style(scrollbar).into()
-    } else if brain.find.trim().is_empty() && !brain.prompts_only {
-        let list = brain.conversation.as_ref().map(|c| c.messages.as_slice()).unwrap_or_default();
-        let children = if list.is_empty() { vec![hint(t("Diese Session hat noch keine Nachrichten.", "This session has no messages yet."))] } else { markdown::conversation(list) };
-        scrollable(column(children).spacing(14).padding(Padding { top: 4.0, right: 12.0, bottom: 24.0, left: 0.0 }))
-            .id(app::MESSAGES)
-            .on_scroll(Message::MessagesScrolled)
-            .height(Fill)
-            .style(scrollbar)
-            .into()
-    } else {
-        whole_session(brain)
-    };
-    let lens_open = brain.tab != DetailTab::Messages || brain.prompts_only || !brain.find.is_empty();
-    if !brain.find_open && !lens_open {
-        return body;
-    }
-    column![messages_bar(brain), body].spacing(8).height(Fill).into()
-}
-
-/// ⌘F: find in the whole session, and the lenses on it: the conversation, only your prompts,
-/// Claude's questions with your answers, the session's events.
-fn messages_bar(brain: &Brain) -> Element<'_, Message> {
+/// ⌘F: find in the whole session. With text in the field, the matches replace the terminal.
+fn find_bar(brain: &Brain) -> Element<'_, Message> {
     let field = text_input(t("In der ganzen Session suchen", "Find in the whole session"), &brain.find)
         .id(app::FIND)
         .on_input(Message::Find)
@@ -1696,36 +1492,15 @@ fn messages_bar(brain: &Brain) -> Element<'_, Message> {
         .font(UI)
         .padding([6, 2])
         .style(|theme, status| text_input::Style { border: Border::default(), background: Background::Color(Color::TRANSPARENT), ..field_style(theme, status) });
-    let active = !brain.find.is_empty() || brain.prompts_only;
-    let find = container(row![text("⌕").size(13).color(TEXT_FAINT), field, kbd(if active { "esc" } else { "⌘F" })].spacing(6).align_y(iced::Center))
+    let active = !brain.find.is_empty();
+    container(row![text("⌕").size(13).color(TEXT_FAINT), field, kbd("esc".to_string())].spacing(6).align_y(iced::Center))
         .padding([0, 10])
         .width(Fill)
-        .style(move |_| boxed(INK, if active { alpha(WORKING, 0x99) } else { LINE }, 8.0));
-    use app::Lens;
-    let lens = match brain.tab {
-        DetailTab::Questions => Lens::Questions,
-        DetailTab::Timeline => Lens::Events,
-        _ if brain.prompts_only => Lens::Prompts,
-        _ => Lens::Conversation,
-    };
-    let view = segmented(
-        [
-            (Lens::Conversation, t("Gespräch", "Conversation")),
-            (Lens::Prompts, t("Deine Prompts", "Your prompts")),
-            (Lens::Questions, t("Fragen", "Questions")),
-            (Lens::Events, t("Ereignisse", "Events")),
-        ]
-        .into_iter()
-        .map(|(l, label)| (label.to_string(), lens == l, Message::Lens(l)))
-        .collect(),
-    );
-    row![find, view]
-    .spacing(8)
-    .align_y(iced::Center)
-    .into()
+        .style(move |_| boxed(INK, if active { alpha(WORKING, 0x99) } else { LINE }, 8.0))
+        .into()
 }
 
-/// Matches or prompts from the whole conversation; a click opens one fully.
+/// Matches in the whole conversation; a click opens one fully.
 fn whole_session(brain: &Brain) -> Element<'_, Message> {
     use brain_core::transcript::Role;
     let Some(history) = brain.history.as_ref().filter(|h| Some(&h.key) == brain.selected.as_ref()) else {
@@ -1738,16 +1513,10 @@ fn whole_session(brain: &Brain) -> Element<'_, Message> {
     };
     let messages = &history.messages;
     let query = brain.find.trim();
-    let mut indices: Vec<usize> = if query.is_empty() { (0..messages.len()).collect() } else { brain_core::history::find(messages, query) };
-    if brain.prompts_only {
-        indices.retain(|&i| messages[i].role == Role::User);
-    }
+    let indices: Vec<usize> = brain_core::history::find(messages, query);
     let now = now_ms();
     let found = indices.len();
-    let summary = match (brain.prompts_only, query.is_empty()) {
-        (true, true) => tr!("{found} Prompts", "{found} prompts"),
-        _ => tr!("{found} Treffer", "{found} matches"),
-    };
+    let summary = tr!("{found} Treffer", "{found} matches");
     let mut rows: Vec<Element<'_, Message>> = vec![text(summary).size(11.5).color(TEXT_FAINT).font(UI).into()];
     for i in indices.into_iter().rev() {
         let message = &messages[i];
@@ -1801,118 +1570,6 @@ fn highlighted<'a>(line: String, range: Option<std::ops::Range<usize>>) -> Eleme
         iced::widget::span(line[range.end..].to_string()).color(TEXT),
     ];
     iced::widget::rich_text(spans).size(12.5).font(UI).into()
-}
-
-fn changes<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
-    let cache = brain.changes.as_ref().filter(|c| c.key == s.key);
-    let body: Vec<Element<'a, Message>> = match cache.map(|c| c.changes.as_ref()) {
-        None => vec![hint(t("Lade Änderungen …", "Loading changes …"))],
-        Some(None) => vec![hint(t("Der Ordner dieser Session ist kein Git-Repository.", "This session's folder is not a git repository."))],
-        Some(Some(changes)) => {
-            let (added, removed) = changes.totals();
-            let mut head = Vec::new();
-            if let Some(branch) = &changes.branch {
-                head.push(chip(format!("⑂ {branch}"), true));
-            }
-            if let Some((ahead, behind)) = changes.ahead_behind {
-                head.push(chip(format!("↑{ahead} ↓{behind}"), false));
-            }
-            let files = changes.files.len();
-            head.push(chip(tr!("{files} Dateien · +{added} −{removed}", "{files} files · +{added} −{removed}"), false));
-            let mut out = vec![container(iced::widget::row(head).spacing(6).wrap()).padding(Padding { bottom: 6.0, ..Padding::ZERO }).into()];
-            if changes.files.is_empty() {
-                out.push(hint(t("Keine offenen Änderungen.", "No uncommitted changes.")));
-            }
-            for file in &changes.files {
-                let open = brain.diff.as_ref().filter(|(k, p, _)| *k == s.key && *p == file.path);
-                out.push(
-                    button(change_row(file))
-                        .padding([0, 6])
-                        .width(Fill)
-                        .on_press(Message::ShowDiff(file.path.clone()))
-                        .style(move |_, status| button::Style {
-                            background: (open.is_some() || matches!(status, button::Status::Hovered)).then_some(Background::Color(style::HOVER)),
-                            border: Border { radius: 5.0.into(), ..Border::default() },
-                            ..button::Style::default()
-                        })
-                        .into(),
-                );
-                if let Some((_, _, lines)) = open {
-                    out.push(diff_view(file, lines.as_deref()));
-                }
-            }
-            out
-        }
-    };
-    scrollable(column(body).spacing(2).padding(Padding { top: 4.0, right: 8.0, bottom: 20.0, left: 0.0 })).height(Fill).style(scrollbar).into()
-}
-
-/// A file's diff, colored by line; long ones are cut. Below it, discarding the change.
-fn diff_view<'a>(file: &brain_core::changes::FileChange, lines: Option<&[(brain_core::changes::DiffKind, String)]>) -> Element<'a, Message> {
-    use brain_core::changes::DiffKind;
-    const SHOWN: usize = 400;
-    let Some(lines) = lines else { return container(hint(t("Lade Diff …", "Loading diff …"))).padding([4, 10]).into() };
-    if lines.is_empty() {
-        return container(hint(t("Kein Diff (binär oder unverändert).", "No diff (binary or unchanged)."))).padding([4, 10]).into();
-    }
-    let mut rows: Vec<Element<'a, Message>> = lines
-        .iter()
-        .take(SHOWN)
-        .map(|(kind, line)| {
-            let color = match kind {
-                DiffKind::Added => DONE,
-                DiffKind::Removed => CALLS_SOFT,
-                DiffKind::Hunk => WORKING,
-                DiffKind::Meta => TEXT_FAINT,
-                DiffKind::Context => TEXT_MUTED,
-            };
-            let background = match kind {
-                DiffKind::Added => Some(alpha(DONE, 0x14)),
-                DiffKind::Removed => Some(alpha(CALLS, 0x14)),
-                _ => None,
-            };
-            container(text(line.clone()).size(11.5).color(color).font(MONO).wrapping(text::Wrapping::None))
-                .width(Fill)
-                .padding([0, 8])
-                .style(move |_| container::Style { background: background.map(Background::Color), ..container::Style::default() })
-                .into()
-        })
-        .collect();
-    if lines.len() > SHOWN {
-        let more = lines.len() - SHOWN;
-        rows.push(hint(tr!("… {more} weitere Zeilen", "… {more} more lines")));
-    }
-    let mut body = column![container(column(rows)).padding([6, 0]).width(Fill).clip(true).style(|_| boxed(INK, LINE, 6.0))].spacing(6);
-    if brain_core::changes::discardable(file) {
-        body = body.push(row![action(t("Änderung verwerfen", "Discard change"), "", false, Some(Message::DiscardChange(file.path.clone())))]);
-    }
-    container(body).padding(Padding { top: 2.0, right: 0.0, bottom: 10.0, left: 6.0 }).into()
-}
-
-/// One changed file: status code, path, added and removed lines.
-fn change_row<'a>(file: &brain_core::changes::FileChange) -> Element<'a, Message> {
-    let code = file.status.trim();
-    let color = match code.chars().next() {
-        Some('A') => DONE,
-        Some('D') => CALLS,
-        Some('R') => WORKING,
-        Some('?') => TEXT_FAINT,
-        _ => TURN,
-    };
-    let mut line = row![
-        container(text(if code.is_empty() { "M".to_string() } else { code.to_string() }).size(12).color(color).font(MONO)).width(22),
-        container(text(clip(&file.path, 110)).size(11.5).color(TEXT).font(MONO).wrapping(text::Wrapping::None)).width(Fill).clip(true),
-    ]
-    .spacing(10)
-    .align_y(iced::Center)
-    .padding([3, 0]);
-    if let Some(a) = file.added.filter(|a| *a > 0) {
-        line = line.push(text(format!("+{a}")).size(12).color(DONE).font(UI));
-    }
-    if let Some(r) = file.removed.filter(|r| *r > 0) {
-        line = line.push(text(format!("−{r}")).size(12).color(CALLS).font(UI));
-    }
-    line.into()
 }
 
 fn pr_look(pr: &brain_core::github::PullRequest) -> (&'static str, Color) {
@@ -2502,7 +2159,7 @@ fn pairing(brain: &Brain) -> Element<'_, Message> {
 /// The few keys that matter for the selected session right now; everything else is behind ⌘K
 /// and `?`.
 fn footer_hints(brain: &Brain) -> Vec<(&'static str, &'static str)> {
-    if brain.tab == DetailTab::Terminal && brain.selected.as_ref().is_some_and(|k| brain.terminals.contains_key(k)) {
+    if brain.selected.as_ref().is_some_and(|k| brain.terminals.contains_key(k)) {
         return vec![
             ("⏎ ⌘2", t("ins Terminal", "into terminal")),
             ("⌘1", t("zur Liste", "to the list")),

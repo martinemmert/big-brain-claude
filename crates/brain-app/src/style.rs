@@ -157,13 +157,6 @@ pub fn account_badge<'a, M: 'a>(account: &str, index: usize) -> Element<'a, M> {
         .into()
 }
 
-/// A small rounded chip for metadata (path, pid, start time).
-pub fn chip<'a, M: 'a>(content: impl Into<String>, mono: bool) -> Element<'a, M> {
-    let label = text(content.into()).color(TEXT_MUTED);
-    let label = if mono { label.font(MONO).size(11) } else { label.font(UI).size(11.5) };
-    container(label).padding([2, 7]).style(|_| boxed(SURFACE, LINE, 5.0)).into()
-}
-
 /// Small coloured text after a session's name: worktree, PR, pinned, muted …
 pub fn marker<'a, M: 'a>(label: impl Into<String>, color: Color) -> Element<'a, M> {
     text(label.into()).size(11).color(color).font(UI).into()
