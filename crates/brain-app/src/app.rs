@@ -27,6 +27,7 @@ use crate::menubar::MenuBar;
 use crate::model::Model;
 use crate::notify::{self, Notifier};
 use crate::prefs::Prefs;
+use crate::tree::{self, Tree, Views};
 use crate::tr;
 
 /// Ended sessions show in the list for a day; older ones through the search.
@@ -90,7 +91,6 @@ pub enum PaletteCommand {
     Find,
     Cleanup,
     Later,
-    ToggleEnded,
     ToggleBackground,
     /// Show or hide sessions programs started (SDK reviews, `claude -p`).
     ToggleAutomated,
@@ -168,6 +168,10 @@ pub enum Action {
     ForceEnd,
     /// ⌘K with the selected session's projects to move it to.
     MoveToProject,
+    /// Keep the project of a session from the others as a project of the tree.
+    KeepProject,
+    /// A guess at a question counts as a report: no amber line any more.
+    OnlyReport,
 }
 
 #[derive(Debug, Clone)]
@@ -178,6 +182,17 @@ pub enum Message {
     OpenEntry(SessionKey),
     /// A right click on a list entry: select it, open its menu at the pointer.
     ContextMenu(SessionKey),
+    /// A right click on a project: its menu opens at the pointer.
+    ProjectMenu(String),
+    /// "+ Neues Projekt …": the folder dialog, the folder's project joins the tree.
+    NewProject,
+    /// A new session in this project (its folder is the dialog's first choice).
+    NewSessionIn(String),
+    /// Fold or open a project's "Für später" notes.
+    ToggleNotes(String),
+    /// A note for later starts as a new session; check it off.
+    StartNote(String),
+    CheckOffNote(String),
     /// A choice in the context menu; the click is the confirmation keys get by pressing twice.
     MenuPick(Action),
     CloseMenu,
@@ -201,10 +216,9 @@ pub enum Message {
     ToggleBackground,
     ToggleAutomated,
     ToggleSnoozed,
-    ToggleEnded,
     /// A card's button: the same command the phone sends.
     Steer(crate::companion::Command),
-    /// A click on a list section's title: fold or open it (`saved`, `projects`).
+    /// A click on a list section's title: fold or open it (`others`).
     ToggleSection(&'static str),
     /// A click on a project's head: fold or open it.
     ToggleProjectFolded(String),
@@ -214,10 +228,6 @@ pub enum Message {
     ToggleHiddenProjects,
     /// Open or fold the sessions that ended over a day ago.
     ToggleOlder,
-    /// "alle gesehen": every report in the reading zone counts as read.
-    SeeAll,
-    /// "Nur Bericht" on a maybe-question: it counts as a report, not as a question.
-    OnlyReport(SessionKey),
     Do(Action),
     CleanupAge(usize),
     OpenUrl(String),
@@ -347,8 +357,8 @@ impl Message {
 }
 
 /// The session list's width bounds when dragged.
-pub const SIDEBAR_DEFAULT: f32 = 460.0;
-const SIDEBAR_MIN: f32 = 300.0;
+pub const SIDEBAR_DEFAULT: f32 = 320.0;
+const SIDEBAR_MIN: f32 = 240.0;
 const SIDEBAR_MAX: f32 = 1100.0;
 
 /// A file opened from a path in the terminal output.
@@ -454,8 +464,6 @@ pub struct Groups<'a> {
     pub projects_open: bool,
     /// The hidden projects show, for a look.
     pub hidden_open: bool,
-    /// "Saved to resume" is open.
-    pub saved_open: bool,
     /// Snoozed while waiting, or hidden with ⌫ until something happens: folded at the end.
     pub paused: Vec<&'a Session>,
     /// Background sessions without activity for a day.
@@ -466,7 +474,7 @@ pub struct Groups<'a> {
     /// Ended over a day ago: a footer link opens them (a search puts them with `ended`).
     pub older: Vec<&'a Session>,
     pub older_open: bool,
-    /// Which of the folded lists at the end are open (a search opens all; ended: `include_ended`).
+    /// Which of the folded lists at the end are open (a search opens all).
     pub paused_open: bool,
     pub background_open: bool,
     pub automated_open: bool,
@@ -506,26 +514,8 @@ impl<'a> Entry<'a> {
 }
 
 impl<'a> Groups<'a> {
-    /// The sessions ↑↓ reach, in drawing order: what the list shows, folded lists only while open.
-    pub fn navigable(&self, include_ended: bool) -> Vec<&'a Session> {
-        let mut all: Vec<&Session> = if self.saved_open { self.saved.clone() } else { Vec::new() };
-        all.extend(self.live());
-        let folded: [(bool, &Vec<&'a Session>); 5] = [
-            (self.paused_open, &self.paused),
-            (self.background_open, &self.background),
-            (self.automated_open, &self.automated),
-            (include_ended, &self.ended),
-            (self.older_open, &self.older),
-        ];
-        for (open, sessions) in folded {
-            if open {
-                all.extend(sessions);
-            }
-        }
-        all
-    }
-
-    /// The running sessions the list draws, in drawing order: not in a folded or hidden project.
+    /// The running sessions of the projects the list draws, in drawing order: not in a folded or
+    /// hidden project.
     pub fn live(&self) -> Vec<&'a Session> {
         if !self.projects_open {
             return Vec::new();
@@ -533,80 +523,9 @@ impl<'a> Groups<'a> {
         self.projects.iter().filter(|b| b.shows(self.hidden_open)).flat_map(|b| b.entries.iter().map(Entry::session)).collect()
     }
 
-    /// How many projects are hidden.
-    pub fn hidden_projects(&self) -> usize {
-        self.projects.iter().filter(|b| b.hidden).count()
-    }
-
     /// How many sessions wait for a decision. A guess ([`Ask::Maybe`]) doesn't count.
     pub fn deciding(&self) -> usize {
         self.decide.iter().filter(|(_, ask)| *ask != Ask::Maybe).count()
-    }
-}
-
-/// One entry of the session list, in drawing order. The list's height is known from these, so
-/// keyboard navigation can keep the selection in view.
-pub enum Item<'a> {
-    /// `action`: a link at the section's right edge and what it sends. `fold`: whether it is
-    /// open, and what a click on its title sends to fold or open it.
-    Section { title: String, count: usize, alert: bool, action: Option<Box<(String, Message)>>, fold: Option<Box<(bool, Message)>> },
-    Hint(String),
-    /// A session that asks something. `options`: how many option buttons the card has (for a
-    /// permission: 1 when it shows the command).
-    Decide { s: &'a Session, nav: usize, ask: Ask, options: usize },
-    /// A finished session to read.
-    Report(&'a Session, usize),
-    Row(&'a Session, usize),
-    /// A project's head above its sessions, or a folded list's title.
-    Project(Head),
-    /// Under the projects: the toggles for ended, background and automated sessions.
-    Footer,
-}
-
-/// A head in the list: a project (folded or not, hidden or not) or a folded list's title.
-#[derive(Debug, Clone)]
-pub struct Head {
-    pub name: String,
-    pub count: usize,
-    /// A project: whether it is folded (a click folds or opens it) and hidden.
-    pub project: Option<(bool, bool)>,
-}
-
-pub const SECTION_H: f32 = 34.0;
-pub const HINT_H: f32 = 36.0;
-/// A session as the phone shows it: name and time, its headline, folder and phase.
-pub const ROW_H: f32 = 74.0;
-pub const CARD_H: f32 = 88.0;
-/// The button row of a permission or maybe-question card.
-pub const BUTTONS_H: f32 = 34.0;
-/// One option button of an AskUserQuestion card.
-pub const OPTION_H: f32 = 32.0;
-/// The line with the tool and command a permission card asks about.
-pub const CMD_H: f32 = 31.0;
-pub const REPORT_H: f32 = ROW_H;
-/// The line under a maybe-question that says why it is listed.
-pub const WHY_H: f32 = 18.0;
-pub const PROJECT_H: f32 = 34.0;
-pub const FOOTER_H: f32 = 40.0;
-pub const LIST_GAP: f32 = 6.0;
-pub const LIST_TOP: f32 = 4.0;
-
-impl Item<'_> {
-    pub fn height(&self) -> f32 {
-        match self {
-            Item::Section { .. } => SECTION_H,
-            Item::Hint(_) => HINT_H,
-            Item::Decide { ask, options, .. } => match ask {
-                Ask::Permission => CARD_H + *options as f32 * CMD_H + BUTTONS_H,
-                Ask::Maybe => CARD_H + WHY_H + BUTTONS_H,
-                Ask::Options => CARD_H + *options as f32 * OPTION_H,
-                Ask::Question => CARD_H,
-            },
-            Item::Report(..) => REPORT_H,
-            Item::Row(..) => ROW_H,
-            Item::Project(..) => PROJECT_H,
-            Item::Footer => FOOTER_H,
-        }
     }
 }
 
@@ -619,16 +538,17 @@ pub struct Brain {
     pub filter: Option<String>,
     pub selected: Option<SessionKey>,
     pub hovered: Option<SessionKey>,
-    pub show_ended: bool,
     /// Whether the snoozed-and-hidden section is open.
     pub show_snoozed: bool,
     /// The projects hidden from the list show for a look (not remembered).
     pub show_hidden_projects: bool,
     /// The clean-up dialog's age choice (index into CLEANUP_DAYS).
     pub cleanup_age: usize,
-    /// The tasks for later while their dialog is open, and the picked one.
-    pub later: Vec<brain_core::later::Item>,
+    /// The tasks noted for later with the project each belongs to, read again when the file
+    /// changes; the picked one while their dialog is open.
+    pub later: Vec<(brain_core::later::Item, String)>,
     pub later_pick: usize,
+    later_stamp: Option<(std::time::SystemTime, u64)>,
     pub status: Option<(String, Instant)>,
     pub conversation: Option<Conversation>,
     /// The selected ended session in a few lines (shown before resuming it).
@@ -687,6 +607,8 @@ pub struct Brain {
     moving: HashMap<SessionKey, Instant>,
     /// The session whose context menu is open, and where it opens.
     pub context_menu: Option<(SessionKey, iced::Point)>,
+    /// The project whose menu is open, and where it opens.
+    pub project_menu: Option<(String, iced::Point)>,
     /// The session selected before a right click selected another one: "open beside" keeps it.
     pub before_menu: Option<SessionKey>,
     pointer: iced::Point,
@@ -802,12 +724,12 @@ impl Brain {
             filter: None,
             selected: None,
             hovered: None,
-            show_ended: false,
             show_snoozed: false,
             show_hidden_projects: false,
             cleanup_age: 1,
             later: Vec::new(),
             later_pick: 0,
+            later_stamp: None,
             status: None,
             conversation: None,
             mode: Mode::Normal,
@@ -842,6 +764,7 @@ impl Brain {
             armed: None,
             moving: HashMap::new(),
             context_menu: None,
+            project_menu: None,
             before_menu: None,
             pointer: iced::Point::ORIGIN,
             window_size: iced::Size::new(1180.0, 760.0),
@@ -885,7 +808,8 @@ impl Brain {
             link_qr: None,
         };
         brain.resume_link();
-        brain.selected = brain.groups(now_ms()).navigable(false).first().map(|s| s.key.clone());
+        brain.refresh_later();
+        brain.selected = brain.nav_keys().first().cloned();
         if let Some(spec) = crate::config::quick_terminal().filter(|_| !demo) {
             if !crate::hotkey::register(&spec) {
                 brain.set_status(tr!("Die Tastenkombination „{spec}“ ist vergeben oder ungültig.", "The hotkey “{spec}” is taken or invalid."));
@@ -968,6 +892,27 @@ impl Brain {
             }
             Message::CloseMenu => {
                 self.context_menu = None;
+                self.project_menu = None;
+                Task::none()
+            }
+            Message::ProjectMenu(name) => {
+                self.context_menu = None;
+                self.project_menu = Some((name, self.pointer));
+                Task::none()
+            }
+            Message::NewProject => self.new_project(),
+            Message::NewSessionIn(name) => {
+                self.project_menu = None;
+                self.new_session_in(&name)
+            }
+            Message::ToggleNotes(project) => {
+                self.prefs.toggle_notes_open(&project);
+                self.prefs.save();
+                Task::none()
+            }
+            Message::StartNote(id) => self.start_note(&id),
+            Message::CheckOffNote(id) => {
+                self.check_off_note(&id);
                 Task::none()
             }
             Message::Pointer(position) => {
@@ -1039,6 +984,7 @@ impl Brain {
                 Task::none()
             }
             Message::ToggleProjectHidden(name) => {
+                self.project_menu = None;
                 self.prefs.toggle_project_hidden(&name);
                 self.prefs.save();
                 let hidden = self.prefs.is_project_hidden(&name);
@@ -1059,21 +1005,8 @@ impl Brain {
                 Task::none()
             }
             Message::Steer(command) => self.run_link_command(command, true),
-            Message::SeeAll => {
-                self.see_all();
-                Task::none()
-            }
-            Message::OnlyReport(key) => {
-                self.prefs.mark_report(&key, now_ms());
-                self.prefs.save();
-                Task::none()
-            }
             Message::ToggleSnoozed => {
                 self.show_snoozed = !self.show_snoozed;
-                Task::none()
-            }
-            Message::ToggleEnded => {
-                self.toggle_ended();
                 Task::none()
             }
             Message::Do(action) => self.act(action),
@@ -1486,6 +1419,7 @@ impl Brain {
         }
         let now = now_ms();
         let refreshed = self.model.refresh();
+        self.refresh_later();
         self.refresh_questions();
         if !self.model.is_demo() {
             self.request_takers = brain_core::requests::takers(&brain_core::requests::dir(&brain_core::account::home_dir()));
@@ -1566,18 +1500,16 @@ impl Brain {
     /// the conversation, the terminal capabilities, projects, conflicts and the menu bar.
     fn sync(&mut self) -> Task<Message> {
         let now = now_ms();
-        // A selected session that just ended stays selected: the ended list opens for it, so `P`
-        // or ⏎ right after `/exit` still mean that session.
-        let selected_ended = self.selected_session().is_some_and(|s| s.phase() == Phase::Ended && self.model.resumable(s));
-        if selected_ended && !self.include_ended() {
-            self.show_ended = true;
-        }
-        let (visible, mut deciding) = {
+        // A selected session that just ended stays in the tree (the last day's ended sessions
+        // show under their project), so `P` or ⏎ right after `/exit` still mean that session.
+        let (visible, first, mut deciding) = {
             let groups = self.groups(now);
-            (groups.navigable(self.include_ended()).iter().map(|s| s.key.clone()).collect::<Vec<SessionKey>>(), groups.deciding())
+            let tree = self.tree(&groups);
+            let visible: Vec<SessionKey> = tree.sessions().iter().map(|s| s.key.clone()).collect();
+            (visible, tree.navigable().first().map(|s| s.key.clone()), groups.deciding())
         };
         if self.selected.as_ref().is_none_or(|k| !visible.contains(k)) {
-            self.selected = visible.first().cloned();
+            self.selected = first;
         }
         // Where the newly selected session stood, before looking at it makes it seen.
         let held_changes = self.held.as_ref().map(|(key, _)| key) != self.selected.as_ref();
@@ -1919,7 +1851,6 @@ impl Brain {
         all.push((t("Alle Tasten", "All keys").to_string(), "?", PaletteCommand::Keys));
         all.push((t("Gärtner: kaputte Sessions finden und beenden", "Gardener: find and end broken sessions").to_string(), "", PaletteCommand::Garden));
         all.push((t("Log öffnen (Meldungen und Fehler)", "Open the log (messages and errors)").to_string(), "", PaletteCommand::OpenLog));
-        all.push((t("Beendete Sessions auf- / zuklappen", "Open / fold ended sessions").to_string(), "E", PaletteCommand::ToggleEnded));
         all.push((t("Ruhige Hintergrund-Sessions auf- / zuklappen", "Open / fold quiet background sessions").to_string(), "B", PaletteCommand::ToggleBackground));
         all.push((t("Automatisch gestartete Sessions (Reviews, Skripte) auf- / zuklappen", "Open / fold sessions started by programs (reviews, scripts)").to_string(), "U", PaletteCommand::ToggleAutomated));
 
@@ -2015,10 +1946,6 @@ impl Brain {
             }
             PaletteCommand::PairPhone => {
                 self.pair_phone();
-                Task::none()
-            }
-            PaletteCommand::ToggleEnded => {
-                self.toggle_ended();
                 Task::none()
             }
             PaletteCommand::ToggleBackground => {
@@ -2497,7 +2424,6 @@ impl Brain {
             older_open: self.prefs.show_older,
             projects_open: !self.prefs.is_section_folded("projects") || searching,
             hidden_open: self.show_hidden_projects || searching,
-            saved_open: !self.prefs.is_section_folded("saved") || searching,
             paused_open: self.show_snoozed || searching,
             background_open: self.prefs.show_background || searching,
             automated_open: self.prefs.show_automated || searching,
@@ -2579,128 +2505,47 @@ impl Brain {
         groups
     }
 
-    /// The list in drawing order: sections, hints and sessions.
-    pub fn items<'a>(&'a self, groups: &Groups<'a>, _now: i64) -> Vec<Item<'a>> {
+    /// The tree on the left: the listed projects with their sessions, the others at the end.
+    pub fn tree<'a>(&'a self, groups: &Groups<'a>) -> Tree<'a> {
         let searching = !self.search.is_empty();
-        let mut items = Vec::new();
-        let position = std::cell::Cell::new(0usize);
-        let next = || {
-            let n = position.get();
-            position.set(n + 1);
-            n
+        let query = self.search.to_lowercase();
+        let notes = self.later.iter().filter(|(note, project)| {
+            query.split_whitespace().all(|term| format!("{} {project}", note.text).to_lowercase().contains(term))
+        });
+        let folded = |name: &str| self.prefs.is_project_folded(name);
+        let hidden = |name: &str| self.prefs.is_project_hidden(name);
+        let notes_open = |name: &str| self.prefs.are_notes_open(name);
+        let views = Views {
+            folded: &folded,
+            hidden: &hidden,
+            notes_open: &notes_open,
+            others_open: !self.prefs.is_section_folded("others"),
+            show_hidden: self.show_hidden_projects,
         };
-        let push = |items: &mut Vec<Item<'a>>, s: &'a Session| items.push(Item::Row(s, next()));
-        if searching && groups.navigable(true).is_empty() {
-            let query = self.search.clone();
-            items.push(Item::Hint(tr!("Keine Session passt zu „{query}“. Esc leert die Suche.", "No session matches “{query}”. Esc clears the search.")));
-        }
-        if !groups.saved.is_empty() {
-            let fold = Some(Box::new((groups.saved_open, Message::ToggleSection("saved"))));
-            items.push(Item::Section { title: t("Zum Fortsetzen gemerkt", "Saved to resume").into(), count: groups.saved.len(), alert: false, action: None, fold });
-            if groups.saved_open {
-                for s in &groups.saved {
-                    push(&mut items, s);
-                }
-            }
-        }
-        // Everything that lives, by project: the count is what waits for a decision.
-        let action = (!groups.read.is_empty()).then(|| Box::new((t("alle gesehen", "all seen").to_string(), Message::SeeAll)));
-        let fold = Some(Box::new((groups.projects_open, Message::ToggleSection("projects"))));
-        items.push(Item::Section { title: t("Projekte", "Projects").into(), count: groups.deciding(), alert: true, action, fold });
-        if groups.decide.is_empty() && !searching && groups.projects_open {
-            items.push(Item::Hint(t("Nichts wartet auf dich.", "Nothing is waiting for you.").into()));
-        }
-        let shown = groups.projects.iter().filter(|b| groups.projects_open && (!b.hidden || groups.hidden_open));
-        for block in shown {
-            items.push(Item::Project(Head { name: block.name.clone(), count: block.entries.len(), project: Some((block.folded, block.hidden)) }));
-            if block.folded {
-                continue;
-            }
-            for entry in &block.entries {
-                match *entry {
-                    Entry::Decide(s, ask) => {
-                        let options = match ask {
-                            Ask::Options => self.question_buttons(&s.key),
-                            Ask::Permission => usize::from(s.insight.tool.is_some()),
-                            _ => 0,
-                        };
-                        items.push(Item::Decide { s, nav: next(), ask, options });
-                    }
-                    Entry::Read(s) => items.push(Item::Report(s, next())),
-                    Entry::Quiet(s) => push(&mut items, s),
-                }
-            }
-        }
-        if !groups.ended.is_empty() || !groups.background.is_empty() || !groups.automated.is_empty() || !groups.older.is_empty() || groups.hidden_projects() > 0 {
-            items.push(Item::Footer);
-        }
-        // Folded away at the end, one click (or ⌘K) opens each: nothing leaves the list without
-        // a trace.
-        if !groups.paused.is_empty() {
-            let fold = Some(Box::new((groups.paused_open, Message::ToggleSnoozed)));
-            items.push(Item::Section { title: t("Pausiert und ausgeblendet", "Snoozed and hidden").into(), count: groups.paused.len(), alert: false, action: None, fold });
-            if groups.paused_open {
-                for s in &groups.paused {
-                    push(&mut items, s);
-                }
-            }
-        }
-        let lists: [(&str, &Vec<&'a Session>, bool); 4] = [
-            (t("Ruhig im Hintergrund", "Quiet in the background"), &groups.background, groups.background_open),
-            (t("Automatisch gestartet", "Started by programs"), &groups.automated, groups.automated_open),
-            (t("Beendet", "Ended"), &groups.ended, self.include_ended()),
-            (t("Älter als ein Tag", "Older than a day"), &groups.older, groups.older_open),
-        ];
-        for (title, sessions, open) in lists {
-            if open && !sessions.is_empty() {
-                items.push(Item::Project(Head { name: title.into(), count: sessions.len(), project: None }));
-                for s in sessions {
-                    push(&mut items, s);
-                }
-            }
-        }
-        items
+        Tree::build(groups, self.prefs.listed_projects(), &|s| self.project_name(s), notes, &views, searching)
     }
 
-    /// How many option buttons the open question of the session gets: only a single question
-    /// without multiple choice can be answered with a click.
-    pub fn question_buttons(&self, key: &SessionKey) -> usize {
-        match self.questions.get(key).and_then(|(_, q)| q.as_ref()) {
-            Some(q) if q.items.len() == 1 && !q.items[0].multi_select => q.items[0].options.len(),
-            _ => 0,
-        }
+    /// The sessions ↑↓ reach, in the tree's drawing order.
+    pub fn nav_keys(&self) -> Vec<SessionKey> {
+        let groups = self.groups(now_ms());
+        self.tree(&groups).navigable().iter().map(|s| s.key.clone()).collect()
     }
 
-    /// "alle gesehen": the reports in the reading zone count as read.
-    fn see_all(&mut self) {
-        let now = now_ms();
-        let unread: Vec<(SessionKey, i64)> = self.groups(now).read.iter().map(|s| (s.key.clone(), s.phase_since_ms())).collect();
-        let mut changed = false;
-        for (key, since) in unread {
-            changed |= self.prefs.see(&key, now, since);
-        }
-        if changed {
-            self.prefs.save();
-        }
-    }
-
-    /// Scrolls the list so the selected session is visible (the first one: to the very top).
+    /// Scrolls the tree so the selected session is visible (the first one: to the very top).
     fn scroll_to_selected(&self) -> Task<Message> {
         let Some(key) = self.selected.clone() else { return Task::none() };
-        let now = now_ms();
-        let groups = self.groups(now);
-        let mut top = LIST_TOP;
-        for item in self.items(&groups, now) {
-            let found = match &item {
-                Item::Decide { s, nav, .. } | Item::Report(s, nav) | Item::Row(s, nav) if s.key == key => Some(*nav),
-                _ => None,
-            };
-            if let Some(nav) = found {
-                let bottom = top + item.height();
+        let groups = self.groups(now_ms());
+        let tree = self.tree(&groups);
+        let first = tree.navigable().first().map(|s| s.key.clone());
+        let mut top = tree::TOP;
+        for node in tree.nodes(!self.search.is_empty()) {
+            let height = node.height();
+            if matches!(&node, tree::Node::Session(row) if row.session.key == key) {
+                let bottom = top + height;
                 let target = match self.list_viewport {
-                    _ if nav == 0 => Some(0.0),
+                    _ if first.as_ref() == Some(&key) => Some(0.0),
                     Some((offset, _)) if top < offset => Some(top - 8.0),
-                    Some((offset, height)) if bottom > offset + height => Some(bottom - height + 8.0),
+                    Some((offset, viewport)) if bottom > offset + viewport => Some(bottom - viewport + 8.0),
                     Some(_) => None,
                     None => Some(top - 8.0),
                 };
@@ -2709,7 +2554,7 @@ impl Brain {
                     None => Task::none(),
                 };
             }
-            top += item.height() + LIST_GAP;
+            top += height + tree::GAP;
         }
         Task::none()
     }
@@ -2738,17 +2583,6 @@ impl Brain {
     fn toggle_background(&mut self) {
         self.prefs.show_background = !self.prefs.show_background;
         self.prefs.save();
-    }
-
-    fn toggle_ended(&mut self) {
-        self.show_ended = !self.show_ended;
-        if !self.show_ended && self.selected_session().is_some_and(|s| s.phase() == Phase::Ended) {
-            self.selected = None;
-        }
-    }
-
-    pub fn include_ended(&self) -> bool {
-        self.show_ended || !self.search.is_empty()
     }
 
     pub fn account_index(&self, account: &str) -> usize {
@@ -2789,7 +2623,8 @@ impl Brain {
             _ => None,
         };
         let cmd = modifiers.command();
-        if self.context_menu.take().is_some() && named == Some(Named::Escape) {
+        let menu_open = self.context_menu.take().is_some() | self.project_menu.take().is_some();
+        if menu_open && named == Some(Named::Escape) {
             return Task::none();
         }
 
@@ -2950,7 +2785,7 @@ impl Brain {
             return Task::none();
         }
 
-        let list: Vec<SessionKey> = self.groups(now_ms()).navigable(self.include_ended()).iter().map(|s| s.key.clone()).collect();
+        let list: Vec<SessionKey> = self.nav_keys();
         let current = self.selected.as_ref().and_then(|k| list.iter().position(|l| l == k));
         let next = current.map_or(0, |i| (i + 1).min(list.len().saturating_sub(1)));
         let previous = current.map_or(0, |i| i.saturating_sub(1));
@@ -3049,7 +2884,7 @@ impl Brain {
     }
 
     fn select_first_visible(&mut self) {
-        let first = self.groups(now_ms()).navigable(self.include_ended()).first().map(|s| s.key.clone());
+        let first = self.nav_keys().first().cloned();
         if first.is_some() {
             self.selected = first;
         }
@@ -3175,6 +3010,13 @@ impl Brain {
                 return Task::none();
             }
             Action::Pin => self.toggle_pin(),
+            Action::KeepProject => self.keep_selected_project(),
+            Action::OnlyReport => {
+                if let Some(key) = self.selected.clone() {
+                    self.prefs.mark_report(&key, now_ms());
+                    self.prefs.save();
+                }
+            }
             Action::MoveToProject => {
                 let task = self.open_palette();
                 self.palette = t("Projekt", "project").into();
@@ -3717,11 +3559,37 @@ impl Brain {
             .collect()
     }
 
+    /// Reads the tasks noted for later again when their file changed, each with the project of
+    /// its folder. The demo has made-up ones.
+    fn refresh_later(&mut self) {
+        if self.model.is_demo() {
+            if self.later.is_empty() {
+                self.later = crate::demo::later();
+            }
+            return;
+        }
+        let file = brain_core::later::file(&brain_core::account::home_dir());
+        let stamp = std::fs::metadata(&file).ok().and_then(|m| Some((m.modified().ok()?, m.len())));
+        if stamp == self.later_stamp {
+            return;
+        }
+        self.later_stamp = stamp;
+        let tasks = brain_core::later::open(&file);
+        self.later = tasks
+            .into_iter()
+            .map(|task| {
+                let project = task.cwd.clone().map(|cwd| self.model.project(&cwd).name.clone()).unwrap_or_default();
+                (task, project)
+            })
+            .collect();
+        self.later_pick = self.later_pick.min(self.later.len().saturating_sub(1));
+    }
+
     /// `L`: the tasks noted for later, read again each time the dialog opens.
     fn open_later(&mut self) {
         self.armed = None;
-        self.later = brain_core::later::open(&brain_core::later::file(&brain_core::account::home_dir()));
-        self.later_pick = self.later_pick.min(self.later.len().saturating_sub(1));
+        self.later_stamp = None;
+        self.refresh_later();
         self.mode = Mode::Later;
     }
 
@@ -3732,30 +3600,51 @@ impl Brain {
         match named {
             Some(Named::ArrowDown) => self.later_pick = (self.later_pick + 1).min(count.saturating_sub(1)),
             Some(Named::ArrowUp) => self.later_pick = self.later_pick.saturating_sub(1),
-            Some(Named::Enter) => return self.start_later(),
+            Some(Named::Enter) => {
+                let Some((task, _)) = self.later.get(self.later_pick).cloned() else { return Task::none() };
+                return self.start_task(task);
+            }
             Some(Named::Backspace | Named::Delete) if !cmd => {
-                let Some(task) = self.later.get(self.later_pick).cloned() else { return Task::none() };
-                if self.blocked_in_demo() {
-                    return Task::none();
-                }
-                match brain_core::later::done(&brain_core::later::file(&brain_core::account::home_dir()), &task.id) {
-                    Ok(()) => {
-                        let text = brain_core::hook::one_line(&task.text, 60);
-                        self.set_status(tr!("Abgehakt: {text}", "Checked off: {text}"));
-                    }
-                    Err(err) => self.set_status(err.to_string()),
-                }
-                self.open_later();
+                let Some((task, _)) = self.later.get(self.later_pick).cloned() else { return Task::none() };
+                self.check_off(&task);
             }
             _ => {}
         }
         Task::none()
     }
 
-    /// The picked task as a new background session in its folder and account, the task as its
-    /// first prompt; it is checked off once started.
-    fn start_later(&mut self) -> Task<Message> {
-        let Some(task) = self.later.get(self.later_pick).cloned() else { return Task::none() };
+    /// Checks a task off (⌫ in the dialog, the tick in the tree).
+    fn check_off(&mut self, task: &brain_core::later::Item) {
+        if self.blocked_in_demo() {
+            return;
+        }
+        match brain_core::later::done(&brain_core::later::file(&brain_core::account::home_dir()), &task.id) {
+            Ok(()) => {
+                let text = brain_core::hook::one_line(&task.text, 60);
+                self.set_status(tr!("Abgehakt: {text}", "Checked off: {text}"));
+            }
+            Err(err) => self.set_status(err.to_string()),
+        }
+        self.later_stamp = None;
+        self.refresh_later();
+    }
+
+    fn check_off_note(&mut self, id: &str) {
+        if let Some((task, _)) = self.later.iter().find(|(task, _)| task.id == id).cloned() {
+            self.check_off(&task);
+        }
+    }
+
+    fn start_note(&mut self, id: &str) -> Task<Message> {
+        match self.later.iter().find(|(task, _)| task.id == id).cloned() {
+            Some((task, _)) => self.start_task(task),
+            None => Task::none(),
+        }
+    }
+
+    /// The task as a new background session in its folder and account, the task as its first
+    /// prompt; it is checked off once started. Its project joins the tree.
+    fn start_task(&mut self, task: brain_core::later::Item) -> Task<Message> {
         let Some(folder) = task.cwd.clone().filter(|f| std::path::Path::new(f).is_dir()) else {
             self.set_status(t("Der Ordner dieser Aufgabe fehlt – ⌘N startet sie woanders.", "This task's folder is missing – ⌘N starts it elsewhere."));
             return Task::none();
@@ -3767,11 +3656,53 @@ impl Brain {
         }
         self.list_project_of(&folder);
         let _ = brain_core::later::done(&brain_core::later::file(&brain_core::account::home_dir()), &task.id);
+        self.later_stamp = None;
+        self.refresh_later();
         self.mode = Mode::Normal;
         self.set_status(t("Starte die Aufgabe als neue Session …", "Starting the task as a new session …"));
         let id = account.id.clone();
         let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), &brain_core::agents::Start { prompt: Some(task.text.clone()), ..Default::default() }));
         Task::perform(started, move |result| Message::Started(id.clone(), result))
+    }
+
+    /// "+ Neues Projekt …": the folder dialog; the folder's project (a worktree's main checkout)
+    /// joins the tree, and shows again if it was hidden.
+    fn new_project(&mut self) -> Task<Message> {
+        let Some(path) = crate::folder_picker::choose_folder() else { return Task::none() };
+        let folder = path.display().to_string();
+        let (name, root) = listed_entry(self.model.project(&folder));
+        self.prefs.list_project(&name, Some(&root));
+        if self.prefs.is_project_hidden(&name) {
+            self.prefs.toggle_project_hidden(&name);
+        }
+        self.prefs.save();
+        self.set_status(tr!("Projekt „{name}“ steht jetzt im Baum.", "Project “{name}” is in the tree now."));
+        Task::none()
+    }
+
+    /// A new session in a project: the dialog with the project's folder as the first choice.
+    fn new_session_in(&mut self, name: &str) -> Task<Message> {
+        let folder = self.prefs.listed_projects().iter().find(|p| p.name == name).and_then(|p| p.folder.clone());
+        let task = self.open_new_session_dialog();
+        if let Some(folder) = folder {
+            self.new_session.folder = folder;
+        }
+        task
+    }
+
+    /// "Als Projekt behalten": the project of a session among the others joins the tree.
+    fn keep_selected_project(&mut self) {
+        let Some(cwd) = self.selected_session().and_then(|s| s.cwd.clone()) else { return };
+        let (name, root) = listed_entry(self.model.project(&cwd));
+        self.prefs.list_project(&name, Some(&root));
+        self.prefs.save();
+        self.set_status(tr!("Projekt „{name}“ steht jetzt im Baum.", "Project “{name}” is in the tree now."));
+    }
+
+    /// A session whose last sentence ends with a question mark, not yet taken for a report.
+    pub fn is_guess(&self, s: &Session) -> bool {
+        let open_question = self.questions.get(&s.key).is_some_and(|(_, q)| q.is_some());
+        s.ask(open_question) == Some(Ask::Maybe) && !self.prefs.is_report(&s.key, s.phase_since_ms())
     }
 
     fn on_cleanup_key(&mut self, named: Option<Named>, character: Option<&str>, cmd: bool) {

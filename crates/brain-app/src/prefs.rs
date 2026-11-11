@@ -61,6 +61,9 @@ pub struct Prefs {
     /// in Brain, once.
     #[serde(default)]
     projects_seeded: bool,
+    /// Projects whose "for later" notes are unfolded in the tree.
+    #[serde(default)]
+    open_notes: BTreeSet<String>,
 }
 
 /// A project in the tree: its name (a worktree counts as its main checkout) and the folder of
@@ -279,6 +282,16 @@ impl Prefs {
             self.list_project(&name, folder.as_deref());
         }
         true
+    }
+
+    pub fn are_notes_open(&self, project: &str) -> bool {
+        self.open_notes.contains(project)
+    }
+
+    pub fn toggle_notes_open(&mut self, project: &str) {
+        if !self.open_notes.remove(project) {
+            self.open_notes.insert(project.to_string());
+        }
     }
 
     pub fn is_section_folded(&self, section: &str) -> bool {

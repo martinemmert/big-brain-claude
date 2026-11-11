@@ -20,6 +20,7 @@ mod prefs;
 mod shell_env;
 mod style;
 mod trash;
+mod tree;
 mod ui;
 
 fn main() -> iced::Result {

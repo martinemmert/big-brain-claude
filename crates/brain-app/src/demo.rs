@@ -26,6 +26,27 @@ pub fn list_projects(prefs: &mut crate::prefs::Prefs) -> bool {
     false
 }
 
+/// Notes for later: two in docs-site, one in the resting legacy-shop.
+pub fn later() -> Vec<(brain_core::later::Item, String)> {
+    let note = |id: &str, hours: i64, text: &str, project: &str| {
+        let item = brain_core::later::Item {
+            id: id.into(),
+            ts: Utc::now() - Duration::hours(hours),
+            text: text.into(),
+            cwd: Some(format!("~/Projects/{project}")),
+            account: Some("main".into()),
+            session_id: None,
+            session_name: None,
+        };
+        (item, project.to_string())
+    };
+    vec![
+        note("demo-1", 30, "Algolia-Index nachts neu bauen", "docs-site"),
+        note("demo-2", 5, "Kaputte Links im Archiv prüfen", "docs-site"),
+        note("demo-3", 70, "Altes Warenkorb-Modul entfernen", "legacy-shop"),
+    ]
+}
+
 pub struct Demo {
     pub accounts: Vec<Account>,
     pub board: Board,
@@ -36,6 +57,8 @@ pub struct Demo {
 struct Spec {
     pid: u32,
     account: &'static str,
+    /// The folder's name, which is the project.
+    project: &'static str,
     name: &'static str,
     status: &'static str,
     minutes_ago: i64,
@@ -51,7 +74,8 @@ pub fn build() -> Demo {
         Spec {
             pid: 4101,
             account: "main",
-            name: "api-gateway",
+            project: "api-gateway",
+            name: "Rate-Limits",
             status: "idle",
             minutes_ago: 6,
             events: vec![
@@ -64,7 +88,8 @@ pub fn build() -> Demo {
         Spec {
             pid: 4102,
             account: "second",
-            name: "checkout-redesign",
+            project: "checkout-redesign",
+            name: "Stripe Elements",
             status: "waiting",
             minutes_ago: 3,
             events: vec![
@@ -73,9 +98,19 @@ pub fn build() -> Demo {
             ],
         },
         Spec {
+            pid: 4109,
+            account: "second",
+            project: "checkout-redesign",
+            name: "Warenkorb-Tests",
+            status: "busy",
+            minutes_ago: 21,
+            events: vec![(30, Source::Report, Kind::Doing, "Writing cart tests")],
+        },
+        Spec {
             pid: 4103,
             account: "main",
-            name: "docs-site",
+            project: "docs-site",
+            name: "Changelog-Suche",
             status: "idle",
             minutes_ago: 12,
             events: vec![
@@ -87,7 +122,8 @@ pub fn build() -> Demo {
         Spec {
             pid: 4104,
             account: "main",
-            name: "billing-service",
+            project: "billing-service",
+            name: "UUID-Migration",
             status: "busy",
             minutes_ago: 1,
             events: vec![
@@ -98,7 +134,8 @@ pub fn build() -> Demo {
         Spec {
             pid: 4105,
             account: "second",
-            name: "mobile-onboarding",
+            project: "mobile-onboarding",
+            name: "Onboarding-Flow",
             status: "busy",
             minutes_ago: 2,
             events: vec![(15, Source::Report, Kind::Doing, "Writing snapshot tests for the onboarding flow")],
@@ -106,7 +143,8 @@ pub fn build() -> Demo {
         Spec {
             pid: 4106,
             account: "main",
-            name: "infra-terraform",
+            project: "infra-terraform",
+            name: "Staging-Cluster",
             status: "idle",
             minutes_ago: 2,
             events: vec![
@@ -117,7 +155,8 @@ pub fn build() -> Demo {
         Spec {
             pid: 4107,
             account: "second",
-            name: "design-tokens",
+            project: "design-tokens",
+            name: "Farbskala exportieren",
             status: "idle",
             minutes_ago: 5 * 60,
             events: vec![(5 * 60, Source::Report, Kind::Done, "Exported the colour scale as tokens")],
@@ -125,7 +164,8 @@ pub fn build() -> Demo {
         Spec {
             pid: 4108,
             account: "main",
-            name: "release-notes",
+            project: "release-notes",
+            name: "Release Notes 2.4",
             status: "idle",
             minutes_ago: 26 * 60,
             events: vec![(26 * 60, Source::Report, Kind::Done, "Drafted the 2.4 release notes")],
@@ -152,7 +192,7 @@ pub fn build() -> Demo {
                 account: spec.account.into(),
                 pid: spec.pid,
                 session_id: Some(format!("demo-{}", spec.pid)),
-                cwd: Some(format!("~/Projects/{}", spec.name)),
+                cwd: Some(format!("~/Projects/{}", spec.project)),
                 source: *source,
                 kind: *kind,
                 text: (!text.is_empty()).then(|| text.to_string()),
@@ -166,7 +206,7 @@ pub fn build() -> Demo {
             &SessionFile {
                 pid: spec.pid,
                 session_id: Some(format!("demo-{}", spec.pid)),
-                cwd: Some(format!("~/Projects/{}", spec.name)),
+                cwd: Some(format!("~/Projects/{}", spec.project)),
                 name: Some(spec.name.into()),
                 status: Some(spec.status.into()),
                 started_at: Some(ms(spec.minutes_ago + 50)),
@@ -232,13 +272,14 @@ pub fn build() -> Demo {
         (4104, "main", "claude-opus-5-5", 97_000, 2.17, "default"),
     ];
     for (pid, account, model, tokens, cost, mode) in insights {
+        let tool = (pid == 4102).then(|| "Bash(npm run e2e)".to_string());
         let key = SessionKey { account: account.into(), id: format!("demo-{pid}") };
         board.apply_insight(
             &key,
             Insight {
                 asks: false,
                 closing: None,
-                tool: None,
+                tool,
                 model: Some(model.into()),
                 context_tokens: Some(tokens),
                 permission_mode: Some(mode.into()),

@@ -3,7 +3,7 @@
 
 use brain_core::state::Phase;
 use iced::widget::{button, container, row, text, Space};
-use iced::{border, color, font, Background, Border, Color, Element, Font, Length, Padding, Shadow, Vector};
+use iced::{border, color, font, Background, Border, Color, Element, Font, Shadow};
 
 // Surfaces, darkest to lightest.
 pub const INK: Color = color!(0x0f1322);
@@ -101,9 +101,6 @@ pub fn fill(background: Color) -> container::Style {
     container::Style { background: Some(Background::Color(background)), ..container::Style::default() }
 }
 
-pub fn glow(color: Color) -> Shadow {
-    Shadow { color: alpha(color, 0x30), offset: Vector::new(0.0, 0.0), blur_radius: 18.0 }
-}
 
 /// The embedded terminal's colours: iTerm2's default profile (foreground and the 16 ANSI
 /// colours) on Brain's ink background; Brain's own tones where iTerm has none.
@@ -170,21 +167,6 @@ pub fn dot<'a, M: 'a>(color: Color, size: f32) -> Element<'a, M> {
 /// A muted line of guidance in a list.
 pub fn hint<'a, M: 'a>(label: impl Into<String>) -> Element<'a, M> {
     container(text(label.into()).size(12.5).color(TEXT_MUTED).font(UI)).padding([10, 6]).into()
-}
-
-/// Section title with its count, e.g. "Braucht dich 3". `alert` turns the count red.
-pub fn section_title<'a, M: 'a>(title: impl Into<String>, count: usize, alert: bool) -> Element<'a, M> {
-    let count: Element<'a, M> = if alert && count > 0 {
-        container(text(count.to_string()).size(11).color(INK).font(bold()))
-            .padding([0, 6])
-            .style(|_| boxed(CALLS, Color::TRANSPARENT, 8.0))
-            .into()
-    } else {
-        text(count.to_string()).size(12).color(TEXT_FAINT).font(medium()).into()
-    };
-    container(row![text(title.into()).size(12).color(TEXT_MUTED).font(semibold()), count].spacing(7).align_y(iced::Center))
-        .padding(Padding { top: 14.0, right: 4.0, bottom: 4.0, left: 4.0 })
-        .into()
 }
 
 /// A labelled button with its key; `strong` fills it with the alert colour.
@@ -285,15 +267,4 @@ pub fn entry_style(selected: bool, base: Color, selected_bg: Color, edge: Color,
             snap: true,
         }
     }
-}
-
-/// The phase colour as a bar along the left edge of a rounded entry.
-pub fn rail<'a, M: 'a>(color: Color, radius: f32) -> Element<'a, M> {
-    container(Space::new().width(4).height(Length::Fill))
-        .style(move |_| container::Style {
-            background: Some(Background::Color(color)),
-            border: Border { radius: border::Radius { top_left: radius, bottom_left: radius, top_right: 0.0, bottom_right: 0.0 }, ..Border::default() },
-            ..container::Style::default()
-        })
-        .into()
 }
