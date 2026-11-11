@@ -38,10 +38,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::NewSession => new_session(brain),
         _ => detail(brain),
     };
-    let mut left = column![search(brain), tree(brain, &groups, now)];
-    if let Some(usage) = usage(brain, now) {
-        left = left.push(usage);
-    }
+    let left = column![search(brain), tree(brain, &groups, now)];
     let width = brain.prefs.sidebar_width.unwrap_or(app::SIDEBAR_DEFAULT);
     let edge = if brain.dragging_sidebar { WORKING } else { LINE };
     // A 7 pt grab area around the 1 pt divider line.
@@ -59,7 +56,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         grip,
         container(detail).width(Fill).height(Fill).style(|_| style::fill(INK)),
     ];
-    let window = container(column![titlebar(brain, groups.deciding()), divider(), body.height(Fill), divider(), footer(brain)])
+    let window = container(column![titlebar(brain, groups.deciding()), divider(), body.height(Fill), divider(), status_line_bar(brain, &groups, now)])
         .width(Fill)
         .height(Fill)
         .style(|_| container::Style { background: Some(Background::Color(INK)), text_color: Some(TEXT), ..container::Style::default() });
@@ -354,17 +351,10 @@ fn divider<'a>() -> Element<'a, Message> {
 // ---- title bar --------------------------------------------------------------------
 
 fn titlebar(brain: &Brain, waiting: usize) -> Element<'_, Message> {
-    let summary = match waiting {
-        0 => t("nichts wartet", "nothing waiting").to_string(),
-        1 => t("1 wartet auf dich", "1 waiting for you").to_string(),
-        w => tr!("{w} warten auf dich", "{w} waiting for you"),
-    };
-
     let mut bar = row![
         Space::new().width(TRAFFIC_LIGHTS),
         brand_mark(waiting > 0),
         text("Brain").size(14).color(TEXT_STRONG).font(style::bold()),
-        text(summary).size(12.5).color(TEXT_MUTED).font(UI),
         Space::new().width(Fill),
     ]
     .spacing(12)
@@ -825,68 +815,6 @@ fn phase_word(phase: Phase) -> &'static str {
     }
 }
 
-/// Plan limits per account (from the status line) and today's cost, under the list.
-fn usage(brain: &Brain, now: i64) -> Option<Element<'_, Message>> {
-    let today = chrono::Local::now().date_naive();
-    let rows: Vec<Element<'_, Message>> = brain
-        .model
-        .accounts
-        .iter()
-        .filter_map(|account| {
-            let limits = brain_core::usage::account_limits(&brain.model.usage, &account.id);
-            let cost: f64 = brain
-                .model
-                .usage
-                .iter()
-                .filter(|s| s.account == account.id)
-                .filter(|s| chrono::DateTime::from_timestamp_millis(s.ts).is_some_and(|t| t.with_timezone(&chrono::Local).date_naive() == today))
-                .filter_map(|s| s.cost_usd)
-                .sum();
-            if limits.is_none() && cost == 0.0 {
-                return None;
-            }
-            let mut line = row![account_badge(&account.id, brain.account_index(&account.id))].spacing(10).align_y(iced::Center);
-            let history = brain.model.usage_history.get(&account.id).map(Vec::as_slice).unwrap_or_default();
-            if let Some(snapshot) = limits {
-                if let Some(limit) = snapshot.five_hour {
-                    line = line.push(limit_bar("5h", limit, five_hour_runs_out(limit, now), now));
-                }
-                if let Some(limit) = snapshot.seven_day {
-                    line = line.push(limit_bar("7d", limit, seven_day_runs_out(limit, history, now), now));
-                }
-            }
-            // Running out at this pace while another account has room: say where to go.
-            let runs_out = limits.is_some_and(|snapshot| {
-                snapshot.five_hour.and_then(|l| five_hour_runs_out(l, now)).is_some()
-                    || snapshot.seven_day.and_then(|l| seven_day_runs_out(l, history, now)).is_some()
-            });
-            let roomy = brain.model.accounts.iter().filter(|a| a.id != account.id).find(|other| {
-                brain_core::usage::account_limits(&brain.model.usage, &other.id).is_some_and(|s| {
-                    s.five_hour.is_none_or(|l| l.used_percentage < 50.0) && s.seven_day.is_none_or(|l| l.used_percentage < 50.0)
-                })
-            });
-            if let (true, Some(other)) = (runs_out, roomy) {
-                let other = other.id.clone();
-                line = line.push(text(tr!("→ {other} hat Luft", "→ {other} has room")).size(11).color(DONE).font(UI));
-            }
-            if cost > 0.0 {
-                // Claude Code's per-session totals at API prices: a measure of use, not a bill.
-                line = line
-                    .push(Space::new().width(Fill))
-                    .push(text(tr!("≈ ${cost:.0} API-Wert", "≈ ${cost:.0} API value")).size(11.5).color(TEXT_MUTED).font(UI).wrapping(text::Wrapping::None));
-            }
-            Some(line.into())
-        })
-        .collect();
-    if rows.is_empty() {
-        return None;
-    }
-    Some(
-        column![divider(), column![text(t("Nutzung", "Usage")).size(11).color(TEXT_FAINT).font(style::semibold())].extend(rows).spacing(8).padding([10, 16])]
-            .into(),
-    )
-}
-
 /// The five-hour limit runs out at the pace of its window so far.
 fn five_hour_runs_out(limit: brain_core::usage::Limit, now_ms: i64) -> Option<i64> {
     limit.runs_out_at(brain_core::usage::FIVE_HOURS, now_ms / 1000)
@@ -895,43 +823,6 @@ fn five_hour_runs_out(limit: brain_core::usage::Limit, now_ms: i64) -> Option<i6
 /// The weekly limit runs out at the pace of the last 24 hours.
 fn seven_day_runs_out(limit: brain_core::usage::Limit, history: &[brain_core::usage::Sample], now_ms: i64) -> Option<i64> {
     limit.runs_out_at_recent(brain_core::usage::SEVEN_DAYS, now_ms / 1000, history)
-}
-
-/// `5h ▓▓▓░░ 46% · 15:20`: a plan limit window with its reset time, and when it runs out at
-/// the current pace (`runs_out`, Unix seconds) if that comes first.
-fn limit_bar<'a>(label: &str, limit: brain_core::usage::Limit, runs_out: Option<i64>, now_ms: i64) -> Element<'a, Message> {
-    let used = limit.used_percentage.clamp(0.0, 100.0);
-    let color = if used >= 90.0 { CALLS } else if used >= 70.0 { TURN } else { WORKING };
-    let resets = limit.resets_at.filter(|r| r * 1000 > now_ms).map(|r| {
-        let at = chrono::DateTime::from_timestamp(r, 0).map(|t| t.with_timezone(&chrono::Local));
-        match at {
-            Some(t) if r * 1000 - now_ms < 24 * 3600 * 1000 => t.format("%H:%M").to_string(),
-            Some(t) => t.format("%a").to_string(),
-            None => String::new(),
-        }
-    });
-    let filled = (46.0 * used as f32 / 100.0).max(0.0);
-    let bar = stack![
-        container(Space::new().width(46).height(5)).style(|_| boxed(RAISED, Color::TRANSPARENT, 3.0)),
-        container(Space::new().width(filled).height(5)).style(move |_| boxed(color, Color::TRANSPARENT, 3.0)),
-    ];
-    let mut out = row![text(label.to_string()).size(11).color(TEXT_FAINT).font(UI), bar, text(format!("{used:.0}%")).size(11).color(TEXT).font(UI)]
-        .spacing(5)
-        .align_y(iced::Center);
-    if let Some(at) = resets {
-        out = out.push(text(format!("↻ {at}")).size(11).color(TEXT_FAINT).font(UI));
-    }
-    // At this pace the limit runs out before it resets: when.
-    if let Some(at) = runs_out.filter(|_| used < 100.0) {
-        let when = chrono::DateTime::from_timestamp(at, 0).map(|t| t.with_timezone(&chrono::Local));
-        let when = match when {
-            Some(t) if at * 1000 - now_ms < 24 * 3600 * 1000 => t.format("%H:%M").to_string(),
-            Some(t) => t.format("%a %H:%M").to_string(),
-            None => String::new(),
-        };
-        out = out.push(text(tr!("voll ~{when}", "full ~{when}")).size(11).color(TURN).font(style::semibold()));
-    }
-    out.into()
 }
 
 // ---- detail -----------------------------------------------------------------------
@@ -1998,32 +1889,84 @@ fn pairing(brain: &Brain) -> Element<'_, Message> {
     scrollable(body.padding(Padding { top: 24.0, right: 28.0, bottom: 24.0, left: 28.0 })).height(Fill).style(scrollbar).into()
 }
 
-// ---- footer -----------------------------------------------------------------------
+// ---- status line ------------------------------------------------------------------
 
-/// The status message ("press again" prompts, what a command did) in a band of its own; empty
-/// otherwise, so the terminal above keeps its size when a message comes and goes.
-fn footer(brain: &Brain) -> Element<'_, Message> {
-    if let Some((message, _)) = &brain.status {
-        let band = row![
-            text("●").size(11).color(CALLS),
-            text(clip(message, 160)).size(13).color(TEXT_STRONG).font(style::semibold()).wrapping(text::Wrapping::None),
-        ]
-        .spacing(8)
-        .align_y(iced::Center);
-        return container(band)
-            .height(32)
-            .padding([0, 14])
-            .center_y(32)
-            .width(Fill)
-            .clip(true)
-            .style(|_| container::Style {
-                background: Some(Background::Color(alpha(CALLS, 0x2a))),
-                border: Border { color: alpha(CALLS, 0x80), width: 1.0, radius: 0.0.into() },
-                ..container::Style::default()
-            })
-            .into();
+/// The height of the line at the bottom: it stays when a message comes and goes.
+const STATUS_LINE_H: f32 = 26.0;
+
+/// One line at the bottom: who needs the user, who finished, who works; the message of the last
+/// command; and the usage of each account at the right.
+fn status_line_bar<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Message> {
+    let working = groups.quiet.iter().filter(|s| matches!(s.phase(), Phase::Working | Phase::Background)).count();
+    let counts = [
+        (groups.deciding(), CALLS, t("braucht dich", "needs you")),
+        (groups.read.len(), TURN, t("fertig", "finished")),
+        (working, WORKING, t("arbeiten", "working")),
+    ];
+    let mut line = row![].spacing(14).align_y(iced::Center);
+    for (count, color, label) in counts.into_iter().filter(|(count, ..)| *count > 0) {
+        line = line.push(row![style::dot(color, 7.0), text(format!("{count} {label}")).size(11.5).color(TEXT_MUTED).font(UI)].spacing(6).align_y(iced::Center));
     }
-    container(Space::new()).height(32).width(Fill).style(|_| style::fill(CHROME)).into()
+    if let Some((message, _)) = &brain.status {
+        line = line.push(text(clip(message, 110)).size(11.5).color(TEXT_STRONG).font(style::semibold()).wrapping(text::Wrapping::None));
+    }
+    line = line.push(Space::new().width(Fill));
+    let usage: Vec<Element<'a, Message>> = brain.model.accounts.iter().filter_map(|account| usage_segment(brain, &account.id, now)).collect();
+    for (i, segment) in usage.into_iter().enumerate() {
+        if i > 0 {
+            line = line.push(container(Space::new().width(1).height(12)).style(|_| style::fill(LINE_STRONG)));
+        }
+        line = line.push(segment);
+    }
+    container(line)
+        .height(STATUS_LINE_H)
+        .center_y(STATUS_LINE_H)
+        .padding([0, 14])
+        .width(Fill)
+        .clip(true)
+        .style(|_| style::fill(CHROME))
+        .into()
+}
+
+/// An account's limits: `main 5 h ▓▓░ 46 % Woche 21 % · voll ~Do 14:00`, or "hat Platz" when
+/// neither window is half used.
+fn usage_segment<'a>(brain: &Brain, account: &str, now: i64) -> Option<Element<'a, Message>> {
+    let snapshot = brain_core::usage::account_limits(&brain.model.usage, account)?;
+    let history = brain.model.usage_history.get(account).map(Vec::as_slice).unwrap_or_default();
+    let faint = |label: String| text(label).size(11.5).color(TEXT_FAINT).font(UI);
+    let num = |label: String| text(label).size(11.5).color(TEXT).font(UI);
+    let mut line = row![account_badge(account, brain.account_index(account))].spacing(6).align_y(iced::Center);
+    if let Some(limit) = snapshot.five_hour {
+        let used = limit.used_percentage.clamp(0.0, 100.0);
+        let color = if used >= 90.0 { CALLS } else if used >= 70.0 { TURN } else { WORKING };
+        let bar = stack![
+            container(Space::new().width(40).height(4)).style(|_| boxed(RAISED, Color::TRANSPARENT, 2.0)),
+            container(Space::new().width(40.0 * used as f32 / 100.0).height(4)).style(move |_| boxed(color, Color::TRANSPARENT, 2.0)),
+        ];
+        line = line.push(faint("5 h".into())).push(bar).push(num(format!("{used:.0} %")));
+    }
+    if let Some(limit) = snapshot.seven_day {
+        line = line.push(faint(t("Woche", "week").into())).push(num(format!("{:.0} %", limit.used_percentage)));
+    }
+    let runs_out = [snapshot.five_hour.and_then(|l| five_hour_runs_out(l, now)), snapshot.seven_day.and_then(|l| seven_day_runs_out(l, history, now))]
+        .into_iter()
+        .flatten()
+        .min();
+    let has_room = snapshot.five_hour.is_none_or(|l| l.used_percentage < 50.0) && snapshot.seven_day.is_none_or(|l| l.used_percentage < 50.0);
+    match runs_out {
+        Some(at) => {
+            let when = chrono::DateTime::from_timestamp(at, 0).map(|t| t.with_timezone(&chrono::Local));
+            let when = match when {
+                Some(t) if at * 1000 - now < 24 * 3600 * 1000 => t.format("%H:%M").to_string(),
+                Some(t) => t.format("%a %H:%M").to_string(),
+                None => String::new(),
+            };
+            line = line.push(text(tr!("voll ~{when}", "full ~{when}")).size(11.5).color(TURN).font(style::semibold()));
+        }
+        None if has_room => line = line.push(text(t("hat Platz", "has room")).size(11.5).color(DONE).font(UI)),
+        None => {}
+    }
+    Some(line.into())
 }
 
 /// `?`: every key, by what it acts on.
