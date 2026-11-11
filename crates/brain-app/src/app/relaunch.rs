@@ -27,9 +27,9 @@ const OWN_FLAGS: [&str; 11] = ["--resume", "-r", "--continue", "-c", "--print", 
 /// What the dialog opens with, by the key or menu entry that opened it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Preset {
-    /// `A`: another account, the original ends.
+    /// "Into another account …": the original ends.
     Move,
-    /// `F`: its own account, the original keeps running.
+    /// Its own account, the original keeps running.
     Fork,
     /// "Restart with …": only flags.
     Restart,

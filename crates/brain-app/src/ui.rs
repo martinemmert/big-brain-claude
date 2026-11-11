@@ -202,7 +202,7 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
         open.push((t("Öffnen", "Open").to_string(), "⏎", Action::Open, false));
     }
     if s.agent.is_none() && (ended || s.accepts_input()) {
-        open.push((t("Nach Brain holen", "Move into Brain").to_string(), "I", Action::TakeOver, false));
+        open.push((t("Nach Brain holen", "Move into Brain").to_string(), "⌥⌘O", Action::TakeOver, false));
     }
     // Beside the terminal that's on screen: two sessions side by side.
     let beside = brain.before_menu.as_ref().is_some_and(|k| brain.terminals.contains_key(k));
@@ -213,12 +213,12 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
 
     let mut talk = Vec::new();
     if s.awaiting_permission() && caps.keys {
-        talk.push((t("Erlauben", "Allow").to_string(), "Y", Action::Allow, false));
-        talk.push((t("Ablehnen", "Deny").to_string(), "N", Action::Deny, false));
+        talk.push((t("Erlauben", "Allow").to_string(), "⌘Y", Action::Allow, false));
+        talk.push((t("Ablehnen", "Deny").to_string(), "⇧⌘Y", Action::Deny, false));
     }
     // Brain renames with `/rename` through the session's mod: only while the session waits.
     if s.waits_for_input() && brain.can_send(&s.key) {
-        talk.push((t("Umbenennen", "Rename").to_string(), "R", Action::StartRename, false));
+        talk.push((t("Umbenennen", "Rename").to_string(), "⌘R", Action::StartRename, false));
     }
     groups.push(talk);
 
@@ -229,16 +229,16 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
         (false, false) => t("Anheften", "Pin"),
         (true, false) => t("Lösen", "Unpin"),
     };
-    let mut keep = vec![(pin.to_string(), "P", Action::Pin, false)];
+    let mut keep = vec![(pin.to_string(), "⌥⌘P", Action::Pin, false)];
     let mute = if brain.prefs.is_muted(&s.key) { t("Benachrichtigungen an", "Unmute") } else { t("Stummschalten", "Mute") };
     keep.push((mute.to_string(), "", Action::Mute, false));
     let hidden = brain.prefs.is_hidden(&s.key, s.last_activity_ms);
     if hidden {
-        keep.push((t("Wieder einblenden", "Show again").to_string(), "S", Action::Snooze, false));
+        keep.push((t("Wieder einblenden", "Show again").to_string(), "", Action::Snooze, false));
     } else if !ended {
-        keep.push((t("Pausieren (15 min → 1 h → morgen → bis sich etwas tut)", "Snooze (15 min → 1 h → tomorrow → until something happens)").to_string(), "S", Action::Snooze, false));
+        keep.push((t("Pausieren (15 min → 1 h → morgen → bis sich etwas tut)", "Snooze (15 min → 1 h → tomorrow → until something happens)").to_string(), "", Action::Snooze, false));
     }
-    keep.push((t("In ein anderes Konto oder forken …", "Into another account or fork …").to_string(), "A", Action::Relaunch, false));
+    keep.push((t("In ein anderes Konto oder forken …", "Into another account or fork …").to_string(), "", Action::Relaunch, false));
     keep.push((t("In ein anderes Projekt …", "Into another project …").to_string(), "", Action::MoveToProject, false));
     if !brain.prefs.is_project_listed(&brain.project_name(s)) {
         keep.push((t("Als Projekt behalten", "Keep as a project").to_string(), "", Action::KeepProject, false));
@@ -250,9 +250,9 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
 
     let mut remove = Vec::new();
     if agent_active {
-        remove.push((t("Hintergrund-Session stoppen", "Stop background session").to_string(), "X", Action::End, false));
+        remove.push((t("Hintergrund-Session stoppen", "Stop background session").to_string(), "⌥⌘X", Action::End, false));
     } else if !ended && s.accepts_input() {
-        remove.push((t("Beenden", "End").to_string(), "X", Action::End, false));
+        remove.push((t("Beenden", "End").to_string(), "⌥⌘X", Action::End, false));
     }
     // When ending doesn't work (it hangs, or Brain can't reach it): stop the process.
     if !ended && s.alive {
@@ -263,7 +263,7 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
         remove.push((t("Ausblenden", "Hide").to_string(), "⌫", Action::Hide, false));
     }
     if ended || s.agent.as_ref().is_some_and(|a| !a.is_active()) {
-        remove.push((t("In den Papierkorb", "Move to Trash").to_string(), "⌘⌫", Action::Trash, true));
+        remove.push((t("In den Papierkorb", "Move to Trash").to_string(), "⌥⌘⌫", Action::Trash, true));
     }
     groups.push(remove);
 
@@ -421,7 +421,7 @@ fn search(brain: &Brain) -> Element<'_, Message> {
         .style(|theme, status| text_input::Style { border: Border::default(), background: Background::Color(Color::TRANSPARENT), ..field_style(theme, status) });
     let edge = if editing { alpha(WORKING, 0x99) } else { LINE };
     container(
-        container(row![text("⌕").size(13).color(TEXT_FAINT), field, kbd(if editing { "esc" } else { "/" })].spacing(6).align_y(iced::Center))
+        container(row![text("⌕").size(13).color(TEXT_FAINT), field, kbd(if editing { "esc" } else { "⌥⌘F" })].spacing(6).align_y(iced::Center))
             .padding([0, 10])
             .style(move |_| boxed(INK, edge, 8.0)),
     )
@@ -2088,36 +2088,40 @@ fn usage_segment<'a>(brain: &Brain, account: &str, now: i64) -> Option<Element<'
     Some(line.into())
 }
 
-/// `?`: every key, by what it acts on.
+/// ⌘?: every key, by what it acts on.
 fn keys_sheet(_brain: &Brain) -> Element<'_, Message> {
     let groups: [(&str, Vec<(&str, &str)>); 3] = [
         (
-            t("Liste", "List"),
+            t("Liste und Baum", "List and tree"),
             vec![
-                ("↑↓  j k", t("wählen", "select")),
+                ("↑↓", t("wählen", "select")),
                 ("⏎", t("öffnen (beendete: fortsetzen)", "open (ended: resume)")),
                 ("⌥⏎", t("in iTerm öffnen", "open in iTerm")),
-                ("/", t("Liste durchsuchen", "search the list")),
+                ("⌃⇥", t("nächste Session (⇧: vorherige)", "next session (⇧: previous)")),
+                ("⇧⌘U", t("nächste Session, die dich braucht", "next session that needs you")),
+                ("⌘1…9", t("die Sessions, die dich brauchen", "the sessions that need you")),
                 ("⇥", t("Konto-Filter", "account filter")),
-                ("B  U", t("Hintergrund- · automatische Sessions auf-/zuklappen", "fold background · automated sessions")),
-                ("C", t("aufräumen", "clean up")),
-                ("L", t("für später: Aufgaben aus /later", "for later: tasks from /later")),
+                ("⌥⌘F", t("Sessions suchen", "search sessions")),
+                ("⌘O", t("Session fortsetzen (suchen, auch beendete)", "resume a session (search, ended ones too)")),
                 ("⌘N", t("neue Session", "new session")),
+                ("⌥⌘N", t("neue Session im Projekt", "new session in the project")),
+                ("⇧⌘N", t("neues Projekt", "new project")),
+                ("⌘L", t("für später: Aufgaben aus /later", "for later: tasks from /later")),
+                ("⇧⌘L", t("Später-Notizen des Projekts", "the project's notes for later")),
             ],
         ),
         (
             t("Session", "Session"),
             vec![
-                ("Y  N", t("Freigabe erlauben · ablehnen", "allow · deny a permission")),
-                ("R", t("umbenennen", "rename")),
-                ("P", t("anheften", "pin")),
-                ("S", t("pausieren: 15 min → 1 h → morgen → bis sich etwas tut", "snooze: 15 min → 1 h → tomorrow → until something happens")),
-                ("⌫ ⌫", t("gleich bis sich etwas tut", "straight to until something happens")),
-                ("A", t("in ein anderes Konto oder forken", "into another account or fork")),
-                ("F", t("forken (Original läuft weiter)", "fork (the original keeps running)")),
-                ("I", t("aus iTerm in Brain holen", "move from iTerm into Brain")),
-                ("X X", t("beenden", "end")),
-                ("⌘⌫ ⌘⌫", t("in den Papierkorb", "move to the Trash")),
+                ("⌘Y  ⇧⌘Y", t("Freigabe erlauben · ablehnen", "allow · deny a permission")),
+                ("⌘R", t("umbenennen", "rename")),
+                ("⌥⌘P", t("anheften", "pin")),
+                ("⌥⌘M", t("stummschalten", "mute")),
+                ("⌫ ⌫", t("ausblenden, bis sich etwas tut", "hide until something happens")),
+                ("⌥⌘O", t("aus iTerm in Brain holen", "move from iTerm into Brain")),
+                ("⌥⌘I", t("in iTerm öffnen", "open in iTerm")),
+                ("⌥⌘X ⌥⌘X", t("beenden", "end")),
+                ("⌥⌘⌫ ⌥⌘⌫", t("in den Papierkorb", "move to the Trash")),
                 ("⌘E", t("längerer Prompt (Composer)", "longer prompt (composer)")),
                 ("⌘F", t("im ganzen Gespräch suchen", "find in the whole conversation")),
                 ("⌘⇧C", t("letzte Antwort kopieren", "copy the last answer")),
@@ -2126,14 +2130,18 @@ fn keys_sheet(_brain: &Brain) -> Element<'_, Message> {
         (
             t("Ansicht und Terminal", "View and terminal"),
             vec![
-                ("⌘2  ⌘J", t("Tastatur ins Terminal", "keyboard into the terminal")),
-                ("⌘1  ⌘[", t("zurück zur Liste", "back to the list")),
+                ("⌘J", t("Tastatur ins Terminal", "keyboard into the terminal")),
+                ("⌘[", t("Tastatur zurück in den Baum", "keyboard back to the tree")),
                 ("⌘T", t("Shell im Projektordner", "shell in the project folder")),
                 ("⌘D", t("Terminal teilen", "split the terminal")),
                 ("⌘⇧A", t("alle Terminals im Überblick", "all terminals at a glance")),
+                ("⌃⌘S", t("Seitenleiste ein-/ausblenden", "show / hide the sidebar")),
+                ("⌥⌘0", t("Änderungen unter der Session", "changes under the session")),
                 ("⌘-Klick", t("Pfad oder Link öffnen", "open a path or link")),
-                ("⌘V", t("Screenshot ins Terminal", "paste a screenshot")),
+                ("⌘C  ⌘V", t("kopieren · einsetzen im Terminal", "copy · paste in the terminal")),
+                ("⌃⌘V", t("Screenshot ins Terminal", "paste a screenshot")),
                 ("⌘K", t("Befehle", "commands")),
+                ("⌘,", t("Einstellungen (config.json)", "settings (config.json)")),
                 ("esc", t("schließen", "close")),
             ],
         ),

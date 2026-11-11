@@ -186,9 +186,8 @@ pub enum Action {
     MoveTo(usize),
     /// Fork the selected session into this account; the original goes on.
     ForkTo(usize),
-    /// The account dialog, opened for a move (`A`), a fork (`F`) or a restart with flags.
+    /// The account dialog, opened for a move or a restart with flags.
     Relaunch,
-    Fork,
     RestartWith,
     End,
     Hide,
@@ -663,7 +662,7 @@ pub struct Brain {
     /// Sessions whose terminal rang the bell while another session was selected.
     pub bells: HashSet<SessionKey>,
     pub new_session: NewSession,
-    /// `A`, `X`, `⌫` or `⌘⌫` was pressed once on this session: a second press within 5 s acts.
+    /// ⌥⌘X, ⌫ or ⌥⌘⌫ was chosen once on this session: a second press within 5 s acts.
     armed: Option<(char, SessionKey, Instant)>,
     /// Sessions a move just started for: until the board lists them as moved, a second move
     /// (a double tap on the phone) would fork them into the target twice.
@@ -2010,10 +2009,10 @@ impl Brain {
             all.push((t("Gespräch als Markdown öffnen", "Open the conversation as Markdown").to_string(), "", PaletteCommand::Act(Action::Export)));
             all.push((t("Shell im Projektordner", "Shell in the project folder").to_string(), "⌘T", PaletteCommand::Shell));
             all.push((t("In der Session suchen", "Find in the session").to_string(), "⌘F", PaletteCommand::Find));
-            all.push((t("Umbenennen", "Rename").to_string(), "R", PaletteCommand::Act(Action::StartRename)));
-            all.push((t("Anheften / lösen", "Pin / unpin").to_string(), "P", PaletteCommand::Act(Action::Pin)));
+            all.push((t("Umbenennen", "Rename").to_string(), "⌘R", PaletteCommand::Act(Action::StartRename)));
+            all.push((t("Anheften / lösen", "Pin / unpin").to_string(), "⌥⌘P", PaletteCommand::Act(Action::Pin)));
             all.push((t("Stumm / laut", "Mute / unmute").to_string(), "", PaletteCommand::Act(Action::Mute)));
-            all.push((t("Pausieren", "Snooze").to_string(), "S", PaletteCommand::Act(Action::Snooze)));
+            all.push((t("Pausieren", "Snooze").to_string(), "", PaletteCommand::Act(Action::Snooze)));
             for index in self.move_targets() {
                 let id = self.model.accounts[index].id.clone();
                 all.push((tr!("In {id} fortsetzen", "Continue in {id}"), "", PaletteCommand::Act(Action::MoveTo(index))));
@@ -2022,26 +2021,26 @@ impl Brain {
                 let id = self.model.accounts[index].id.clone();
                 all.push((tr!("In {id} forken", "Fork into {id}"), "", PaletteCommand::Act(Action::ForkTo(index))));
             }
-            all.push((t("In ein anderes Konto oder forken …", "Into another account or fork …").to_string(), "A", PaletteCommand::Act(Action::Relaunch)));
+            all.push((t("In ein anderes Konto oder forken …", "Into another account or fork …").to_string(), "", PaletteCommand::Act(Action::Relaunch)));
             all.push((t("Neu starten mit … (z. B. --chrome)", "Restart with … (e.g. --chrome)").to_string(), "", PaletteCommand::Act(Action::RestartWith)));
-            all.push((t("Beenden / Hintergrund-Session stoppen", "End / stop the background session").to_string(), "X", PaletteCommand::Act(Action::End)));
+            all.push((t("Beenden / Hintergrund-Session stoppen", "End / stop the background session").to_string(), "⌥⌘X", PaletteCommand::Act(Action::End)));
             all.push((t("Ausblenden", "Hide").to_string(), "⌫", PaletteCommand::Act(Action::Hide)));
-            all.push((t("In den Papierkorb", "Move to Trash").to_string(), "⌘⌫", PaletteCommand::Act(Action::Trash)));
+            all.push((t("In den Papierkorb", "Move to Trash").to_string(), "⌥⌘⌫", PaletteCommand::Act(Action::Trash)));
         }
         all.push((t("Terminal teilen", "Split the terminal").to_string(), "⌘D", PaletteCommand::Split));
         all.push((t("Alle Terminals im Überblick", "All terminals at a glance").to_string(), "⌘⇧A", PaletteCommand::Overview));
         all.push((t("Neue Session", "New session").to_string(), "⌘N", PaletteCommand::NewSession));
-        all.push((t("Aufräumen", "Clean up").to_string(), "C", PaletteCommand::Cleanup));
-        all.push((t("Für später", "For later").to_string(), "L", PaletteCommand::Later));
+        all.push((t("Aufräumen", "Clean up").to_string(), "", PaletteCommand::Cleanup));
+        all.push((t("Für später", "For later").to_string(), "⌘L", PaletteCommand::Later));
         all.push((t("iPhone koppeln (Brain Link)", "Pair a phone (Brain Link)").to_string(), "", PaletteCommand::PairPhone));
         all.push((t("Neues Claude-Konto einrichten", "Set up a new Claude account").to_string(), "", PaletteCommand::SetUpAccount));
         all.push((t("Konten abgleichen (Einstellungen, Skills, Gedächtnis)", "Sync accounts (settings, skills, memory)").to_string(), "", PaletteCommand::SyncAccounts));
-        all.push((t("Alle Tasten", "All keys").to_string(), "?", PaletteCommand::Keys));
+        all.push((t("Alle Tasten", "All keys").to_string(), "⌘?", PaletteCommand::Keys));
         all.push((t("Gärtner: kaputte Sessions finden und beenden", "Gardener: find and end broken sessions").to_string(), "", PaletteCommand::Garden));
         all.push((t("Log öffnen (Meldungen und Fehler)", "Open the log (messages and errors)").to_string(), "", PaletteCommand::OpenLog));
         all.push((t("Änderungen unter der Session zeigen / verbergen", "Show / hide the changes under the session").to_string(), "", PaletteCommand::ToggleChanges));
-        all.push((t("Ruhige Hintergrund-Sessions auf- / zuklappen", "Open / fold quiet background sessions").to_string(), "B", PaletteCommand::ToggleBackground));
-        all.push((t("Automatisch gestartete Sessions (Reviews, Skripte) auf- / zuklappen", "Open / fold sessions started by programs (reviews, scripts)").to_string(), "U", PaletteCommand::ToggleAutomated));
+        all.push((t("Ruhige Hintergrund-Sessions auf- / zuklappen", "Open / fold quiet background sessions").to_string(), "", PaletteCommand::ToggleBackground));
+        all.push((t("Automatisch gestartete Sessions (Reviews, Skripte) auf- / zuklappen", "Open / fold sessions started by programs (reviews, scripts)").to_string(), "", PaletteCommand::ToggleAutomated));
 
         // Leave a project out of the list, or bring it back.
         for name in self.project_names() {
@@ -2994,35 +2993,6 @@ impl Brain {
             }
             _ => {}
         }
-        if text.as_deref() == Some("/") {
-            return self.start_search();
-        }
-        if text.as_deref() == Some("?") {
-            self.mode = Mode::Keys;
-            return Task::none();
-        }
-        let Some(character) = character else { return Task::none() };
-        match character.as_str() {
-            "j" => return self.select_index(&list, next),
-            "k" => return self.select_index(&list, previous),
-            "r" => return self.start_rename(),
-            "y" => self.answer_permission(true),
-            "n" => self.answer_permission(false),
-            "p" => self.toggle_pin(),
-            "s" => self.cycle_snooze(),
-            "a" => return self.act(Action::Relaunch),
-            "f" => return self.act(Action::Fork),
-            "x" => return self.end_selected(false),
-            "c" => {
-                self.armed = None;
-                self.mode = Mode::Cleanup;
-            }
-            "l" => self.open_later(),
-            "i" => return self.act(Action::TakeOver),
-            "b" => self.toggle_background(),
-            "u" => self.toggle_automated(),
-            _ => {}
-        }
         Task::none()
     }
 
@@ -3234,7 +3204,6 @@ impl Brain {
             Action::Mute => self.toggle_mute(),
             Action::Snooze => self.cycle_snooze(),
             Action::Relaunch => return self.open_relaunch(relaunch::Preset::Move),
-            Action::Fork => return self.open_relaunch(relaunch::Preset::Fork),
             Action::RestartWith => return self.open_relaunch(relaunch::Preset::Restart),
             Action::MoveTo(index) => return self.move_selected(index, Vec::new()),
             Action::ForkTo(index) => return self.fork_selected(index, Vec::new()),
@@ -3442,7 +3411,7 @@ impl Brain {
         confirmed
     }
 
-    /// `X` twice: ends a waiting session with `/exit` (a background one with `claude stop`).
+    /// ⌥⌘X twice: ends a waiting session with `/exit` (a background one with `claude stop`).
     fn end_selected(&mut self, confirmed: bool) -> Task<Message> {
         let Some(session) = self.selected_session() else { return Task::none() };
         let key = session.key.clone();
@@ -3455,7 +3424,7 @@ impl Brain {
         }
         if let Some(agent) = session.agent.clone().filter(|a| a.is_active()) {
             if !confirmed && !self.arm('x', &key) {
-                self.set_status(t("Nochmal X stoppt die Hintergrund-Session (das Gespräch bleibt).", "Press X again to stop the background session (its conversation is kept)."));
+                self.set_status(t("Nochmal ⌥⌘X stoppt die Hintergrund-Session (das Gespräch bleibt).", "Press ⌥⌘X again to stop the background session (its conversation is kept)."));
                 return Task::none();
             }
             if self.blocked_in_demo() {
@@ -3484,13 +3453,13 @@ impl Brain {
             return Task::none();
         }
         if !confirmed && !self.arm('x', &key) {
-            self.set_status(t("Nochmal X beendet die Session (fortsetzen mit ⏎).", "Press X again to end the session (⏎ resumes it)."));
+            self.set_status(t("Nochmal ⌥⌘X beendet die Session (fortsetzen mit ⏎).", "Press ⌥⌘X again to end the session (⏎ resumes it)."));
             return Task::none();
         }
         if self.blocked_in_demo() {
             return Task::none();
         }
-        self.type_into_selected("/exit", t("Session beendet – ⏎ setzt sie fort, P merkt sie dir.", "Session ended – ⏎ resumes it, P saves it for later.").into())
+        self.type_into_selected("/exit", t("Session beendet – ⏎ setzt sie fort, ⌥⌘P merkt sie dir.", "Session ended – ⏎ resumes it, ⌥⌘P saves it for later.").into())
     }
 
     /// `A` twice: continues a session in the next account. The transcript is copied and resumed
@@ -3662,21 +3631,21 @@ impl Brain {
         self.prefs.hide(&key, now_ms());
         self.prefs.save();
         self.selected = None;
-        self.set_status(t("Ausgeblendet – über / findest du sie wieder.", "Hidden – / finds it again."));
+        self.set_status(t("Ausgeblendet – über ⌥⌘F findest du sie wieder.", "Hidden – ⌥⌘F finds it again."));
     }
 
-    /// `⌘⌫` twice: an ended session's transcript goes to the Trash; a background session is
+    /// ⌥⌘⌫ twice: an ended session's transcript goes to the Trash; a background session is
     /// removed with `claude rm` after its transcript went to the Trash.
     fn trash_selected(&mut self, confirmed: bool) {
         let Some(session) = self.selected_session() else { return };
         let key = session.key.clone();
         let deletable = session.phase() == Phase::Ended || session.agent.as_ref().is_some_and(|a| !a.is_active());
         if !deletable {
-            self.set_status(t("Löschen geht nur bei beendeten Sessions – erst X X.", "Only ended sessions can be deleted – end it with X X first."));
+            self.set_status(t("Löschen geht nur bei beendeten Sessions – erst beenden (⌥⌘X).", "Only ended sessions can be deleted – end it first (⌥⌘X)."));
             return;
         }
         if !confirmed && !self.arm('d', &key) {
-            self.set_status(t("Nochmal ⌘⌫ legt die Session in den Papierkorb.", "Press ⌘⌫ again to move the session to the Trash."));
+            self.set_status(t("Nochmal ⌥⌘⌫ legt die Session in den Papierkorb.", "Press ⌥⌘⌫ again to move the session to the Trash."));
             return;
         }
         if self.blocked_in_demo() {
