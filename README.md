@@ -78,19 +78,24 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   from their transcripts, and a softer hint when they change files in the same checkout.
 - **For later.** `/later <task>` in any session (or `brain later "<task>"`, which Claude uses too) notes a
   task with its folder; `L` lists them, `⏎` starts one as a new session there, `⌫` checks it off.
-- **By project, nothing lost.** Sessions that never got a prompt don't show up. Everything that
-  lives is grouped by project, the project with the most urgent session first, and the count next
-  to *Projects* is what waits for a decision. In a project, first what asks you something (red): a
-  permission (Allow / Deny on the card), a question with options (one click answers) or a
-  `brain report --waiting`; a reply that only ends with “?” is a yellow *Question?* that doesn't
-  count and goes away when you open the session or choose *Only a report*. Then finished sessions
-  you haven't looked at, each with the last sentence of its reply (*all seen* clears them), then
-  the rest. The phone groups the same way and filters by project or account. A session that
-  belongs elsewhere goes into another project (right-click → *Into another project …*, ⌘K, or
+- **A tree of projects, nothing lost.** Sessions that never got a prompt don't show up. The left
+  side is a tree: the projects you keep (*+ New project …*, or a session started from Brain in its
+  folder; the first start takes over those running in Brain) as fixed headings in alphabetical
+  order, so nothing moves under the mouse, and their sessions below, with a dot, the name and the
+  time since the state changed. A second line only for what needs you (red, with a ring: a
+  permission with Allow / Deny right there, a question, a `brain report --waiting`; it stays until
+  answered) or finished unseen (amber: the last sentence of its reply; gone once you look at it).
+  The rest shows on hover. Each project folds, shows *resting* without a live session, and has a
+  folded *For later · n* row with its notes (a click starts one as a new session, ✓ checks it off).
+  Sessions of other folders (iTerm, `claude --bg` from a shell, programs) are under *Others*, each
+  with *Keep as a project* in its menu. The phone groups by state and project, as before. A session
+  that belongs elsewhere goes into another project (right-click → *Into another project …*, ⌘K, or
   ⋯ on the phone); Brain remembers it.
-  At the end: a footer with *Ended* (the last day; older ones through the search), *Quiet in the
-  background* and *Started by programs* (security reviews, SDK scripts, `claude -p`), and the
-  folded section *Snoozed and hidden*. A click, or ⌘K, opens one. `⌘⌫` twice moves an ended session's transcript
+  Ended sessions of the last day stay dimmed under their project; a line at the end opens
+  *snoozed*, *in the background*, *automated* and *older* ones. A slim header over the terminal
+  shows project › session, branch, account and context fill; a status line at the bottom shows
+  who needs you, who finished, who works, the last message and the usage per account.
+  `⌘⌫` twice moves an ended session's transcript
   to the **Trash**. `C` opens *Clean up*: everything ended (or in the background) and quiet for
   1, 3, 7 or 14 days, to hide or trash at once. Pinned and saved sessions always stay.
 - **Claude Code's background sessions** (`claude --bg`, listed by `claude agents`) show with
@@ -321,7 +326,7 @@ and `~/.claude-brain`. With Homebrew: `brew uninstall --zap --cask brain` remove
 | `⌘J` `⌘2` / `⌘[` `⌘1` | keyboard into the terminal / back to the list |
 | `/` | search the session list (`esc` clears) |
 | `⇥` / `⇧⇥` | cycle the account filter |
-| `E` / `B` / `U` | fold ended / background / automated sessions in the footer |
+| `B` / `U` | open / fold background / automated sessions |
 | `C` | clean up: hide or trash everything quiet for N days |
 | `⌘N` | start a new session (in Brain; `⌘I` in the dialog: in iTerm) |
 | `Y` / `N` | allow / deny an open permission prompt |

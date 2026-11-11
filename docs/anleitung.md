@@ -16,61 +16,70 @@ Terminal laufen und hilft, die Liste kurz zu halten.
 - **Berechtigungen:** Brain ist mit deiner Apple-Development-Identität signiert. macOS fragt jede
   Berechtigung einmal und merkt sich die Antwort auch über Updates.
 
-## Die Liste
+## Der Baum
 
-Links stehen die Sessions nach **Projekt** gruppiert, unter „Projekte“ (die Zahl daneben, rot: wie
-viele auf eine Entscheidung warten). Oben steht das Projekt mit dem dringendsten Anliegen: erst eine
-Entscheidung, dann ein Bericht zum Lesen, dann der Rest. In jedem Projekt kommen die Sessions in
-dieser Reihenfolge, jede mit ihrer Karte:
+Links steht der **Baum**: die Projekte als feste Überschriften, darunter ihre Sessions. Die
+Projekte stehen alphabetisch und bleiben dort, auch wenn eine Session zu fragen beginnt: nichts
+springt unter der Maus. Welche Projekte im Baum stehen, bestimmst du:
 
-- **Zu entscheiden** (rot): Claude braucht eine Freigabe (**Erlauben** / **Ablehnen**), stellt
-  eine Frage mit Optionen (ein Klick auf die Option antwortet) oder hat mit `brain report --waiting`
-  gefragt. Die Reihenfolge ist Freigabe, Optionen, Frage, darin die am längsten Wartende zuerst.
-  Wartet nichts, steht dort „Nichts wartet auf dich.“
-  - **Frage?** (gelber Streifen, kein Zähler): Der Turn endete ohne Meldung, der letzte Satz endet
-    mit „?“. Die Karte bleibt, solange du die Session ausgewählt hast, und verschwindet beim
-    Weiterklicken (mit ↓ gehst du so durch alle) oder sofort mit **Nur Bericht**.
-- **Zum Lesen:** fertige Sessions, die du noch nicht angesehen hast, neueste zuerst, mit dem
-  letzten Satz der Antwort. Als gesehen zählt eine Session, sobald du sie in Brains vorderem Fenster
-  auswählst. Sie bleibt in der Zone, solange sie ausgewählt ist, und geht beim Weiterklicken.
-  Eine Session, die schon gesehen ist oder deren Turn endet, während sie offen ist, landet nicht
-  in „Zum Lesen“. **alle gesehen** (oben bei „Projekte“) macht das für alle.
-- **Der Rest**, was läuft: blau arbeitet, hellblau Subagents oder Hintergrund-Shells laufen noch,
-  grau ruht; „schläft“ heißt, Claude hat den Prozess nach einer Stunde Ruhe beendet, eine
-  Nachricht weckt die Session wieder.
+- **+ Neues Projekt …** (ganz unten) fragt nach einem Ordner (ein Worktree zählt als sein Haupt-Ordner).
+- Startest du in Brain eine Session in einem Ordner (`⌘N`, das **+** am Projekt, eine Aufgabe „für
+  später“), kommt sein Projekt dazu. So auch **In ein anderes Projekt …** mit einem neuen Namen.
+- Beim ersten Start nach dem Update übernimmt Brain einmal die Projekte der Sessions, die gerade in
+  Brain laufen. Sonst nichts.
 
-Die Projekte stehen in fester Reihenfolge (alphabetisch), damit nichts springt. Ein Klick auf
-einen Projektkopf klappt das Projekt zu oder auf, ein Klick auf „Projekte“ oder „Zum Fortsetzen
-gemerkt“ die ganze Gruppe. **ausblenden** rechts am Projektkopf (oder ⌘K) nimmt ein Projekt aus der
-Liste; unten holt „N Projekte ausgeblendet“ sie zum Nachsehen zurück. Brain merkt sich das alles.
+Ein Projekt bleibt, bis du es ausblendest (Rechtsklick auf den Projektkopf, oder `⌘K`); unten holt
+„N Projekte ausgeblendet“ es zum Nachsehen zurück. Ein Klick auf den Kopf klappt es zu oder auf; ein
+zugeklapptes zeigt rote und gelbe Zähler. „ruht“ steht an einem Projekt ohne lebende Session. Daneben
+steht das Konto.
 
-Auf dem Handy ist die Liste genauso gruppiert, mit einem Filter nach Projekt oder Konto.
+Unter dem Projekt stehen die Sessions in der Reihenfolge, in der sie gestartet wurden, jede mit
+einem Zustandspunkt (rot fragt, gelb fertig und ungesehen, blau arbeitet, hellblau Subagents oder
+Hintergrund-Shells laufen noch, Ring: angesehen oder ruht), dem Namen und der Zeit seit dem
+Zustandswechsel. Eine zweite Zeile gibt es nur, wenn die Session dich braucht oder fertig ist:
+
+- **Rot, mit Ring:** Claude braucht eine Freigabe („Freigabe: Bash(npm run e2e)“, mit **Erlauben** und
+  **Ablehnen** gleich darunter), stellt eine Frage oder hat mit `brain report --waiting` gefragt. Rot
+  bleibt, bis du geantwortet hast. Optionen einer Frage beantwortest du im Terminal.
+- **Gelb:** fertig und noch nicht angesehen, mit dem letzten Satz der Antwort. Es verschwindet, sobald
+  du die Session in Brains vorderem Fenster auswählst. Auch **Frage?** (der Turn endete ohne Meldung,
+  der letzte Satz endet mit „?“) ist gelb und geht beim Ansehen; **Nur Bericht, keine Frage** im
+  Rechtsklick-Menü nimmt es sofort.
+- Alle anderen Sessions sind einzeilig; Details (Überschrift, Ordner, PR, Worktree …) erscheinen beim
+  Überfahren.
+
+Beendete Sessions des letzten Tages stehen gedimmt unter ihrem Projekt, ältere findest du über die
+Suche oder „▸ N älter“. Angeheftete (★) bleiben stehen. **Für später · N** ist eine zuklappbare Zeile
+mit den Aufgaben aus `/later` dieses Projekts: ein Klick startet eine als neue Session dort, das ✓ hakt sie ab.
+
+**Weitere** am Ende des Baums sammelt Sessions, deren Ordner kein Projekt im Baum ist (iTerm,
+`claude --bg` aus einer Shell, von Programmen gestartete). Rechtsklick → **Als Projekt behalten**
+nimmt ihr Projekt in den Baum.
+
+Alles, was gerade nicht nach dir ruft, liegt am Ende in einer Zeile mit Zahlen; ein Klick klappt auf:
+**pausiert** (`S`, `⌫`), **im Hintergrund** (`B`, ohne Aktivität seit einem Tag), **automatisch** (`U`:
+Programme wie Security-Reviews nach Commits oder `claude -p`-Skripte) und **älter**. Diese Sessions
+melden sich nie per Mitteilung. So verschwindet keine Session spurlos.
+
+Auf dem Handy ist die Liste weiter nach Zustand und Projekt gruppiert, mit einem Filter nach Projekt oder Konto.
 
 Eine Session gehört woanders hin? Rechtsklick → **In ein anderes Projekt …** (oder ⌘K, „Projekt“ tippen):
 ein vorhandenes Projekt, ein neues per Namen, oder zurück in ihr eigenes. Brain merkt sich das, auch
 fürs Handy (⋯ → **In anderes Projekt …**, oder lange drücken in der Liste).
 
-Angeheftete Sessions (★) stehen in ihrem Projekt; beendete angeheftete unter „Zum Fortsetzen gemerkt“.
-Alles, was gerade nicht nach dir ruft, liegt am Listenende: in der Fußzeile und in einem
-zugeklappten Abschnitt, jeweils mit Zahl; ein Klick (oder ⌘K) klappt auf:
+Oben in der Titelleiste steht der Kontofilter (umschalten mit `⇥`).
 
-- **▸ N beendet** (`E`): die des letzten Tages.
-- **▸ N älter**: was vor mehr als einem Tag endete.
-- **▸ N im Hintergrund** (`B`): Claudes Hintergrund-Sessions ohne Aktivität seit einem Tag.
-- **▸ automatisch** (`U`): Sessions, die Programme gestartet haben, etwa Security-Reviews nach
-  Commits oder `claude -p`-Skripte.
-- **Pausiert und ausgeblendet** (`S`, `⌫` `⌫`): als eigener Abschnitt darunter.
-
-Die Sessions aus Hintergrund, automatisch und pausiert melden sich nie per Mitteilung. So
-verschwindet keine Session spurlos.
-
-Oben in der Titelleiste steht die Zahl der Wartenden und der Kontofilter (umschalten mit `⇥`).
-Tastenkürzel stehen nur auf der gewählten Karte.
-
-- **Suchen:** `/` durchsucht die Liste nach Name, Ordner, Konto und Überschrift.
-- **Kontofilter:** in der Titelleiste, umschalten mit `⇥`.
+- **Suchen:** `/` filtert den Baum nach Name, Ordner, Konto und Überschrift.
+- **Klick auf eine Session** gibt die Tastatur an ihr Terminal.
 - **Rechtsklick** auf eine Session zeigt alle passenden Aktionen mit ihren Kürzeln.
 - **Tasten:** `?` zeigt alle.
+
+Über dem Terminal steht eine schmale Zeile: Projekt › Session (ein Klick benennt um), Branch, Konto,
+wie voll der Kontext ist (ab 80 % mit **/compact**) und ein ⚠, wenn die Session dieselben Dateien
+bearbeitet wie eine andere. Modell, Kosten, pid und Ordner erscheinen beim Überfahren.
+
+Unten steht eine Zeile mit „N braucht dich“, „N fertig“, „N arbeiten“, der Meldung des letzten
+Befehls und rechts der Nutzung pro Konto (siehe unten).
 
 ## Eine Session ansehen
 
@@ -88,7 +97,7 @@ Rechts steht die ausgewählte Session.
 - **Suchen in der Session:** `⌘F` öffnet über dem Terminal eine Suchleiste für das ganze Gespräch;
   mit Text darin ersetzen die Treffer das Terminal, ein Klick öffnet einen ganz. `esc` schließt sie.
   `⌘⇧C` kopiert die letzte Antwort, ⌘K → „Gespräch als Markdown öffnen“ öffnet es in YAMV.
-- **Freigaben** beantwortest du auf der Karte in der Liste (**Erlauben**/**Ablehnen**, `Y`/`N`),
+- **Freigaben** beantwortest du im Baum (**Erlauben**/**Ablehnen**, `Y`/`N`),
   Fragen mit Optionen mit einem Klick.
 
 ## Sessions in Brain laufen lassen
@@ -252,9 +261,9 @@ CLAUDE.md und das Gedächtnis gleicht er selbst ab. Was ersetzt oder gelöscht w
 
 ## Nutzung und Limits
 
-Unter der Liste steht pro Konto, wie viel vom 5-Stunden- und vom Wochenlimit verbraucht ist und
+In der Zeile unten steht pro Konto, wie viel vom 5-Stunden- und vom Wochenlimit verbraucht ist und
 wann es zurückgesetzt wird. Reicht das Tempo nicht bis zum Reset, steht dort **„voll ~Do 14:00“**,
-und hat ein anderes Konto Luft, nennt Brain es („→ second hat Luft“). Beim Wochenlimit zählt das
+und hat ein Konto noch Platz, steht dort „hat Platz“. Beim Wochenlimit zählt das
 Tempo der letzten 24 Stunden (Brain merkt sich dafür alle zehn Minuten den Stand); beim
 5-Stunden-Limit das des laufenden Fensters.
 
@@ -283,7 +292,7 @@ Alles optional, in `~/.claude-brain/config.json`:
 | `⌘2` `⌘J` / `⌘1` `⌘[` | ins Terminal / zurück zur Liste |
 | `/` | Liste durchsuchen |
 | `⇥` / `⇧⇥` | Kontofilter |
-| `E` `B` `U` | beendete / Hintergrund- / automatische Sessions auflisten |
+| `B` `U` | Hintergrund- / automatische Sessions auflisten |
 | `C` | aufräumen |
 | `⌘N` | neue Session (darin `⌘O`: Ordner im macOS-Dialog wählen) |
 | `Y` / `N` | Freigabe erlauben / ablehnen |
