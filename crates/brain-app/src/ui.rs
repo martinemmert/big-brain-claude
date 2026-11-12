@@ -1198,8 +1198,10 @@ fn session_pane(brain: &Brain) -> Element<'_, Message> {
     } else {
         column![find_bar(brain), whole_session(brain)].spacing(8).height(Fill).into()
     };
+    // A stack takes its size from its first layer: without a terminal (demo, an ended session, one
+    // in iTerm) that is a short hint, and the diff card would be squeezed into its few points.
     let content = match brain.preview.as_ref().filter(|p| p.key == s.key) {
-        Some(preview) => stack![content, diff_preview(s, preview)].into(),
+        Some(preview) => stack![container(content).width(Fill).height(Fill), diff_preview(s, preview)].into(),
         None => content,
     };
     // Its line stands in the title bar; the terminal gets the whole height.
