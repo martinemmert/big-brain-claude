@@ -13,6 +13,8 @@ pub const RAISED: Color = color!(0x1d2338);
 pub const HOVER: Color = color!(0x1a2033);
 pub const LINE: Color = color!(0x232a40);
 pub const LINE_STRONG: Color = color!(0x2e3654);
+/// The button that says yes (Allow), in the sidebar and in the popup alike.
+pub const PRIMARY: Color = color!(0x3a6fd8);
 
 // Text.
 pub const TEXT: Color = color!(0xd5d9e6);

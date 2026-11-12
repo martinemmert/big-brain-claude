@@ -747,7 +747,7 @@ fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> El
     if mark == Mark::Asks(Ask::Permission) {
         let answer = |allow: bool| Message::Steer(Command::Permission { key: s.key.clone(), allow, since_ms: s.phase_since_ms() });
         body = body.push(
-            container(row![answer_button(t("Erlauben", "Allow"), false, answer(true)), answer_button(t("Ablehnen", "Deny"), true, answer(false))].spacing(8))
+            container(row![answer_button(t("Erlauben", "Allow"), Answer::Yes, answer(true)), answer_button(t("Ablehnen", "Deny"), Answer::No, answer(false))].spacing(8))
                 .height(tree::BUTTONS_H)
                 .align_y(iced::Top)
                 .padding(Padding { left: NAME - NEST, ..Padding::ZERO }),
@@ -801,15 +801,31 @@ fn status_line(s: &Session, mark: Mark) -> Option<(Option<String>, String)> {
 
 /// A button on a card that asks: neutral, so the red of the card stays the one signal. Deny
 /// keeps a fine edge.
-fn answer_button<'a>(label: &str, edged: bool, message: Message) -> Element<'a, Message> {
+/// How an answer button looks: the one that says yes in blue, the one that says no with an edge,
+/// the rest plain.
+#[derive(Clone, Copy, PartialEq)]
+enum Answer {
+    Yes,
+    No,
+    Plain,
+}
+
+fn answer_button<'a>(label: &str, kind: Answer, message: Message) -> Element<'a, Message> {
     button(style::centered(text(label.to_string()).size(12).color(TEXT_STRONG).font(style::semibold())))
         .padding([0, 10])
         .height(24)
         .on_press(message)
         .style(move |_, status| {
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            let background = match (kind, hovered) {
+                (Answer::Yes, false) => style::PRIMARY,
+                (Answer::Yes, true) => alpha(style::PRIMARY, 0xdd),
+                (_, false) => RAISED,
+                (_, true) => LINE_STRONG,
+            };
+            let edged = kind == Answer::No;
             button::Style {
-                background: Some(Background::Color(if hovered { LINE_STRONG } else { RAISED })),
+                background: Some(Background::Color(background)),
                 text_color: TEXT_STRONG,
                 border: Border { color: if edged { LINE_STRONG } else { Color::TRANSPARENT }, width: if edged { 1.0 } else { 0.0 }, radius: 6.0.into() },
                 ..button::Style::default()
@@ -2283,9 +2299,9 @@ fn status_popup(brain: &Brain, now: i64) -> Element<'_, Message> {
             let text_part = column![titled(&need.name, &need.project), said(&need.line)];
             if need.permission {
                 let buttons = row![
-                    answer_button(t("Erlauben", "Allow"), false, Message::PopupAnswer(need.key.clone(), true, need.since_ms)),
-                    answer_button(t("Ablehnen", "Deny"), true, Message::PopupAnswer(need.key.clone(), false, need.since_ms)),
-                    answer_button(t("Ansehen", "Show"), false, Message::PopupSee(need.key.clone())),
+                    answer_button(t("Erlauben", "Allow"), Answer::Yes, Message::PopupAnswer(need.key.clone(), true, need.since_ms)),
+                    answer_button(t("Ablehnen", "Deny"), Answer::No, Message::PopupAnswer(need.key.clone(), false, need.since_ms)),
+                    answer_button(t("Ansehen", "Show"), Answer::Plain, Message::PopupSee(need.key.clone())),
                 ]
                 .spacing(6);
                 let body = text_part.push(container(buttons).padding(Padding { top: 7.0, ..Padding::ZERO }));
