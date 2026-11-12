@@ -22,6 +22,9 @@ pub struct Prefs {
     /// Width of the session list in points, as dragged.
     #[serde(default)]
     pub sidebar_width: Option<f32>,
+    /// Width and height of the Quick Look sheet in points, as dragged; none means 80 % of the window.
+    #[serde(default)]
+    pub quick_look_size: Option<(f32, f32)>,
     /// Session id → snoozed until (epoch ms).
     #[serde(default)]
     snoozed: BTreeMap<String, i64>,

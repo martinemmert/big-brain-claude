@@ -20,7 +20,7 @@ mod link;
 mod menus;
 pub(crate) mod status_popup;
 mod quick_look;
-pub use quick_look::{DiffRow, Preview};
+pub use quick_look::{sheet_size, DiffRow, Preview};
 
 pub use account::ACCOUNT_NAME;
 use crate::conversation::Conversation;
@@ -284,6 +284,15 @@ pub enum Message {
     PreviewInEditor,
     /// A click on the sheet itself, which must not reach the backdrop that closes it.
     PreviewClicked,
+    /// An edge or corner of the sheet was grabbed (horizontal, vertical), the pointer moved while
+    /// it is held, and it was let go.
+    SheetGrab(bool, bool),
+    SheetTo(iced::Point),
+    SheetDone,
+    /// A press on the sheet's head: twice in a row sets the size back to the default.
+    SheetHead,
+    /// "Diff kopieren": the open file's diff to the clipboard.
+    CopyDiff,
     /// A search hit or a prompt clicked open (its index in the history), or closed again.
     Expand(Option<usize>),
     CopyText(String),
@@ -405,6 +414,7 @@ impl Message {
                 | Message::FileHover(_)
                 | Message::MousePressed
                 | Message::MouseReleased
+                | Message::SheetTo(_)
         )
     }
 }
@@ -718,6 +728,9 @@ pub struct Brain {
     takeover: Option<SessionKey>,
     /// The session list's divider is being dragged.
     pub dragging_sidebar: bool,
+    /// The Quick Look sheet's edges held with the mouse: (horizontal, vertical).
+    pub dragging_sheet: Option<(bool, bool)>,
+    last_sheet_head_press: Option<Instant>,
     /// The selection the derived state was last synced for, and whether it ran in Brain then
     /// (auto-attach when either changes: another session, or this one just moved into Brain).
     synced_selection: Option<(SessionKey, bool)>,
@@ -868,6 +881,8 @@ impl Brain {
             takeover: None,
             synced_selection: None,
             dragging_sidebar: false,
+            dragging_sheet: None,
+            last_sheet_head_press: None,
             titlebar_ready: false,
             focus_on_select: false,
             account_setup: account::AccountSetup::default(),
@@ -936,6 +951,13 @@ impl Brain {
             subscriptions.push(iced::event::listen_with(|event, _, _| match event {
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Message::SidebarTo(position.x)),
                 iced::Event::Mouse(iced::mouse::Event::ButtonReleased(_)) => Some(Message::SidebarDone),
+                _ => None,
+            }));
+        }
+        if self.dragging_sheet.is_some() {
+            subscriptions.push(iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Message::SheetTo(position)),
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(_)) => Some(Message::SheetDone),
                 _ => None,
             }));
         }
@@ -1215,6 +1237,40 @@ impl Brain {
                 Task::none()
             }
             Message::PreviewClicked => Task::none(),
+            Message::SheetGrab(horizontal, vertical) => {
+                self.dragging_sheet = Some((horizontal, vertical));
+                Task::none()
+            }
+            Message::SheetTo(pointer) => {
+                if let Some((horizontal, vertical)) = self.dragging_sheet {
+                    let current = sheet_size(self.prefs.quick_look_size, self.window_size);
+                    let size = quick_look::dragged_size(pointer, horizontal, vertical, self.window_size, current);
+                    self.prefs.quick_look_size = Some((size.width, size.height));
+                }
+                Task::none()
+            }
+            Message::SheetDone => {
+                self.dragging_sheet = None;
+                self.prefs.save();
+                Task::none()
+            }
+            Message::SheetHead => {
+                let twice = self.last_sheet_head_press.is_some_and(|t| t.elapsed() < Duration::from_millis(400));
+                self.last_sheet_head_press = (!twice).then(Instant::now);
+                if twice {
+                    self.prefs.quick_look_size = None;
+                    self.prefs.save();
+                }
+                Task::none()
+            }
+            Message::CopyDiff => match self.preview.as_ref().and_then(|p| p.diffs.get(&p.change.path)).filter(|d| !d.raw.is_empty()) {
+                Some(diff) => {
+                    let raw = diff.raw.clone();
+                    self.set_status(t("Diff kopiert.", "Diff copied."));
+                    iced::clipboard::write(raw)
+                }
+                None => Task::none(),
+            },
             Message::Expand(index) => {
                 self.expanded = index;
                 Task::none()
@@ -2871,6 +2927,10 @@ impl Brain {
                 Some(Named::ArrowRight) => return self.step_preview(1),
                 Some(Named::Enter) if cmd => return self.update(Message::PreviewInEditor),
                 _ => {}
+            }
+            // ⌘C copies the diff; the terminal doesn't get it.
+            if cmd && !modifiers.shift() && character.as_deref() == Some("c") {
+                return self.update(Message::CopyDiff);
             }
             // Other ⌘ shortcuts go on as usual; plain keys stop here.
             if !cmd {

@@ -39,6 +39,8 @@ pub struct QuickDiff {
     pub cut: usize,
     /// The file has no old version: only new lines, and no column for old numbers.
     pub new_file: bool,
+    /// The diff as git printed it, for the clipboard.
+    pub raw: String,
 }
 
 /// `@@ -12,7 +14,9 @@ context` as (old start, new start, new length, context).
@@ -86,7 +88,28 @@ pub fn quick_diff(diff: &str, limit: usize) -> QuickDiff {
     }
     let cut = rows.len().saturating_sub(limit);
     rows.truncate(limit);
-    QuickDiff { rows, cut, new_file }
+    QuickDiff { rows, cut, new_file, raw: diff.to_string() }
+}
+
+/// The smallest the sheet gets when dragged, and the margin it leaves around itself at most.
+pub const SHEET_MIN: iced::Size = iced::Size::new(520.0, 320.0);
+const SHEET_MARGIN: f32 = 24.0;
+
+/// The sheet's size in a window: the one dragged (kept inside the bounds the window allows now),
+/// else 80 % each way.
+pub fn sheet_size(chosen: Option<(f32, f32)>, window: iced::Size) -> iced::Size {
+    let most = |window: f32, least: f32| (window - SHEET_MARGIN).max(least);
+    let (w, h) = chosen.unwrap_or((window.width * 0.8, window.height * 0.8));
+    iced::Size::new(w.clamp(SHEET_MIN.width, most(window.width, SHEET_MIN.width)), h.clamp(SHEET_MIN.height, most(window.height, SHEET_MIN.height)))
+}
+
+/// The sheet's size while an edge (`horizontal`: left or right, `vertical`: top or bottom) follows
+/// the pointer. The sheet stays centred, so the edge is as far from the window's middle as the
+/// pointer is, and the opposite one moves with it.
+pub fn dragged_size(pointer: iced::Point, horizontal: bool, vertical: bool, window: iced::Size, current: iced::Size) -> iced::Size {
+    let width = if horizontal { 2.0 * (pointer.x - window.width / 2.0).abs() } else { current.width };
+    let height = if vertical { 2.0 * (pointer.y - window.height / 2.0).abs() } else { current.height };
+    sheet_size(Some((width, height)), window)
 }
 
 /// The file `delta` places from `index` in a list of `len`; `None` past either end.
@@ -198,6 +221,26 @@ mod tests {
         assert_eq!(all.rows.len(), 4);
         assert!(matches!(&all.rows[3], DiffRow::Line { old: None, new: Some(3), .. }));
         assert_eq!((short.rows.len(), short.cut), (3, 1));
+    }
+
+    #[test]
+    fn dragging_an_edge_keeps_the_sheet_centred_and_inside_its_bounds() {
+        let window = iced::Size::new(1200.0, 800.0);
+        let current = sheet_size(None, window);
+        assert_eq!(current, iced::Size::new(960.0, 640.0));
+
+        // The right edge at x = 900 is 300 from the middle: 600 wide, height untouched.
+        assert_eq!(dragged_size(iced::Point::new(900.0, 10.0), true, false, window, current), iced::Size::new(600.0, 640.0));
+        // Past the window, and across the middle, are held to the bounds.
+        assert_eq!(dragged_size(iced::Point::new(5000.0, 400.0), true, true, window, current), iced::Size::new(1176.0, 776.0));
+        assert_eq!(dragged_size(iced::Point::new(610.0, 395.0), true, true, window, current), SHEET_MIN);
+    }
+
+    #[test]
+    fn a_kept_size_is_pulled_in_when_the_window_got_smaller() {
+        let small = iced::Size::new(900.0, 520.0);
+        assert_eq!(sheet_size(Some((1100.0, 700.0)), small), iced::Size::new(876.0, 496.0));
+        assert_eq!(sheet_size(Some((600.0, 400.0)), small), iced::Size::new(600.0, 400.0));
     }
 
     #[test]

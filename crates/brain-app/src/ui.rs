@@ -1254,13 +1254,13 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
     }
     title = title.push(counts(change.added, change.removed));
     title = title.push(Space::new().width(Fill));
+    title = title.push(action(t("Diff kopieren", "Copy diff"), "⌘C", false, diff.is_some_and(|d| !d.raw.is_empty()).then_some(Message::CopyDiff)));
     title = title.push(action(t("Im Editor öffnen", "Open in editor"), "⌘⏎", false, preview.exists.then_some(Message::PreviewInEditor)));
     title = title.push(action(t("Schließen", "Close"), "esc", false, Some(Message::ClosePreview)));
-    let mut head = column![title].spacing(8);
-    if let Some(said) = &change.said {
-        head = head.push(text(said.clone()).size(13).color(TEXT).font(UI));
-    }
-    let head = container(head).padding([12, 16]).width(Fill).style(|_| style::fill(RAISED));
+    let head = mouse_area(container(title).padding([12, 16]).width(Fill).style(|_| style::fill(RAISED))).on_press(Message::SheetHead);
+    let said: Option<Element<'_, Message>> = change.said.as_ref().map(|said| {
+        container(text(said.clone()).size(13).color(TEXT).font(UI)).padding([10, 16]).width(Fill).style(|_| style::fill(RAISED)).into()
+    });
 
     let number = |n: Option<u32>, color: Color, tint: Color| -> Element<'_, Message> {
         container(text(n.map(|n| n.to_string()).unwrap_or_default()).size(font.size).color(color).font(font.regular))
@@ -1336,15 +1336,40 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
         }
     };
 
-    // The files as tabs: where you are, and a click goes there.
-    let tabs = files.iter().enumerate().map(|(i, file)| -> Element<'_, Message> {
-        let name = file.relative.rsplit('/').next().unwrap_or(&file.relative);
+    // The list of files on the left, newest first: folder muted under a strong name, the counts and
+    // a mark for new files; the open one is lit, a click goes there. Fixed width: dragging the
+    // sheet gives the diff the rest.
+    let (total_added, total_removed) = files.iter().fold((0, 0), |(a, r), f| (a + f.added.unwrap_or(0), r + f.removed.unwrap_or(0)));
+    let file_count = files.len();
+    let mut list = column![row![
+        text(tr!("{file_count} Dateien", "{file_count} files")).size(12).color(TEXT_MUTED).font(style::semibold()),
+        Space::new().width(Fill),
+        counts(Some(total_added), Some(total_removed)),
+    ]
+    .padding([0, 8])
+    .spacing(8)
+    .align_y(iced::Center)]
+    .spacing(2);
+    for (i, file) in files.iter().enumerate() {
+        let (dir, name) = file.relative.rsplit_once('/').map_or(("", file.relative.as_str()), |(d, n)| (d, n));
         let current = i == index;
-        let tab = container(text(name.to_string()).size(11.5).color(if current { TEXT_STRONG } else { TEXT_MUTED }).font(MONO).wrapping(text::Wrapping::None))
-            .padding([2, 8])
-            .style(move |_| boxed(if current { LINE_STRONG } else { Color::TRANSPARENT }, Color::TRANSPARENT, 6.0));
-        mouse_area(tab).on_press(Message::PreviewGo(i)).interaction(iced::mouse::Interaction::Pointer).into()
-    });
+        let file_is_new = file.git.as_ref().is_some_and(|g| matches!(g.status.as_str(), "??" | "A " | "AM"));
+        let mut first = row![text(name.to_string()).size(12.5).color(TEXT_STRONG).font(MONO).wrapping(text::Wrapping::None)].spacing(8).align_y(iced::Center);
+        if file_is_new {
+            first = first.push(container(text(t("neu", "new")).size(9.5).color(DONE).font(style::semibold())).padding([0, 4]).style(|_| boxed(Color::TRANSPARENT, alpha(DONE, 0x73), 4.0)));
+        }
+        first = first.push(Space::new().width(Fill)).push(counts(file.added, file.removed));
+        let mut entry = column![first].spacing(3);
+        if !dir.is_empty() {
+            entry = entry.push(text(clip_start(&format!("{dir}/"), 34)).size(11).color(TEXT_FAINT).font(MONO).wrapping(text::Wrapping::None));
+        }
+        let entry = container(entry).padding([8, 10]).width(Fill).style(move |_| boxed(if current { style::ISLAND_SELECTED } else { Color::TRANSPARENT }, Color::TRANSPARENT, 8.0));
+        list = list.push(mouse_area(entry).on_press(Message::PreviewGo(i)).interaction(iced::mouse::Interaction::Pointer));
+    }
+    let list = container(scrollable(list.padding([12, 10])).width(Fill).height(Fill).style(scrollbar))
+        .width(240)
+        .height(Fill)
+        .style(|_| style::fill(CHROME));
     let hints = row![
         kbd("←"),
         kbd("→"),
@@ -1356,7 +1381,7 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
     ]
     .spacing(6)
     .align_y(iced::Center);
-    let foot = container(row![container(row(tabs).spacing(4)).width(Fill).clip(true), hints].spacing(14).align_y(iced::Center))
+    let foot = container(row![Space::new().width(Fill), hints].align_y(iced::Center))
         .height(34)
         .center_y(34)
         .padding([0, 16])
@@ -1364,7 +1389,13 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
         .style(|_| style::fill(CHROME));
     let edge = || container(Space::new().width(Fill).height(1)).style(|_| style::fill(LINE_STRONG));
 
-    let sheet = container(column![head, edge(), container(body).height(Fill).style(|_| style::fill(INK)), edge(), foot])
+    let mut right = column![];
+    if let Some(said) = said {
+        right = right.push(said).push(edge());
+    }
+    right = right.push(container(body).width(Fill).height(Fill).style(|_| style::fill(INK)));
+    let vertical_edge = || container(Space::new().width(1).height(Fill)).style(|_| style::fill(LINE));
+    let sheet = container(column![head, edge(), row![list, vertical_edge(), right.width(Fill)].height(Fill), edge(), foot])
         .width(Fill)
         .height(Fill)
         .clip(true)
@@ -1372,17 +1403,33 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
             shadow: iced::Shadow { color: alpha(Color::BLACK, 0xb3), offset: iced::Vector::new(0.0, 30.0), blur_radius: 90.0 },
             ..boxed(INK, alpha(Color::WHITE, 0x1a), 14.0)
         });
-    // 80 % of the window each way: a tenth of it free on every side.
-    let centered = column![
-        Space::new().height(Length::FillPortion(1)),
+    // The sheet sits in a ring of grips: the edges and corners drag its size, symmetrically around
+    // the window's middle.
+    const GRIP: f32 = 6.0;
+    use iced::mouse::Interaction as Cursor;
+    let grip = |horizontal: bool, vertical: bool, cursor: Cursor, width: Length, height: Length| -> Element<'_, Message> {
+        mouse_area(Space::new().width(width).height(height)).on_press(Message::SheetGrab(horizontal, vertical)).interaction(cursor).into()
+    };
+    let (g, size) = (Length::Fixed(GRIP), app::sheet_size(brain.prefs.quick_look_size, brain.window_size));
+    let ring = column![
         row![
-            Space::new().width(Length::FillPortion(1)),
-            container(mouse_area(sheet).on_press(Message::PreviewClicked)).width(Length::FillPortion(8)).height(Fill),
-            Space::new().width(Length::FillPortion(1)),
+            grip(true, true, Cursor::ResizingDiagonallyDown, g, g),
+            grip(false, true, Cursor::ResizingVertically, Fill, g),
+            grip(true, true, Cursor::ResizingDiagonallyUp, g, g),
         ]
-        .height(Length::FillPortion(8)),
-        Space::new().height(Length::FillPortion(1)),
+        .height(g),
+        row![grip(true, false, Cursor::ResizingHorizontally, g, Fill), sheet, grip(true, false, Cursor::ResizingHorizontally, g, Fill)].height(Fill),
+        row![
+            grip(true, true, Cursor::ResizingDiagonallyUp, g, g),
+            grip(false, true, Cursor::ResizingVertically, Fill, g),
+            grip(true, true, Cursor::ResizingDiagonallyDown, g, g),
+        ]
+        .height(g),
     ];
+    let centered = container(mouse_area(ring).on_press(Message::PreviewClicked))
+        .width(Length::Fixed(size.width))
+        .height(Length::Fixed(size.height))
+        .center(Fill);
     // The backdrop claims the pointer, so what lies under it (the sidebar's tooltips) doesn't
     // think the pointer is over it.
     let backdrop = mouse_area(container(Space::new().width(Fill).height(Fill)).style(|_| style::fill(Color::from_rgba8(6, 8, 15, 0.55))))
