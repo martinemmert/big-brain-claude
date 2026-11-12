@@ -641,10 +641,16 @@ fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Messa
     let name = project.name.clone();
     let color = if project.hidden { TEXT_FAINT } else { TEXT_STRONG };
     let hovered = brain.hovered_head.as_ref() == Some(&HeadKey::Project(name.clone()));
-    let summary = project_summary(project);
-    // Arrow, gap, "+", the head's right padding, and what the summary needs.
-    let summary_w: f32 = summary.iter().map(|(words, _)| words.chars().count() as f32 * 11.5 * 0.56 + 8.0).sum();
-    let room = tree_inner(brain) - (ARROW + 2.0) - 6.0 - PLUS_W - 6.0 - summary_w;
+    // Folded, only what calls for you shows: a red dot when a session asks, an amber one when one
+    // finished and wasn't looked at. Nothing else (counts, notes, "resting") helps decide.
+    let dots: Vec<Color> = if project.folded {
+        [(project.asking() > 0).then_some(CALLS), (project.unseen() > 0).then_some(TURN)].into_iter().flatten().collect()
+    } else {
+        Vec::new()
+    };
+    // Arrow, gap, "+", the head's right padding, the dots, and "hidden" when it is.
+    let extra = dots.len() as f32 * 14.0 + if project.hidden { 70.0 } else { 0.0 };
+    let room = tree_inner(brain) - (ARROW + 2.0) - 6.0 - PLUS_W - 6.0 - extra;
     let mut line = row![
         fold_arrow(project.folded, project.folded || hovered),
         text(clip(&name, fitting(room, 13.0))).size(13).color(color).font(style::semibold()).wrapping(text::Wrapping::None),
@@ -653,13 +659,11 @@ fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Messa
     .spacing(6)
     .height(HEAD_LINE_H)
     .align_y(iced::Center);
-    // In words, each in its colour: "1 fragt · 1 fertig · 2 später".
-    let count = summary.len();
-    for (i, (words, tint)) in summary.into_iter().enumerate() {
-        line = line.push(text(words).size(11.5).color(tint).font(UI).wrapping(text::Wrapping::None));
-        if i + 1 < count {
-            line = line.push(text("·").size(11.5).color(TEXT_FAINT).font(UI));
-        }
+    if project.hidden {
+        line = line.push(text(t("ausgeblendet", "hidden")).size(11.5).color(TEXT_FAINT).font(UI).wrapping(text::Wrapping::None));
+    }
+    for dot in dots {
+        line = line.push(style::dot::<Message>(dot, 8.0));
     }
     // The "+" keeps its room (and the line its height) when it is out of sight, so nothing moves
     // as the pointer comes and goes.
@@ -689,37 +693,7 @@ fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Messa
 /// The height of a head's line: fixed, so the "+" and the arrow coming and going move nothing.
 const HEAD_LINE_H: f32 = 20.0;
 
-/// What a project's head says at its right, in words: folded, what is inside ("1 fragt",
-/// "1 fertig", "2 später", or only how many sessions run); open, only that it rests or is hidden
-/// (its sessions say the rest themselves).
-fn project_summary(project: &Project<'_>) -> Vec<(String, Color)> {
-    let mut parts = Vec::new();
-    if project.hidden {
-        parts.push((t("ausgeblendet", "hidden").to_string(), TEXT_FAINT));
-    }
-    if project.folded {
-        let (asking, unseen, notes) = (project.asking(), project.unseen(), project.notes.len());
-        if asking > 0 {
-            parts.push((tr!("{asking} fragt", "{asking} asking"), CALLS_SOFT));
-        }
-        if unseen > 0 {
-            parts.push((tr!("{unseen} fertig", "{unseen} done"), TURN));
-        }
-        if asking == 0 && unseen == 0 && project.live > 0 {
-            let live = project.live;
-            parts.push((if live == 1 { t("1 Session", "1 session").to_string() } else { tr!("{live} Sessions", "{live} sessions") }, TEXT_FAINT));
-        }
-        if notes > 0 {
-            parts.push((tr!("{notes} später", "{notes} later"), TEXT_MUTED));
-        }
-    }
-    if project.live == 0 {
-        parts.push((t("ruht", "resting").to_string(), TEXT_FAINT));
-    }
-    parts
-}
-
-/// A session under its project: state dot, name, the time since its state changed. A line below
+/// A session under its project: state dot and name. A line below
 /// only when it asks (red, with a ring) or has finished unseen (amber); the rest on hover.
 fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> Element<'a, Message> {
     let selected = brain.selected.as_ref() == Some(&s.key);
@@ -731,11 +705,11 @@ fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> El
         (false, true) => TEXT_STRONG,
         (false, false) => TEXT,
     };
-    let since = if ended || matches!(s.phase(), Phase::Asleep) { s.last_activity_ms } else { s.phase_since_ms() };
     let pinned = brain.prefs.is_pinned(&s.key);
     let conflict = brain.conflicts.get(&s.key).is_some_and(|c| !c.shared_files.is_empty());
-    // The name gets what the dot, the time ("59 min") and the markers leave.
-    let name_room = tree_inner(brain) - NAME - ROW_RIGHT - 52.0 - 18.0 * (pinned as u8 + conflict as u8) as f32;
+    // The name gets what the dot and the markers leave. No time: how long something lies there
+    // helps nobody decide what to do next.
+    let name_room = tree_inner(brain) - NAME - ROW_RIGHT - 18.0 * (pinned as u8 + conflict as u8) as f32;
     let mut head = row![
         state_dot(s, mark),
         text(clip(&s.display_name(), fitting(name_room, 13.0))).size(13).color(name_color).font(if selected { style::medium() } else { UI }).wrapping(text::Wrapping::None),
@@ -749,7 +723,6 @@ fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> El
     if conflict {
         head = head.push(marker("⚠", CALLS));
     }
-    head = head.push(text(ago(since, now)).size(11).color(TEXT_FAINT).font(UI));
     let mut body = column![container(head).height(tree::ROW_H).center_y(tree::ROW_H)];
     if let Some((prefix, line)) = status_line(s, mark) {
         let prefix_w = prefix.as_ref().map_or(0.0, |p| p.chars().count() as f32 * 12.0 * 0.56 + 3.0);
@@ -2304,7 +2277,6 @@ fn status_popup(brain: &Brain, now: i64) -> Element<'_, Message> {
             .clip(true)
             .into()
     };
-    let aged = |since_ms: i64| text(ago(since_ms, now)).size(11.5).color(TEXT_MUTED).font(UI);
     let dotted = |color: Color| container(style::dot::<Message>(color, 8.0)).padding(Padding { top: 5.0, ..Padding::ZERO });
 
     let mut list = column![container(text(content.summary()).size(12).color(TEXT_MUTED).font(UI)).height(HEAD_H).center_y(HEAD_H).padding([0, 8])];
@@ -2328,10 +2300,10 @@ fn status_popup(brain: &Brain, now: i64) -> Element<'_, Message> {
                 ]
                 .spacing(6);
                 let body = text_part.push(container(buttons).padding(Padding { top: 7.0, ..Padding::ZERO }));
-                list = list.push(container(row![dotted(CALLS), body.width(Fill), aged(need.since_ms)].spacing(8)).height(ROW_H + BUTTONS_H).padding([6, 8]));
+                list = list.push(container(row![dotted(CALLS), body.width(Fill)].spacing(8)).height(ROW_H + BUTTONS_H).padding([6, 8]));
             } else {
                 // A question: the whole row opens the session.
-                let line = container(row![dotted(CALLS), text_part.width(Fill), aged(need.since_ms)].spacing(8)).height(ROW_H).padding([6, 8]);
+                let line = container(row![dotted(CALLS), text_part.width(Fill)].spacing(8)).height(ROW_H).padding([6, 8]);
                 list = list.push(row_button(line, Message::PopupSee(need.key.clone())));
             }
         }
@@ -2342,7 +2314,7 @@ fn status_popup(brain: &Brain, now: i64) -> Element<'_, Message> {
     if content.finished_total > 0 {
         list = list.push(section(t("Fertig, nicht angesehen", "Finished, not looked at")));
         for done in &content.finished {
-            let line = container(row![dotted(TURN), column![titled(&done.name, &done.project), said(&done.line)].width(Fill), aged(done.since_ms)].spacing(8))
+            let line = container(row![dotted(TURN), column![titled(&done.name, &done.project), said(&done.line)].width(Fill)].spacing(8))
                 .height(ROW_H)
                 .padding([6, 8]);
             list = list.push(row_button(line, Message::PopupSee(done.key.clone())));
