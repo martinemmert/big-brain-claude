@@ -20,7 +20,9 @@ mod link;
 mod menus;
 pub(crate) mod status_popup;
 mod quick_look;
+mod review;
 pub use quick_look::{sheet_size, DiffRow, Preview};
+pub use review::{place as place_comments, ReviewEditor, REVIEW_EDITOR};
 
 pub use account::ACCOUNT_NAME;
 use crate::conversation::Conversation;
@@ -282,6 +284,24 @@ pub enum Message {
     PreviewLoaded(SessionKey, String, Option<String>),
     ClosePreview,
     PreviewInEditor,
+    /// The pointer is over this diff row of the sheet, or left it.
+    ReviewHoverRow(Option<usize>),
+    /// The pointer is over this file of the sheet's list, or left it.
+    ReviewHoverFile(Option<usize>),
+    /// The "+" of a diff row, the button for a whole file (its place in the list).
+    ReviewCommentLine(usize),
+    ReviewCommentFile(usize),
+    ReviewEdit(iced::widget::text_editor::Action),
+    ReviewSave,
+    ReviewCancel,
+    ReviewEditComment(u64),
+    ReviewDelete(u64),
+    ReviewSend,
+    ReviewDiscard,
+    ReviewUnqueue,
+    /// The review bar's preview of the message, open or closed.
+    ReviewTogglePreview,
+    ReviewCopyMessage,
     /// A click on the sheet itself, which must not reach the backdrop that closes it.
     PreviewClicked,
     /// An edge or corner of the sheet was grabbed (horizontal, vertical), the pointer moved while
@@ -415,6 +435,9 @@ impl Message {
                 | Message::MousePressed
                 | Message::MouseReleased
                 | Message::SheetTo(_)
+                | Message::ReviewHoverRow(_)
+                | Message::ReviewHoverFile(_)
+                | Message::ReviewEdit(_)
         )
     }
 }
@@ -647,6 +670,17 @@ pub struct Brain {
     changes_loading: bool,
     /// The diff card over the terminal; while it is open the terminal gets no keys.
     pub preview: Option<Preview>,
+    /// The review comments of each session, drafts and sent.
+    pub reviews: HashMap<SessionKey, brain_core::review::Review>,
+    /// The reviews that changed and are not written yet.
+    review_dirty: HashSet<SessionKey>,
+    /// The field for a review comment, open under a line of the sheet.
+    pub review_editor: Option<ReviewEditor>,
+    /// The review bar shows the message Claude would get.
+    pub review_preview: bool,
+    /// The diff row and the file in the sheet's list the pointer is over.
+    pub review_hover_row: Option<usize>,
+    pub review_hover_file: Option<usize>,
     pub expanded: Option<usize>,
     pub mode: Mode,
     pub search: String,
@@ -853,6 +887,12 @@ impl Brain {
             changes: None,
             changes_loading: false,
             preview: None,
+            reviews: HashMap::new(),
+            review_dirty: HashSet::new(),
+            review_editor: None,
+            review_preview: false,
+            review_hover_row: None,
+            review_hover_file: None,
             history_loading: false,
             expanded: None,
             bells: HashSet::new(),
@@ -906,6 +946,8 @@ impl Brain {
             link_qr: None,
         };
         brain.resume_link();
+        let saved = if demo { crate::demo::reviews() } else { brain_core::review::Review::load_all(&brain_core::review::Review::dir(&brain_core::account::home_dir())) };
+        brain.reviews = saved.into_iter().map(|r| (r.key(), r)).collect();
         brain.refresh_later();
         brain.selected = brain.nav_keys().first().cloned();
         if let Some(spec) = crate::config::quick_terminal().filter(|_| !demo) {
@@ -1237,6 +1279,60 @@ impl Brain {
                 Task::none()
             }
             Message::PreviewClicked => Task::none(),
+            Message::ReviewHoverRow(row) => {
+                self.review_hover_row = row;
+                Task::none()
+            }
+            Message::ReviewHoverFile(file) => {
+                self.review_hover_file = file;
+                Task::none()
+            }
+            Message::ReviewCommentLine(row) => self.review_comment_line(row),
+            Message::ReviewCommentFile(index) => self.review_comment_file(index),
+            Message::ReviewEdit(action) => {
+                self.review_edit(action);
+                Task::none()
+            }
+            Message::ReviewSave => {
+                self.review_save();
+                Task::none()
+            }
+            Message::ReviewCancel => {
+                self.review_cancel();
+                Task::none()
+            }
+            Message::ReviewEditComment(id) => self.review_edit_comment(id),
+            Message::ReviewDelete(id) => {
+                self.review_delete(id);
+                Task::none()
+            }
+            Message::ReviewSend => {
+                self.review_send();
+                Task::none()
+            }
+            Message::ReviewDiscard => {
+                self.review_discard();
+                Task::none()
+            }
+            Message::ReviewUnqueue => {
+                self.review_unqueue();
+                Task::none()
+            }
+            Message::ReviewTogglePreview => {
+                self.review_preview = !self.review_preview;
+                Task::none()
+            }
+            Message::ReviewCopyMessage => {
+                let order = self.review_file_order();
+                let text = self.preview.as_ref().and_then(|p| self.reviews.get(&p.key)).and_then(|r| r.pending_message(&order).or_else(|| r.last_message.clone()));
+                match text {
+                    Some(text) => {
+                        self.set_status(t("Nachricht kopiert.", "Message copied."));
+                        iced::clipboard::write(text)
+                    }
+                    None => Task::none(),
+                }
+            }
             Message::SheetGrab(horizontal, vertical) => {
                 self.dragging_sheet = Some((horizontal, vertical));
                 Task::none()
@@ -1689,6 +1785,8 @@ impl Brain {
             tasks.push(self.bring_forward());
             tasks.push(self.scroll_to_selected());
         }
+        self.tick_reviews();
+        tasks.push(self.refresh_open_diff());
         tasks.push(self.continue_takeover());
         tasks.push(self.continue_restart());
         if self.status.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(6)) {
@@ -1734,6 +1832,9 @@ impl Brain {
         }
         if self.preview.as_ref().is_some_and(|p| self.selected.as_ref() != Some(&p.key)) {
             self.preview = None;
+        }
+        if self.preview.is_none() {
+            self.review_editor = None;
         }
         if self.changes_open && self.selected_changes().is_none() {
             self.changes_open = false;
@@ -2918,23 +3019,45 @@ impl Brain {
         // The Quick Look sheet has the keyboard while it is open: esc and space close it, the
         // arrows page, ⌘⏎ opens the file in the editor; nothing reaches the terminal or the list.
         if self.preview.is_some() && self.mode == Mode::Normal && !self.overview {
-            match named {
-                Some(Named::Escape | Named::Space) => {
-                    self.preview = None;
+            // ⇧⌘⏎ sends the review.
+            if cmd && modifiers.shift() && named == Some(Named::Enter) {
+                self.review_send();
+                return Task::none();
+            }
+            // A field for a review comment has the keys: ⌘⏎ saves, esc cancels, the rest is the
+            // field's (space, the arrows and ⌘C included).
+            if self.review_editor.is_some() {
+                match named {
+                    Some(Named::Escape) => self.review_cancel(),
+                    Some(Named::Enter) if cmd => self.review_save(),
+                    _ => {}
+                }
+                if !cmd || named == Some(Named::Enter) {
                     return Task::none();
                 }
-                Some(Named::ArrowLeft) => return self.step_preview(-1),
-                Some(Named::ArrowRight) => return self.step_preview(1),
-                Some(Named::Enter) if cmd => return self.update(Message::PreviewInEditor),
-                _ => {}
-            }
-            // ⌘C copies the diff; the terminal doesn't get it.
-            if cmd && !modifiers.shift() && character.as_deref() == Some("c") {
-                return self.update(Message::CopyDiff);
-            }
-            // Other ⌘ shortcuts go on as usual; plain keys stop here.
-            if !cmd {
-                return Task::none();
+                // Other ⌘ shortcuts go on as usual, except those of the sheet itself.
+                if character.as_deref() == Some("c") {
+                    return Task::none();
+                }
+            } else {
+                match named {
+                    Some(Named::Escape | Named::Space) => {
+                        self.preview = None;
+                        return Task::none();
+                    }
+                    Some(Named::ArrowLeft) => return self.step_preview(-1),
+                    Some(Named::ArrowRight) => return self.step_preview(1),
+                    Some(Named::Enter) if cmd => return self.update(Message::PreviewInEditor),
+                    _ => {}
+                }
+                // ⌘C copies the diff; the terminal doesn't get it.
+                if cmd && !modifiers.shift() && character.as_deref() == Some("c") {
+                    return self.update(Message::CopyDiff);
+                }
+                // Other ⌘ shortcuts go on as usual; plain keys stop here.
+                if !cmd {
+                    return Task::none();
+                }
             }
         }
         // A focused terminal keeps Esc (it interrupts Claude); ⌘[ leaves it.

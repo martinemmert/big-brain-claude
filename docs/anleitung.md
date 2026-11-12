@@ -111,6 +111,30 @@ Rechts steht die ausgewählte Session.
 - **Freigaben** beantwortest du im Baum (**Erlauben**/**Ablehnen**, `⌘Y`/`⇧⌘Y`),
   Fragen mit Optionen mit einem Klick.
 
+### Review an Claude
+
+Im Blatt mit dem Diff (siehe „Alle Tastenkürzel“, `⌥⌘0`) kommentierst du, was Claude geschrieben
+hat:
+
+- Fährst du über eine Diff-Zeile, steht vorn ein blaues **+**. Ein Klick öffnet darunter ein Feld
+  „Kommentar“: `⌘⏎` speichert, `esc` bricht ab. Solange es offen ist, gehen alle Tasten dorthin,
+  nicht ins Terminal, und `←` `→` blättern nicht. Ein Kommentar zur ganzen Datei geht über
+  **Zur Datei kommentieren** im Streifen mit Claudes Satz oder über das **+** beim Überfahren einer
+  Datei in der Liste links. Die Liste zeigt je Datei die Zahl der Kommentare.
+- Ein Kommentar steht als Karte unter seiner Zeile; ein Entwurf lässt sich **bearbeiten** und
+  **löschen**. Entwürfe bleiben über einen Neustart erhalten (`~/.claude-brain/reviews/`).
+  Verschiebt sich die Zeile, findet Brain sie über ihren Text; ist sie weg, steht die Karte
+  oben an der Datei.
+- Unten im Blatt steht die **Review-Leiste**: Zahl der Kommentare, **Nachricht ansehen** (genau
+  der Text, den Claude bekommt), **Review an Claude schicken** (`⇧⌘⏎`) und **Verwerfen**.
+- Das Review geht als **eine Nachricht** über Brains Mod in die Session, sobald sie auf einen
+  neuen Prompt wartet: Ihre Runde ist zu Ende, sie fragt nichts und will keine Freigabe. Vorher
+  wartet es (lila Punkt am Änderungen-Knopf und an der Session in der Liste) und lässt sich
+  **zurücknehmen**; „jetzt senden“ gibt es nicht. Einen halb getippten Prompt im Terminal kann Brain
+  nicht erkennen: Steht dort etwas, wartet das Review deshalb nicht darauf.
+- Nach dem Senden gelten die Kommentare als gesendet. Hat Claude die Zeile geändert, steht die
+  Karte auf **von Claude geändert** und zeigt die alte Zeile durchgestrichen.
+
 ## Sessions in Brain laufen lassen
 
 - **Neue Session:** `⌘N`. Ordner, Konto, Modell und erster Prompt, auf Wunsch aus einer

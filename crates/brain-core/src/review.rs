@@ -158,13 +158,7 @@ impl Review {
     /// dropped, and the message that goes to the session is returned. `file_order` is the order
     /// of the sheet's list of files.
     pub fn send(&mut self, now_ms: i64, file_order: &[String]) -> Option<String> {
-        let message = {
-            let open: Vec<&Comment> = self.comments.iter().filter(|c| c.is_open()).collect();
-            if open.is_empty() {
-                return None;
-            }
-            message(&open, file_order)
-        };
+        let message = self.pending_message(file_order)?;
         self.comments.retain(Comment::is_open);
         for comment in &mut self.comments {
             comment.state = State::Sent;
@@ -174,6 +168,12 @@ impl Review {
         self.last_message = Some(message.clone());
         self.last_sent_ms = Some(now_ms);
         Some(message)
+    }
+
+    /// The message the drafts and queued comments would make: the preview of what goes out.
+    pub fn pending_message(&self, file_order: &[String]) -> Option<String> {
+        let open: Vec<&Comment> = self.comments.iter().filter(|c| c.is_open()).collect();
+        (!open.is_empty()).then(|| message(&open, file_order))
     }
 
     /// The file's diff was read again: sent comments whose line is no longer there are marked as
@@ -298,12 +298,14 @@ pub fn where_is(comment: &Comment) -> String {
 /// first, then the removed lines, then the new ones by number.
 pub fn ordered<'a>(comments: &[&'a Comment], file_order: &[String]) -> Vec<&'a Comment> {
     let mut list = comments.to_vec();
-    let rank = |c: &Comment| -> (usize, u8, u32) {
+    // A file the order doesn't list (the comments of a session that isn't open) goes by its path.
+    let rank = |c: &'a Comment| -> (usize, &'a str, u8, u32) {
         let file = file_order.iter().position(|p| *p == c.path).unwrap_or(usize::MAX);
+        let by_path = if file == usize::MAX { c.relative.as_str() } else { "" };
         match c.place {
-            Place::File => (file, 0, 0),
-            Place::Line { new: None, old } => (file, 1, old.unwrap_or(0)),
-            Place::Line { new: Some(n), .. } => (file, 2, n),
+            Place::File => (file, by_path, 0, 0),
+            Place::Line { new: None, old } => (file, by_path, 1, old.unwrap_or(0)),
+            Place::Line { new: Some(n), .. } => (file, by_path, 2, n),
         }
     };
     list.sort_by_key(|c| (rank(c), c.id));

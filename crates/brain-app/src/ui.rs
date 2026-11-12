@@ -20,6 +20,8 @@ use crate::style::{
 use crate::tr;
 use crate::tree::HeadKey;
 
+mod review;
+
 /// Room for the window's traffic lights at the left of the title bar.
 const TRAFFIC_LIGHTS: f32 = 78.0;
 
@@ -540,7 +542,11 @@ fn changes_button<'a>(brain: &Brain, files: &[SessionChange]) -> Element<'a, Mes
     let (added, removed) = change_sums(files);
     let count = files.len();
     let label = if count == 1 { t("1 Datei", "1 file").to_string() } else { tr!("{count} Dateien", "{count} files") };
-    let content = row![text(label).size(12).color(TEXT).font(UI), counts(Some(added), Some(removed))].spacing(8).align_y(iced::Center);
+    let mut content = row![text(label).size(12).color(TEXT).font(UI), counts(Some(added), Some(removed))].spacing(8).align_y(iced::Center);
+    // A violet dot: a review of this session waits for it to want a prompt.
+    if brain.selected.as_ref().is_some_and(|key| brain.review_waits(key)) {
+        content = content.push(review::waiting_sign());
+    }
     let open = brain.changes_open;
     button(style::centered(content))
         .padding([0, 10])
@@ -805,7 +811,8 @@ fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> El
     let conflict = brain.conflicts.get(&s.key).is_some_and(|c| !c.shared_files.is_empty());
     // The name gets what the dot and the markers leave. No time: how long something lies there
     // helps nobody decide what to do next.
-    let name_room = tree_inner(brain) - NAME - ROW_RIGHT - 18.0 * (pinned as u8 + conflict as u8) as f32;
+    let waiting_review = brain.review_waits(&s.key);
+    let name_room = tree_inner(brain) - NAME - ROW_RIGHT - 18.0 * (pinned as u8 + conflict as u8 + waiting_review as u8) as f32;
     let mut head = row![
         state_dot(s, mark),
         text(clip(&s.display_name(), fitting(name_room, 13.0))).size(13).color(name_color).font(if selected { style::medium() } else { UI }).wrapping(text::Wrapping::None),
@@ -818,6 +825,9 @@ fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> El
     }
     if conflict {
         head = head.push(marker("⚠", CALLS));
+    }
+    if waiting_review {
+        head = head.push(review::waiting_sign());
     }
     let mut body = column![container(head).height(tree::ROW_H).center_y(tree::ROW_H)];
     if let Some((prefix, line)) = status_line(s, mark) {
@@ -1217,6 +1227,14 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
     let (index, total) = brain.preview_position().unwrap_or((0, 1));
     let diff = preview.diffs.get(&change.path);
     let is_new = diff.is_some_and(|d| d.new_file) || change.git.as_ref().is_some_and(|g| matches!(g.status.as_str(), "??" | "A " | "AM"));
+    // The review comments: under their lines in the diff, at the file's head, in the list.
+    let reviewing = brain.review_of(&preview.key);
+    let file_order: Vec<String> = files.iter().map(|c| c.path.clone()).collect();
+    let placed = reviewing.map(|r| app::place_comments(r, &change.path, diff, &file_order)).unwrap_or_default();
+    let editing = brain.review_editor.as_ref();
+    let open_comments: Vec<&brain_core::review::Comment> = reviewing.map(|r| r.comments.iter().filter(|c| c.is_open()).collect()).unwrap_or_default();
+    let open_comments = brain_core::review::ordered(&open_comments, &file_order);
+    let numbered = |c: &brain_core::review::Comment| open_comments.iter().position(|x| x.id == c.id).map(|i| i + 1);
 
     let step = |glyph: &'static str, delta: isize, enabled: bool| -> Element<'static, Message> {
         button(style::centered(text(glyph).size(13).color(TEXT).font(UI)))
@@ -1258,9 +1276,22 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
     title = title.push(action(t("Im Editor öffnen", "Open in editor"), "⌘⏎", false, preview.exists.then_some(Message::PreviewInEditor)));
     title = title.push(action(t("Schließen", "Close"), "esc", false, Some(Message::ClosePreview)));
     let head = mouse_area(container(title).padding([12, 16]).width(Fill).style(|_| style::fill(RAISED))).on_press(Message::SheetHead);
-    let said: Option<Element<'_, Message>> = change.said.as_ref().map(|said| {
-        container(text(said.clone()).size(13).color(TEXT).font(UI)).padding([10, 16]).width(Fill).style(|_| style::fill(RAISED)).into()
-    });
+    // The sentence Claude said before writing the file, and the button for a comment on the whole
+    // file; under them the cards of those comments and the field for a new one.
+    let head_cards: Vec<(&brain_core::review::Comment, bool)> = placed.head.clone();
+    let mut strip_items = review::cards(&head_cards, editing, &numbered);
+    if let Some(field) = editing.filter(|e| e.edit_id.is_none() && e.place == brain_core::review::Place::File) {
+        strip_items.push(review::editor(field));
+    }
+    let said_text: Element<'_, Message> = match change.said.as_ref() {
+        Some(said) => text(said.clone()).size(13).color(TEXT).font(UI).width(Fill).into(),
+        None => Space::new().width(Fill).into(),
+    };
+    let mut strip = column![row![said_text, review::file_button(Some(t("Zur Datei kommentieren", "Comment on the file").to_string()), index)].spacing(14).align_y(iced::Center)].spacing(10);
+    if !strip_items.is_empty() {
+        strip = strip.push(column(strip_items).spacing(6));
+    }
+    let said: Element<'_, Message> = container(strip).padding([10, 16]).width(Fill).style(|_| style::fill(RAISED)).into();
 
     let number = |n: Option<u32>, color: Color, tint: Color| -> Element<'_, Message> {
         container(text(n.map(|n| n.to_string()).unwrap_or_default()).size(font.size).color(color).font(font.regular))
@@ -1283,7 +1314,8 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
                 DiffRow::Line { text: content, .. } => content.chars().count(),
                 DiffRow::Hunk { context, raw, .. } => context.chars().count() + raw.chars().count() + 30,
             });
-            let gutters = if diff.new_file { 46.0 } else { 92.0 } + 20.0 + 18.0;
+            let numbers = if diff.new_file { 46.0 } else { 92.0 };
+            let gutters = numbers + 20.0 + 18.0 + review::PLUS_W;
             let row_w = Length::Fixed((longest.max().unwrap_or(0) as f32 * font.size * 0.62 + gutters).max(1100.0));
             let mut rows: Vec<Element<'_, Message>> = Vec::with_capacity(diff.rows.len() + 1);
             for (i, entry) in diff.rows.iter().enumerate() {
@@ -1312,14 +1344,26 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
                         let sign_color = if *kind == DiffKind::Added { DONE } else { CALLS_SOFT };
                         // An empty line still takes its height.
                         let shown = if content.is_empty() { " ".to_string() } else { content.clone() };
-                        let mut line = row![];
+                        let hovered = brain.review_hover_row == Some(i);
+                        let commented = placed.by_row.get(&i).map(|list| list.iter().any(|c| c.state == brain_core::review::State::Queued));
+                        let mut line = row![review::plus(i, hovered, commented)];
                         if !diff.new_file {
                             line = line.push(number(*old, number_color, gutter));
                         }
                         line = line.push(number(*new, number_color, gutter));
                         line = line.push(container(text(sign).size(font.size).color(sign_color).font(font.regular)).width(20).align_x(iced::Center));
                         line = line.push(text(shown).size(font.size).color(TEXT).font(font.regular).wrapping(text::Wrapping::None));
-                        rows.push(container(line).width(row_w).padding(Padding { right: 18.0, ..Padding::ZERO }).style(move |_| style::fill(tint)).into());
+                        let line = container(line).width(row_w).padding(Padding { right: 18.0, ..Padding::ZERO }).style(move |_| style::fill(tint));
+                        rows.push(mouse_area(line).on_enter(Message::ReviewHoverRow(Some(i))).on_exit(Message::ReviewHoverRow(None)).into());
+                        // The cards of the line's comments, and the field for a new one.
+                        let here: Vec<(&brain_core::review::Comment, bool)> = placed.by_row.get(&i).map(|list| list.iter().map(|c| (*c, false)).collect()).unwrap_or_default();
+                        let mut items = review::cards(&here, editing, &numbered);
+                        if let Some(field) = editing.filter(|e| e.edit_id.is_none() && e.row == Some(i)) {
+                            items.push(review::editor(field));
+                        }
+                        if !items.is_empty() {
+                            rows.push(review::slot(items, numbers + 20.0 + review::PLUS_W, row_w));
+                        }
                     }
                 }
             }
@@ -1360,11 +1404,28 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
         }
         first = first.push(Space::new().width(Fill)).push(counts(file.added, file.removed));
         let mut entry = column![first].spacing(3);
-        if !dir.is_empty() {
-            entry = entry.push(text(clip_start(&format!("{dir}/"), 34)).size(11).color(TEXT_FAINT).font(MONO).wrapping(text::Wrapping::None));
+        // The folder, the number of comments on the file, and on hover the button for one more.
+        let count = review::file_count(reviewing, &file.path);
+        let adding = brain.review_hover_file == Some(i);
+        if !dir.is_empty() || count.is_some() || adding {
+            let folder = if dir.is_empty() { String::new() } else { clip_start(&format!("{dir}/"), 34) };
+            let mut second = row![text(folder).size(11).color(TEXT_FAINT).font(MONO).wrapping(text::Wrapping::None), Space::new().width(Fill)].spacing(6).align_y(iced::Center).height(22);
+            if let Some(count) = count {
+                second = second.push(count);
+            }
+            if adding {
+                second = second.push(review::file_button(None, i));
+            }
+            entry = entry.push(second);
         }
         let entry = container(entry).padding([8, 10]).width(Fill).style(move |_| boxed(if current { style::ISLAND_SELECTED } else { Color::TRANSPARENT }, Color::TRANSPARENT, 8.0));
-        list = list.push(mouse_area(entry).on_press(Message::PreviewGo(i)).interaction(iced::mouse::Interaction::Pointer));
+        list = list.push(
+            mouse_area(entry)
+                .on_press(Message::PreviewGo(i))
+                .on_enter(Message::ReviewHoverFile(Some(i)))
+                .on_exit(Message::ReviewHoverFile(None))
+                .interaction(iced::mouse::Interaction::Pointer),
+        );
     }
     let list = container(scrollable(list.padding([12, 10])).width(Fill).height(Fill).style(scrollbar))
         .width(240)
@@ -1389,13 +1450,10 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
         .style(|_| style::fill(CHROME));
     let edge = || container(Space::new().width(Fill).height(1)).style(|_| style::fill(LINE_STRONG));
 
-    let mut right = column![];
-    if let Some(said) = said {
-        right = right.push(said).push(edge());
-    }
+    let mut right = column![said, edge()];
     right = right.push(container(body).width(Fill).height(Fill).style(|_| style::fill(INK)));
     let vertical_edge = || container(Space::new().width(1).height(Fill)).style(|_| style::fill(LINE));
-    let sheet = container(column![head, edge(), row![list, vertical_edge(), right.width(Fill)].height(Fill), edge(), foot])
+    let sheet = container(column![head, edge(), row![list, vertical_edge(), right.width(Fill)].height(Fill), review::bar(brain, &preview.key), foot])
         .width(Fill)
         .height(Fill)
         .clip(true)

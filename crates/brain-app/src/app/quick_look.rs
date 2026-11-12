@@ -140,7 +140,8 @@ impl Brain {
         let Some(change) = self.changes_newest_first().into_iter().find(|c| c.path == path).cloned() else { return Task::none() };
         self.focused_terminal = None;
         self.focused_shell = None;
-        let task = self.show_file(key, change);
+        self.review_editor = None;
+        let task = self.show_file(key, change, false);
         Task::batch([super::unfocus(), task])
     }
 
@@ -151,14 +152,16 @@ impl Brain {
         let (Some(key), Some(change)) = (self.selected.clone(), self.changes_newest_first().get(next).map(|c| (*c).clone())) else {
             return Task::none();
         };
-        self.show_file(key, change)
+        self.review_editor = None;
+        self.show_file(key, change, false)
     }
 
-    /// Puts a file on the sheet and reads its diff unless that has been read.
-    fn show_file(&mut self, key: SessionKey, change: SessionChange) -> Task<Message> {
+    /// Puts a file on the sheet and reads its diff unless that has been read (`reload`: read it
+    /// anew, the old one stays on show until the new one is there).
+    pub(super) fn show_file(&mut self, key: SessionKey, change: SessionChange, reload: bool) -> Task<Message> {
         let exists = !self.model.is_demo() && std::path::Path::new(&change.path).is_file();
         let diffs = self.preview.take().filter(|p| p.key == key).map(|p| p.diffs).unwrap_or_default();
-        let known = diffs.contains_key(&change.path);
+        let known = diffs.contains_key(&change.path) && !reload;
         let demo_diff = self.model.is_demo().then(|| self.model.demo_diffs.get(&change.path).cloned());
         let path = change.path.clone();
         let reading = change.clone();
@@ -176,8 +179,14 @@ impl Brain {
 
     /// A diff came in: kept for its file, shown when that is the open one.
     pub(super) fn preview_loaded(&mut self, key: SessionKey, path: String, diff: Option<String>) {
-        if let Some(preview) = self.preview.as_mut().filter(|p| p.key == key) {
-            preview.diffs.insert(path, quick_diff(diff.as_deref().unwrap_or_default(), MOST_ROWS));
+        if self.preview.as_ref().is_some_and(|p| p.key == key) {
+            let read = quick_diff(diff.as_deref().unwrap_or_default(), MOST_ROWS);
+            if diff.is_some() {
+                self.review_diff_read(&key, &path, &read);
+            }
+            if let Some(preview) = self.preview.as_mut().filter(|p| p.key == key) {
+                preview.diffs.insert(path, read);
+            }
         }
     }
 }

@@ -47,6 +47,12 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   commands for the session, and any text sent to it or to every session whose turn it is.
 - **Composer.** `⌘E`: a large editor for a longer prompt, with your templates, dictation and
   screenshots pasted with `⌘V`; `⌘⏎` sends it as one paste.
+- **Review comments.** In a changed file's Quick Look a `+` in front of a diff line (or the button
+  for the whole file) opens a field; `⌘⏎` saves the comment as a draft. `Send review to Claude`
+  hands all drafts to the session as one message, at once when it waits for a new prompt, else
+  once it does (a question or a permission doesn't count); a violet dot marks a waiting review,
+  which you can take back. Drafts survive a restart; a sent comment whose line Claude changed is
+  marked.
 - **Reply from the notification.** "Session waits" notifications have a reply field (only on an
   unlocked Mac); the text goes into the session.
 - **Shell per project.** `⌘T` opens a login shell in the session's folder below its terminal.

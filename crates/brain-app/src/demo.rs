@@ -320,6 +320,29 @@ pub fn build() -> Demo {
     Demo { accounts, board, usage, messages, changes, diffs }
 }
 
+/// "Rate-Limits" has two drafts of a review: one on `burst` in the configuration, one on the
+/// limiter's clock.
+pub fn reviews() -> Vec<brain_core::review::Review> {
+    use brain_core::review::{Place, Review};
+    let root = "~/Projects/api-gateway";
+    let mut review = Review::new(&SessionKey { account: "main".into(), id: "demo-4101".into() });
+    review.add(
+        &format!("{root}/src/config.rs"),
+        "src/config.rs",
+        Place::Line { new: Some(22), old: None },
+        "    pub burst: u32,",
+        "Bitte als Option, Default 100.",
+    );
+    review.add(
+        &format!("{root}/src/middleware/rate_limit.rs"),
+        "src/middleware/rate_limit.rs",
+        Place::Line { new: Some(18), old: None },
+        "        let now = Instant::now();",
+        "Hier lieber eine Uhr reinreichen statt Instant::now(), dann braucht der zweite Test kein sleep.",
+    );
+    vec![review]
+}
+
 /// The files "Rate-Limits" changed, newest first, and their made-up diffs by path. The counts
 /// are those of the diffs.
 fn rate_limit_changes(now_ms: i64) -> (Vec<brain_core::changes::SessionChange>, HashMap<String, String>) {
