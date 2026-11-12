@@ -597,7 +597,7 @@ fn changes_popover_layer(brain: &Brain) -> Element<'_, Message> {
             ..boxed(style::MENU_BG, style::MENU_LINE, 10.0)
         });
     let card = mouse_area(card).on_press(Message::PopupClicked);
-    let backdrop = mouse_area(Space::new().width(Fill).height(Fill)).on_press(Message::CloseChanges);
+    let backdrop = mouse_area(Space::new().width(Fill).height(Fill)).on_press(Message::CloseChanges).interaction(iced::mouse::Interaction::Idle);
     stack![
         backdrop,
         container(card).width(Fill).height(Fill).align_x(iced::Right).align_y(iced::Top).padding(Padding { top, right: 14.0, ..Padding::ZERO }),
@@ -1276,6 +1276,15 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
             container(hint(t("Gegen HEAD hat sich an dieser Datei nichts geändert.", "This file does not differ from HEAD."))).padding(14).into()
         }
         Some(diff) => {
+            // The rows scroll sideways too, where Fill has no width to fill: they get the width of
+            // the longest line (monospace: a glyph is about 0.62 of the size), and at least a wide
+            // sheet's, so their tints run across.
+            let longest = diff.rows.iter().map(|r| match r {
+                DiffRow::Line { text: content, .. } => content.chars().count(),
+                DiffRow::Hunk { context, raw, .. } => context.chars().count() + raw.chars().count() + 30,
+            });
+            let gutters = if diff.new_file { 46.0 } else { 92.0 } + 20.0 + 18.0;
+            let row_w = Length::Fixed((longest.max().unwrap_or(0) as f32 * font.size * 0.62 + gutters).max(1100.0));
             let mut rows: Vec<Element<'_, Message>> = Vec::with_capacity(diff.rows.len() + 1);
             for (i, entry) in diff.rows.iter().enumerate() {
                 match entry {
@@ -1292,7 +1301,7 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
                         ]
                         .spacing(10)
                         .align_y(iced::Center);
-                        rows.push(container(line).padding([5, 14]).width(Fill).style(|_| style::fill(alpha(WORKING, 0x12))).into());
+                        rows.push(container(line).padding([5, 14]).width(row_w).style(|_| style::fill(alpha(WORKING, 0x12))).into());
                     }
                     DiffRow::Line { kind, old, new, text: content } => {
                         let (tint, gutter, number_color, sign) = match kind {
@@ -1310,7 +1319,7 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
                         line = line.push(number(*new, number_color, gutter));
                         line = line.push(container(text(sign).size(font.size).color(sign_color).font(font.regular)).width(20).align_x(iced::Center));
                         line = line.push(text(shown).size(font.size).color(TEXT).font(font.regular).wrapping(text::Wrapping::None));
-                        rows.push(container(line).width(Fill).padding(Padding { right: 18.0, ..Padding::ZERO }).style(move |_| style::fill(tint)).into());
+                        rows.push(container(line).width(row_w).padding(Padding { right: 18.0, ..Padding::ZERO }).style(move |_| style::fill(tint)).into());
                     }
                 }
             }
@@ -1374,7 +1383,11 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
         .height(Length::FillPortion(8)),
         Space::new().height(Length::FillPortion(1)),
     ];
-    let backdrop = mouse_area(container(Space::new().width(Fill).height(Fill)).style(|_| style::fill(Color::from_rgba8(6, 8, 15, 0.55)))).on_press(Message::ClosePreview);
+    // The backdrop claims the pointer, so what lies under it (the sidebar's tooltips) doesn't
+    // think the pointer is over it.
+    let backdrop = mouse_area(container(Space::new().width(Fill).height(Fill)).style(|_| style::fill(Color::from_rgba8(6, 8, 15, 0.55))))
+        .on_press(Message::ClosePreview)
+        .interaction(iced::mouse::Interaction::Idle);
     stack![backdrop, centered].into()
 }
 
@@ -2521,7 +2534,7 @@ fn popup_width() -> f32 {
 fn status_popup_layer(brain: &Brain, now: i64) -> Element<'_, Message> {
     let top = crate::chrome::TITLEBAR_HEIGHT / brain.zoom() + 4.0;
     let card = mouse_area(status_popup(brain, now)).on_press(Message::PopupClicked);
-    let backdrop = mouse_area(Space::new().width(Fill).height(Fill)).on_press(Message::ClosePopup);
+    let backdrop = mouse_area(Space::new().width(Fill).height(Fill)).on_press(Message::ClosePopup).interaction(iced::mouse::Interaction::Idle);
     stack![
         backdrop,
         container(card).width(Fill).height(Fill).align_x(iced::Right).align_y(iced::Top).padding(Padding { top, right: 14.0, ..Padding::ZERO }),
