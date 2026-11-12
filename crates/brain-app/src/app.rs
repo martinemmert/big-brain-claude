@@ -10,7 +10,6 @@ use iced::keyboard::{self, key::Named};
 use iced::widget::{operation, scrollable};
 use iced::{window, Subscription, Task};
 
-use crate::config;
 
 mod account;
 pub(crate) mod relaunch;
@@ -23,7 +22,7 @@ pub(crate) mod status_popup;
 
 pub use account::ACCOUNT_NAME;
 use crate::conversation::Conversation;
-use crate::format::{ago, clock, now_ms, plain, shell_quote};
+use crate::format::{clock, now_ms, plain, shell_quote};
 use crate::i18n::t;
 use crate::menubar::MenuBar;
 pub use menus::MenuCommand;
@@ -753,7 +752,6 @@ pub struct Brain {
     started_from: HashMap<SessionKey, String>,
     /// Per session that waits: what it was read at, and the question it asks.
     /// Reminders sent per waiting session: (when its wait began, how many).
-    reminders: HashMap<SessionKey, (i64, u32)>,
     /// The selected session and where it stood in the list before it was selected.
     held: Option<(SessionKey, Place)>,
     /// The sessions that asked for a decision at the last refresh (none before the first one).
@@ -883,7 +881,6 @@ impl Brain {
             request_takers: HashSet::new(),
             waking: HashMap::new(),
             wake_results: std::sync::mpsc::channel(),
-            reminders: HashMap::new(),
             held: None,
             asking: None,
             sync: sync::SyncDialog::default(),
@@ -1630,7 +1627,6 @@ impl Brain {
         tasks.push(self.serve_link(now));
         self.refresh_sync_conflicts();
         self.garden_count = self.garden_findings().iter().filter(|f| f.sure).count();
-        self.remind(now);
         let linked: Vec<SessionKey> = crate::links::take_sessions()
             .into_iter()
             .filter_map(|(account, pid)| Some(self.model.board.live_by_pid(&account, pid)?.key.clone()))
@@ -1740,44 +1736,6 @@ impl Brain {
             return self.open_terminal(just_started || clicked);
         }
         Task::none()
-    }
-
-    /// Reminds again about sessions that still ask for a decision: every `remind_after_minutes`,
-    /// at most three times per waiting period, never for muted or snoozed ones, and never for a
-    /// guess at a question or a report.
-    fn remind(&mut self, now: i64) {
-        const MAX_REMINDERS: u32 = 3;
-        let Some(interval) = config::remind_after_ms() else { return };
-        // Straight from the board: neither the search nor the account filter hides a session
-        // that waits for a decision.
-        let waiting: Vec<(SessionKey, i64, String, Option<String>)> = self
-            .model
-            .board
-            .keys()
-            .filter(|key| self.real_ask(key).is_some())
-            .filter_map(|key| self.model.board.get(key))
-            .map(|s| (s.key.clone(), s.phase_since_ms(), s.display_name(), s.headline()))
-            .collect();
-        self.reminders.retain(|key, _| waiting.iter().any(|(k, ..)| k == key));
-        for (key, since, name, headline) in waiting {
-            if self.prefs.is_muted(&key) || self.prefs.snoozed_until(&key, now).is_some() || self.is_quiet(&key) {
-                continue;
-            }
-            let entry = self.reminders.entry(key.clone()).or_insert((since, 0));
-            if entry.0 != since {
-                *entry = (since, 0);
-            }
-            let due = since + interval * (entry.1 as i64 + 1);
-            if entry.1 >= MAX_REMINDERS || now < due {
-                continue;
-            }
-            entry.1 += 1;
-            let waited = ago(since, now);
-            let account = key.account.clone();
-            let subtitle = tr!("{account} · wartet seit {waited}", "{account} · waiting for {waited}");
-            let body = plain(headline.as_deref().unwrap_or(""));
-            self.notifier.post(&key, &name, &subtitle, &body, true);
-        }
     }
 
     /// Live sessions with a folder, for the background PR lookup.

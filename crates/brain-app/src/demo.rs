@@ -308,9 +308,9 @@ pub fn build() -> Demo {
         seven_day: Some(Limit { used_percentage: seven, resets_at: resets(80) }),
     };
     let usage = vec![
-        snapshot("main", 4101, 46.0, 21.0, 71.0, 3.84),
-        snapshot("main", 4103, 46.0, 21.0, 19.0, 0.41),
-        snapshot("main", 4104, 46.0, 21.0, 48.0, 2.17),
+        snapshot("main", 4101, 84.0, 21.0, 71.0, 3.84),
+        snapshot("main", 4103, 84.0, 21.0, 19.0, 0.41),
+        snapshot("main", 4104, 84.0, 21.0, 48.0, 2.17),
         snapshot("second", 4102, 12.0, 34.0, 30.0, 0.92),
     ];
 

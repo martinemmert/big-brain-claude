@@ -23,7 +23,6 @@ pub const TEXT_FAINT: Color = color!(0x5f6782);
 // The popup under the status item: a lighter, nearly opaque card with a fine light edge.
 pub const MENU_BG: Color = Color::from_rgba8(0x27, 0x2c, 0x40, 0.96);
 pub const MENU_LINE: Color = Color::from_rgba8(0xff, 0xff, 0xff, 0.10);
-pub const MENU_HL: Color = color!(0x3a6fd8);
 
 // Signals.
 pub const CALLS: Color = color!(0xff5c6c);

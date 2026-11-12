@@ -306,7 +306,7 @@ impl Brain {
             Entry::Separator,
             commands.menu(MenuCommand::Zoom(true), t("Größer", "Zoom in"), "zoom-in").keys("+", CMD).into(),
             commands.menu(MenuCommand::Zoom(false), t("Kleiner", "Zoom out"), "zoom-out").keys("-", CMD).into(),
-            commands.menu(MenuCommand::ZoomReset, t("Originalgröße", "Actual size"), "zoom-reset").keys("0", CMD).enabled(self.zoom() != 1.0).into(),
+            commands.menu(MenuCommand::ZoomReset, self.actual_size_title(), "zoom-reset").keys("0", CMD).enabled(self.zoom() != 1.0).into(),
             Entry::Separator,
             commands.item(t("Beendete Sessions zeigen", "Show ended sessions"), "show-older", Message::ToggleOlder).checked(self.prefs.show_older).into(),
             commands.palette(PaletteCommand::ToggleBackground, t("Ruhige Hintergrund-Sessions zeigen", "Show quiet background sessions"), "show-background").checked(self.prefs.show_background).into(),
@@ -446,6 +446,15 @@ impl Brain {
                 self.snooze_selected(length);
                 Task::none()
             }
+        }
+    }
+
+    /// "Originalgröße", with the current level when it isn't 100 %.
+    fn actual_size_title(&self) -> String {
+        let title = t("Originalgröße", "Actual size");
+        match (self.zoom() * 100.0).round() as u32 {
+            100 => title.to_string(),
+            percent => format!("{title} ({percent} %)"),
         }
     }
 

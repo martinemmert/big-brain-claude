@@ -81,16 +81,16 @@ Oben in der Titelleiste steht der Kontofilter (umschalten mit `⇥`).
   Konto das 5-h- und Wochenlimit mit Prognose und Empfehlung, wo eine neue Session besser läuft. Ein Klick aufs Zeichen in
   der Menüleiste holt Brain nach vorn und öffnet die Karte. `esc`, ein Klick daneben oder ein zweiter Klick auf den Knopf
   schließt sie. Neue Session und Beenden stehen in der Menüleiste.
-- **Größe:** `⌘+`, `⌘-` und `⌘0` skalieren das ganze Fenster samt Terminalschrift; die Statuszeile zeigt die Stufe,
-  wenn sie nicht 100 % ist.
+- **Größe:** `⌘+`, `⌘-` und `⌘0` skalieren das ganze Fenster samt Terminalschrift; das Menü *Darstellung* zeigt die Stufe
+  im Titel von *Originalgröße*, wenn sie nicht 100 % ist.
 - **Tasten:** `⌘?` zeigt alle.
 
 Über dem Terminal steht eine schmale Zeile: Projekt › Session (ein Klick benennt um), Branch, Konto,
 wie voll der Kontext ist (ab 80 % mit **/compact**) und ein ⚠, wenn die Session dieselben Dateien
 bearbeitet wie eine andere. Modell, Kosten, pid und Ordner erscheinen beim Überfahren.
 
-Unten steht eine Zeile mit „N braucht dich“, „N fertig“, „N arbeiten“, der Meldung des letzten
-Befehls und rechts der Nutzung pro Konto (siehe unten).
+Die Meldung des letzten Befehls erscheint kurz als kleine Karte unten im Fenster. Eine Zeile ganz
+unten gibt es nur, wenn bei einem Konto ein Limit zu 80 % oder mehr verbraucht ist (siehe unten).
 
 ## Eine Session ansehen
 
@@ -162,9 +162,7 @@ Rechts steht die ausgewählte Session.
   für die Session. Freier Text geht an die Session oder an alle, die auf dich warten.
 - **Benachrichtigungen:** Nur wenn eine Session dich direkt fragt (eine Frage, eine Freigabe oder
   ein `brain report --waiting`). Eine fertige Runde („du bist dran“)
-  steht nur in der Liste. Auf dem iPhone gilt dasselbe. Wartet eine Session weiter auf eine Entscheidung, erinnert Brain nach
-  `remind_after_minutes` (Standard 10, 0 schaltet aus), höchstens dreimal; nie bei „Frage?“
-  und nie bei Berichten. Direkt in der Mitteilung kannst du
+  steht nur in der Liste. Auf dem iPhone gilt dasselbe. Erinnerungen gibt es nicht. Direkt in der Mitteilung kannst du
   antworten (nur am entsperrten Mac), öffnen oder 15 Minuten pausieren.
 - **Quick Terminal:** Eine Taste deiner Wahl holt Brain aus jeder App mit dem Terminal der
   wartenden Session nach vorn; nochmal drücken blendet Brain aus. Ist aus, bis du sie in der
@@ -273,9 +271,9 @@ CLAUDE.md und das Gedächtnis gleicht er selbst ab. Was ersetzt oder gelöscht w
 
 ## Nutzung und Limits
 
-In der Zeile unten steht pro Konto, wie viel vom 5-Stunden- und vom Wochenlimit verbraucht ist und
-wann es zurückgesetzt wird. Reicht das Tempo nicht bis zum Reset, steht dort **„voll ~Do 14:00“**,
-und hat ein Konto noch Platz, steht dort „hat Platz“. Beim Wochenlimit zählt das
+Die Karte am Knopf oben rechts zeigt pro Konto, wie viel vom 5-Stunden- und vom Wochenlimit
+verbraucht ist. Ab 80 % erscheint zusätzlich unten eine Zeile mit genau diesen Konten (amber, ab 90 %
+rot); reicht das Tempo nicht bis zum Reset, steht dort **„voll ~Do 14:00“**. Beim Wochenlimit zählt das
 Tempo der letzten 24 Stunden (Brain merkt sich dafür alle zehn Minuten den Stand); beim
 5-Stunden-Limit das des laufenden Fensters.
 

@@ -94,8 +94,8 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   ⋯ on the phone); Brain remembers it.
   Ended sessions of the last day stay dimmed under their project; a line at the end opens
   *snoozed*, *in the background*, *automated* and *older* ones. A slim header over the terminal
-  shows project › session, branch, account and context fill; a status line at the bottom shows
-  who needs you, who finished, who works, the last message and the usage per account.
+  shows project › session, branch, account and context fill; a line at the bottom appears only while an account has a limit used up to 80 % or more.
+  Messages of the last command show as a small card at the bottom of the window.
   `⌥⌘⌫` twice moves an ended session's transcript
   to the **Trash**. *File → Clean up …* shows everything ended (or in the background) and quiet for
   1, 3, 7 or 14 days, to hide or trash at once. Pinned and saved sessions always stay.
@@ -121,8 +121,7 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   on the list any more. *Window* lists the sessions that need you as `⌘1` … `⌘9`.
 - **Menu bar count** and native **notifications** with *Open* and *Snooze 15 min*, only when a
   session is done or asks you something (a question or a permission), sound only for the
-  latter; reminders only while a session still waits for a decision (`remind_after_minutes` in
-  `config.json`, 10 by default, 0 turns them off, at most three). *Session → Snooze* pauses a
+  latter; no reminders. *Session → Snooze* pauses a
   session for 15 min, 1 h, until tomorrow 9:00 or until something happens in it (`⌫` twice jumps to
   the last). A button in the title bar, right of the account filter (it shows the number that needs you and the fullest account's usage), opens a card
   over the window's top right: the sessions that need you (a permission with *Allow* and *Deny*, and *Show*, which selects

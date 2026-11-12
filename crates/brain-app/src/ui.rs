@@ -60,7 +60,12 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
             .on_move(move |p| Message::Pointer(iced::Point::new(p.x, p.y + titlebar_height + 1.0)));
         row![left, grip, detail]
     };
-    let window = container(column![titlebar(brain, groups.deciding() > 0), divider(), body.height(Fill), divider(), status_line_bar(brain, &groups, now)])
+    let mut rows = column![titlebar(brain), divider(), body.height(Fill)];
+    // Below only when a limit is nearly used up.
+    if let Some(warning) = limit_warning_bar(brain, now) {
+        rows = rows.push(divider()).push(warning);
+    }
+    let window = container(rows)
         .width(Fill)
         .height(Fill)
         .style(|_| container::Style { background: Some(Background::Color(INK)), text_color: Some(TEXT), ..container::Style::default() });
@@ -73,7 +78,18 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
     };
     // The status popup hangs under the title bar's right end, over the whole window.
     let popup: Element<'_, Message> = if brain.status_open { status_popup_layer(brain, now) } else { Space::new().into() };
-    stack![window, overlay, popup].into()
+    stack![window, overlay, popup, toast(brain)].into()
+}
+
+/// A message of the last command: a small card at the bottom, centred over the main area. It
+/// takes no room, so nothing in the window moves when it comes and goes.
+fn toast(brain: &Brain) -> Element<'_, Message> {
+    let Some((message, _)) = &brain.status else { return Space::new().into() };
+    let left = if brain.prefs.hide_sidebar { 0.0 } else { brain.prefs.sidebar_width.unwrap_or(app::SIDEBAR_DEFAULT) };
+    let card = container(text(clip(message, 110)).size(12).color(TEXT_STRONG).font(UI).wrapping(text::Wrapping::None))
+        .padding([8, 14])
+        .style(|_| boxed(RAISED, LINE_STRONG, 10.0));
+    container(card).width(Fill).height(Fill).align_x(iced::Center).align_y(iced::Bottom).padding(Padding { left, bottom: 24.0, ..Padding::ZERO }).into()
 }
 
 /// ⌘E: a longer prompt for the selected session, with templates and pasted screenshots.
@@ -372,13 +388,14 @@ fn sidebar_button<'a>(hidden: bool) -> Element<'a, Message> {
     iced::widget::tooltip(toggle, tip, iced::widget::tooltip::Position::Bottom).gap(4).into()
 }
 
-/// Brain's mark in miniature: a grid of sessions, one of them calling while one needs you.
-fn brand_mark<'a>(calling: bool) -> Element<'a, Message> {
+/// Brain's mark in miniature: a grid of sessions, always quiet; the button at the right end of
+/// the title bar is the window's one signal.
+fn brand_mark<'a>() -> Element<'a, Message> {
     let cell = |color: Color| style::dot::<Message>(color, 4.0);
     let quiet = LINE_STRONG;
     container(
         column![
-            row![cell(quiet), cell(WORKING), cell(if calling { CALLS } else { quiet })].spacing(2),
+            row![cell(quiet), cell(WORKING), cell(quiet)].spacing(2),
             row![cell(WORKING), cell(quiet), cell(quiet)].spacing(2),
             row![cell(quiet), cell(quiet), cell(WORKING)].spacing(2),
         ]
@@ -393,7 +410,7 @@ fn brand_mark<'a>(calling: bool) -> Element<'a, Message> {
 /// then a divider that carries the sidebar's edge up; over the terminal the selected session's
 /// line (project › name, branch, account, context), at the right the account filter. Without the
 /// sidebar a short divider follows the button instead.
-fn titlebar(brain: &Brain, calling: bool) -> Element<'_, Message> {
+fn titlebar(brain: &Brain) -> Element<'_, Message> {
     let hidden = brain.prefs.hide_sidebar;
     let titlebar_height = crate::chrome::TITLEBAR_HEIGHT / brain.zoom();
     // Right after the traffic lights (the row's spacing comes before the mark).
@@ -402,12 +419,12 @@ fn titlebar(brain: &Brain, calling: bool) -> Element<'_, Message> {
     let mut bar = if hidden {
         // Without the sidebar: mark and button take what they need, a short line parts them from
         // the session.
-        row![row![lights, brand_mark(calling), sidebar_button(hidden)].spacing(12).align_y(iced::Center), edge(18.0)]
+        row![row![lights, brand_mark(), sidebar_button(hidden)].spacing(12).align_y(iced::Center), edge(18.0)]
     } else {
         // As wide as the sidebar, the button at its right end; the divider stands where the
         // sidebar's edge does (the row's spacing is the last 10 points).
         let width = brain.prefs.sidebar_width.unwrap_or(app::SIDEBAR_DEFAULT);
-        let lead = row![lights, brand_mark(calling), Space::new().width(Fill), sidebar_button(hidden)].spacing(12).align_y(iced::Center);
+        let lead = row![lights, brand_mark(), Space::new().width(Fill), sidebar_button(hidden)].spacing(12).align_y(iced::Center);
         row![container(lead).width(Length::Fixed(width - 10.0)).padding(Padding { right: 2.0, ..Padding::ZERO }), edge(titlebar_height)]
     }
     .spacing(10)
@@ -2215,7 +2232,7 @@ fn status_popup(brain: &Brain, now: i64) -> Element<'_, Message> {
     use crate::app::status_popup::*;
     let content = brain.popup_content(now);
     let section = |title: &str| -> Element<'static, Message> {
-        container(text(title.to_uppercase()).size(11).color(TEXT_MUTED).font(UI))
+        container(text(title.to_string()).size(12).color(TEXT_MUTED).font(style::semibold()))
             .height(SECTION_H)
             .align_y(iced::Bottom)
             .padding(Padding { left: 8.0, bottom: 4.0, ..Padding::ZERO })
@@ -2251,19 +2268,7 @@ fn status_popup(brain: &Brain, now: i64) -> Element<'_, Message> {
     let aged = |since_ms: i64| text(ago(since_ms, now)).size(11.5).color(TEXT_MUTED).font(UI);
     let dotted = |color: Color| container(style::dot::<Message>(color, 8.0)).padding(Padding { top: 5.0, ..Padding::ZERO });
 
-    let mut list = column![container(
-        row![
-            brand_mark(!content.needs.is_empty()),
-            text("Brain").size(13).color(TEXT_STRONG).font(style::semibold()),
-            Space::new().width(Fill),
-            text(content.summary()).size(12).color(TEXT_MUTED).font(UI)
-        ]
-        .spacing(8)
-        .align_y(iced::Center),
-    )
-    .height(HEAD_H)
-    .center_y(HEAD_H)
-    .padding([0, 8])];
+    let mut list = column![container(text(content.summary()).size(12).color(TEXT_MUTED).font(UI)).height(HEAD_H).center_y(HEAD_H).padding([0, 8])];
     if content.is_calm() {
         list = list.push(
             container(text(t("Nichts wartet auf dich", "Nothing is waiting for you")).size(12.5).color(TEXT_MUTED).font(UI))
@@ -2278,9 +2283,9 @@ fn status_popup(brain: &Brain, now: i64) -> Element<'_, Message> {
             let text_part = column![titled(&need.name, &need.project), said(&need.line)];
             if need.permission {
                 let buttons = row![
-                    popup_button(t("Erlauben", "Allow"), true, Message::PopupAnswer(need.key.clone(), true, need.since_ms)),
-                    popup_button(t("Ablehnen", "Deny"), false, Message::PopupAnswer(need.key.clone(), false, need.since_ms)),
-                    popup_button(t("Ansehen", "Show"), false, Message::PopupSee(need.key.clone())),
+                    answer_button(t("Erlauben", "Allow"), false, Message::PopupAnswer(need.key.clone(), true, need.since_ms)),
+                    answer_button(t("Ablehnen", "Deny"), true, Message::PopupAnswer(need.key.clone(), false, need.since_ms)),
+                    answer_button(t("Ansehen", "Show"), false, Message::PopupSee(need.key.clone())),
                 ]
                 .spacing(6);
                 let body = text_part.push(container(buttons).padding(Padding { top: 7.0, ..Padding::ZERO }));
@@ -2364,26 +2369,6 @@ fn row_button<'a>(row: impl Into<Element<'a, Message>>, message: Message) -> Ele
         .into()
 }
 
-/// A button on a popup row: "Erlauben" in blue, the others in a light veil with a fine edge.
-fn popup_button<'a>(label: &str, primary: bool, message: Message) -> Element<'a, Message> {
-    button(style::centered(text(label.to_string()).size(12).color(TEXT_STRONG).font(UI)))
-        .padding([0, 10])
-        .height(24)
-        .on_press(message)
-        .style(move |_, status| {
-            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-            let veil = Color::from_rgba8(0xff, 0xff, 0xff, if hovered { 0.12 } else { 0.08 });
-            let blue = if hovered { alpha(style::MENU_HL, 0xdd) } else { style::MENU_HL };
-            button::Style {
-                background: Some(Background::Color(if primary { blue } else { veil })),
-                text_color: TEXT_STRONG,
-                border: Border { color: if primary { Color::TRANSPARENT } else { style::MENU_LINE }, width: if primary { 0.0 } else { 1.0 }, radius: 5.0.into() },
-                ..button::Style::default()
-            }
-        })
-        .into()
-}
-
 /// One account in the popup: name, five-hour and weekly limit as bars with their percent. Each
 /// column has a fixed width, so the accounts line up.
 fn popup_usage_row<'a>(account: &crate::app::status_popup::AccountRow) -> Element<'a, Message> {
@@ -2410,51 +2395,37 @@ fn popup_usage_row<'a>(account: &crate::app::status_popup::AccountRow) -> Elemen
     container(line).height(crate::app::status_popup::ACCOUNT_H).center_y(crate::app::status_popup::ACCOUNT_H).into()
 }
 
-// ---- status line ------------------------------------------------------------------
+// ---- limit warning ----------------------------------------------------------------
 
-/// The height of the line at the bottom: it stays when a message comes and goes.
+/// The height of the warning line at the bottom.
 const STATUS_LINE_H: f32 = 26.0;
 
-/// One line at the bottom: who needs the user, who finished, who works; the message of the last
-/// command; and the usage of each account at the right.
-fn status_line_bar<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Message> {
-    let working = groups.quiet.iter().filter(|s| matches!(s.phase(), Phase::Working | Phase::Background)).count();
-    let counts = [
-        (groups.deciding(), CALLS, t("braucht dich", "needs you")),
-        (groups.read.len(), TURN, t("fertig", "finished")),
-        (working, WORKING, t("arbeiten", "working")),
-    ];
+/// From this percent of a limit on, the line at the bottom appears.
+const WARN_PERCENT: f64 = 80.0;
+
+/// The limits of an account that are used up to the warning mark: (is the five-hour limit, percent).
+pub fn tight_limits(usage: &UsageNow) -> Vec<(bool, f64)> {
+    [(true, usage.five_hour), (false, usage.week)].into_iter().filter_map(|(five, used)| Some((five, used?))).filter(|(_, used)| *used >= WARN_PERCENT).collect()
+}
+
+/// A line at the bottom, only while some account has a limit used up to 80 % or more: it shows
+/// those accounts, nothing else. Otherwise there is no line.
+fn limit_warning_bar<'a>(brain: &'a Brain, now: i64) -> Option<Element<'a, Message>> {
+    let segments: Vec<Element<'a, Message>> = brain.model.accounts.iter().filter_map(|account| usage_segment(brain, &account.id, now)).collect();
+    if segments.is_empty() {
+        return None;
+    }
     let mut line = row![].spacing(14).align_y(iced::Center);
-    for (count, color, label) in counts.into_iter().filter(|(count, ..)| *count > 0) {
-        line = line.push(row![style::dot(color, 7.0), text(format!("{count} {label}")).size(11.5).color(TEXT_MUTED).font(UI)].spacing(6).align_y(iced::Center));
-    }
-    if let Some((message, _)) = &brain.status {
-        line = line.push(text(clip(message, 110)).size(11.5).color(TEXT_STRONG).font(style::semibold()).wrapping(text::Wrapping::None));
-    }
-    line = line.push(Space::new().width(Fill));
-    // Not at 100 %: the size says so, and a click brings it back.
-    if brain.zoom() != 1.0 {
-        let percent = (brain.zoom() * 100.0).round() as u32;
-        line = line.push(style::text_button(format!("{percent} %"), false, Message::Menu(crate::app::MenuCommand::ZoomReset)));
-    }
-    let usage: Vec<Element<'a, Message>> = brain.model.accounts.iter().filter_map(|account| usage_segment(brain, &account.id, now)).collect();
-    for (i, segment) in usage.into_iter().enumerate() {
+    for (i, segment) in segments.into_iter().enumerate() {
         if i > 0 {
             line = line.push(container(Space::new().width(1).height(12)).style(|_| style::fill(LINE_STRONG)));
         }
         line = line.push(segment);
     }
-    container(line)
-        .height(STATUS_LINE_H)
-        .center_y(STATUS_LINE_H)
-        .padding([0, 14])
-        .width(Fill)
-        .clip(true)
-        .style(|_| style::fill(CHROME))
-        .into()
+    Some(container(line).height(STATUS_LINE_H).center_y(STATUS_LINE_H).padding([0, 14]).width(Fill).clip(true).style(|_| style::fill(CHROME)).into())
 }
 
-/// What an account's limits come to now: the status line and the status popup both show it.
+/// What an account's limits come to now: the warning line and the status popup both show it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UsageNow {
     /// Percent of the five-hour and the weekly limit used.
@@ -2491,24 +2462,25 @@ pub fn runs_out_label(at: i64, now_ms: i64) -> String {
     }
 }
 
-/// An account's limits: `main 5 h ▓▓░ 46 % Woche 21 %`, and `voll ~Do 14:00` when it gets tight.
+/// An account's tight limits: `main 5 h ▓▓▓ 84 %  week ▓▓▓ 81 %  voll ~Do 14:00`; amber from
+/// 80 %, red from 90 %. Nothing for an account below the mark.
 fn usage_segment<'a>(brain: &Brain, account: &str, now: i64) -> Option<Element<'a, Message>> {
     let usage = usage_now(brain, account, now)?;
+    let tight = tight_limits(&usage);
+    if tight.is_empty() {
+        return None;
+    }
     let faint = |label: String| text(label).size(11.5).color(TEXT_FAINT).font(UI);
-    let num = |label: String| text(label).size(11.5).color(TEXT).font(UI);
     let mut line = row![text(account.to_string()).size(11.5).color(TEXT_MUTED).font(style::medium())].spacing(6).align_y(iced::Center);
-    if let Some(used) = usage.five_hour {
-        let color = if used >= 90.0 { CALLS } else if used >= 70.0 { TURN } else { WORKING };
+    for (five, used) in tight {
+        let color = if used >= 90.0 { CALLS } else { TURN };
         let bar = stack![
             container(Space::new().width(40).height(4)).style(|_| boxed(RAISED, Color::TRANSPARENT, 2.0)),
-            container(Space::new().width(40.0 * used as f32 / 100.0).height(4)).style(move |_| boxed(color, Color::TRANSPARENT, 2.0)),
+            container(Space::new().width(40.0 * used.clamp(0.0, 100.0) as f32 / 100.0).height(4)).style(move |_| boxed(color, Color::TRANSPARENT, 2.0)),
         ];
-        line = line.push(faint("5 h".into())).push(bar).push(num(format!("{used:.0} %")));
+        let label = if five { "5 h" } else { t("Woche", "week") };
+        line = line.push(faint(label.into())).push(bar).push(text(format!("{used:.0} %")).size(11.5).color(color).font(UI));
     }
-    if let Some(used) = usage.week {
-        line = line.push(faint(t("Woche", "week").into())).push(num(format!("{used:.0} %")));
-    }
-    // Only when it gets tight: amber, red once the five hours are nearly gone.
     if let Some(at) = usage.runs_out {
         let when = runs_out_label(at, now);
         let color = if usage.five_hour.is_some_and(|used| used >= 90.0) { CALLS } else { TURN };
@@ -2586,4 +2558,22 @@ fn keys_sheet(_brain: &Brain) -> Element<'_, Message> {
         .spacing(18)
         .padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 })
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn usage(five_hour: Option<f64>, week: Option<f64>) -> UsageNow {
+        UsageNow { five_hour, week, runs_out: None, has_room: false }
+    }
+
+    #[test]
+    fn the_warning_line_needs_a_limit_at_eighty_percent() {
+        assert!(tight_limits(&usage(Some(79.9), Some(46.0))).is_empty(), "below 80 % there is no line");
+        assert_eq!(tight_limits(&usage(Some(80.0), Some(21.0))), vec![(true, 80.0)]);
+        assert_eq!(tight_limits(&usage(Some(12.0), Some(93.0))), vec![(false, 93.0)], "only the limit that is tight");
+        assert_eq!(tight_limits(&usage(Some(84.0), Some(85.0))).len(), 2);
+        assert!(tight_limits(&usage(None, None)).is_empty());
+    }
 }
