@@ -31,6 +31,9 @@ pub struct SessionFile {
     pub touches: Vec<Touch>,
     /// When it was last touched (Unix ms); 0 when the transcript has no time.
     pub last_ms: i64,
+    /// What Claude said, in one sentence, right before it last wrote or edited the file; `None`
+    /// when it said nothing there.
+    pub said: Option<String>,
 }
 
 impl SessionFile {
@@ -52,6 +55,8 @@ pub fn session_files(transcript: &Path) -> Vec<SessionFile> {
         return Vec::new();
     };
     let mut files: HashMap<String, SessionFile> = HashMap::new();
+    // The last thing Claude said that no tool call or prompt has moved past yet.
+    let mut said: Option<String> = None;
     for line in BufReader::new(file).lines().map_while(Result::ok) {
         let Ok(entry) = serde_json::from_str::<Value>(&line) else { continue };
         let ms = entry
@@ -59,11 +64,14 @@ pub fn session_files(transcript: &Path) -> Vec<SessionFile> {
             .and_then(Value::as_str)
             .and_then(|t| t.parse::<chrono::DateTime<chrono::Utc>>().ok())
             .map_or(0, |t| t.timestamp_millis());
-        for (path, touch) in touches_of(&entry) {
-            let file = files.entry(path.clone()).or_insert_with(|| SessionFile { path, touches: Vec::new(), last_ms: 0 });
+        for (path, touch, said_before) in touches_of(&entry, &mut said) {
+            let file = files.entry(path.clone()).or_insert_with(|| SessionFile { path, touches: Vec::new(), last_ms: 0, said: None });
             if !file.touches.contains(&touch) {
                 file.touches.push(touch);
                 file.touches.sort();
+            }
+            if matches!(touch, Touch::Written | Touch::Edited) {
+                file.said = said_before;
             }
             file.last_ms = file.last_ms.max(ms);
         }
@@ -73,12 +81,14 @@ pub fn session_files(transcript: &Path) -> Vec<SessionFile> {
     out
 }
 
-fn touches_of(entry: &Value) -> Vec<(String, Touch)> {
+/// The touches in one transcript entry, each with what Claude had said right before it (`said`
+/// follows the transcript from entry to entry).
+fn touches_of(entry: &Value, said: &mut Option<String>) -> Vec<(String, Touch, Option<String>)> {
     let mut out = Vec::new();
     if let Some(attachment) = entry.get("attachment") {
         if attachment.get("type").and_then(Value::as_str) == Some("file") {
             if let Some(path) = attachment.get("filename").and_then(Value::as_str) {
-                out.push((path.to_string(), Touch::Attached));
+                out.push((path.to_string(), Touch::Attached, None));
             }
         }
         return out;
@@ -88,6 +98,13 @@ fn touches_of(entry: &Value) -> Vec<(String, Touch)> {
     match kind {
         "assistant" => {
             for block in content.as_array().into_iter().flatten() {
+                if block.get("type").and_then(Value::as_str) == Some("text") {
+                    let sentence = block.get("text").and_then(Value::as_str).and_then(one_sentence);
+                    if sentence.is_some() {
+                        *said = sentence;
+                    }
+                    continue;
+                }
                 if block.get("type").and_then(Value::as_str) != Some("tool_use") {
                     continue;
                 }
@@ -100,7 +117,15 @@ fn touches_of(entry: &Value) -> Vec<(String, Touch)> {
                     "Read" => field("file_path").map(|p| (p, Touch::Read)),
                     _ => None,
                 };
-                out.extend(touch);
+                match touch {
+                    Some((path, touch)) if matches!(touch, Touch::Written | Touch::Edited) => out.push((path, touch, said.clone())),
+                    Some((path, touch)) => {
+                        // A look at another file: what was said before it was about that.
+                        *said = None;
+                        out.push((path, touch, None));
+                    }
+                    None => *said = None,
+                }
             }
         }
         "user" if !entry.get("isMeta").and_then(Value::as_bool).unwrap_or(false) => {
@@ -114,13 +139,51 @@ fn touches_of(entry: &Value) -> Vec<(String, Touch)> {
                     .collect(),
                 _ => Vec::new(),
             };
+            if !texts.is_empty() {
+                *said = None;
+            }
             for text in texts {
-                out.extend(prompt_paths(text).into_iter().map(|p| (p, Touch::Shared)));
+                out.extend(prompt_paths(text).into_iter().map(|p| (p, Touch::Shared, None)));
             }
         }
         _ => {}
     }
     out
+}
+
+/// The first sentence of what Claude said, as plain text: no code blocks, no Markdown marks.
+/// `None` when nothing readable is left.
+pub(crate) fn one_sentence(text: &str) -> Option<String> {
+    let mut in_code = false;
+    let mut prose = Vec::new();
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            in_code = !in_code;
+        } else if !in_code {
+            prose.push(line.trim().trim_start_matches(|c: char| matches!(c, '#' | '>' | '-' | '*' | ' ')));
+        }
+    }
+    let plain: String = prose.join(" ").replace(['*', '`'], "");
+    // `[label](url)` reads as its label.
+    let mut flat = String::new();
+    let mut rest = plain.as_str();
+    while let Some(open) = rest.find('[') {
+        let Some((label, after)) = rest[open + 1..].split_once("](").and_then(|(label, tail)| tail.split_once(')').map(|(_, after)| (label, after))) else { break };
+        flat.push_str(&rest[..open]);
+        flat.push_str(label);
+        rest = after;
+    }
+    flat.push_str(rest);
+    let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+    let end = flat
+        .char_indices()
+        .find(|&(i, c)| matches!(c, '.' | '!' | '?') && flat[i + c.len_utf8()..].starts_with(' '))
+        .map_or(flat.len(), |(i, c)| i + c.len_utf8());
+    let mut sentence = flat[..end].trim().trim_end_matches(':').trim().to_string();
+    if sentence.chars().count() > 200 {
+        sentence = sentence.chars().take(199).collect::<String>() + "…";
+    }
+    (sentence.chars().filter(|c| c.is_alphanumeric()).count() >= 3).then_some(sentence)
 }
 
 /// Absolute or `~/` paths in a prompt that name existing files: what a drop or a paste puts

@@ -325,14 +325,34 @@ pub fn build() -> Demo {
 fn rate_limit_changes(now_ms: i64) -> (Vec<brain_core::changes::SessionChange>, HashMap<String, String>) {
     let root = "~/Projects/api-gateway";
     let files = [
-        ("src/config.rs", 7, CONFIG_DIFF.to_string()),
-        ("tests/rate_limit.rs", 11, new_file("tests/rate_limit.rs", TEST_BODY)),
-        ("src/middleware/rate_limit.rs", 19, new_file("src/middleware/rate_limit.rs", LIMITER_BODY)),
-        ("src/middleware/mod.rs", 24, MOD_DIFF.to_string()),
+        (
+            "src/config.rs",
+            7,
+            "Neuer Abschnitt „rate_limit“ in der Konfiguration: wie viele Anfragen pro Sekunde, wie viele auf Vorrat und ob das Limit global oder pro Mandant gilt.",
+            CONFIG_DIFF.to_string(),
+        ),
+        (
+            "tests/rate_limit.rs",
+            11,
+            "Zwei Tests für den Limiter: Ein voller Eimer lässt drei Anfragen durch und lehnt die vierte ab, nach 30 ms kommt wieder eine durch.",
+            new_file("tests/rate_limit.rs", TEST_BODY),
+        ),
+        (
+            "src/middleware/rate_limit.rs",
+            19,
+            "Der Limiter selbst, ein Token-Bucket: Jede Anfrage kostet eine Marke, der Eimer füllt sich mit der Zeit wieder.",
+            new_file("src/middleware/rate_limit.rs", LIMITER_BODY),
+        ),
+        (
+            "src/middleware/mod.rs",
+            24,
+            "Meldet das neue Modul „rate_limit“ an und macht den Limiter für den Rest des Gateways sichtbar.",
+            MOD_DIFF.to_string(),
+        ),
     ];
     let mut changes = Vec::new();
     let mut diffs = HashMap::new();
-    for (relative, minutes, diff) in files {
+    for (relative, minutes, said, diff) in files {
         let count = |sign: char, header: &str| diff.lines().filter(|l| l.starts_with(sign) && !l.starts_with(header)).count() as u64;
         let path = format!("{root}/{relative}");
         changes.push(brain_core::changes::SessionChange {
@@ -341,6 +361,7 @@ fn rate_limit_changes(now_ms: i64) -> (Vec<brain_core::changes::SessionChange>, 
             last_ms: now_ms - minutes * 60_000,
             added: Some(count('+', "+++")),
             removed: Some(count('-', "---")),
+            said: Some(said.to_string()),
             root: PathBuf::from(root),
             git: None,
         });

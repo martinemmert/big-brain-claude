@@ -149,6 +149,8 @@ pub struct SessionChange {
     pub last_ms: i64,
     pub added: Option<u64>,
     pub removed: Option<u64>,
+    /// What Claude said in one sentence right before it last wrote or edited the file.
+    pub said: Option<String>,
     /// The repository the file is in (the folder to run git in).
     pub root: PathBuf,
     /// Its entry in git's status; `None` when it equals HEAD (or isn't in a repository).
@@ -192,7 +194,7 @@ pub fn session_changes(transcript: &Path, cwd: &Path) -> Vec<SessionChange> {
                 .map(|p| p.display().to_string())
                 .or(relative_to_root)
                 .unwrap_or_else(|| path.display().to_string());
-            SessionChange { path: path.display().to_string(), relative, last_ms: file.last_ms, added, removed, root: git_root.to_path_buf(), git: entry }
+            SessionChange { path: path.display().to_string(), relative, last_ms: file.last_ms, added, removed, said: file.said, root: git_root.to_path_buf(), git: entry }
         })
         .collect()
 }
@@ -368,6 +370,75 @@ mod tests {
         assert!(session_diff(&changes[0]).unwrap().contains("+a"));
         assert!(session_diff(&changes[1]).is_none());
         assert!(session_diff(&changes[2]).unwrap().contains("-two"));
+    }
+
+    fn said(text: &str, ts: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"{ts}","message":{{"role":"assistant","content":[{{"type":"text","text":{}}}]}}}}"#,
+            serde_json::to_string(text).unwrap()
+        )
+    }
+
+    #[test]
+    fn each_file_gets_the_sentence_claude_said_right_before_writing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+            std::fs::write(root.join(name), "x\n").unwrap();
+        }
+        let transcript = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            transcript.path(),
+            [
+                said("Ich baue **zuerst** den `Limiter`. Danach kommen die Tests.", "2026-10-09T10:00:00Z"),
+                tool("Write", &root.join("a.txt"), "2026-10-09T10:00:01Z"),
+                // A sentence, then a file only looked at: that sentence was about the look.
+                said("Jetzt die Konfiguration.", "2026-10-09T10:01:00Z"),
+                tool("Read", &root.join("d.txt"), "2026-10-09T10:01:01Z"),
+                tool("Edit", &root.join("b.txt"), "2026-10-09T10:01:02Z"),
+                // Said once, two files written after it.
+                said("Beide Dateien bekommen denselben Kopf.", "2026-10-09T10:02:00Z"),
+                tool("Edit", &root.join("c.txt"), "2026-10-09T10:02:01Z"),
+                tool("Edit", &root.join("a.txt"), "2026-10-09T10:02:02Z"),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let changes = session_changes(transcript.path(), &root);
+
+        let said_of = |name: &str| changes.iter().find(|c| c.relative == name).unwrap().said.as_deref();
+        // a: its last write counts; b: the Read in between ended what was said.
+        assert_eq!(said_of("a.txt"), Some("Beide Dateien bekommen denselben Kopf."));
+        assert_eq!(said_of("b.txt"), None);
+        assert_eq!(said_of("c.txt"), Some("Beide Dateien bekommen denselben Kopf."));
+    }
+
+    #[test]
+    fn what_was_said_is_one_plain_sentence() {
+        use crate::files::one_sentence;
+        assert_eq!(
+            one_sentence("Ich habe **fett** und `Code` und [einen Link](https://x.de) gebaut. Zweiter Satz.").as_deref(),
+            Some("Ich habe fett und Code und einen Link gebaut.")
+        );
+        assert_eq!(one_sentence("```rust\nlet x = 1;\n```\nDanach läuft es:").as_deref(), Some("Danach läuft es"));
+        assert_eq!(one_sentence("```\ncode only\n```"), None);
+    }
+
+    #[test]
+    fn a_prompt_ends_what_was_said_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("a.txt"), "x\n").unwrap();
+        let prompt = r#"{"type":"user","timestamp":"2026-10-09T10:00:30Z","message":{"role":"user","content":"Mach weiter"}}"#.to_string();
+        let transcript = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            transcript.path(),
+            [said("Alter Satz.", "2026-10-09T10:00:00Z"), prompt, tool("Edit", &root.join("a.txt"), "2026-10-09T10:01:00Z")].join("\n"),
+        )
+        .unwrap();
+
+        assert_eq!(session_changes(transcript.path(), &root)[0].said, None);
     }
 
     #[test]
