@@ -232,7 +232,7 @@ mod tests {
         // The right edge at x = 900 is 300 from the middle: 600 wide, height untouched.
         assert_eq!(dragged_size(iced::Point::new(900.0, 10.0), true, false, window, current), iced::Size::new(600.0, 640.0));
         // Past the window, and across the middle, are held to the bounds.
-        assert_eq!(dragged_size(iced::Point::new(5000.0, 400.0), true, true, window, current), iced::Size::new(1176.0, 776.0));
+        assert_eq!(dragged_size(iced::Point::new(5000.0, 5000.0), true, true, window, current), iced::Size::new(1176.0, 776.0));
         assert_eq!(dragged_size(iced::Point::new(610.0, 395.0), true, true, window, current), SHEET_MIN);
     }
 
