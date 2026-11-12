@@ -49,14 +49,6 @@ impl Project<'_> {
     pub fn unseen(&self) -> usize {
         self.rows.iter().filter(|r| matches!(r.mark, Mark::Unseen | Mark::Guess)).count()
     }
-
-    /// The account of its newest live session (else its newest session), for the chip.
-    pub fn account(&self) -> Option<&str> {
-        let newest = |live: bool| {
-            self.rows.iter().filter(|r| (r.mark != Mark::Ended) == live).max_by_key(|r| r.session.last_activity_ms)
-        };
-        newest(true).or_else(|| newest(false)).map(|r| r.session.key.account.as_str())
-    }
 }
 
 /// A folded list at the end of the tree: how many sessions it holds and whether it is open.

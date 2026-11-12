@@ -641,44 +641,34 @@ fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Messa
     let name = project.name.clone();
     let color = if project.hidden { TEXT_FAINT } else { TEXT_STRONG };
     let hovered = brain.hovered_head.as_ref() == Some(&HeadKey::Project(name.clone()));
-    // Arrow, gap, "+", the head's right padding, and room for a word like "ruht" or the account.
-    let room = tree_inner(brain) - (ARROW + 2.0) - 6.0 - PLUS_W - 6.0 - 64.0;
+    let summary = project_summary(project);
+    // Arrow, gap, "+", the head's right padding, and what the summary needs.
+    let summary_w: f32 = summary.iter().map(|(words, _)| words.chars().count() as f32 * 11.5 * 0.56 + 8.0).sum();
+    let room = tree_inner(brain) - (ARROW + 2.0) - 6.0 - PLUS_W - 6.0 - summary_w;
     let mut line = row![
         fold_arrow(project.folded, project.folded || hovered),
         text(clip(&name, fitting(room, 13.0))).size(13).color(color).font(style::semibold()).wrapping(text::Wrapping::None),
         Space::new().width(Fill),
     ]
     .spacing(6)
+    .height(HEAD_LINE_H)
     .align_y(iced::Center);
-    // Folded: what is hidden inside still shows as a count in its colour.
-    if project.folded {
-        let (asking, unseen) = (project.asking(), project.unseen());
-        if asking > 0 {
-            line = line.push(text(format!("● {asking}")).size(11).color(CALLS).font(UI));
-        }
-        if unseen > 0 {
-            line = line.push(text(format!("● {unseen}")).size(11).color(TURN).font(UI));
+    // In words, each in its colour: "1 fragt · 1 fertig · 2 später".
+    let count = summary.len();
+    for (i, (words, tint)) in summary.into_iter().enumerate() {
+        line = line.push(text(words).size(11.5).color(tint).font(UI).wrapping(text::Wrapping::None));
+        if i + 1 < count {
+            line = line.push(text("·").size(11.5).color(TEXT_FAINT).font(UI));
         }
     }
-    let notes = project.notes.len();
-    if project.live == 0 {
-        line = line.push(text(t("ruht", "resting")).size(11).color(TEXT_FAINT).font(UI));
-    }
-    if project.folded && notes > 0 {
-        line = line.push(text(tr!("{notes} später", "{notes} later")).size(11).color(TURN).font(UI));
-    }
-    if project.hidden {
-        line = line.push(text(t("ausgeblendet", "hidden")).size(11).color(TEXT_FAINT).font(UI));
-    }
-    // The account only tells when all accounts show and it isn't the first one.
-    if let Some(account) = project.account().filter(|a| brain.filter.is_none() && brain.model.accounts.first().is_some_and(|first| first.id != *a)) {
-        line = line.push(text(account.to_string()).size(11).color(TEXT_FAINT).font(UI));
-    }
+    // The "+" keeps its room (and the line its height) when it is out of sight, so nothing moves
+    // as the pointer comes and goes.
     line = line.push(if hovered {
         Element::from(
-            button(container(text("+").size(14).font(UI)).center_x(Fill))
+            button(container(text("+").size(14).font(UI)).center(Fill))
                 .padding(0)
                 .width(PLUS_W)
+                .height(HEAD_LINE_H)
                 .on_press(Message::NewSessionIn(name.clone()))
                 .style(|_, status| button::Style {
                     text_color: if matches!(status, button::Status::Hovered | button::Status::Pressed) { TEXT_STRONG } else { TEXT_MUTED },
@@ -687,13 +677,46 @@ fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Messa
                 }),
         )
     } else {
-        Element::from(Space::new().width(PLUS_W).height(1))
+        Element::from(Space::new().width(PLUS_W).height(HEAD_LINE_H))
     });
     let head = mouse_area(head_cell(line))
         .on_press(Message::ToggleProjectFolded(name.clone()))
         .on_right_press(Message::ProjectMenu(name.clone()))
         .interaction(iced::mouse::Interaction::Pointer);
     head_hover(head.into(), HeadKey::Project(name))
+}
+
+/// The height of a head's line: fixed, so the "+" and the arrow coming and going move nothing.
+const HEAD_LINE_H: f32 = 20.0;
+
+/// What a project's head says at its right, in words: folded, what is inside ("1 fragt",
+/// "1 fertig", "2 später", or only how many sessions run); open, only that it rests or is hidden
+/// (its sessions say the rest themselves).
+fn project_summary(project: &Project<'_>) -> Vec<(String, Color)> {
+    let mut parts = Vec::new();
+    if project.hidden {
+        parts.push((t("ausgeblendet", "hidden").to_string(), TEXT_FAINT));
+    }
+    if project.folded {
+        let (asking, unseen, notes) = (project.asking(), project.unseen(), project.notes.len());
+        if asking > 0 {
+            parts.push((tr!("{asking} fragt", "{asking} asking"), CALLS_SOFT));
+        }
+        if unseen > 0 {
+            parts.push((tr!("{unseen} fertig", "{unseen} done"), TURN));
+        }
+        if asking == 0 && unseen == 0 && project.live > 0 {
+            let live = project.live;
+            parts.push((if live == 1 { t("1 Session", "1 session").to_string() } else { tr!("{live} Sessions", "{live} sessions") }, TEXT_FAINT));
+        }
+        if notes > 0 {
+            parts.push((tr!("{notes} später", "{notes} later"), TEXT_MUTED));
+        }
+    }
+    if project.live == 0 {
+        parts.push((t("ruht", "resting").to_string(), TEXT_FAINT));
+    }
+    parts
 }
 
 /// A session under its project: state dot, name, the time since its state changed. A line below
