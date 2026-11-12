@@ -60,7 +60,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
             .on_move(move |p| Message::Pointer(iced::Point::new(p.x, p.y + titlebar_height + 1.0)));
         row![left, grip, detail]
     };
-    let window = container(column![titlebar(brain), divider(), body.height(Fill), divider(), status_line_bar(brain, &groups, now)])
+    let window = container(column![titlebar(brain, groups.deciding() > 0), divider(), body.height(Fill), divider(), status_line_bar(brain, &groups, now)])
         .width(Fill)
         .height(Fill)
         .style(|_| container::Style { background: Some(Background::Color(INK)), text_color: Some(TEXT), ..container::Style::default() });
@@ -354,10 +354,9 @@ fn divider<'a>() -> Element<'a, Message> {
 
 // ---- title bar --------------------------------------------------------------------
 
-fn titlebar(brain: &Brain) -> Element<'_, Message> {
-    // Beside the traffic lights, as in Finder and Mail: folds the sidebar away and back (⌃⌘S).
-    let hidden = brain.prefs.hide_sidebar;
-    let sidebar_toggle = button(style::sidebar_icon(16.0, if hidden { TEXT_MUTED } else { TEXT_FAINT }))
+/// The sidebar button, as in Finder and Mail: folds the sidebar away and back (⌃⌘S).
+fn sidebar_button<'a>(hidden: bool) -> Element<'a, Message> {
+    let toggle = button(style::sidebar_icon(16.0, if hidden { TEXT_MUTED } else { TEXT_FAINT }))
         .padding([3, 5])
         .on_press(Message::Menu(crate::app::MenuCommand::ToggleSidebar))
         .style(|_, status| button::Style {
@@ -368,13 +367,57 @@ fn titlebar(brain: &Brain) -> Element<'_, Message> {
     let tip = container(text(if hidden { t("Seitenleiste zeigen  ⌃⌘S", "Show sidebar  ⌃⌘S") } else { t("Seitenleiste ausblenden  ⌃⌘S", "Hide sidebar  ⌃⌘S") }).size(11.5).color(TEXT).font(UI))
         .padding([4, 8])
         .style(|_| boxed(RAISED, LINE_STRONG, 6.0));
-    let mut bar = row![
-        Space::new().width(TRAFFIC_LIGHTS / brain.zoom()),
-        iced::widget::tooltip(sidebar_toggle, tip, iced::widget::tooltip::Position::Bottom).gap(4),
-        Space::new().width(Fill),
-    ]
-    .spacing(12)
+    iced::widget::tooltip(toggle, tip, iced::widget::tooltip::Position::Bottom).gap(4).into()
+}
+
+/// Brain's mark in miniature: a grid of sessions, one of them calling while one needs you.
+fn brand_mark<'a>(calling: bool) -> Element<'a, Message> {
+    let cell = |color: Color| style::dot::<Message>(color, 4.0);
+    let quiet = LINE_STRONG;
+    container(
+        column![
+            row![cell(quiet), cell(WORKING), cell(if calling { CALLS } else { quiet })].spacing(2),
+            row![cell(WORKING), cell(quiet), cell(quiet)].spacing(2),
+            row![cell(quiet), cell(quiet), cell(WORKING)].spacing(2),
+        ]
+        .spacing(2),
+    )
+    .padding(4)
+    .style(|_| boxed(RAISED, Color::TRANSPARENT, 6.0))
+    .into()
+}
+
+/// The title bar in two parts, like Mail's: over the sidebar Brain's mark and the sidebar button,
+/// then a divider that carries the sidebar's edge up; over the terminal the selected session's
+/// line (project › name, branch, account, context), at the right the account filter. Without the
+/// sidebar a short divider follows the button instead.
+fn titlebar(brain: &Brain, calling: bool) -> Element<'_, Message> {
+    let hidden = brain.prefs.hide_sidebar;
+    let titlebar_height = crate::chrome::TITLEBAR_HEIGHT / brain.zoom();
+    // Right after the traffic lights (the row's spacing comes before the mark).
+    let lights = Space::new().width(TRAFFIC_LIGHTS / brain.zoom() - 12.0);
+    let edge = |height: f32| container(Space::new().width(1).height(height)).style(|_| style::fill(LINE));
+    let mut bar = if hidden {
+        // Without the sidebar: mark and button take what they need, a short line parts them from
+        // the session.
+        row![row![lights, brand_mark(calling), sidebar_button(hidden)].spacing(12).align_y(iced::Center), edge(18.0)]
+    } else {
+        // As wide as the sidebar, the button at its right end; the divider stands where the
+        // sidebar's edge does (the row's spacing is the last 10 points).
+        let width = brain.prefs.sidebar_width.unwrap_or(app::SIDEBAR_DEFAULT);
+        let lead = row![lights, brand_mark(calling), Space::new().width(Fill), sidebar_button(hidden)].spacing(12).align_y(iced::Center);
+        row![container(lead).width(Length::Fixed(width - 10.0)).padding(Padding { right: 2.0, ..Padding::ZERO }), edge(titlebar_height)]
+    }
+    .spacing(10)
     .align_y(iced::Center);
+    // The selected session's line, where the window's title would be.
+    match brain.selected_session() {
+        Some(s) => {
+            let line = container(header_line(brain, s, None)).width(Fill).padding(Padding { left: 4.0, right: 8.0, ..Padding::ZERO }).clip(true);
+            bar = bar.push(iced::widget::tooltip(line, detail_card(brain, s), iced::widget::tooltip::Position::Bottom).gap(6));
+        }
+        None => bar = bar.push(Space::new().width(Fill)),
+    }
     if let Some(update) = &brain.update {
         let version = update.version.clone();
         bar = bar.push(
@@ -399,7 +442,6 @@ fn titlebar(brain: &Brain) -> Element<'_, Message> {
     bar = bar.push(style::segmented_in(accounts, LINE_STRONG, Color::from_rgba8(0xff, 0xff, 0xff, 0.06)));
 
     // The native title bar keeps its size in points when the window is zoomed.
-    let titlebar_height = crate::chrome::TITLEBAR_HEIGHT / brain.zoom();
     mouse_area(container(bar).height(titlebar_height).center_y(titlebar_height).padding(Padding { left: 0.0, right: 14.0, top: 0.0, bottom: 0.0 }).style(|_| style::fill(CHROME)))
         .on_press(Message::DragWindow)
         .on_double_click(Message::ZoomWindow)
@@ -1012,7 +1054,8 @@ fn session_pane(brain: &Brain) -> Element<'_, Message> {
         Some(preview) => stack![content, diff_preview(s, preview)].into(),
         None => content,
     };
-    column![header(brain, s, None), content].spacing(2).padding(Padding { top: 0.0, right: 12.0, bottom: 0.0, left: 12.0 }).height(Fill).into()
+    // Its line stands in the title bar; the terminal gets the whole height.
+    container(content).padding(Padding { top: 8.0, right: 12.0, bottom: 0.0, left: 12.0 }).height(Fill).into()
 }
 
 /// The diff of a changed file, floating over the terminal like Quick Look. It takes no room from
@@ -1086,9 +1129,16 @@ fn diff_preview<'a>(s: &Session, preview: &'a app::Preview) -> Element<'a, Messa
     stack![backdrop, floating].into()
 }
 
-/// One slim line above a terminal: project › session, branch, account, how full the context is,
-/// a sign when it edits the same files as another session. Everything else on hover.
+/// The line above the split's other terminal (the selected session's stands in the title bar).
+/// Everything else on hover.
 fn header<'a>(brain: &'a Brain, s: &'a Session, close: Option<Message>) -> Element<'a, Message> {
+    let bar = container(header_line(brain, s, close)).height(HEADER_H).center_y(HEADER_H).padding([0, 6]).width(Fill).clip(true);
+    iced::widget::tooltip(bar, detail_card(brain, s), iced::widget::tooltip::Position::Bottom).gap(2).into()
+}
+
+/// A session's line: project › name, branch, account, how full the context is, a sign when it
+/// edits the same files as another session.
+fn header_line<'a>(brain: &'a Brain, s: &'a Session, close: Option<Message>) -> Element<'a, Message> {
     let renaming = brain.mode == Mode::Rename && brain.selected.as_ref() == Some(&s.key);
     let name: Element<'a, Message> = if renaming {
         text_input("", &brain.rename)
@@ -1135,8 +1185,7 @@ fn header<'a>(brain: &'a Brain, s: &'a Session, close: Option<Message>) -> Eleme
     if let Some(close) = close {
         line = line.push(button(text("✕").size(12).color(TEXT_MUTED)).padding([2, 6]).on_press(close).style(|_, _| button::Style::default()));
     }
-    let bar = container(line).height(HEADER_H).center_y(HEADER_H).padding([0, 6]).width(Fill).clip(true);
-    iced::widget::tooltip(bar, detail_card(brain, s), iced::widget::tooltip::Position::Bottom).gap(2).into()
+    line.into()
 }
 
 /// The height of the line above a terminal.
