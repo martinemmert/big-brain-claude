@@ -11,6 +11,10 @@ pub const CHROME: Color = color!(0x121728);
 pub const SURFACE: Color = color!(0x161b2c);
 pub const RAISED: Color = color!(0x1d2338);
 pub const HOVER: Color = color!(0x1a2033);
+/// A project's island on the sidebar, the selected session on it, the pointer over a session.
+pub const ISLAND: Color = color!(0x182036);
+pub const ISLAND_SELECTED: Color = color!(0x27304c);
+pub const ISLAND_HOVER: Color = Color::from_rgba8(0xff, 0xff, 0xff, 0.05);
 pub const LINE: Color = color!(0x232a40);
 pub const LINE_STRONG: Color = color!(0x2e3654);
 /// The button that says yes (Allow), in the sidebar and in the popup alike.

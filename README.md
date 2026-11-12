@@ -364,7 +364,7 @@ start and end), and none of the menu's shortcuts uses them.
 | `⌘T` | shell in the session's folder (again: hide) |
 | `⌘D` | keep this terminal beside the next session (again: end) |
 | `⌘⇧A` | all terminals as live previews |
-| `⌃⌘S` / `⌥⌘0` | show / hide the sidebar / the changes under the session |
+| `⌃⌘S` / `⌥⌘0` | show / hide the sidebar / the list of files the session changed (also the button right of the session line in the title bar) |
 | `⌘+` `⌘-` `⌘0` | larger / smaller / actual size of the whole window (the level is remembered) |
 | `⌘`-click | open a path (Markdown in YAMV, else the reader) or URL from the terminal output |
 | `⌘K` | command palette: everything, also what has no key (open/fold sections, sync accounts …) |

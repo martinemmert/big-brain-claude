@@ -212,18 +212,21 @@ impl Brain {
     /// The button in the title bar and a click on the status item: the popup opens or closes.
     pub(super) fn toggle_status_popup(&mut self) -> Task<Message> {
         self.status_open = !self.status_open;
+        self.changes_open = false;
         self.keys_leave_terminal()
     }
 
     /// A click on the menu bar's item: Brain comes forward with the popup open.
     pub(super) fn open_status_popup_in_front(&mut self) -> Task<Message> {
         self.status_open = true;
+        self.changes_open = false;
         Task::batch([self.bring_forward(), self.keys_leave_terminal()])
     }
 
-    /// An open popup has the keyboard: the terminal gives it up, so typing doesn't reach Claude.
-    fn keys_leave_terminal(&mut self) -> Task<Message> {
-        if !self.status_open {
+    /// An open popup (or the list of changes) has the keyboard: the terminal gives it up, so typing
+    /// doesn't reach Claude.
+    pub(super) fn keys_leave_terminal(&mut self) -> Task<Message> {
+        if !self.status_open && !self.changes_open {
             return Task::none();
         }
         self.focused_terminal = None;

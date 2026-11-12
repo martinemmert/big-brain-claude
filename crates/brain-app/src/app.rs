@@ -282,9 +282,10 @@ pub enum Message {
     HistoryLoaded(SessionKey, u64, Vec<brain_core::transcript::Message>),
     /// The files the session changed, read in the background for a transcript of this size.
     ChangesLoaded(SessionKey, u64, Vec<brain_core::changes::SessionChange>),
-    /// Show or leave out the changed files under the selected session.
+    /// Open or close the list of files the selected session changed, under the title bar.
     ToggleChanges,
-    /// A changed file clicked in the tree: its diff floats over the terminal (again: closes).
+    CloseChanges,
+    /// A changed file clicked in that list: its diff floats over the terminal (again: closes).
     OpenPreview(String),
     /// The file's diff against HEAD, read in the background.
     PreviewLoaded(SessionKey, String, Option<String>),
@@ -597,6 +598,8 @@ pub struct Brain {
     menubar: Option<MenuBar>,
     /// The status popup floats over the window's top right.
     pub status_open: bool,
+    /// The list of changed files hangs under the title bar. Only one of the two popovers is open.
+    pub changes_open: bool,
     /// The menu bar of the app, and what its items stand for.
     appmenu: Option<crate::appmenu::AppMenu>,
     menu_commands: HashMap<String, Message>,
@@ -800,6 +803,7 @@ impl Brain {
             notifier: Notifier::new(),
             menubar: MenuBar::new(),
             status_open: false,
+            changes_open: false,
             appmenu: crate::appmenu::AppMenu::new(),
             menu_commands: HashMap::new(),
             resume_search: false,
@@ -1109,6 +1113,10 @@ impl Brain {
                 self.status_open = false;
                 Task::none()
             }
+            Message::CloseChanges => {
+                self.changes_open = false;
+                Task::none()
+            }
             Message::PopupClicked => Task::none(),
             Message::PopupSee(key) => self.show_session_from_popup(key),
             Message::PopupAnswer(key, allow, since_ms) => self.answer_from_popup(key, allow, since_ms),
@@ -1194,11 +1202,7 @@ impl Brain {
                 self.changes_loading = false;
                 Task::none()
             }
-            Message::ToggleChanges => {
-                self.prefs.hide_changes = !self.prefs.hide_changes;
-                self.prefs.save();
-                Task::none()
-            }
+            Message::ToggleChanges => self.toggle_changes_popover(),
             Message::OpenPreview(path) => self.open_preview(&path),
             Message::PreviewLoaded(key, path, diff) => {
                 if let Some(preview) = self.preview.as_mut().filter(|p| p.key == key && p.change.path == path) {
@@ -1683,6 +1687,9 @@ impl Brain {
         if self.preview.as_ref().is_some_and(|p| self.selected.as_ref() != Some(&p.key)) {
             self.preview = None;
         }
+        if self.changes_open && self.selected_changes().is_none() {
+            self.changes_open = false;
+        }
         self.sync_conversation();
         let attach = self.sync_terminal();
         self.sync_shown_terminal();
@@ -1786,7 +1793,7 @@ impl Brain {
     /// Reads the files the selected session changed when it is selected and when its transcript
     /// grew (at most every few seconds: the reading runs git).
     fn load_changes(&mut self) -> Task<Message> {
-        if self.prefs.hide_changes || self.changes_loading {
+        if self.changes_loading {
             return Task::none();
         }
         let Some(key) = self.selected.clone() else { return Task::none() };
@@ -1814,6 +1821,7 @@ impl Brain {
     /// Opens the card for a file of the selected session's changes, or closes it when that file's
     /// card is open already. The terminal gives up the keyboard: esc and the rest are the card's.
     fn open_preview(&mut self, path: &str) -> Task<Message> {
+        self.changes_open = false;
         if self.preview.as_ref().is_some_and(|p| p.change.path == path) {
             self.preview = None;
             return Task::none();
@@ -1842,12 +1850,25 @@ impl Brain {
         Task::batch([unfocus(), task])
     }
 
-    /// The selected session and the files it changed, once they are read: they stand under its
-    /// row in the tree.
-    pub fn tree_changes(&self) -> Option<(&SessionKey, &[brain_core::changes::SessionChange])> {
+    /// The files the selected session changed, once they are read; none when it changed nothing.
+    pub fn selected_changes(&self) -> Option<&[brain_core::changes::SessionChange]> {
         let key = self.selected.as_ref()?;
-        let cache = self.changes.as_ref().filter(|c| c.key == *key && !self.prefs.hide_changes)?;
-        Some((key, cache.files.as_slice()))
+        self.changes.as_ref().filter(|c| c.key == *key && !c.files.is_empty()).map(|c| c.files.as_slice())
+    }
+
+    /// The title bar's button for the changes: opens their list, or closes it. The list and the
+    /// status popup are never open together; the open one has the keyboard.
+    fn toggle_changes_popover(&mut self) -> Task<Message> {
+        if self.changes_open {
+            self.changes_open = false;
+            return Task::none();
+        }
+        if self.selected_changes().is_none() {
+            return Task::none();
+        }
+        self.changes_open = true;
+        self.status_open = false;
+        self.keys_leave_terminal()
     }
 
     /// Writes the selected session's conversation to `~/.claude-brain/exports/` as Markdown.
@@ -2034,7 +2055,7 @@ impl Brain {
         all.push((t("Alle Tasten", "All keys").to_string(), "⌘?", PaletteCommand::Keys));
         all.push((t("Gärtner: kaputte Sessions finden und beenden", "Gardener: find and end broken sessions").to_string(), "", PaletteCommand::Garden));
         all.push((t("Log öffnen (Meldungen und Fehler)", "Open the log (messages and errors)").to_string(), "", PaletteCommand::OpenLog));
-        all.push((t("Änderungen unter der Session zeigen / verbergen", "Show / hide the changes under the session").to_string(), "", PaletteCommand::ToggleChanges));
+        all.push((t("Änderungen der Session zeigen", "Show the session's changes").to_string(), "", PaletteCommand::ToggleChanges));
         all.push((t("Ruhige Hintergrund-Sessions auf- / zuklappen", "Open / fold quiet background sessions").to_string(), "", PaletteCommand::ToggleBackground));
         all.push((t("Automatisch gestartete Sessions (Reviews, Skripte) auf- / zuklappen", "Open / fold sessions started by programs (reviews, scripts)").to_string(), "", PaletteCommand::ToggleAutomated));
 
@@ -2756,23 +2777,31 @@ impl Brain {
         let tree = self.tree(&groups);
         let first = tree.navigable().first().map(|s| s.key.clone());
         let mut top = tree::TOP;
-        for node in tree.nodes(self.searching(), self.tree_changes()) {
-            let height = node.height();
-            if matches!(&node, tree::Node::Session(row) if row.session.key == key) {
-                let bottom = top + height;
-                let target = match self.list_viewport {
-                    _ if first.as_ref() == Some(&key) => Some(0.0),
-                    Some((offset, _)) if top < offset => Some(top - 8.0),
-                    Some((offset, viewport)) if bottom > offset + viewport => Some(bottom - viewport + 8.0),
-                    Some(_) => None,
-                    None => Some(top - 8.0),
-                };
-                return match target {
-                    Some(y) => operation::scroll_to(LIST, scrollable::AbsoluteOffset { x: 0.0, y: y.max(0.0) }),
-                    None => Task::none(),
-                };
+        for block in tree::blocks(tree.nodes(self.searching())) {
+            let (lines, pad) = match block {
+                tree::Block::Island(lines) => (lines, tree::ISLAND_PAD_Y),
+                tree::Block::Alone(node) => (vec![node], 0.0),
+            };
+            top += pad;
+            for node in &lines {
+                let height = node.height();
+                if matches!(node, tree::Node::Session(row) if row.session.key == key) {
+                    let bottom = top + height;
+                    let target = match self.list_viewport {
+                        _ if first.as_ref() == Some(&key) => Some(0.0),
+                        Some((offset, _)) if top < offset => Some(top - 8.0),
+                        Some((offset, viewport)) if bottom > offset + viewport => Some(bottom - viewport + 8.0),
+                        Some(_) => None,
+                        None => Some(top - 8.0),
+                    };
+                    return match target {
+                        Some(y) => operation::scroll_to(LIST, scrollable::AbsoluteOffset { x: 0.0, y: y.max(0.0) }),
+                        None => Task::none(),
+                    };
+                }
+                top += height + tree::GAP;
             }
-            top += height + tree::GAP;
+            top += pad - tree::GAP + tree::BLOCK_GAP;
         }
         Task::none()
     }
@@ -2858,6 +2887,11 @@ impl Brain {
         // The status popup has the keyboard while it is open: esc closes it and goes no further.
         if named == Some(Named::Escape) && self.status_open {
             self.status_open = false;
+            return Task::none();
+        }
+        // The same for the list of changed files.
+        if named == Some(Named::Escape) && self.changes_open {
+            self.changes_open = false;
             return Task::none();
         }
         // The diff card has the keyboard while it is open: esc closes it and goes no further.

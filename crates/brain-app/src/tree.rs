@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 
-use brain_core::changes::SessionChange;
 use brain_core::later;
 use brain_core::state::{Ask, Phase, Session, SessionKey};
 
@@ -193,8 +192,9 @@ pub enum HeadKey {
     Others,
 }
 
-/// A project's head, with room above its name that sets the projects apart.
-pub const PROJECT_H: f32 = 42.0;
+/// A project's head (and "Weitere"): the name's line with a little air; the room between
+/// projects lies between their islands.
+pub const PROJECT_H: f32 = 34.0;
 pub const ROW_H: f32 = 30.0;
 /// The line under a session that asks or has finished unseen.
 pub const STATUS_H: f32 = 20.0;
@@ -205,6 +205,12 @@ pub const FOOTER_H: f32 = 30.0;
 pub const HINT_H: f32 = 34.0;
 pub const GAP: f32 = 2.0;
 pub const TOP: f32 = 0.0;
+/// The air inside an island, above its first and below its last line.
+pub const ISLAND_PAD_Y: f32 = 6.0;
+/// The air inside an island at both sides.
+pub const ISLAND_PAD_X: f32 = 4.0;
+/// The room between two blocks of the tree (islands, the footer, the new-project line).
+pub const BLOCK_GAP: f32 = 8.0;
 
 /// One line of the tree in drawing order, so the list's height is known (to keep the selected
 /// session in view).
@@ -217,13 +223,9 @@ pub enum Node<'t, 'a> {
     /// "Für später · n" under a project (`None`: among the others).
     NotesHead { project: Option<&'t str>, count: usize, open: bool },
     Note { note: &'t later::Item },
-    OthersHead { count: usize, open: bool },
+    OthersHead { count: usize },
     Footer,
     NewProject,
-    /// "Änderungen · n · +a −b" under the selected session.
-    ChangesHead { count: usize, added: u64, removed: u64 },
-    /// One file the selected session changed.
-    Change(&'t SessionChange),
 }
 
 impl Node<'_, '_> {
@@ -232,7 +234,7 @@ impl Node<'_, '_> {
             Node::Hint(_) => HINT_H,
             Node::Project(_) => PROJECT_H,
             Node::Session(row) => row_height(row.mark),
-            Node::NotesHead { .. } | Node::Note { .. } | Node::ChangesHead { .. } | Node::Change(_) => NOTE_H,
+            Node::NotesHead { .. } | Node::Note { .. } => NOTE_H,
             Node::OthersHead { .. } => PROJECT_H,
             Node::Footer => FOOTER_H,
             Node::NewProject => PROJECT_H,
@@ -251,9 +253,8 @@ pub fn row_height(mark: Mark) -> f32 {
 }
 
 impl<'a> Tree<'a> {
-    /// The tree line by line. `searching` with nothing found says so. `changes`: the selected
-    /// session and the files it changed, which stand under its row.
-    pub fn nodes<'t>(&'t self, searching: bool, changes: Option<(&SessionKey, &'t [SessionChange])>) -> Vec<Node<'t, 'a>> {
+    /// The tree line by line. `searching` with nothing found says so.
+    pub fn nodes<'t>(&'t self, searching: bool) -> Vec<Node<'t, 'a>> {
         let mut nodes = Vec::new();
         let nothing = self.sessions().is_empty() && self.projects.iter().all(|p| p.notes.is_empty()) && self.other_notes.is_empty();
         if nothing && (searching || self.projects.is_empty()) {
@@ -264,9 +265,7 @@ impl<'a> Tree<'a> {
             if project.folded {
                 continue;
             }
-            for row in &project.rows {
-                push_session(&mut nodes, row, changes);
-            }
+            nodes.extend(project.rows.iter().map(Node::Session));
             if !project.notes.is_empty() {
                 nodes.push(Node::NotesHead { project: Some(&project.name), count: project.notes.len(), open: project.notes_open });
                 if project.notes_open {
@@ -276,11 +275,9 @@ impl<'a> Tree<'a> {
         }
         let others = self.others.len() + self.other_notes.len();
         if others > 0 {
-            nodes.push(Node::OthersHead { count: self.others.len(), open: self.others_open });
+            nodes.push(Node::OthersHead { count: self.others.len() });
             if self.others_open {
-                for row in &self.others {
-                    push_session(&mut nodes, row, changes);
-                }
+                nodes.extend(self.others.iter().map(Node::Session));
                 if !self.other_notes.is_empty() {
                     nodes.push(Node::NotesHead { project: None, count: self.other_notes.len(), open: true });
                     nodes.extend(self.other_notes.iter().map(|note| Node::Note { note }));
@@ -299,13 +296,42 @@ impl<'a> Tree<'a> {
     }
 }
 
-/// A session's row, and under it the files it changed when it is the one `changes` is about.
-fn push_session<'t, 'a>(nodes: &mut Vec<Node<'t, 'a>>, row: &'t Row<'a>, changes: Option<(&SessionKey, &'t [SessionChange])>) {
-    nodes.push(Node::Session(row));
-    let Some((_, files)) = changes.filter(|(key, files)| **key == row.session.key && !files.is_empty()) else { return };
-    let sum = |value: fn(&SessionChange) -> Option<u64>| files.iter().filter_map(value).sum::<u64>();
-    nodes.push(Node::ChangesHead { count: files.len(), added: sum(|c| c.added), removed: sum(|c| c.removed) });
-    nodes.extend(files.iter().map(Node::Change));
+/// Where a line of the tree stands: inside a project's (or "Weitere"'s) island, which a head
+/// opens, or on its own between the islands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Place {
+    Opens,
+    Inside,
+    Alone,
+}
+
+impl Node<'_, '_> {
+    fn place(&self) -> Place {
+        match self {
+            Node::Project(_) | Node::OthersHead { .. } => Place::Opens,
+            Node::Session(_) | Node::NotesHead { .. } | Node::Note { .. } => Place::Inside,
+            Node::Hint(_) | Node::Footer | Node::NewProject => Place::Alone,
+        }
+    }
+}
+
+/// A part of the tree as it is drawn: the lines of one island, or a line without one.
+pub enum Block<'t, 'a> {
+    Island(Vec<Node<'t, 'a>>),
+    Alone(Node<'t, 'a>),
+}
+
+/// The lines grouped into islands: a head opens one, the lines after it belong to it.
+pub fn blocks<'t, 'a>(nodes: Vec<Node<'t, 'a>>) -> Vec<Block<'t, 'a>> {
+    let mut blocks: Vec<Block<'t, 'a>> = Vec::new();
+    for node in nodes {
+        match (node.place(), blocks.last_mut()) {
+            (Place::Inside, Some(Block::Island(lines))) => lines.push(node),
+            (Place::Alone, _) => blocks.push(Block::Alone(node)),
+            _ => blocks.push(Block::Island(vec![node])),
+        }
+    }
+    blocks
 }
 
 /// A session's place among its project's: running ones in the order they were started, then the
@@ -474,35 +500,18 @@ mod tests {
     }
 
     #[test]
-    fn the_changed_files_stand_under_the_selected_session_only() {
-        let (first, second) = (session("first", "/w/api", 1, false), session("second", "/w/api", 2, false));
-        let change = |relative: &str, added: u64, removed: u64| SessionChange {
-            path: format!("/w/api/{relative}"),
-            relative: relative.into(),
-            last_ms: 0,
-            added: Some(added),
-            removed: Some(removed),
-            root: "/w/api".into(),
-            git: None,
-        };
-        let files = vec![change("src/a.rs", 10, 2), change("b.rs", 5, 0)];
-        let tree = Tree::build(&groups(vec![], vec![], vec![&first, &second], vec![]), &listed(&["api"]), &by_folder, [], &views(), false);
-
-        let nodes = tree.nodes(false, Some((&second.key, &files)));
-
-        let shape: Vec<String> = nodes
+    fn every_project_and_the_others_get_an_island_and_the_rest_stands_between_them() {
+        let (mine, stray) = (session("mine", "/w/api", 1, false), session("stray", "/w/notes", 2, false));
+        let tree = Tree::build(&groups(vec![], vec![], vec![&mine, &stray], vec![]), &listed(&["api", "docs"]), &by_folder, [], &views(), false);
+        let shape: Vec<String> = blocks(tree.nodes(false))
             .iter()
-            .map(|n| match n {
-                Node::Project(_) => "project".to_string(),
-                Node::Session(row) => row.session.key.id.clone(),
-                Node::ChangesHead { count, added, removed } => format!("changes {count} +{added} -{removed}"),
-                Node::Change(c) => c.relative.clone(),
-                _ => "other".to_string(),
+            .map(|b| match b {
+                Block::Island(lines) => format!("island {}", lines.len()),
+                Block::Alone(_) => "alone".to_string(),
             })
             .collect();
-        assert_eq!(shape, ["project", "first", "second", "changes 2 +15 -2", "src/a.rs", "b.rs", "other"]);
-        // No files read yet, or none changed: the tree is as it was.
-        assert_eq!(tree.nodes(false, Some((&second.key, &[]))).len(), tree.nodes(false, None).len());
+        // api with its session, docs bare, "Weitere" with its session, then the new-project line.
+        assert_eq!(shape, ["island 2", "island 1", "island 2", "alone"]);
     }
 
     #[test]

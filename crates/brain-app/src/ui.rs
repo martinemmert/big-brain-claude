@@ -78,7 +78,9 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
     };
     // The status popup hangs under the title bar's right end, over the whole window.
     let popup: Element<'_, Message> = if brain.status_open { status_popup_layer(brain, now) } else { Space::new().into() };
-    stack![window, overlay, popup, toast(brain)].into()
+    // So does the list of changed files; never both at once.
+    let changes: Element<'_, Message> = if brain.changes_open { changes_popover_layer(brain) } else { Space::new().into() };
+    stack![window, overlay, popup, changes, toast(brain)].into()
 }
 
 /// A message of the last command: a small card at the bottom, centred over the main area. It
@@ -434,6 +436,9 @@ fn titlebar(brain: &Brain) -> Element<'_, Message> {
         Some(s) => {
             let line = container(header_line(brain, s, None)).width(Fill).padding(Padding { left: 4.0, right: 8.0, ..Padding::ZERO }).clip(true);
             bar = bar.push(iced::widget::tooltip(line, detail_card(brain, s), iced::widget::tooltip::Position::Bottom).gap(6));
+            if let Some(files) = brain.selected_changes() {
+                bar = bar.push(changes_button(brain, files));
+            }
         }
         None => bar = bar.push(Space::new().width(Fill)),
     }
@@ -522,6 +527,85 @@ fn status_button(brain: &Brain) -> Element<'_, Message> {
     .into()
 }
 
+/// The sums of what a session changed: lines added and removed over all its files.
+fn change_sums(files: &[SessionChange]) -> (u64, u64) {
+    (files.iter().filter_map(|c| c.added).sum(), files.iter().filter_map(|c| c.removed).sum())
+}
+
+/// "4 Dateien +67 −3" right of the session's line, like the changes of a merge request. Opens the
+/// list of the files; pressed while it is open.
+fn changes_button<'a>(brain: &Brain, files: &[SessionChange]) -> Element<'a, Message> {
+    let (added, removed) = change_sums(files);
+    let count = files.len();
+    let label = if count == 1 { t("1 Datei", "1 file").to_string() } else { tr!("{count} Dateien", "{count} files") };
+    let content = row![text(label).size(12).color(TEXT).font(UI), counts(Some(added), Some(removed))].spacing(8).align_y(iced::Center);
+    let open = brain.changes_open;
+    button(style::centered(content))
+        .padding([0, 10])
+        .height(28)
+        .on_press(Message::ToggleChanges)
+        .style(move |_, status| {
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            button::Style {
+                background: Some(Background::Color(if open { LINE_STRONG } else if hovered { RAISED } else { INK })),
+                text_color: TEXT,
+                border: Border { color: LINE, width: 1.0, radius: 8.0.into() },
+                ..button::Style::default()
+            }
+        })
+        .into()
+}
+
+/// The list of changed files under the title bar, newest first, over the whole window: a backdrop
+/// that closes it, the card at the top right (a click on the card itself stays on it). A file
+/// closes the list and opens its diff.
+fn changes_popover_layer(brain: &Brain) -> Element<'_, Message> {
+    let top = crate::chrome::TITLEBAR_HEIGHT / brain.zoom() + 4.0;
+    let Some(files) = brain.selected_changes() else { return Space::new().into() };
+    let (added, removed) = change_sums(files);
+    let count = files.len();
+    let title = if count == 1 { t("1 Datei geändert", "1 file changed").to_string() } else { tr!("{count} Dateien geändert", "{count} files changed") };
+    let head = row![text(title).size(12).color(TEXT_MUTED).font(style::semibold()), Space::new().width(Fill), counts(Some(added), Some(removed))]
+        .spacing(8)
+        .align_y(iced::Center);
+    let mut newest_first: Vec<&SessionChange> = files.iter().collect();
+    newest_first.sort_by_key(|c| std::cmp::Reverse(c.last_ms));
+    let open = brain.preview.as_ref().map(|p| p.change.path.as_str());
+    let rows = newest_first.into_iter().map(|change| {
+        let line = row![
+            text(clip_start(&change.relative, 46)).size(12).color(TEXT).font(MONO).wrapping(text::Wrapping::None),
+            Space::new().width(Fill),
+            counts(change.added, change.removed),
+        ]
+        .spacing(10)
+        .align_y(iced::Center);
+        let line = container(line).height(CHANGE_ROW_H).center_y(CHANGE_ROW_H).padding([0, 8]).style(move |_| {
+            boxed(if open == Some(change.path.as_str()) { alpha(Color::WHITE, 0x10) } else { Color::TRANSPARENT }, Color::TRANSPARENT, 6.0)
+        });
+        row_button(line, Message::OpenPreview(change.path.clone()))
+    });
+    let list = scrollable(column(rows.collect::<Vec<_>>()).width(Fill)).style(scrollbar);
+    let card = container(column![container(head).padding([6, 8]), list].spacing(4))
+        .width(Length::Fixed(460.0))
+        .max_height(CHANGE_ROW_H * 12.0 + 40.0)
+        .padding(6)
+        .clip(true)
+        .style(|_| container::Style {
+            shadow: iced::Shadow { color: Color::from_rgba8(0, 0, 0, 0.6), offset: iced::Vector::new(0.0, 12.0), blur_radius: 34.0 },
+            ..boxed(style::MENU_BG, style::MENU_LINE, 10.0)
+        });
+    let card = mouse_area(card).on_press(Message::PopupClicked);
+    let backdrop = mouse_area(Space::new().width(Fill).height(Fill)).on_press(Message::CloseChanges);
+    stack![
+        backdrop,
+        container(card).width(Fill).height(Fill).align_x(iced::Right).align_y(iced::Top).padding(Padding { top, right: 14.0, ..Padding::ZERO }),
+    ]
+    .into()
+}
+
+/// A file's line in the list of changes.
+const CHANGE_ROW_H: f32 = 28.0;
+
 // ---- list -------------------------------------------------------------------------
 
 fn search(brain: &Brain) -> Element<'_, Message> {
@@ -560,10 +644,8 @@ fn field_style(_: &iced::Theme, status: text_input::Status) -> text_input::Style
 fn tree<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Message> {
     let searching = brain.searching();
     let tree = brain.tree(groups);
-    let items: Vec<Element<'a, Message>> = tree
-        .nodes(searching, brain.tree_changes())
-        .into_iter()
-        .map(|node| match node {
+    let node = |node: Node<'_, 'a>| -> Element<'a, Message> {
+        match node {
             Node::Hint(true) => {
                 let query = brain.search.clone();
                 hint(tr!("Keine Session passt zu „{query}“. Esc leert die Suche.", "No session matches “{query}”. Esc clears the search."))
@@ -573,16 +655,22 @@ fn tree<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Mess
             Node::Session(row) => session_row(brain, row.session, row.mark, now),
             Node::NotesHead { project, count, open } => notes_head(project, count, open),
             Node::Note { note } => note_row(note, tree_inner(brain)),
-            Node::OthersHead { count, open } => others_head(brain, count, open),
+            Node::OthersHead { count } => others_head(count),
             Node::Footer => tree_footer(brain, &tree),
             Node::NewProject => new_project_row(),
-            Node::ChangesHead { count, added, removed } => changes_head(count, added, removed),
-            Node::Change(change) => change_row(change, brain.preview.as_ref().is_some_and(|p| p.change.path == change.path)),
+        }
+    };
+    // Each project (and "Weitere") on an island of its own; the rest stands between them.
+    let items: Vec<Element<'a, Message>> = tree::blocks(tree.nodes(searching))
+        .into_iter()
+        .map(|block| match block {
+            tree::Block::Island(lines) => island(column(lines.into_iter().map(node)).spacing(tree::GAP)),
+            tree::Block::Alone(line) => node(line),
         })
         .collect();
     // A thin scroller inside the tree's right padding: it floats, but never over a row.
     let bar = scrollable::Scrollbar::new().width(5).scroller_width(5).margin(3);
-    scrollable(column(items).spacing(tree::GAP).padding(Padding { top: tree::TOP, right: 12.0, bottom: 16.0, left: 12.0 }))
+    scrollable(column(items).spacing(tree::BLOCK_GAP).padding(Padding { top: tree::TOP, right: 12.0, bottom: 16.0, left: 12.0 }))
         .id(app::LIST)
         .on_scroll(Message::ListScrolled)
         .direction(scrollable::Direction::Vertical(bar))
@@ -591,23 +679,32 @@ fn tree<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Mess
         .into()
 }
 
-/// Where a session's dot stands, from the tree's left edge (12 pt in): under the project's name.
+/// A project's island: a softly tinted, rounded area under its head, sessions and notes. Its left
+/// edge is the search field's.
+fn island<'a>(lines: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(lines)
+        .width(Fill)
+        .padding(Padding { top: tree::ISLAND_PAD_Y, bottom: tree::ISLAND_PAD_Y, left: tree::ISLAND_PAD_X, right: tree::ISLAND_PAD_X })
+        .style(|_| boxed(style::ISLAND, Color::TRANSPARENT, 10.0))
+        .into()
+}
+
+/// Where a session's dot stands, from the island's left edge (12 pt in): under the project's name.
 const NEST: f32 = 20.0;
 /// Where a session's name starts (its dot and the gap after it): its status line and what stands
 /// under it (changes, notes) begin there.
 const NAME: f32 = NEST + 16.0;
-/// One step further in: the files and notes under such a head.
-const LEAF: f32 = NAME + 14.0;
-/// The fold arrow's square; the head leaves two points more before the name.
-const ARROW: f32 = 12.0;
+/// The room a head keeps before its name, where an arrow could stand: the name and the dots of
+/// the sessions below it stand on one line. A click on the head folds it; no arrow says so.
+const HEAD_GUTTER: f32 = 14.0;
 /// The "+" of a project's head.
 const PLUS_W: f32 = 20.0;
 /// Room kept free at the right end of a session's lines, so text ends before the edge.
 const ROW_RIGHT: f32 = 10.0;
 
-/// The width inside the tree: the sidebar less the tree's own padding on both sides.
+/// The width inside an island: the sidebar less the tree's own padding and the island's.
 fn tree_inner(brain: &Brain) -> f32 {
-    brain.prefs.sidebar_width.unwrap_or(app::SIDEBAR_DEFAULT) - 24.0
+    brain.prefs.sidebar_width.unwrap_or(app::SIDEBAR_DEFAULT) - 24.0 - 2.0 * tree::ISLAND_PAD_X
 }
 
 /// How many characters of text at `size` fit into `width` points. Iced cuts text hard at the
@@ -617,17 +714,14 @@ fn fitting(width: f32, size: f32) -> usize {
     (width / (size * 0.56)).max(6.0) as usize
 }
 
-/// A tree head's line (project, "Weitere"): sits at the bottom of its row, so the room above it
-/// parts it from what comes before. It starts at the tree's edge, like the search field.
+/// A tree head's line (project, "Weitere"), centred in its row at the top of the island.
 fn head_cell<'a>(line: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
-    container(line).height(tree::PROJECT_H).align_y(iced::Bottom).padding(Padding { left: 0.0, right: 6.0, bottom: 5.0, top: 0.0 }).width(Fill).clip(true)
+    container(line).height(tree::PROJECT_H).center_y(tree::PROJECT_H).padding(Padding { right: 6.0, ..Padding::ZERO }).width(Fill).clip(true)
 }
 
-/// The fold arrow of a head: a quiet chevron, which stays out of sight (but keeps its room)
-/// when `visible` is not set.
-fn fold_arrow<'a>(folded: bool, visible: bool) -> Element<'a, Message> {
-    let inner: Element<'a, Message> = if visible { style::chevron(folded, ARROW, TEXT_FAINT) } else { Space::new().width(ARROW).height(ARROW).into() };
-    container(inner).width(ARROW + 2.0).into()
+/// The empty place of a head's fold arrow (there is none; the room stays).
+fn head_gutter<'a>() -> Element<'a, Message> {
+    Space::new().width(HEAD_GUTTER).height(HEAD_LINE_H).into()
 }
 
 /// Wraps a head so the pointer over it is known (its "+" and open arrow show then).
@@ -635,7 +729,7 @@ fn head_hover<'a>(head: Element<'a, Message>, key: HeadKey) -> Element<'a, Messa
     mouse_area(head).on_enter(Message::HoverHead(Some(key))).on_exit(Message::HoverHead(None)).into()
 }
 
-/// A project's head: fold arrow, name, and at the right what is going on in it. A click folds it,
+/// A project's head: name, and at the right what is going on in it. A click folds it,
 /// a right click opens its menu.
 fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Message> {
     let name = project.name.clone();
@@ -648,12 +742,12 @@ fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Messa
     } else {
         Vec::new()
     };
-    // Arrow, gap, "+", the head's right padding, the dots, and "hidden" when it is.
+    // Gutter, gap, "+", the head's right padding, the dots, and "hidden" when it is.
     let extra = dots.len() as f32 * 14.0 + if project.hidden { 70.0 } else { 0.0 };
-    let room = tree_inner(brain) - (ARROW + 2.0) - 6.0 - PLUS_W - 6.0 - extra;
+    let room = tree_inner(brain) - HEAD_GUTTER - 6.0 - PLUS_W - 6.0 - extra;
     let mut line = row![
-        fold_arrow(project.folded, project.folded || hovered),
-        text(clip(&name, fitting(room, 13.0))).size(13).color(color).font(style::semibold()).wrapping(text::Wrapping::None),
+        head_gutter(),
+        text(clip(&name, fitting(room, 15.0))).size(15).color(color).font(style::semibold()).wrapping(text::Wrapping::None),
         Space::new().width(Fill),
     ]
     .spacing(6)
@@ -749,7 +843,7 @@ fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> El
                 .padding(Padding { left: NAME - NEST, ..Padding::ZERO }),
         );
     }
-    let background = if selected { RAISED } else if asking { alpha(CALLS, 0x1a) } else if hovered { style::HOVER } else { Color::TRANSPARENT };
+    let background = if selected { style::ISLAND_SELECTED } else if asking { alpha(CALLS, 0x24) } else if hovered { style::ISLAND_HOVER } else { Color::TRANSPARENT };
     let content = container(body)
         .height(tree::row_height(mark))
         .width(Fill)
@@ -853,34 +947,6 @@ fn tooltip_card<'a>(brain: &'a Brain, s: &'a Session, now: i64) -> Element<'a, M
     container(card).padding([8, 10]).style(|_| boxed(RAISED, LINE_STRONG, 8.0)).into()
 }
 
-/// "Änderungen · n · +a −b" under the selected session.
-fn changes_head<'a>(count: usize, added: u64, removed: u64) -> Element<'a, Message> {
-    let label = row![
-        text(format!("{} · {count} ·", t("Änderungen", "Changes"))).size(11.5).color(TEXT_MUTED).font(UI),
-        counts(Some(added), Some(removed)),
-    ]
-    .spacing(4);
-    container(label).height(tree::NOTE_H).center_y(tree::NOTE_H).padding(Padding { left: NAME, ..Padding::ZERO }).into()
-}
-
-/// A file the selected session changed: its path from the project, with the lines added and
-/// removed.
-fn change_row<'a>(change: &SessionChange, open: bool) -> Element<'a, Message> {
-    let line = row![
-        text(clip_start(&change.relative, 30)).size(11.5).color(TEXT).font(MONO).wrapping(text::Wrapping::None),
-        Space::new().width(Fill),
-        counts(change.added, change.removed),
-    ]
-    .spacing(6)
-    .align_y(iced::Center);
-    let padded = container(line)
-        .height(tree::NOTE_H)
-        .center_y(tree::NOTE_H)
-        .padding(Padding { left: LEAF, right: 8.0, ..Padding::ZERO })
-        .style(move |_| boxed(if open { RAISED } else { Color::TRANSPARENT }, Color::TRANSPARENT, 6.0));
-    mouse_area(padded).on_press(Message::OpenPreview(change.path.clone())).interaction(iced::mouse::Interaction::Pointer).into()
-}
-
 /// `+18 −2`; what git doesn't know is left out.
 fn counts<'a>(added: Option<u64>, removed: Option<u64>) -> Element<'a, Message> {
     let mut line = row![].spacing(5);
@@ -933,12 +999,8 @@ fn note_row<'a>(note: &later::Item, inner: f32) -> Element<'a, Message> {
 }
 
 /// "Weitere": sessions of folders that are not projects of the tree.
-fn others_head<'a>(brain: &Brain, count: usize, open: bool) -> Element<'a, Message> {
-    let hovered = brain.hovered_head == Some(HeadKey::Others);
-    let label = row![
-        fold_arrow(!open, !open || hovered),
-        text(format!("{} · {count}", t("Weitere", "Others"))).size(13).color(TEXT_MUTED).font(style::semibold())
-    ]
+fn others_head<'a>(count: usize) -> Element<'a, Message> {
+    let label = row![head_gutter(), text(format!("{} · {count}", t("Weitere", "Others"))).size(15).color(TEXT_MUTED).font(style::semibold())]
     .spacing(6)
     .align_y(iced::Center);
     let head = mouse_area(head_cell(label)).on_press(Message::ToggleSection("others")).interaction(iced::mouse::Interaction::Pointer);
@@ -977,9 +1039,9 @@ fn tree_footer<'a>(brain: &'a Brain, tree: &Tree<'_>) -> Element<'a, Message> {
 }
 
 fn new_project_row<'a>() -> Element<'a, Message> {
-    let label = container(text(t("+ Neues Projekt …", "+ New project …")).size(13).font(UI)).height(Fill).align_y(iced::Bottom).padding(Padding { bottom: 5.0, ..Padding::ZERO });
+    let label = container(text(t("+ Neues Projekt …", "+ New project …")).size(13).font(UI)).height(Fill).center_y(Fill);
     button(label)
-        .padding(Padding { left: 0.0, right: 6.0, ..Padding::ZERO })
+        .padding(Padding { left: tree::ISLAND_PAD_X + NEST, right: 6.0, ..Padding::ZERO })
         .height(tree::PROJECT_H)
         .width(Fill)
         .on_press(Message::NewProject)

@@ -323,7 +323,7 @@ Alles optional, in `~/.claude-brain/config.json`:
 | `⌘T` | Shell im Projektordner |
 | `⌘D` | Terminal teilen |
 | `⌘⇧A` | alle Terminals im Überblick |
-| `⌃⌘S` / `⌥⌘0` | Seitenleiste / Änderungen unter der Session ein- und ausblenden |
+| `⌃⌘S` / `⌥⌘0` | Seitenleiste ein- und ausblenden / Liste der geänderten Dateien der Session öffnen (auch der Knopf „4 Dateien +67 −3“ rechts in der Titelleiste; ein Klick auf eine Datei zeigt ihren Diff) |
 | `⌘+` `⌘-` `⌘0` | Fenster größer / kleiner / Originalgröße (die Stufe bleibt gemerkt) |
 | `⌘`-Klick | Pfad oder Link aus der Ausgabe öffnen |
 | `⌘K` | Befehlspalette: alles, auch was keine Taste hat (Abschnitte aufklappen, Konten abgleichen …) |

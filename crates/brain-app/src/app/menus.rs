@@ -296,7 +296,7 @@ impl Brain {
             commands.item(t("Befehlspalette …", "Command palette …"), "palette", Message::Menu(MenuCommand::Palette)).keys("k", CMD).into(),
             Entry::Separator,
             commands.menu(MenuCommand::ToggleSidebar, t("Seitenleiste", "Sidebar"), "sidebar").keys("s", CMD | CTRL).checked(!self.prefs.hide_sidebar).into(),
-            commands.item(t("Änderungen unter der Session zeigen", "Show the changes under the session"), "changes", Message::ToggleChanges).keys("0", CMD | OPT).checked(!self.prefs.hide_changes).into(),
+            commands.item(t("Änderungen zeigen", "Show the changes"), "changes", Message::ToggleChanges).keys("0", CMD | OPT).enabled(self.selected_changes().is_some()).into(),
             commands.palette(PaletteCommand::Split, t("Terminal teilen", "Split the terminal"), "split").keys("d", CMD).enabled(session).into(),
             commands.palette(PaletteCommand::Overview, t("Alle Terminals im Überblick", "All terminals at a glance"), "overview").keys("a", CMD | SHIFT).into(),
             commands.palette(PaletteCommand::Shell, t("Shell im Projektordner", "Shell in the project folder"), "shell").keys("t", CMD).enabled(session && self.mode == Mode::Normal).into(),
