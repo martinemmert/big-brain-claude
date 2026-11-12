@@ -1,4 +1,4 @@
-//! The macOS menu bar and the menu of the status item, built from plain descriptions.
+//! The macOS menu bar, built from plain descriptions, and the messages AppKit sends Brain.
 //!
 //! A description (`Menu`, `Entry`) knows nothing of AppKit and compares with `==`, so Brain
 //! rebuilds a menu only when what it shows changed. An item either runs a standard AppKit action
@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use iced::futures::channel::mpsc;
 use iced::futures::SinkExt;
 use objc2::rc::Retained;
-use objc2::runtime::Sel;
+use objc2::runtime::{AnyObject, Sel};
 use objc2::{define_class, msg_send, sel, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSEventModifierFlags, NSMenu, NSMenuItem};
 use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
@@ -107,6 +107,16 @@ pub struct Menu {
 /// Ids of the chosen items, from the open subscription's channel.
 static PICKED: Mutex<Option<mpsc::UnboundedSender<String>>> = Mutex::new(None);
 
+/// The id of a click on the status item.
+pub const STATUS_ITEM_CLICKED: &str = "status-item:clicked";
+
+/// Tells Brain `id` as if an item with that id had been chosen. Works from any thread.
+pub fn send(id: &str) {
+    if let Some(sender) = PICKED.lock().ok().and_then(|s| s.clone()) {
+        let _ = sender.unbounded_send(id.to_string());
+    }
+}
+
 define_class!(
     // SAFETY: NSObject has no subclassing requirements; no Drop impl.
     #[unsafe(super(NSObject))]
@@ -121,9 +131,15 @@ define_class!(
         #[unsafe(method(pick:))]
         fn pick(&self, sender: &NSMenuItem) {
             let id = sender.representedObject().and_then(|object| object.downcast::<NSString>().ok());
-            if let (Some(id), Some(sender)) = (id, PICKED.lock().ok().and_then(|s| s.clone())) {
-                let _ = sender.unbounded_send(id.to_string());
+            if let Some(id) = id {
+                send(&id.to_string());
             }
+        }
+
+        /// The status item's button was clicked.
+        #[unsafe(method(statusItemClicked:))]
+        fn status_item_clicked(&self, _sender: Option<&AnyObject>) {
+            send(STATUS_ITEM_CLICKED);
         }
     }
 );
@@ -184,11 +200,13 @@ impl AppMenu {
         }
     }
 
-    /// A menu for a status item: its items send their ids like the bar's.
-    pub fn menu(&self, entries: &[Entry]) -> Retained<NSMenu> {
-        let menu = new_menu("", self.mtm);
-        fill(&menu, entries, &self.target, self.mtm);
-        menu
+    /// Makes a click on the status item's button send `STATUS_ITEM_CLICKED`.
+    pub fn connect_status_button(&self, button: &objc2_app_kit::NSStatusBarButton) {
+        // SAFETY: `statusItemClicked:` is defined on the target; the target lives as long as the menu.
+        unsafe {
+            button.setTarget(Some(&self.target));
+            button.setAction(Some(sel!(statusItemClicked:)));
+        }
     }
 
     fn rebuild(&mut self, app: &NSApplication, menus: &[Menu]) {

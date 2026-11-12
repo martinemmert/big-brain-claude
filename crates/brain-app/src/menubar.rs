@@ -1,19 +1,18 @@
-//! A menu bar item with the number of sessions waiting for you; a click opens a menu with who
-//! needs you, who finished, the usage of each account and a new session.
-//! GPUI has no status item API, so this talks to AppKit directly.
+//! A menu bar item with the number of sessions waiting for you; a click opens the popup under it
+//! (see `popup`). GPUI has no status item API, so this talks to AppKit directly.
 
+use objc2::rc::Retained;
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSStatusBar, NSStatusItem, NSVariableStatusItemLength};
-use objc2_foundation::NSString;
+use objc2_app_kit::{NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSWindow};
+use objc2_foundation::{NSRect, NSString};
 
-use crate::appmenu::{AppMenu, Entry};
+use crate::appmenu::AppMenu;
 
 pub struct MenuBar {
-    item: objc2::rc::Retained<NSStatusItem>,
+    item: Retained<NSStatusItem>,
     mtm: MainThreadMarker,
     title: String,
-    /// What the item's menu lists now.
-    entries: Vec<Entry>,
+    connected: bool,
 }
 
 impl MenuBar {
@@ -21,7 +20,7 @@ impl MenuBar {
     pub fn new() -> Option<Self> {
         let mtm = MainThreadMarker::new()?;
         let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
-        let mut bar = Self { item, mtm, title: String::new(), entries: Vec::new() };
+        let mut bar = Self { item, mtm, title: String::new(), connected: false };
         bar.show(0, 0);
         Some(bar)
     }
@@ -42,12 +41,20 @@ impl MenuBar {
         self.title = title;
     }
 
-    /// Makes a click open this menu; builds it again only when its entries changed.
-    pub fn show_menu(&mut self, entries: &[Entry], menus: &AppMenu) {
-        if self.entries == entries {
+    /// Makes a click on the item reach Brain (once).
+    pub fn connect(&mut self, menus: &AppMenu) {
+        if self.connected {
             return;
         }
-        self.item.setMenu(Some(&menus.menu(entries)));
-        self.entries = entries.to_vec();
+        if let Some(button) = self.item.button(self.mtm) {
+            menus.connect_status_button(&button);
+            self.connected = true;
+        }
+    }
+
+    /// The item's frame on screen, and its window: what the popup hangs under.
+    pub fn anchor(&self) -> Option<(NSRect, Retained<NSWindow>)> {
+        let window = self.item.button(self.mtm)?.window()?;
+        Some((window.frame(), window))
     }
 }

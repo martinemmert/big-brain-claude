@@ -23,6 +23,11 @@ use crate::tree::HeadKey;
 /// Room for the window's traffic lights at the left of the title bar.
 const TRAFFIC_LIGHTS: f32 = 78.0;
 
+/// What a window of Brain shows: the popup under the status item, or the main window.
+pub fn window_view(brain: &Brain, id: iced::window::Id) -> Element<'_, Message> {
+    if id == brain.popup_window { status_popup(brain, now_ms()) } else { view(brain) }
+}
+
 pub fn view(brain: &Brain) -> Element<'_, Message> {
     let now = now_ms();
     // The list, the title bar and the footer all read the same grouping: made once per view.
@@ -2149,6 +2154,190 @@ fn pairing(brain: &Brain) -> Element<'_, Message> {
     scrollable(body.padding(Padding { top: 24.0, right: 28.0, bottom: 24.0, left: 28.0 })).height(Fill).style(scrollbar).into()
 }
 
+// ---- status popup -----------------------------------------------------------------
+
+/// The popup under the status item, after the mockup's `tpl-status`: who needs you (with Allow,
+/// Deny and "Ansehen"), who finished unseen, the accounts' limits. Every piece has the height
+/// that `PopupContent::height` counts, so the window fits its content.
+fn status_popup(brain: &Brain, now: i64) -> Element<'_, Message> {
+    use crate::app::status_popup::*;
+    let content = brain.popup_content(now);
+    let section = |title: &str| -> Element<'static, Message> {
+        container(text(title.to_uppercase()).size(11).color(TEXT_MUTED).font(UI))
+            .height(SECTION_H)
+            .align_y(iced::Bottom)
+            .padding(Padding { left: 8.0, bottom: 4.0, ..Padding::ZERO })
+            .into()
+    };
+    let more = |count: usize| -> Element<'static, Message> {
+        container(text(tr!("… und {count} weitere", "… and {count} more")).size(11.5).color(TEXT_MUTED).font(UI))
+            .height(MORE_H)
+            .center_y(MORE_H)
+            .padding(Padding { left: 8.0, ..Padding::ZERO })
+            .into()
+    };
+    let titled = |name: &str, project: &str| -> Element<'static, Message> {
+        container(
+            row![
+                text(clip(name, 20)).size(13).color(TEXT_STRONG).font(style::semibold()).wrapping(text::Wrapping::None),
+                text(clip(project, 14)).size(12).color(TEXT_MUTED).font(UI).wrapping(text::Wrapping::None),
+            ]
+            .spacing(6)
+            .align_y(iced::Center),
+        )
+        .height(18)
+        .clip(true)
+        .into()
+    };
+    let said = |line: &str| -> Element<'static, Message> {
+        container(text(clip(line, fitting(250.0, 12.5))).size(12.5).color(TEXT).font(UI).wrapping(text::Wrapping::None))
+            .height(20)
+            .align_y(iced::Bottom)
+            .clip(true)
+            .into()
+    };
+    let aged = |since_ms: i64| text(ago(since_ms, now)).size(11.5).color(TEXT_MUTED).font(UI);
+    let dotted = |color: Color| container(style::dot::<Message>(color, 8.0)).padding(Padding { top: 5.0, ..Padding::ZERO });
+
+    let mut list = column![container(
+        row![
+            brand_mark(!content.needs.is_empty()),
+            text("Brain").size(13).color(TEXT_STRONG).font(style::semibold()),
+            Space::new().width(Fill),
+            text(content.summary()).size(12).color(TEXT_MUTED).font(UI)
+        ]
+        .spacing(8)
+        .align_y(iced::Center),
+    )
+    .height(HEAD_H)
+    .center_y(HEAD_H)
+    .padding([0, 8])];
+    if content.is_calm() {
+        list = list.push(
+            container(text(t("Nichts wartet auf dich", "Nothing is waiting for you")).size(12.5).color(TEXT_MUTED).font(UI))
+                .height(CALM_H)
+                .center_y(CALM_H)
+                .padding([0, 8]),
+        );
+    }
+    if content.needs_total > 0 {
+        list = list.push(section(t("Braucht dich", "Needs you")));
+        for need in &content.needs {
+            let text_part = column![titled(&need.name, &need.project), said(&need.line)];
+            if need.permission {
+                let buttons = row![
+                    popup_button(t("Erlauben", "Allow"), true, Message::PopupAnswer(need.key.clone(), true, need.since_ms)),
+                    popup_button(t("Ablehnen", "Deny"), false, Message::PopupAnswer(need.key.clone(), false, need.since_ms)),
+                    popup_button(t("Ansehen", "Show"), false, Message::PopupSee(need.key.clone())),
+                ]
+                .spacing(6);
+                let body = text_part.push(container(buttons).padding(Padding { top: 7.0, ..Padding::ZERO }));
+                list = list.push(container(row![dotted(CALLS), body.width(Fill), aged(need.since_ms)].spacing(8)).height(ROW_H + BUTTONS_H).padding([6, 8]));
+            } else {
+                // A question: the whole row opens the session.
+                let line = container(row![dotted(CALLS), text_part.width(Fill), aged(need.since_ms)].spacing(8)).height(ROW_H).padding([6, 8]);
+                list = list.push(row_button(line, Message::PopupSee(need.key.clone())));
+            }
+        }
+        if content.needs_total > content.needs.len() {
+            list = list.push(more(content.needs_total - content.needs.len()));
+        }
+    }
+    if content.finished_total > 0 {
+        list = list.push(section(t("Fertig, nicht angesehen", "Finished, not looked at")));
+        for done in &content.finished {
+            let line = container(row![dotted(TURN), column![titled(&done.name, &done.project), said(&done.line)].width(Fill), aged(done.since_ms)].spacing(8))
+                .height(ROW_H)
+                .padding([6, 8]);
+            list = list.push(row_button(line, Message::PopupSee(done.key.clone())));
+        }
+        if content.finished_total > content.finished.len() {
+            list = list.push(more(content.finished_total - content.finished.len()));
+        }
+    }
+    if !content.accounts.is_empty() {
+        list = list.push(
+            container(container(Space::new().width(Fill).height(1)).style(|_| style::fill(style::MENU_LINE))).height(SEPARATOR_H).center_y(SEPARATOR_H).padding([0, 8]),
+        );
+        list = list.push(section(t("Konten", "Accounts")));
+        let mut usage = column![].spacing(ACCOUNT_GAP);
+        for account in &content.accounts {
+            usage = usage.push(popup_usage_row(account));
+        }
+        if let Some(advice) = &content.advice {
+            usage = usage.push(container(text(clip(advice, 56)).size(11).color(TEXT_FAINT).font(UI).wrapping(text::Wrapping::None)).height(NOTE_H).clip(true));
+        }
+        list = list.push(container(usage).padding([USAGE_PADDING, 8.0]));
+    }
+    container(list)
+        .width(Fill)
+        .height(Fill)
+        .padding(PADDING)
+        .clip(true)
+        .style(|_| boxed(style::MENU_BG, style::MENU_LINE, 10.0))
+        .into()
+}
+
+/// A row of the popup that opens its session: no background until the pointer is over it.
+fn row_button<'a>(row: impl Into<Element<'a, Message>>, message: Message) -> Element<'a, Message> {
+    button(row)
+        .padding(0)
+        .width(Fill)
+        .on_press(message)
+        .style(|_, status| button::Style {
+            background: matches!(status, button::Status::Hovered | button::Status::Pressed).then_some(Background::Color(Color::from_rgba8(0xff, 0xff, 0xff, 0.05))),
+            border: iced::border::rounded(6),
+            ..button::Style::default()
+        })
+        .into()
+}
+
+/// A button on a popup row: "Erlauben" in blue, the others in a light veil with a fine edge.
+fn popup_button<'a>(label: &str, primary: bool, message: Message) -> Element<'a, Message> {
+    button(text(label.to_string()).size(12).color(TEXT_STRONG).font(UI))
+        .padding([0, 10])
+        .height(24)
+        .on_press(message)
+        .style(move |_, status| {
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            let veil = Color::from_rgba8(0xff, 0xff, 0xff, if hovered { 0.12 } else { 0.08 });
+            let blue = if hovered { alpha(style::MENU_HL, 0xdd) } else { style::MENU_HL };
+            button::Style {
+                background: Some(Background::Color(if primary { blue } else { veil })),
+                text_color: TEXT_STRONG,
+                border: Border { color: if primary { Color::TRANSPARENT } else { style::MENU_LINE }, width: if primary { 0.0 } else { 1.0 }, radius: 5.0.into() },
+                ..button::Style::default()
+            }
+        })
+        .into()
+}
+
+/// One account in the popup: name, five-hour and weekly limit as bars with their percent. Each
+/// column has a fixed width, so the accounts line up.
+fn popup_usage_row<'a>(account: &crate::app::status_popup::AccountRow) -> Element<'a, Message> {
+    let (_, hue) = style::account_colors(account.index);
+    let faint = |label: &str, width: f32| container(text(label.to_string()).size(11.5).color(TEXT_FAINT).font(UI)).width(width);
+    let bar = move |used: f64| -> Element<'a, Message> {
+        let used = used.clamp(0.0, 100.0) as f32;
+        stack![
+            container(Space::new().width(46).height(4)).style(|_| boxed(LINE_STRONG, Color::TRANSPARENT, 2.0)),
+            container(Space::new().width(46.0 * used / 100.0).height(4)).style(move |_| boxed(hue, Color::TRANSPARENT, 2.0)),
+        ]
+        .into()
+    };
+    let num = |used: f64| container(text(format!("{used:.0} %")).size(11.5).color(TEXT).font(UI)).width(36);
+    let mut line = row![container(account_badge(&account.account, account.index)).width(54).clip(true)].spacing(6).align_y(iced::Center);
+    let usage = &account.usage;
+    match usage.five_hour {
+        Some(used) => line = line.push(faint("5 h", 24.0)).push(bar(used)).push(num(used)),
+        None => line = line.push(Space::new().width(24.0 + 46.0 + 36.0 + 12.0)),
+    }
+    if let Some(used) = usage.week {
+        line = line.push(faint(t("Woche", "Week"), 38.0)).push(bar(used)).push(num(used));
+    }
+    container(line).height(crate::app::status_popup::ACCOUNT_H).center_y(crate::app::status_popup::ACCOUNT_H).into()
+}
+
 // ---- status line ------------------------------------------------------------------
 
 /// The height of the line at the bottom: it stays when a message comes and goes.
@@ -2193,7 +2382,7 @@ fn status_line_bar<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Eleme
         .into()
 }
 
-/// What an account's limits come to now: the status line and the status item both show it.
+/// What an account's limits come to now: the status line and the status popup both show it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UsageNow {
     /// Percent of the five-hour and the weekly limit used.
@@ -2221,33 +2410,13 @@ pub fn usage_now(brain: &Brain, account: &str, now: i64) -> Option<UsageNow> {
 }
 
 /// When a limit runs out: the time within a day, otherwise the weekday and time.
-fn runs_out_label(at: i64, now_ms: i64) -> String {
+pub fn runs_out_label(at: i64, now_ms: i64) -> String {
     let when = chrono::DateTime::from_timestamp(at, 0).map(|t| t.with_timezone(&chrono::Local));
     match when {
         Some(t) if at * 1000 - now_ms < 24 * 3600 * 1000 => t.format("%H:%M").to_string(),
         Some(t) => t.format("%a %H:%M").to_string(),
         None => String::new(),
     }
-}
-
-/// An account's limits as one line of text: `main  5 h 46 %  ·  Woche 21 %  ·  voll ~Do 14:00`.
-pub fn usage_text(account: &str, usage: &UsageNow, now_ms: i64) -> String {
-    let mut parts = Vec::new();
-    if let Some(used) = usage.five_hour {
-        parts.push(format!("5 h {used:.0} %"));
-    }
-    if let Some(used) = usage.week {
-        parts.push(format!("{} {used:.0} %", t("Woche", "week")));
-    }
-    match usage.runs_out {
-        Some(at) => {
-            let when = runs_out_label(at, now_ms);
-            parts.push(tr!("voll ~{when}", "full ~{when}"));
-        }
-        None if usage.has_room => parts.push(t("hat Platz", "has room").to_string()),
-        None => {}
-    }
-    format!("{account}  {}", parts.join("  ·  "))
 }
 
 /// An account's limits: `main 5 h ▓▓░ 46 % Woche 21 %`, and `voll ~Do 14:00` when it gets tight.
@@ -2345,23 +2514,4 @@ fn keys_sheet(_brain: &Brain) -> Element<'_, Message> {
         .spacing(18)
         .padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 })
         .into()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_status_item_shows_each_accounts_limits_as_one_line() {
-        let now_ms = 1_790_000_000_000;
-        let busy = UsageNow { five_hour: Some(46.0), week: Some(21.0), runs_out: Some(now_ms / 1000 + 3600), has_room: false };
-        let line = usage_text("main", &busy, now_ms);
-        assert!(line.starts_with("main"), "{line}");
-        assert!(line.contains("5 h 46 %") && line.contains("21 %"), "{line}");
-        assert!(line.contains('~'), "a forecast says when it runs out: {line}");
-
-        let idle = UsageNow { five_hour: Some(3.0), week: None, runs_out: None, has_room: true };
-        let line = usage_text("second", &idle, now_ms);
-        assert!(line.contains("5 h 3 %") && !line.contains('~'), "{line}");
-    }
 }

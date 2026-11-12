@@ -124,9 +124,11 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   latter; reminders only while a session still waits for a decision (`remind_after_minutes` in
   `config.json`, 10 by default, 0 turns them off, at most three). *Session → Snooze* pauses a
   session for 15 min, 1 h, until tomorrow 9:00 or until something happens in it (`⌫` twice jumps to
-  the last). Clicking the menu bar item opens a menu: the sessions that need you (a permission
-  with *Allow* and *Deny*), the finished ones you haven't seen, the usage of each account and
-  *New session …*.
+  the last). Clicking the menu bar item opens a small window under it, without bringing Brain
+  forward: the sessions that need you (a permission with *Allow* and *Deny*, and *Show*, which
+  brings Brain forward with the session), the finished ones you haven't seen, and the 5-hour and
+  weekly limits of each account with a forecast and where a new session fits better. A click
+  elsewhere, `esc` or another click on the item closes it.
 - **New sessions** in a recent folder and any account (`⌘N`), or from a **template**: a
   Markdown file with folder, account, model and a first prompt with placeholders (below).
 - **Into another account or fork …** (*Session → Into another account*): one dialog for the account a session goes on in.

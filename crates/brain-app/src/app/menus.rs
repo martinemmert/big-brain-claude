@@ -48,11 +48,8 @@ pub enum MenuCommand {
     Zoom(bool),
     /// ⌘0: back to 100 %.
     ZoomReset,
-    /// A session from the status item's menu: Brain comes forward with it.
+    /// "Ansehen" in the status popup: Brain comes forward with the session.
     OpenSession(SessionKey),
-    /// "Neue Session …" of the status item: Brain comes forward with the dialog.
-    NewSessionInFront,
-    BringForward,
     /// ⌘C / ⌘V in a terminal that has the keyboard.
     Copy,
     Paste,
@@ -355,99 +352,37 @@ impl Brain {
             .collect()
     }
 
-    /// Builds the menu bar and the status item's menu again and hands AppKit what changed. The
+    /// Builds the menu bar again, keeps the status popup as high as its content, and hands AppKit what changed. The
     /// list is the whole board: neither the search nor the account filter hides a decision.
     pub(super) fn refresh_menus(&mut self) {
         let now = now_ms();
-        let (menus, status, commands) = {
+        let (menus, commands) = {
             let groups = self.groups_for(now, "", None);
             let needing = self.needing_you(&groups);
             let mut commands = Commands::default();
             let menus = self.main_menus(&mut commands, &needing);
-            let status = self.status_entries(&mut commands, &groups, &needing, now);
-            (menus, status, commands.0)
+            (menus, commands.0)
         };
         self.menu_commands = commands;
         if let Some(bar) = self.appmenu.as_mut() {
             bar.show(&menus);
         }
         if let (Some(menubar), Some(bar)) = (self.menubar.as_mut(), self.appmenu.as_ref()) {
-            menubar.show_menu(&status, bar);
+            menubar.connect(bar);
         }
-    }
-
-    /// The status item's menu: who needs you (a permission with Allow and Deny), who finished and
-    /// wasn't looked at, the usage of each account, a new session.
-    fn status_entries(&self, commands: &mut Commands, groups: &Groups<'_>, needing: &[(SessionKey, String)], now: i64) -> Vec<Entry> {
-        const SHOWN: usize = 8;
-        let heading = |title: String| -> Entry { Item::new(title, "heading").enabled(false).into() };
-        let mut entries: Vec<Entry> = Vec::new();
-        if !needing.is_empty() {
-            let count = needing.len();
-            entries.push(heading(tr!("{count} brauchen dich", "{count} need you")));
-        }
-        for (key, title) in needing.iter().take(SHOWN) {
-            let session = groups.decide.iter().find(|(s, _)| s.key == *key);
-            let id = format!("status:{}/{}", key.account, key.id);
-            let open = Message::Menu(MenuCommand::OpenSession(key.clone()));
-            match session {
-                Some((s, Ask::Permission)) => {
-                    let since_ms = s.phase_since_ms();
-                    let answer = |allow: bool| Message::Steer(crate::companion::Command::Permission { key: key.clone(), allow, since_ms });
-                    let title = tr!("{title} – Freigabe", "{title} – permission");
-                    let entries_of_session = vec![
-                        commands.item(t("In Brain öffnen", "Open in Brain"), format!("{id}:open"), open).into(),
-                        Entry::Separator,
-                        commands.item(t("Erlauben", "Allow"), format!("{id}:allow"), answer(true)).into(),
-                        commands.item(t("Ablehnen", "Deny"), format!("{id}:deny"), answer(false)).into(),
-                    ];
-                    entries.push(Entry::Submenu { title, enabled: true, entries: entries_of_session });
-                }
-                _ => entries.push(commands.item(title.clone(), format!("{id}:open"), open).into()),
-            }
-        }
-        if needing.len() > SHOWN {
-            let more = needing.len() - SHOWN;
-            entries.push(heading(tr!("… und {more} weitere", "… and {more} more")));
-        }
-        if !groups.read.is_empty() {
-            if !entries.is_empty() {
-                entries.push(Entry::Separator);
-            }
-            let count = groups.read.len();
-            entries.push(heading(tr!("{count} fertig", "{count} finished")));
-            for s in groups.read.iter().take(SHOWN) {
-                let id = format!("status:{}/{}:open", s.key.account, s.key.id);
-                let title = format!("{} · {}", s.display_name(), self.project_name(s));
-                entries.push(commands.item(title, id, Message::Menu(MenuCommand::OpenSession(s.key.clone()))).into());
-            }
-            if groups.read.len() > SHOWN {
-                let more = groups.read.len() - SHOWN;
-                entries.push(heading(tr!("… und {more} weitere", "… and {more} more")));
-            }
-        }
-        let usage: Vec<String> = self
-            .model
-            .accounts
-            .iter()
-            .filter_map(|account| Some(crate::ui::usage_text(&account.id, &crate::ui::usage_now(self, &account.id, now)?, now)))
-            .collect();
-        if !usage.is_empty() {
-            if !entries.is_empty() {
-                entries.push(Entry::Separator);
-            }
-            entries.extend(usage.into_iter().map(|line| Item::new(line, "usage").enabled(false).into()));
-        }
-        if !entries.is_empty() {
-            entries.push(Entry::Separator);
-        }
-        entries.push(commands.menu(MenuCommand::NewSessionInFront, t("Neue Session …", "New session …"), "status:new-session").into());
-        entries.push(commands.menu(MenuCommand::BringForward, t("Brain öffnen", "Open Brain"), "status:front").into());
-        entries
+        self.fit_status_popup();
     }
 
     /// An item of the bar was chosen: sends what it stands for.
     pub(super) fn menu_picked(&mut self, id: &str) -> Task<Message> {
+        match id {
+            crate::appmenu::STATUS_ITEM_CLICKED => return self.toggle_status_popup(),
+            crate::popup::CLICK_OUTSIDE => {
+                self.close_status_popup();
+                return Task::none();
+            }
+            _ => {}
+        }
         match self.menu_commands.get(id).cloned() {
             Some(message) => self.update(message),
             None => Task::none(),
@@ -498,8 +433,6 @@ impl Brain {
                 self.focus_on_select = true;
                 Task::batch([self.bring_forward(), self.scroll_to_selected()])
             }
-            MenuCommand::NewSessionInFront => Task::batch([self.bring_forward(), self.open_new_session_dialog()]),
-            MenuCommand::BringForward => self.bring_forward(),
             MenuCommand::Zoom(up) => {
                 self.set_zoom(super::next_zoom(self.zoom(), up));
                 Task::none()

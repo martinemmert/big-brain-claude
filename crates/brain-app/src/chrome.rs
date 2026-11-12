@@ -20,3 +20,18 @@ pub fn unified_titlebar() -> bool {
     }
     true
 }
+
+/// The main window: a hidden title with transparent bar, content up to the top edge.
+pub fn main_window_settings() -> iced::window::Settings {
+    iced::window::Settings {
+        size: iced::Size::new(1180.0, 760.0),
+        min_size: Some(iced::Size::new(900.0, 520.0)),
+        position: iced::window::Position::Centered,
+        platform_specific: iced::window::settings::PlatformSpecific {
+            title_hidden: true,
+            titlebar_transparent: true,
+            fullsize_content_view: true,
+        },
+        ..iced::window::Settings::default()
+    }
+}
