@@ -276,6 +276,39 @@ impl<M> iced::widget::canvas::Program<M> for Chevron {
     }
 }
 
+/// The sidebar symbol of a Mac title bar: a rounded window with its left part set off.
+pub fn sidebar_icon<'a, M: 'a>(size: f32, color: Color) -> Element<'a, M> {
+    iced::widget::canvas(SidebarIcon { color }).width(size).height(size).into()
+}
+
+struct SidebarIcon {
+    color: Color,
+}
+
+impl<M> iced::widget::canvas::Program<M> for SidebarIcon {
+    type State = ();
+
+    fn draw(
+        &self,
+        _: &(),
+        renderer: &iced::Renderer,
+        _: &iced::Theme,
+        bounds: iced::Rectangle,
+        _: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas::{Frame, Path, Stroke};
+        let mut frame = Frame::new(renderer, bounds.size());
+        let k = bounds.width / 16.0;
+        // A 16 × 16 box: the window 14 × 11, the sidebar's divider at a third.
+        let window = Path::rounded_rectangle(iced::Point::new(1.0 * k, 2.5 * k), iced::Size::new(14.0 * k, 11.0 * k), (2.5 * k).into());
+        let divider = Path::line(iced::Point::new(6.0 * k, 2.5 * k), iced::Point::new(6.0 * k, 13.5 * k));
+        let stroke = Stroke::default().with_color(self.color).with_width(1.3 * k);
+        frame.stroke(&window, stroke);
+        frame.stroke(&divider, stroke);
+        vec![frame.into_geometry()]
+    }
+}
+
 /// A clickable text that only looks like a link-ish label (e.g. the background filter).
 pub fn text_button<'a, M: Clone + 'a>(label: impl Into<String>, on: bool, message: M) -> Element<'a, M> {
     button(text(label.into()).size(12).font(UI))

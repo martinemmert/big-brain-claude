@@ -355,8 +355,22 @@ fn divider<'a>() -> Element<'a, Message> {
 // ---- title bar --------------------------------------------------------------------
 
 fn titlebar(brain: &Brain) -> Element<'_, Message> {
+    // Beside the traffic lights, as in Finder and Mail: folds the sidebar away and back (⌃⌘S).
+    let hidden = brain.prefs.hide_sidebar;
+    let sidebar_toggle = button(style::sidebar_icon(16.0, if hidden { TEXT_MUTED } else { TEXT_FAINT }))
+        .padding([3, 5])
+        .on_press(Message::Menu(crate::app::MenuCommand::ToggleSidebar))
+        .style(|_, status| button::Style {
+            background: matches!(status, button::Status::Hovered | button::Status::Pressed).then_some(Background::Color(style::HOVER)),
+            border: iced::border::rounded(5),
+            ..button::Style::default()
+        });
+    let tip = container(text(if hidden { t("Seitenleiste zeigen  ⌃⌘S", "Show sidebar  ⌃⌘S") } else { t("Seitenleiste ausblenden  ⌃⌘S", "Hide sidebar  ⌃⌘S") }).size(11.5).color(TEXT).font(UI))
+        .padding([4, 8])
+        .style(|_| boxed(RAISED, LINE_STRONG, 6.0));
     let mut bar = row![
         Space::new().width(TRAFFIC_LIGHTS / brain.zoom()),
+        iced::widget::tooltip(sidebar_toggle, tip, iced::widget::tooltip::Position::Bottom).gap(4),
         Space::new().width(Fill),
     ]
     .spacing(12)
