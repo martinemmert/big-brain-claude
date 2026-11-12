@@ -1,10 +1,10 @@
-//! A menu bar item with the number of sessions waiting for you; a click opens the popup under it
-//! (see `popup`). GPUI has no status item API, so this talks to AppKit directly.
+//! A menu bar item with the number of sessions waiting for you; a click brings Brain forward with the
+//! status popup open. GPUI has no status item API, so this talks to AppKit directly.
 
 use objc2::rc::Retained;
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSWindow};
-use objc2_foundation::{NSRect, NSString};
+use objc2_app_kit::{NSStatusBar, NSStatusItem, NSVariableStatusItemLength};
+use objc2_foundation::NSString;
 
 use crate::appmenu::AppMenu;
 
@@ -50,11 +50,5 @@ impl MenuBar {
             menus.connect_status_button(&button);
             self.connected = true;
         }
-    }
-
-    /// The item's frame on screen, and its window: what the popup hangs under.
-    pub fn anchor(&self) -> Option<(NSRect, Retained<NSWindow>)> {
-        let window = self.item.button(self.mtm)?.window()?;
-        Some((window.frame(), window))
     }
 }

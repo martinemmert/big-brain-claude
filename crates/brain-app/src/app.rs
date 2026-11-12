@@ -380,10 +380,11 @@ pub enum Message {
     SidebarDone,
     /// An item of the menu bar was chosen (its id).
     MenuPicked(String),
-    /// An event of one of the windows: the main window's keys, mouse and size, the popup's esc.
-    Raw(window::Id, iced::Event, iced::event::Status),
-    /// A window closed; the main one ends Brain.
-    WindowClosed(window::Id),
+    /// The status popup in the title bar: open or close it.
+    ToggleStatus,
+    ClosePopup,
+    /// A click inside the popup, which must not reach the backdrop that closes it.
+    PopupClicked,
     /// "Ansehen" in the status popup.
     PopupSee(SessionKey),
     /// "Erlauben" / "Ablehnen" in the status popup (the permission's `since_ms`).
@@ -413,7 +414,6 @@ impl Message {
                 | Message::FileHover(_)
                 | Message::MousePressed
                 | Message::MouseReleased
-                | Message::Raw(..)
         )
     }
 }
@@ -596,10 +596,8 @@ pub struct Brain {
     pub prefs: Prefs,
     notifier: Notifier,
     menubar: Option<MenuBar>,
-    /// The window under the status item, and the two windows' ids.
-    status_popup: Option<crate::popup::StatusPopup>,
-    pub main_window: window::Id,
-    pub popup_window: window::Id,
+    /// The status popup floats over the window's top right.
+    pub status_open: bool,
     /// The menu bar of the app, and what its items stand for.
     appmenu: Option<crate::appmenu::AppMenu>,
     menu_commands: HashMap<String, Message>,
@@ -732,7 +730,6 @@ pub struct Brain {
     synced_selection: Option<(SessionKey, bool)>,
     /// The native title bar is set up once the window exists.
     titlebar_ready: bool,
-    popup_shown_for_demo: bool,
     /// A click selected a session: once its terminal shows, it gets the keys.
     focus_on_select: bool,
     /// The new-account dialog.
@@ -784,8 +781,6 @@ impl Brain {
         if prefs.migrate_pid_entries(|account, pid| Some(model.board.live_by_pid(account, pid)?.key.clone())) {
             prefs.save();
         }
-        let (main_window, open_main) = window::open(crate::chrome::main_window_settings());
-        let (popup_window, open_popup) = window::open(crate::popup::window_settings());
         let demo = model.is_demo();
         if !demo {
             brain_core::requests::prune(&brain_core::requests::dir(&brain_core::account::home_dir()));
@@ -806,9 +801,7 @@ impl Brain {
             prefs,
             notifier: Notifier::new(),
             menubar: MenuBar::new(),
-            status_popup: crate::popup::StatusPopup::new(),
-            main_window,
-            popup_window,
+            status_open: false,
             appmenu: crate::appmenu::AppMenu::new(),
             menu_commands: HashMap::new(),
             resume_search: false,
@@ -883,7 +876,6 @@ impl Brain {
             synced_selection: None,
             dragging_sidebar: false,
             titlebar_ready: false,
-            popup_shown_for_demo: false,
             focus_on_select: false,
             account_setup: account::AccountSetup::default(),
             questions: HashMap::new(),
@@ -920,41 +912,29 @@ impl Brain {
             brain.reader = Some(read_file(std::path::PathBuf::from(path)));
         }
         let checks = if demo { Task::none() } else { Task::batch([Task::done(Message::CheckPrs), Task::done(Message::CheckUpdate)]) };
-        (brain, Task::batch([open_main.discard(), open_popup.discard(), synced, checks]))
+        (brain, Task::batch([synced, checks]))
     }
 
-    /// How large a window is drawn: the popup always at 100 %.
-    pub fn scale_of(&self, id: window::Id) -> f32 {
-        if id == self.popup_window { 1.0 } else { self.zoom() }
-    }
-
-    pub fn title(&self, id: window::Id) -> String {
-        if id == self.popup_window {
-            return crate::popup::TITLE.into();
-        }
+    pub fn title(&self) -> String {
         let waiting = self.deciding;
         if waiting > 0 { tr!("Brain – {waiting} warten", "Brain – {waiting} waiting") } else { "Brain".into() }
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        // Which window an event belongs to is decided in `update`, where the ids are known.
-        let events = iced::event::listen_with(|event, status, id| match event {
-            iced::Event::Keyboard(keyboard::Event::KeyPressed { .. })
-            | iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_))
-            | iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left))
-            | iced::Event::Window(
-                window::Event::Opened { .. }
-                | window::Event::Resized(_)
-                | window::Event::Unfocused
-                | window::Event::FileHovered(_)
-                | window::Event::FilesHoveredLeft
-                | window::Event::FileDropped(_),
-            ) => Some(Message::Raw(id, event, status)),
+        let keys = iced::event::listen_with(|event, status, _| match event {
+            iced::Event::Keyboard(event @ keyboard::Event::KeyPressed { .. }) => {
+                Some(Message::Key(event, status == iced::event::Status::Captured))
+            }
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => Some(Message::MousePressed),
+            iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => Some(Message::MouseReleased),
+            iced::Event::Window(window::Event::Opened { size, .. } | window::Event::Resized(size)) => Some(Message::WindowSized(size)),
+            iced::Event::Window(window::Event::FileHovered(_)) => Some(Message::FileHover(true)),
+            iced::Event::Window(window::Event::FilesHoveredLeft) => Some(Message::FileHover(false)),
+            iced::Event::Window(window::Event::FileDropped(path)) => Some(Message::FileDrop(path)),
             _ => None,
         });
         let mut subscriptions = vec![
-            events,
-            window::close_events().map(Message::WindowClosed),
+            keys,
             iced::time::every(Duration::from_millis(800)).map(|_| Message::Tick),
             Subscription::run(crate::hotkey::presses).map(|_| Message::QuickTerminal),
             Subscription::run(crate::appmenu::picks).map(Message::MenuPicked),
@@ -1127,9 +1107,12 @@ impl Brain {
             }
             Message::Do(action) => self.act(action),
             Message::MenuPicked(id) => self.menu_picked(&id),
-            Message::Raw(id, event, status) => self.on_window_event(id, event, status),
-            Message::WindowClosed(id) if id == self.main_window => iced::exit(),
-            Message::WindowClosed(_) => Task::none(),
+            Message::ToggleStatus => self.toggle_status_popup(),
+            Message::ClosePopup => {
+                self.status_open = false;
+                Task::none()
+            }
+            Message::PopupClicked => Task::none(),
             Message::PopupSee(key) => self.show_session_from_popup(key),
             Message::PopupAnswer(key, allow, since_ms) => self.answer_from_popup(key, allow, since_ms),
             Message::Menu(command) => self.run_menu(command),
@@ -1274,8 +1257,8 @@ impl Brain {
                 self.hosts.insert(pid, caps);
                 Task::none()
             }
-            Message::DragWindow => window::drag(self.main_window),
-            Message::ZoomWindow => window::toggle_maximize(self.main_window),
+            Message::DragWindow => window::latest().and_then(window::drag),
+            Message::ZoomWindow => window::latest().and_then(window::toggle_maximize),
             Message::Term(event) => {
                 let iced_term::Event::BackendCall(id, command) = event;
                 // A shell's event: its own map; it ends by itself (exit), nothing else to do.
@@ -1583,43 +1566,11 @@ impl Brain {
         Task::batch([task, synced])
     }
 
-    /// An event of a window. The popup only listens for esc and for losing the keys; the main
-    /// window's keys, mouse and size are what Brain has always read.
-    fn on_window_event(&mut self, id: window::Id, event: iced::Event, status: iced::event::Status) -> Task<Message> {
-        if id == self.popup_window {
-            let leaves = matches!(
-                &event,
-                iced::Event::Window(window::Event::Unfocused)
-                    | iced::Event::Keyboard(keyboard::Event::KeyPressed { key: keyboard::Key::Named(Named::Escape), .. })
-            );
-            if leaves {
-                self.close_status_popup();
-            }
-            return Task::none();
-        }
-        let message = match event {
-            iced::Event::Keyboard(event @ keyboard::Event::KeyPressed { .. }) => Message::Key(event, status == iced::event::Status::Captured),
-            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => Message::MousePressed,
-            iced::Event::Mouse(iced::mouse::Event::ButtonReleased(_)) => Message::MouseReleased,
-            iced::Event::Window(window::Event::Opened { size, .. } | window::Event::Resized(size)) => Message::WindowSized(size),
-            iced::Event::Window(window::Event::FileHovered(_)) => Message::FileHover(true),
-            iced::Event::Window(window::Event::FilesHoveredLeft) => Message::FileHover(false),
-            iced::Event::Window(window::Event::FileDropped(path)) => Message::FileDrop(path),
-            _ => return Task::none(),
-        };
-        self.update(message)
-    }
-
     // ---- periodic work ------------------------------------------------------------
 
     fn tick(&mut self) -> Task<Message> {
         if !self.titlebar_ready {
             self.titlebar_ready = crate::chrome::unified_titlebar();
-        }
-        // For screenshots of the popup: `BRAIN_DEMO=1 BRAIN_DEMO_POPUP=1` opens it once.
-        if self.model.is_demo() && !self.popup_shown_for_demo && std::env::var_os("BRAIN_DEMO_POPUP").is_some() {
-            self.popup_shown_for_demo = true;
-            let _ = self.toggle_status_popup();
         }
         let now = now_ms();
         let refreshed = self.model.refresh();
@@ -2946,6 +2897,11 @@ impl Brain {
             return Task::none();
         }
 
+        // The status popup has the keyboard while it is open: esc closes it and goes no further.
+        if named == Some(Named::Escape) && self.status_open {
+            self.status_open = false;
+            return Task::none();
+        }
         // The diff card has the keyboard while it is open: esc closes it and goes no further.
         if named == Some(Named::Escape) && self.preview.is_some() && self.mode == Mode::Normal && !self.overview {
             self.preview = None;
@@ -3236,7 +3192,7 @@ impl Brain {
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             objc2_app_kit::NSApplication::sharedApplication(mtm).activate();
         }
-        window::gain_focus(self.main_window)
+        window::latest().and_then(window::gain_focus)
     }
 
     // ---- actions ----------------------------------------------------------------

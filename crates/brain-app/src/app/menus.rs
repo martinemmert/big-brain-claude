@@ -352,7 +352,7 @@ impl Brain {
             .collect()
     }
 
-    /// Builds the menu bar again, keeps the status popup as high as its content, and hands AppKit what changed. The
+    /// Builds the menu bar again, and hands AppKit what changed. The
     /// list is the whole board: neither the search nor the account filter hides a decision.
     pub(super) fn refresh_menus(&mut self) {
         let now = now_ms();
@@ -370,17 +370,12 @@ impl Brain {
         if let (Some(menubar), Some(bar)) = (self.menubar.as_mut(), self.appmenu.as_ref()) {
             menubar.connect(bar);
         }
-        self.fit_status_popup();
     }
 
     /// An item of the bar was chosen: sends what it stands for.
     pub(super) fn menu_picked(&mut self, id: &str) -> Task<Message> {
         match id {
-            crate::appmenu::STATUS_ITEM_CLICKED => return self.toggle_status_popup(),
-            crate::popup::CLICK_OUTSIDE => {
-                self.close_status_popup();
-                return Task::none();
-            }
+            crate::appmenu::STATUS_ITEM_CLICKED => return self.open_status_popup_in_front(),
             _ => {}
         }
         match self.menu_commands.get(id).cloned() {

@@ -1,12 +1,11 @@
 //! The popup under the status item: what it lists (who needs you, who finished, the accounts'
-//! limits), its height, and opening and closing it. The window itself is drawn by `ui`; AppKit's
-//! side of it is `popup`.
+//! limits) and opening and closing it. It floats over the main window; `ui` draws it.
 
 use brain_core::state::{Ask, Phase, SessionKey};
 use iced::Task;
 
 use super::{Brain, Message};
-use crate::format::{clip, now_ms, plain};
+use crate::format::{clip, plain};
 use crate::i18n::t;
 use crate::tr;
 use crate::ui::{runs_out_label, usage_now, UsageNow};
@@ -14,8 +13,7 @@ use crate::ui::{runs_out_label, usage_now, UsageNow};
 /// Rows each list shows; the rest is a line "… und n weitere".
 pub const SHOWN: usize = 5;
 
-// Heights of the pieces, in points. The view gives each piece exactly this height, so the window
-// can be sized to its content (a window can't measure Iced's layout).
+// Heights of the pieces, in points; the view gives each piece exactly this height.
 pub const PADDING: f32 = 8.0;
 pub const HEAD_H: f32 = 40.0;
 pub const SECTION_H: f32 = 26.0;
@@ -211,42 +209,31 @@ impl Brain {
         PopupContent::new(needs, finished, working, accounts, now)
     }
 
-    /// A click on the status item: opens the popup, or closes it.
+    /// The button in the title bar and a click on the status item: the popup opens or closes.
     pub(super) fn toggle_status_popup(&mut self) -> Task<Message> {
-        if self.status_popup.as_ref().is_some_and(|p| p.is_open()) {
-            self.close_status_popup();
-        } else {
-            self.open_status_popup();
-        }
-        Task::none()
+        self.status_open = !self.status_open;
+        self.keys_leave_terminal()
     }
 
-    fn open_status_popup(&mut self) {
-        let height = self.popup_content(now_ms()).height();
-        let (Some(popup), Some((anchor, item_window))) = (self.status_popup.as_mut(), self.menubar.as_ref().and_then(|m| m.anchor())) else { return };
-        popup.show(anchor, height, Some(item_window));
+    /// A click on the menu bar's item: Brain comes forward with the popup open.
+    pub(super) fn open_status_popup_in_front(&mut self) -> Task<Message> {
+        self.status_open = true;
+        Task::batch([self.bring_forward(), self.keys_leave_terminal()])
     }
 
-    pub(super) fn close_status_popup(&mut self) {
-        if let Some(popup) = self.status_popup.as_mut().filter(|p| p.is_open()) {
-            popup.hide();
+    /// An open popup has the keyboard: the terminal gives it up, so typing doesn't reach Claude.
+    fn keys_leave_terminal(&mut self) -> Task<Message> {
+        if !self.status_open {
+            return Task::none();
         }
-    }
-
-    /// Keeps the open popup as high as its content.
-    pub(super) fn fit_status_popup(&mut self) {
-        if !self.status_popup.as_ref().is_some_and(|p| p.is_open()) {
-            return;
-        }
-        let height = self.popup_content(now_ms()).height();
-        if let Some(popup) = self.status_popup.as_mut() {
-            popup.resize(height);
-        }
+        self.focused_terminal = None;
+        self.focused_shell = None;
+        super::unfocus()
     }
 
     /// "Ansehen": the popup closes and Brain comes forward with the session.
     pub(super) fn show_session_from_popup(&mut self, key: SessionKey) -> Task<Message> {
-        self.close_status_popup();
+        self.status_open = false;
         self.run_menu(super::menus::MenuCommand::OpenSession(key))
     }
 

@@ -23,11 +23,6 @@ use crate::tree::HeadKey;
 /// Room for the window's traffic lights at the left of the title bar.
 const TRAFFIC_LIGHTS: f32 = 78.0;
 
-/// What a window of Brain shows: the popup under the status item, or the main window.
-pub fn window_view(brain: &Brain, id: iced::window::Id) -> Element<'_, Message> {
-    if id == brain.popup_window { status_popup(brain, now_ms()) } else { view(brain) }
-}
-
 pub fn view(brain: &Brain) -> Element<'_, Message> {
     let now = now_ms();
     // The list, the title bar and the footer all read the same grouping: made once per view.
@@ -76,7 +71,9 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::Composer => composer(brain),
         _ => context_menu(brain).or_else(|| project_menu(brain)).unwrap_or_else(|| Space::new().into()),
     };
-    stack![window, overlay].into()
+    // The status popup hangs under the title bar's right end, over the whole window.
+    let popup: Element<'_, Message> = if brain.status_open { status_popup_layer(brain, now) } else { Space::new().into() };
+    stack![window, overlay, popup].into()
 }
 
 /// ⌘E: a longer prompt for the selected session, with templates and pasted screenshots.
@@ -445,12 +442,67 @@ fn titlebar(brain: &Brain, calling: bool) -> Element<'_, Message> {
     let mut accounts = vec![(t("Alle", "All").to_string(), brain.filter.is_none(), Message::Filter(None))];
     accounts.extend(brain.model.accounts.iter().map(|a| (a.id.clone(), brain.filter.as_deref() == Some(&a.id), Message::Filter(Some(a.id.clone())))));
     bar = bar.push(style::segmented_in(accounts, LINE_STRONG, Color::from_rgba8(0xff, 0xff, 0xff, 0.06)));
+    bar = bar.push(status_button(brain));
 
     // The native title bar keeps its size in points when the window is zoomed.
     mouse_area(container(bar).height(titlebar_height).center_y(titlebar_height).padding(Padding { left: 0.0, right: 14.0, top: 0.0, bottom: 0.0 }).style(|_| style::fill(CHROME)))
         .on_press(Message::DragWindow)
         .on_double_click(Message::ZoomWindow)
         .into()
+}
+
+/// The status popup's button, right of the account filter: a dot for the state (red when someone
+/// needs you, amber when sessions finished unseen), the number that needs you, and the account
+/// with the least room left. Pressed while the popup is open.
+fn status_button(brain: &Brain) -> Element<'_, Message> {
+    let now = now_ms();
+    let content = brain.popup_content(now);
+    let (color, count) = if content.needs_total > 0 {
+        (CALLS, Some(content.needs_total))
+    } else if content.finished_total > 0 {
+        (TURN, Some(content.finished_total))
+    } else {
+        (TEXT_FAINT, None)
+    };
+    // The fullest account, by the larger of its two limits.
+    let tightest = content
+        .accounts
+        .iter()
+        .filter_map(|a| match a.usage.five_hour {
+            Some(five) => Some(five.max(a.usage.week.unwrap_or(0.0))),
+            None => a.usage.week,
+        })
+        .fold(None, |most: Option<f64>, used| Some(most.map_or(used, |m| m.max(used))));
+    let mut label = row![style::dot(color, 7.0)].spacing(6).align_y(iced::Center);
+    if let Some(count) = count {
+        label = label.push(text(count.to_string()).size(12).color(TEXT_STRONG).font(style::semibold()));
+    }
+    if let Some(used) = tightest {
+        let used_color = if used >= 90.0 { CALLS } else if used >= 70.0 { TURN } else { TEXT_MUTED };
+        label = label.push(text(format!("{used:.0} %")).size(12).color(used_color).font(UI));
+    }
+    let open = brain.status_open;
+    iced::widget::tooltip(
+        button(style::centered(label))
+            .padding([0, 10])
+            .height(28)
+            .on_press(Message::ToggleStatus)
+            .style(move |_, status| {
+                let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+                button::Style {
+                    background: Some(Background::Color(if open { LINE_STRONG } else if hovered { RAISED } else { INK })),
+                    text_color: TEXT,
+                    border: Border { color: LINE, width: 1.0, radius: 8.0.into() },
+                    ..button::Style::default()
+                }
+            }),
+        container(text(t("Wer dich braucht, wer fertig ist, Verbrauch", "Who needs you, who finished, usage")).size(11.5).color(TEXT).font(UI))
+            .padding([4, 8])
+            .style(|_| boxed(RAISED, LINE_STRONG, 6.0)),
+        iced::widget::tooltip::Position::Bottom,
+    )
+    .gap(4)
+    .into()
 }
 
 // ---- list -------------------------------------------------------------------------
@@ -733,7 +785,7 @@ fn status_line(s: &Session, mark: Mark) -> Option<(Option<String>, String)> {
 /// A button on a card that asks: neutral, so the red of the card stays the one signal. Deny
 /// keeps a fine edge.
 fn answer_button<'a>(label: &str, edged: bool, message: Message) -> Element<'a, Message> {
-    button(text(label.to_string()).size(12).color(TEXT_STRONG).font(style::semibold()))
+    button(style::centered(text(label.to_string()).size(12).color(TEXT_STRONG).font(style::semibold())))
         .padding([0, 10])
         .height(24)
         .on_press(message)
@@ -2270,12 +2322,32 @@ fn status_popup(brain: &Brain, now: i64) -> Element<'_, Message> {
         list = list.push(container(usage).padding([USAGE_PADDING, 8.0]));
     }
     container(list)
-        .width(Fill)
-        .height(Fill)
+        .width(popup_width())
+        .height(content.height())
         .padding(PADDING)
         .clip(true)
-        .style(|_| boxed(style::MENU_BG, style::MENU_LINE, 10.0))
+        .style(|_| container::Style {
+            shadow: iced::Shadow { color: Color::from_rgba8(0, 0, 0, 0.6), offset: iced::Vector::new(0.0, 12.0), blur_radius: 34.0 },
+            ..boxed(style::MENU_BG, style::MENU_LINE, 10.0)
+        })
         .into()
+}
+
+fn popup_width() -> f32 {
+    360.0
+}
+
+/// The popup over the window: a backdrop that closes it, the card at the top right under the
+/// title bar (a click on the card itself stays on it).
+fn status_popup_layer(brain: &Brain, now: i64) -> Element<'_, Message> {
+    let top = crate::chrome::TITLEBAR_HEIGHT / brain.zoom() + 4.0;
+    let card = mouse_area(status_popup(brain, now)).on_press(Message::PopupClicked);
+    let backdrop = mouse_area(Space::new().width(Fill).height(Fill)).on_press(Message::ClosePopup);
+    stack![
+        backdrop,
+        container(card).width(Fill).height(Fill).align_x(iced::Right).align_y(iced::Top).padding(Padding { top, right: 14.0, ..Padding::ZERO }),
+    ]
+    .into()
 }
 
 /// A row of the popup that opens its session: no background until the pointer is over it.
@@ -2294,7 +2366,7 @@ fn row_button<'a>(row: impl Into<Element<'a, Message>>, message: Message) -> Ele
 
 /// A button on a popup row: "Erlauben" in blue, the others in a light veil with a fine edge.
 fn popup_button<'a>(label: &str, primary: bool, message: Message) -> Element<'a, Message> {
-    button(text(label.to_string()).size(12).color(TEXT_STRONG).font(UI))
+    button(style::centered(text(label.to_string()).size(12).color(TEXT_STRONG).font(UI)))
         .padding([0, 10])
         .height(24)
         .on_press(message)

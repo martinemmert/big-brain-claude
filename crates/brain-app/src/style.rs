@@ -174,6 +174,13 @@ pub fn hint<'a, M: 'a>(label: impl Into<String>) -> Element<'a, M> {
     container(text(label.into()).size(12.5).color(TEXT_MUTED).font(UI)).padding([10, 6]).into()
 }
 
+/// A button's label, centred in the button's height. Iced puts a button's content at its top edge,
+/// so a button with a fixed height needs this around its text; give such a button only horizontal
+/// padding. (Not for buttons that size themselves: the label would claim all the room there is.)
+pub fn centered<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    container(content).height(iced::Fill).align_y(iced::Center).into()
+}
+
 /// A labelled button with its key; `strong` fills it with the alert colour.
 pub fn action<'a, M: Clone + 'a>(label: impl Into<String>, key: impl Into<String>, strong: bool, on_press: Option<M>) -> Element<'a, M> {
     let enabled = on_press.is_some();
@@ -194,8 +201,8 @@ pub fn action<'a, M: Clone + 'a>(label: impl Into<String>, key: impl Into<String
             kbd(key)
         });
     }
-    button(content)
-        .padding([6, 12])
+    button(centered(content))
+        .padding([0, 12])
         .height(30)
         .on_press_maybe(on_press)
         .style(move |_, status| {

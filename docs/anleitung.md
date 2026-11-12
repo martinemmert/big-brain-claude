@@ -75,11 +75,12 @@ Oben in der Titelleiste steht der Kontofilter (umschalten mit `⇥`).
 - **Menüleiste:** alle Befehle stehen in den Menüs oben (*Brain, Ablage, Bearbeiten, Session, Darstellung,
   Fenster, Hilfe*), mit ihren Kürzeln. Einbuchstaben-Tasten gibt es in der Liste nicht mehr; was gerade nicht passt, ist
   ausgegraut. Im Menü *Fenster* stehen die Sessions, die dich brauchen, als `⌘1` bis `⌘9`.
-- **Statusfenster:** ein Klick auf Brains Zeichen in der Menüleiste öffnet ein kleines Fenster darunter, ohne Brain nach
-  vorn zu holen: wer dich braucht (bei einer Freigabe mit *Erlauben*, *Ablehnen* und *Ansehen*; *Ansehen* holt Brain nach
-  vorn und wählt die Session), wer fertig ist und noch nicht angesehen wurde, und je Konto das 5-h- und Wochenlimit mit
-  Prognose und Empfehlung, wo eine neue Session besser läuft. Ein Klick daneben, `esc` oder ein zweiter Klick aufs Zeichen
-  schließt es. Neue Session, Brain öffnen und Beenden stehen in der Menüleiste.
+- **Statuskarte:** der Knopf in der Titelleiste rechts neben dem Konto-Filter (er zeigt, wie viele dich brauchen, und den
+  Verbrauch des vollsten Kontos) öffnet eine Karte oben rechts im Fenster: wer dich braucht (bei einer Freigabe mit
+  *Erlauben*, *Ablehnen* und *Ansehen*; *Ansehen* wählt die Session), wer fertig ist und noch nicht angesehen wurde, und je
+  Konto das 5-h- und Wochenlimit mit Prognose und Empfehlung, wo eine neue Session besser läuft. Ein Klick aufs Zeichen in
+  der Menüleiste holt Brain nach vorn und öffnet die Karte. `esc`, ein Klick daneben oder ein zweiter Klick auf den Knopf
+  schließt sie. Neue Session und Beenden stehen in der Menüleiste.
 - **Größe:** `⌘+`, `⌘-` und `⌘0` skalieren das ganze Fenster samt Terminalschrift; die Statuszeile zeigt die Stufe,
   wenn sie nicht 100 % ist.
 - **Tasten:** `⌘?` zeigt alle.
