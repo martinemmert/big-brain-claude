@@ -80,7 +80,9 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
     let popup: Element<'_, Message> = if brain.status_open { status_popup_layer(brain, now) } else { Space::new().into() };
     // So does the list of changed files; never both at once.
     let changes: Element<'_, Message> = if brain.changes_open { changes_popover_layer(brain) } else { Space::new().into() };
-    stack![window, overlay, popup, changes, toast(brain)].into()
+    // A changed file in Quick Look lies over everything but the toast.
+    let sheet: Element<'_, Message> = if brain.preview.is_some() { quick_look(brain) } else { Space::new().into() };
+    stack![window, overlay, popup, changes, sheet, toast(brain)].into()
 }
 
 /// A message of the last command: a small card at the bottom, centred over the main area. It
@@ -568,8 +570,7 @@ fn changes_popover_layer(brain: &Brain) -> Element<'_, Message> {
     let head = row![text(title).size(12).color(TEXT_MUTED).font(style::semibold()), Space::new().width(Fill), counts(Some(added), Some(removed))]
         .spacing(8)
         .align_y(iced::Center);
-    let mut newest_first: Vec<&SessionChange> = files.iter().collect();
-    newest_first.sort_by_key(|c| std::cmp::Reverse(c.last_ms));
+    let newest_first = brain.changes_newest_first();
     let open = brain.preview.as_ref().map(|p| p.change.path.as_str());
     let rows = newest_first.into_iter().map(|change| {
         let line = row![
@@ -585,7 +586,8 @@ fn changes_popover_layer(brain: &Brain) -> Element<'_, Message> {
         row_button(line, Message::OpenPreview(change.path.clone()))
     });
     let list = scrollable(column(rows.collect::<Vec<_>>()).width(Fill)).style(scrollbar);
-    let card = container(column![container(head).padding([6, 8]), list].spacing(4))
+    let tip = container(text(t("Klick oder Leertaste zeigt die Datei groß", "Click or space shows the file large")).size(11).color(TEXT_MUTED).font(UI)).padding([4, 8]);
+    let card = container(column![container(head).padding([6, 8]), list, tip].spacing(4))
         .width(Length::Fixed(460.0))
         .max_height(CHANGE_ROW_H * 12.0 + 40.0)
         .padding(6)
@@ -1198,85 +1200,182 @@ fn session_pane(brain: &Brain) -> Element<'_, Message> {
     } else {
         column![find_bar(brain), whole_session(brain)].spacing(8).height(Fill).into()
     };
-    // A stack takes its size from its first layer: without a terminal (demo, an ended session, one
-    // in iTerm) that is a short hint, and the diff card would be squeezed into its few points.
-    let content = match brain.preview.as_ref().filter(|p| p.key == s.key) {
-        Some(preview) => stack![container(content).width(Fill).height(Fill), diff_preview(s, preview)].into(),
-        None => content,
-    };
     // Its line stands in the title bar; the terminal gets the whole height.
     container(content).padding(Padding { top: 8.0, right: 12.0, bottom: 0.0, left: 12.0 }).height(Fill).into()
 }
 
-/// The diff of a changed file, floating over the terminal like Quick Look. It takes no room from
-/// the terminal; a click beside it, or esc, closes it.
-fn diff_preview<'a>(s: &Session, preview: &'a app::Preview) -> Element<'a, Message> {
+/// Quick Look: one changed file of the session, large over the whole window. The diff has line
+/// numbers, hunks say where they are; ← → page through the session's files, space and esc close.
+/// A click beside the sheet closes it; the sheet swallows its own clicks.
+fn quick_look(brain: &Brain) -> Element<'_, Message> {
+    use app::DiffRow;
     use brain_core::changes::DiffKind;
+    let Some(preview) = brain.preview.as_ref().filter(|_| brain.mode == Mode::Normal && !brain.overview) else { return Space::new().into() };
     let font = crate::chat_font::get();
     let change = &preview.change;
-    let session = clip(&s.display_name(), 28);
-    let mut head = row![
-        text(clip_start(&change.relative, 48)).size(12.5).color(TEXT_STRONG).font(MONO).wrapping(text::Wrapping::None),
-        counts(change.added, change.removed),
+    let files = brain.changes_newest_first();
+    let (index, total) = brain.preview_position().unwrap_or((0, 1));
+    let diff = preview.diffs.get(&change.path);
+    let is_new = diff.is_some_and(|d| d.new_file) || change.git.as_ref().is_some_and(|g| matches!(g.status.as_str(), "??" | "A " | "AM"));
+
+    let step = |glyph: &'static str, delta: isize, enabled: bool| -> Element<'static, Message> {
+        button(style::centered(text(glyph).size(13).color(TEXT).font(UI)))
+            .width(28)
+            .height(28)
+            .padding([0, 8])
+            .on_press_maybe(enabled.then_some(Message::PreviewStep(delta)))
+            .style(move |_, status| {
+                let hovered = enabled && matches!(status, button::Status::Hovered | button::Status::Pressed);
+                let faded = |c: Color| if enabled { c } else { Color { a: c.a * 0.35, ..c } };
+                button::Style {
+                    background: Some(Background::Color(faded(if hovered { LINE_STRONG } else { RAISED }))),
+                    text_color: faded(TEXT),
+                    border: Border { color: faded(LINE_STRONG), width: 1.0, radius: 7.0.into() },
+                    ..button::Style::default()
+                }
+            })
+            .into()
+    };
+    let (dir, base) = change.relative.rsplit_once('/').map_or(("", change.relative.as_str()), |(dir, base)| (dir, base));
+    let dir = if dir.is_empty() { String::new() } else { format!("{dir}/") };
+    let place = index + 1;
+    let mut title = row![
+        row![step("←", -1, index > 0), step("→", 1, index + 1 < total)].spacing(4),
+        text(tr!("{place} von {total}", "{place} of {total}")).size(12).color(TEXT_MUTED).font(UI),
+        row![
+            text(clip_start(&dir, 60)).size(14).color(TEXT_MUTED).font(MONO).wrapping(text::Wrapping::None),
+            text(base.to_string()).size(14).color(TEXT_STRONG).font(MONO).wrapping(text::Wrapping::None),
+        ],
     ]
     .spacing(10)
     .align_y(iced::Center);
-    let when = if change.last_ms > 0 { format!("{} · {session}", ago_phrase(change.last_ms, now_ms())) } else { session };
-    head = head.push(text(when).size(11.5).color(TEXT_FAINT).font(UI).wrapping(text::Wrapping::None));
-    head = head.push(Space::new().width(Fill));
-    head = head.push(action(t("Im Editor öffnen", "Open in editor"), "", false, preview.exists.then_some(Message::PreviewInEditor)));
-    head = head.push(action(t("Schließen", "Close"), "esc", false, Some(Message::ClosePreview)));
-    let head = container(head).padding([9, 12]).width(Fill);
+    if is_new {
+        title = title.push(container(text(t("neu", "new")).size(10.5).color(DONE).font(style::semibold())).padding([0, 5]).style(|_| boxed(Color::TRANSPARENT, alpha(DONE, 0x73), 4.0)));
+    }
+    title = title.push(counts(change.added, change.removed));
+    title = title.push(Space::new().width(Fill));
+    title = title.push(action(t("Im Editor öffnen", "Open in editor"), "⌘⏎", false, preview.exists.then_some(Message::PreviewInEditor)));
+    title = title.push(action(t("Schließen", "Close"), "esc", false, Some(Message::ClosePreview)));
+    let mut head = column![title].spacing(8);
+    if let Some(said) = &change.said {
+        head = head.push(text(said.clone()).size(13).color(TEXT).font(UI));
+    }
+    let head = container(head).padding([12, 16]).width(Fill).style(|_| style::fill(RAISED));
 
-    let line = |kind: DiffKind, content: &str| -> Element<'a, Message> {
-        let (color, tint) = match kind {
-            DiffKind::Added => (DONE, alpha(DONE, 0x1a)),
-            DiffKind::Removed => (CALLS_SOFT, alpha(CALLS, 0x1a)),
-            DiffKind::Hunk => (TEXT_FAINT, Color::TRANSPARENT),
-            DiffKind::Meta | DiffKind::Context => (TEXT_MUTED, Color::TRANSPARENT),
-        };
-        // An empty line still takes its height.
-        let shown = if content.is_empty() { " ".to_string() } else { content.to_string() };
-        container(text(shown).size(font.size).color(color).font(font.regular).wrapping(text::Wrapping::None))
-            .width(Fill)
-            .padding([0, 14])
+    let number = |n: Option<u32>, color: Color, tint: Color| -> Element<'_, Message> {
+        container(text(n.map(|n| n.to_string()).unwrap_or_default()).size(font.size).color(color).font(font.regular))
+            .width(46)
+            .padding(Padding { right: 9.0, ..Padding::ZERO })
+            .align_x(iced::alignment::Horizontal::Right)
             .style(move |_| style::fill(tint))
             .into()
     };
-    let body: Element<'a, Message> = match &preview.lines {
+    let body: Element<'_, Message> = match diff {
         None => container(hint(t("Lade den Diff …", "Reading the diff …"))).padding(14).into(),
-        Some(lines) if lines.is_empty() => {
+        Some(diff) if diff.rows.is_empty() => {
             container(hint(t("Gegen HEAD hat sich an dieser Datei nichts geändert.", "This file does not differ from HEAD."))).padding(14).into()
         }
-        Some(lines) => {
-            let mut rows: Vec<Element<'a, Message>> = lines.iter().map(|(kind, content)| line(*kind, content)).collect();
-            if preview.cut > 0 {
-                let cut = preview.cut;
+        Some(diff) => {
+            let mut rows: Vec<Element<'_, Message>> = Vec::with_capacity(diff.rows.len() + 1);
+            for (i, entry) in diff.rows.iter().enumerate() {
+                match entry {
+                    DiffRow::Hunk { from, len, context, raw } => {
+                        if i > 0 {
+                            rows.push(Space::new().height(10).into());
+                        }
+                        let place = if diff.new_file { tr!("Neue Datei, {len} Zeilen", "New file, {len} lines") } else { tr!("Ab Zeile {from}", "From line {from}") };
+                        let line = row![
+                            text(place).size(11.5).color(WORKING).font(style::semibold()).wrapping(text::Wrapping::None),
+                            text(context.clone()).size(font.size).color(TEXT_MUTED).font(font.regular).wrapping(text::Wrapping::None),
+                            Space::new().width(Fill),
+                            text(raw.clone()).size(11).color(TEXT_FAINT).font(font.regular).wrapping(text::Wrapping::None),
+                        ]
+                        .spacing(10)
+                        .align_y(iced::Center);
+                        rows.push(container(line).padding([5, 14]).width(Fill).style(|_| style::fill(alpha(WORKING, 0x12))).into());
+                    }
+                    DiffRow::Line { kind, old, new, text: content } => {
+                        let (tint, gutter, number_color, sign) = match kind {
+                            DiffKind::Added => (alpha(DONE, 0x1a), alpha(DONE, 0x2b), Color::from_rgb8(0x7f, 0xcf, 0xae), "+"),
+                            DiffKind::Removed => (alpha(CALLS, 0x1a), alpha(CALLS, 0x2b), Color::from_rgb8(0xe0, 0x9a, 0xa3), "−"),
+                            _ => (Color::TRANSPARENT, Color::TRANSPARENT, TEXT_FAINT, ""),
+                        };
+                        let sign_color = if *kind == DiffKind::Added { DONE } else { CALLS_SOFT };
+                        // An empty line still takes its height.
+                        let shown = if content.is_empty() { " ".to_string() } else { content.clone() };
+                        let mut line = row![];
+                        if !diff.new_file {
+                            line = line.push(number(*old, number_color, gutter));
+                        }
+                        line = line.push(number(*new, number_color, gutter));
+                        line = line.push(container(text(sign).size(font.size).color(sign_color).font(font.regular)).width(20).align_x(iced::Center));
+                        line = line.push(text(shown).size(font.size).color(TEXT).font(font.regular).wrapping(text::Wrapping::None));
+                        rows.push(container(line).width(Fill).padding(Padding { right: 18.0, ..Padding::ZERO }).style(move |_| style::fill(tint)).into());
+                    }
+                }
+            }
+            if diff.cut > 0 {
+                let cut = diff.cut;
                 rows.push(container(hint(tr!("… {cut} weitere Zeilen", "… {cut} more lines"))).padding([6, 14]).into());
             }
-            scrollable(column(rows).padding(Padding { top: 8.0, bottom: 8.0, ..Padding::ZERO }))
+            scrollable(column(rows).padding(Padding { top: 8.0, bottom: 12.0, ..Padding::ZERO }))
                 .direction(scrollable::Direction::Both { vertical: scrollable::Scrollbar::default(), horizontal: scrollable::Scrollbar::default() })
+                .width(Fill)
+                .height(Fill)
                 .style(scrollbar)
                 .into()
         }
     };
-    let card = container(column![head, container(Space::new().width(Fill).height(1)).style(|_| style::fill(LINE)), container(body).style(|_| style::fill(INK))])
-        .width(Length::Fixed(680.0))
-        .height(Length::Fixed(440.0))
-        .clip(true)
-        .style(|_| container::Style {
-            shadow: iced::Shadow { color: alpha(Color::BLACK, 0x99), offset: iced::Vector::new(0.0, 18.0), blur_radius: 50.0 },
-            ..boxed(RAISED, LINE_STRONG, 12.0)
-        });
-    // The backdrop closes the card; the card itself swallows its clicks.
-    let backdrop = mouse_area(Space::new().width(Fill).height(Fill)).on_press(Message::ClosePreview);
-    let floating = container(mouse_area(card).on_press(Message::PreviewClicked))
+
+    // The files as tabs: where you are, and a click goes there.
+    let tabs = files.iter().enumerate().map(|(i, file)| -> Element<'_, Message> {
+        let name = file.relative.rsplit('/').next().unwrap_or(&file.relative);
+        let current = i == index;
+        let tab = container(text(name.to_string()).size(11.5).color(if current { TEXT_STRONG } else { TEXT_MUTED }).font(MONO).wrapping(text::Wrapping::None))
+            .padding([2, 8])
+            .style(move |_| boxed(if current { LINE_STRONG } else { Color::TRANSPARENT }, Color::TRANSPARENT, 6.0));
+        mouse_area(tab).on_press(Message::PreviewGo(i)).interaction(iced::mouse::Interaction::Pointer).into()
+    });
+    let hints = row![
+        kbd("←"),
+        kbd("→"),
+        text(t("andere Datei", "other file")).size(11.5).color(TEXT_MUTED).font(UI),
+        kbd(t("Leertaste", "Space")),
+        text(t("oder", "or")).size(11.5).color(TEXT_MUTED).font(UI),
+        kbd("esc"),
+        text(t("schließt", "closes")).size(11.5).color(TEXT_MUTED).font(UI),
+    ]
+    .spacing(6)
+    .align_y(iced::Center);
+    let foot = container(row![container(row(tabs).spacing(4)).width(Fill).clip(true), hints].spacing(14).align_y(iced::Center))
+        .height(34)
+        .center_y(34)
+        .padding([0, 16])
+        .width(Fill)
+        .style(|_| style::fill(CHROME));
+    let edge = || container(Space::new().width(Fill).height(1)).style(|_| style::fill(LINE_STRONG));
+
+    let sheet = container(column![head, edge(), container(body).height(Fill).style(|_| style::fill(INK)), edge(), foot])
         .width(Fill)
         .height(Fill)
-        .align_x(iced::alignment::Horizontal::Right)
-        .align_y(iced::alignment::Vertical::Bottom)
-        .padding(Padding { top: 0.0, right: 28.0, bottom: 26.0, left: 0.0 });
-    stack![backdrop, floating].into()
+        .clip(true)
+        .style(|_| container::Style {
+            shadow: iced::Shadow { color: alpha(Color::BLACK, 0xb3), offset: iced::Vector::new(0.0, 30.0), blur_radius: 90.0 },
+            ..boxed(INK, alpha(Color::WHITE, 0x1a), 14.0)
+        });
+    // 80 % of the window each way: a tenth of it free on every side.
+    let centered = column![
+        Space::new().height(Length::FillPortion(1)),
+        row![
+            Space::new().width(Length::FillPortion(1)),
+            container(mouse_area(sheet).on_press(Message::PreviewClicked)).width(Length::FillPortion(8)).height(Fill),
+            Space::new().width(Length::FillPortion(1)),
+        ]
+        .height(Length::FillPortion(8)),
+        Space::new().height(Length::FillPortion(1)),
+    ];
+    let backdrop = mouse_area(container(Space::new().width(Fill).height(Fill)).style(|_| style::fill(Color::from_rgba8(6, 8, 15, 0.55)))).on_press(Message::ClosePreview);
+    stack![backdrop, centered].into()
 }
 
 /// The line above the split's other terminal (the selected session's stands in the title bar).
