@@ -163,6 +163,10 @@ impl Brain {
             }
             None => Item::new(t("Projekt ausblenden", "Hide project"), "hide-project").enabled(false).into(),
         });
+        entries.push(match project.filter(|name| self.prefs.is_project_listed(name)) {
+            Some(name) => commands.item(tr!("Projekt „{name}“ entfernen …", "Remove project “{name}” …"), "remove-project", Message::RemoveProject(name.to_string())).into(),
+            None => Item::new(t("Projekt entfernen …", "Remove project …"), "remove-project").enabled(false).into(),
+        });
         entries.push(Entry::Separator);
         entries.push(Item::standard(t("Fenster schließen", "Close window"), c"performClose:").keys("w", CMD).into());
         Menu { title: t("Ablage", "File").into(), role: Role::Plain, entries }

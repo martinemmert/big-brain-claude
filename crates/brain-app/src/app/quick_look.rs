@@ -166,6 +166,18 @@ pub fn rescaled(window: iced::Size, from: f32, to: f32) -> iced::Size {
     iced::Size::new(window.width * from / to, window.height * from / to)
 }
 
+/// The file list's default width in the sheet, and the least it keeps.
+/// The grips around the sheet: the list begins this far inside the sheet's box.
+pub const SHEET_RING: f32 = 6.0;
+pub const SHEET_FILES_DEFAULT: f32 = 300.0;
+const SHEET_FILES_MIN: f32 = 200.0;
+
+/// The width of the sheet's file list: the chosen one (none: the default), at least 200 and at
+/// most half the sheet.
+pub fn sheet_files_width(chosen: Option<f32>, sheet_width: f32) -> f32 {
+    chosen.unwrap_or(SHEET_FILES_DEFAULT).clamp(SHEET_FILES_MIN, (sheet_width / 2.0).max(SHEET_FILES_MIN))
+}
+
 /// The sheet's size while an edge (`horizontal`: left or right, `vertical`: top or bottom) follows
 /// the pointer. The sheet stays centred in the area below the title bar, so the edge is as far
 /// from that area's middle as the pointer is, and the opposite one moves with it.
@@ -520,6 +532,16 @@ mod tests {
 
     fn distinct(diff: &QuickDiff, row: usize) -> std::collections::HashSet<[u8; 3]> {
         colors_of(diff, row).iter().map(|(_, c)| *c).collect()
+    }
+
+    #[test]
+    fn the_file_list_keeps_between_200_and_half_the_sheet() {
+        assert_eq!(sheet_files_width(None, 1000.0), 300.0);
+        assert_eq!(sheet_files_width(Some(120.0), 1000.0), 200.0);
+        assert_eq!(sheet_files_width(Some(420.0), 1000.0), 420.0);
+        assert_eq!(sheet_files_width(Some(900.0), 1000.0), 500.0);
+        assert_eq!(sheet_files_width(Some(400.0), 360.0), 200.0, "a narrow sheet never goes below the least");
+        assert_eq!(sheet_files_width(None, 500.0), 250.0, "the default gives way to the half");
     }
 
     #[test]

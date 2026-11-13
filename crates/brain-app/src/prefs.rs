@@ -25,6 +25,9 @@ pub struct Prefs {
     /// Width and height of the Quick Look sheet in points, as dragged; none means 80 % of the window.
     #[serde(default)]
     pub quick_look_size: Option<(f32, f32)>,
+    /// Width of the file list in the Quick Look sheet in points, as dragged; none means 300.
+    #[serde(default)]
+    pub sheet_files_width: Option<f32>,
     /// Session id → snoozed until (epoch ms).
     #[serde(default)]
     snoozed: BTreeMap<String, i64>,
@@ -304,6 +307,16 @@ impl Prefs {
         }
     }
 
+    /// Takes a project out of the tree: off the list, shown again if it was hidden, and the sessions
+    /// put in it by hand are free again. Returns how many sessions that were; nothing is deleted.
+    pub fn remove_project(&mut self, name: &str) -> usize {
+        self.listed_projects.retain(|p| p.name != name);
+        self.hidden_projects.remove(name);
+        let before = self.projects.len();
+        self.projects.retain(|_, project| project != name);
+        before - self.projects.len()
+    }
+
     /// The first start with a project list: takes over `projects` (those of the sessions running
     /// in Brain right now), once. Returns whether anything changed.
     pub fn seed_projects(&mut self, projects: impl IntoIterator<Item = (String, Option<String>)>) -> bool {
@@ -425,6 +438,28 @@ mod tests {
         assert!(!prefs.list_project("api", Some("/elsewhere")), "the first folder stays");
         assert_eq!(prefs.listed_projects(), &[ListedProject { name: "api".into(), folder: Some("/w/api".into()) }]);
         assert!(prefs.is_project_listed("api") && !prefs.is_project_listed("docs"));
+    }
+
+    #[test]
+    fn removing_a_project_frees_its_sessions_and_only_those() {
+        let mut prefs = Prefs::default();
+        prefs.list_project("api", Some("/w/api"));
+        prefs.list_project("web", None);
+        prefs.toggle_project_hidden("api");
+        let (a, b, c) = (
+            SessionKey { account: "main".into(), id: "a".into() },
+            SessionKey { account: "main".into(), id: "b".into() },
+            SessionKey { account: "main".into(), id: "c".into() },
+        );
+        prefs.set_project(&a, Some("api".into()));
+        prefs.set_project(&b, Some("web".into()));
+        prefs.set_project(&c, Some("api".into()));
+
+        assert_eq!(prefs.remove_project("api"), 2);
+        assert!(!prefs.is_project_listed("api") && prefs.is_project_listed("web"));
+        assert!(!prefs.is_project_hidden("api"));
+        assert_eq!((prefs.project(&a), prefs.project(&b), prefs.project(&c)), (None, Some("web"), None));
+        assert_eq!(prefs.remove_project("api"), 0, "nothing left to remove");
     }
 
     #[test]

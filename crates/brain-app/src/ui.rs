@@ -337,6 +337,7 @@ fn project_menu(brain: &Brain) -> Option<Element<'_, Message>> {
         Some((t("Neue Session hier …", "New session here …").to_string(), "", Message::NewSessionIn(name.clone()), false)),
         None,
         Some((if hidden { t("Wieder einblenden", "Show again") } else { t("Projekt ausblenden", "Hide project") }.to_string(), "", Message::ToggleProjectHidden(name.clone()), false)),
+        Some((t("Projekt entfernen …", "Remove project …").to_string(), "", Message::RemoveProject(name.clone()), true)),
     ];
     Some(menu_panel(brain, lines, *at))
 }
@@ -1634,7 +1635,8 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
         .into(),
     };
 
-    let list = (!list_hidden).then(|| sheet_files(brain, &files, index, merge.is_some(), reviewing));
+    let list_width = app::sheet_files_width(brain.prefs.sheet_files_width, app::sheet_size(brain.prefs.quick_look_size, brain.window_size, brain.sheet_top()).width);
+    let list = (!list_hidden).then(|| sheet_files(brain, &files, index, merge.is_some(), reviewing, list_width));
     let mut hints = row![].spacing(6).align_y(iced::Center);
     if merge.is_some() {
         hints = hints.push(session_mark()).push(text(t("von dieser Session", "from this session")).size(11.5).color(TEXT_MUTED).font(UI)).push(Space::new().width(10));
@@ -1660,7 +1662,14 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
 
     let mut right = column![said, edge()];
     right = right.push(container(body).width(Fill).height(Fill).style(|_| style::fill(INK)));
-    let vertical_edge = || container(Space::new().width(1).height(Fill)).style(|_| style::fill(LINE));
+    // A 7 pt grab area around the 1 pt line, as the sidebar has it: a press drags the list's
+    // width, twice in a row sets it back to 300.
+    let edge_color = if brain.dragging_sheet_files { WORKING } else { LINE };
+    let vertical_edge = move || {
+        mouse_area(container(container(Space::new().width(1).height(Fill)).style(move |_| style::fill(edge_color))).width(7).height(Fill).center_x(7))
+            .on_press(Message::SheetFilesGrab)
+            .interaction(iced::mouse::Interaction::ResizingHorizontally)
+    };
     let middle = match list {
         Some(list) => row![list, vertical_edge(), right.width(Fill)],
         None => row![right.width(Fill)],
@@ -1675,7 +1684,7 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
         });
     // The sheet sits in a ring of grips: the edges and corners drag its size, symmetrically around
     // the window's middle.
-    const GRIP: f32 = 6.0;
+    const GRIP: f32 = app::SHEET_RING;
     use iced::mouse::Interaction as Cursor;
     let grip = |horizontal: bool, vertical: bool, cursor: Cursor, width: Length, height: Length| -> Element<'_, Message> {
         mouse_area(Space::new().width(width).height(height)).on_press(Message::SheetGrab(horizontal, vertical)).interaction(cursor).into()
@@ -1712,8 +1721,6 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
 
 /// The height of the line above the list ("44 files" and the totals): the list begins below it.
 const SHEET_LIST_HEAD_H: f32 = 34.0;
-/// How wide the sheet's list of files is.
-const SHEET_LIST_W: f32 = 300.0;
 /// The "+" for a comment on the whole file at a row's right end, and the number of comments after
 /// the counts: both keep their room, so nothing moves as the pointer comes and goes.
 const FILE_PLUS_W: f32 = 22.0;
@@ -1727,8 +1734,10 @@ const FILE_GAP: f32 = 4.0;
 /// "from this session", the name cut with "…", a mark for new, deleted or renamed files, the
 /// counts in a column of their own and the number of comments. The open file is lit, a click goes
 /// there. Fixed width: dragging the sheet gives the diff the rest.
-fn sheet_files<'a>(brain: &'a Brain, files: &[&'a SessionChange], index: usize, merged: bool, reviewing: Option<&brain_core::review::Review>) -> Element<'a, Message> {
-    let inner = SHEET_LIST_W - 24.0 - 2.0 * tree::ISLAND_PAD_X;
+fn sheet_files<'a>(brain: &'a Brain, files: &[&'a SessionChange], index: usize, merged: bool, reviewing: Option<&brain_core::review::Review>, width: f32) -> Element<'a, Message> {
+    // The grab area beside the list takes 3 pt of what the line alone would.
+    let width = width - 3.0;
+    let inner = width - 24.0 - 2.0 * tree::ISLAND_PAD_X;
     // The counts column is as wide as the longest counts need (monospace, 11 pt: 6.6 per glyph).
     let counts_len = |added: Option<u64>, removed: Option<u64>| -> usize {
         let added = added.filter(|a| *a > 0 || removed.unwrap_or(0) == 0).map(|a| format!("+{a}").chars().count() + 1);
@@ -1818,7 +1827,7 @@ fn sheet_files<'a>(brain: &'a Brain, files: &[&'a SessionChange], index: usize, 
         .width(Fill)
         .height(Fill)
         .style(scrollbar);
-    container(column![modes, header, scrolled]).width(SHEET_LIST_W).height(Fill).style(|_| style::fill(CHROME)).into()
+    container(column![modes, header, scrolled]).width(width).height(Fill).style(|_| style::fill(CHROME)).into()
 }
 
 /// How far each level of the tree is moved in: the room of a folder's arrow.

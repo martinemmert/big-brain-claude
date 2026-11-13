@@ -23,7 +23,7 @@ mod menus;
 pub(crate) mod status_popup;
 mod quick_look;
 mod review;
-pub use quick_look::{folders, sheet_size, tree_lines, DiffRow, Preview, TreeLine, LIST_TOP};
+pub use quick_look::{folders, sheet_files_width, sheet_size, SHEET_RING, tree_lines, DiffRow, Preview, TreeLine, LIST_TOP};
 pub use review::{place as place_comments, ReviewEditor, REVIEW_EDITOR};
 
 pub use account::ACCOUNT_NAME;
@@ -262,6 +262,8 @@ pub enum Message {
     ToggleProjectFolded(String),
     /// Leave a project out of the list, or bring it back.
     ToggleProjectHidden(String),
+    /// Takes a project out of the tree (two presses); its sessions stay and go under "Weitere".
+    RemoveProject(String),
     /// Show the hidden projects for a look, or not.
     ToggleHiddenProjects,
     /// Open or fold the sessions that ended over a day ago.
@@ -343,6 +345,11 @@ pub enum Message {
     SheetDone,
     /// A press on the sheet's head: twice in a row sets the size back to the default.
     SheetHead,
+    /// The file list's right edge was grabbed (twice in a row: the default width), the pointer
+    /// moved while it is held (its x), and it was let go.
+    SheetFilesGrab,
+    SheetFilesTo(f32),
+    SheetFilesDone,
     /// "Diff kopieren": the open file's diff to the clipboard.
     CopyDiff,
     /// A search hit or a prompt clicked open (its index in the history), or closed again.
@@ -476,6 +483,7 @@ impl Message {
                 | Message::MousePressed
                 | Message::MouseReleased
                 | Message::SheetTo(_)
+                | Message::SheetFilesTo(_)
                 | Message::ReviewHoverRow(_)
                 | Message::ReviewHoverFile(_)
                 | Message::ReviewEdit(_)
@@ -818,7 +826,9 @@ pub struct Brain {
     pub dragging_sidebar: bool,
     /// The Quick Look sheet's edges held with the mouse: (horizontal, vertical).
     pub dragging_sheet: Option<(bool, bool)>,
+    pub dragging_sheet_files: bool,
     last_sheet_head_press: Option<Instant>,
+    last_sheet_files_press: Option<Instant>,
     /// The selection the derived state was last synced for, and whether it ran in Brain then
     /// (auto-attach when either changes: another session, or this one just moved into Brain).
     synced_selection: Option<(SessionKey, bool)>,
@@ -989,7 +999,9 @@ impl Brain {
             synced_selection: None,
             dragging_sidebar: false,
             dragging_sheet: None,
+            dragging_sheet_files: false,
             last_sheet_head_press: None,
+            last_sheet_files_press: None,
             titlebar_ready: false,
             focus_on_select: false,
             account_setup: account::AccountSetup::default(),
@@ -1063,6 +1075,13 @@ impl Brain {
             subscriptions.push(iced::event::listen_with(|event, _, _| match event {
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Message::SidebarTo(position.x)),
                 iced::Event::Mouse(iced::mouse::Event::ButtonReleased(_)) => Some(Message::SidebarDone),
+                _ => None,
+            }));
+        }
+        if self.dragging_sheet_files {
+            subscriptions.push(iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Message::SheetFilesTo(position.x)),
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(_)) => Some(Message::SheetFilesDone),
                 _ => None,
             }));
         }
@@ -1215,6 +1234,11 @@ impl Brain {
                 } else {
                     tr!("Projekt „{name}“ wieder eingeblendet.", "Project “{name}” shown again.")
                 });
+                Task::none()
+            }
+            Message::RemoveProject(name) => {
+                self.project_menu = None;
+                self.remove_project(&name);
                 Task::none()
             }
             Message::ToggleHiddenProjects => {
@@ -1465,6 +1489,31 @@ impl Brain {
             }
             Message::SheetDone => {
                 self.dragging_sheet = None;
+                self.prefs.save();
+                Task::none()
+            }
+            Message::SheetFilesGrab => {
+                let twice = self.last_sheet_files_press.is_some_and(|t| t.elapsed() < Duration::from_millis(400));
+                self.last_sheet_files_press = (!twice).then(Instant::now);
+                if twice {
+                    self.prefs.sheet_files_width = None;
+                    self.prefs.save();
+                } else {
+                    self.dragging_sheet_files = true;
+                }
+                Task::none()
+            }
+            Message::SheetFilesTo(x) => {
+                if self.dragging_sheet_files {
+                    // The list starts at the sheet's left edge, inside the ring of grips.
+                    let sheet = sheet_size(self.prefs.quick_look_size, self.window_size, self.sheet_top());
+                    let left = (self.window_size.width - sheet.width) / 2.0 + quick_look::SHEET_RING;
+                    self.prefs.sheet_files_width = Some(sheet_files_width(Some(x - left), sheet.width));
+                }
+                Task::none()
+            }
+            Message::SheetFilesDone => {
+                self.dragging_sheet_files = false;
                 self.prefs.save();
                 Task::none()
             }
@@ -2978,6 +3027,18 @@ impl Brain {
         self.prefs.set_project(key, project);
         self.prefs.save();
         self.set_status(status);
+    }
+
+    /// Takes a project out of the tree (the second press within 5 s): off the list and from the
+    /// hidden ones, its hand-placed sessions free again. Nothing is deleted.
+    fn remove_project(&mut self, name: &str) {
+        if !self.arm('p', &SessionKey { account: String::new(), id: format!("project:{name}") }) {
+            self.set_status(t("Nochmal „Projekt entfernen“ – die Sessions bleiben, sie stehen dann unter „Weitere“.", "Press “Remove project” again – the sessions stay, they are then under “More”."));
+            return;
+        }
+        let freed = self.prefs.remove_project(name);
+        self.prefs.save();
+        self.set_status(tr!("Projekt „{name}“ entfernt – seine Sessions stehen unter „Weitere“ ({freed} von Hand zugeordnete wieder frei).", "Project “{name}” removed – its sessions are under “More” ({freed} placed by hand are free again)."));
     }
 
     // ---- the list ---------------------------------------------------------------
