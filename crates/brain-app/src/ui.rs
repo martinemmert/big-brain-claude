@@ -934,8 +934,10 @@ fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Messa
     } else {
         Vec::new()
     };
-    // Gutter, gap, "+", the head's right padding, the dots, and "hidden" when it is.
-    let extra = dots.len() as f32 * 14.0 + if project.hidden { 70.0 } else { 0.0 };
+    // Folded, also how many sessions live in it, quietly before the dots.
+    let count = (project.folded && project.live > 0).then(|| project.live.to_string());
+    // Gutter, gap, "+", the head's right padding, the count, the dots, and "hidden" when it is.
+    let extra = dots.len() as f32 * 14.0 + count.as_ref().map_or(0.0, |c| c.len() as f32 * 7.0 + 8.0) + if project.hidden { 70.0 } else { 0.0 };
     let room = tree_inner(brain) - HEAD_GUTTER - 6.0 - PLUS_W - 6.0 - extra;
     let mut line = row![
         head_gutter(),
@@ -947,6 +949,9 @@ fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Messa
     .align_y(iced::Center);
     if project.hidden {
         line = line.push(text(t("ausgeblendet", "hidden")).size(11.5).color(TEXT_FAINT).font(UI).wrapping(text::Wrapping::None));
+    }
+    if let Some(count) = count {
+        line = line.push(text(count).size(12).color(TEXT_FAINT).font(UI).wrapping(text::Wrapping::None));
     }
     for dot in dots {
         line = line.push(style::dot::<Message>(dot, 8.0));
