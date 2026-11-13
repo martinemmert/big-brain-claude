@@ -108,16 +108,16 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   Ended sessions of the last day stay dimmed under their project; a line at the end opens
   *snoozed*, *in the background*, *automated* and *older* ones. A slim header over the terminal
   shows project › session, branch, account and context fill; a line at the bottom appears only while an account has a limit used up to 80 % or more.
-  Messages of the last command show as a small card at the bottom of the window.
-  `⌥⌘⌫` twice moves an ended session's transcript
-  to the **Trash**. *File → Clean up …* shows everything ended (or in the background) and quiet for
-  1, 3, 7 or 14 days, to hide or trash at once. Pinned and saved sessions always stay.
+  Messages of the last command show as a small card at the bottom of the window; what can be taken back has a button on it (or `⌘Z`).
+  `⌥⌘⌫` moves an ended session's transcript
+  to the **Trash** at once; the card's *Undo* puts it back. *File → Clean up …* shows everything ended (or in the background) and quiet for
+  1, 3, 7 or 14 days, to hide or, after a question, trash. Pinned and saved sessions always stay.
 - **Claude Code's background sessions** (`claude --bg`, listed by `claude agents`) show with
   their own state (blocked, failed, done …) while something happens; after a day without activity
   they go to *Quiet in the background*, and like those programs started, they never notify. `⏎`
-  attaches to one, `⌥⌘X` twice stops it, `⌥⌘⌫` twice stops it, moves its transcript to the Trash
+  attaches to one, `⌥⌘X` stops it, `⌥⌘⌫` stops it, moves its transcript to the Trash
   and runs `claude rm`.
-- **End now, resume later.** `⌥⌘X` twice ends a waiting session (`/exit`); closing the tab works
+- **End now, resume later.** `⌥⌘X` ends a waiting session (`/exit`) at once, and the card's *Resume* goes on; closing the tab works
   too. Ended sessions stay in the list as long as Claude Code keeps their transcript
   (`cleanupPeriodDays`, 30 days by default), with their name, last message and how many days are
   left. `⌥⌘P` saves one under "Saved to resume" at the top; `⏎` resumes it in a new tab; `⌘O` searches
@@ -135,7 +135,7 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
 - **Menu bar count** and native **notifications** with *Open* and *Snooze 15 min*, only when a
   session is done or asks you something (a question or a permission), sound only for the
   latter; no reminders. *Session → Snooze* pauses a
-  session for 15 min, 1 h, until tomorrow 9:00 or until something happens in it (`⌫` twice jumps to
+  session for 15 min, 1 h, until tomorrow 9:00 or until something happens in it (`⌫` jumps to
   the last). A button in the title bar, right of the account filter (it shows the number that needs you and the fullest account's usage), opens a card
   over the window's top right: the sessions that need you (a permission with *Allow* and *Deny*, and *Show*, which selects
   the session), the finished ones you haven't seen, and the 5-hour and weekly limits of each account with a forecast and
@@ -365,10 +365,11 @@ start and end), and none of the menu's shortcuts uses them.
 | `⌘Y` / `⇧⌘Y` | allow / deny an open permission prompt |
 | `⌘R` | rename |
 | `⌥⌘P` / `⌥⌘M` | pin (an ended session: save it to resume) / mute |
-| `⌫` `⌫` | hide until something happens in the session (again: show it) |
+| `⌫` | hide until something happens in the session (again: show it; the card has *Undo*) |
 | `⌥⌘O` | move a session from iTerm into Brain (right away, no dialog) |
-| `⌥⌘X` `⌥⌘X` | end the session (`/exit`; a background session: `claude stop`); it stays resumable |
-| `⌥⌘⌫` `⌥⌘⌫` | move an ended session's transcript to the Trash |
+| `⌥⌘X` | end the session (`/exit`; a background session: `claude stop`); it stays resumable, the card has *Resume* |
+| `⌥⌘⌫` | move an ended session's transcript to the Trash (the card has *Undo*) |
+| `⌘Z` | press the button of the card at the bottom (not while a terminal or a text field has the keyboard) |
 | `⌘F` | find in the session's whole conversation (`esc` closes) |
 | `⌘⇧C` | copy Claude's last answer |
 | `⌘C` | in the terminal: copy what Claude Code copied after your mouse selection, else Brain's selection |

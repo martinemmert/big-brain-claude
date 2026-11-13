@@ -69,7 +69,6 @@ impl Brain {
         self.move_project = MoveDialog { key: Some(key), query: String::new(), index: 0 };
         self.mode = Mode::MoveProject;
         self.focused_terminal = None;
-        self.armed = None;
         operation::focus(MOVE_PROJECT)
     }
 

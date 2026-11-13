@@ -97,6 +97,24 @@ pub struct ListedProject {
     pub folder: Option<String>,
 }
 
+/// A project as it stood before it was taken out of the tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovedProject {
+    pub name: String,
+    /// Its place in the list and its entry.
+    listed: Option<(usize, ListedProject)>,
+    hidden: bool,
+    /// Session id → this project, for the sessions put in it by hand.
+    placed: Vec<(String, String)>,
+}
+
+impl RemovedProject {
+    /// How many sessions put in it by hand are free now.
+    pub fn freed(&self) -> usize {
+        self.placed.len()
+    }
+}
+
 /// Sessions are remembered by account and session id, so a pin outlives the process.
 fn id(key: &SessionKey) -> String {
     format!("{}:{}", key.account, key.id)
@@ -308,13 +326,30 @@ impl Prefs {
     }
 
     /// Takes a project out of the tree: off the list, shown again if it was hidden, and the sessions
-    /// put in it by hand are free again. Returns how many sessions that were; nothing is deleted.
-    pub fn remove_project(&mut self, name: &str) -> usize {
-        self.listed_projects.retain(|p| p.name != name);
-        self.hidden_projects.remove(name);
-        let before = self.projects.len();
+    /// put in it by hand are free again; nothing is deleted. What it was is returned, for
+    /// [`restore_project`](Self::restore_project).
+    pub fn remove_project(&mut self, name: &str) -> RemovedProject {
+        let listed = self.listed_projects.iter().position(|p| p.name == name).map(|at| (at, self.listed_projects.remove(at)));
+        let hidden = self.hidden_projects.remove(name);
+        let placed: Vec<(String, String)> = self.projects.iter().filter(|(_, project)| *project == name).map(|(session, project)| (session.clone(), project.clone())).collect();
         self.projects.retain(|_, project| project != name);
-        before - self.projects.len()
+        RemovedProject { name: name.to_string(), listed, hidden, placed }
+    }
+
+    /// Puts a removed project back as it was: its place in the list, hidden or not, and the
+    /// sessions placed in it by hand (unless the user put them somewhere else since).
+    pub fn restore_project(&mut self, removed: RemovedProject) {
+        if let Some((at, project)) = removed.listed {
+            if !self.listed_projects.iter().any(|p| p.name == project.name) {
+                self.listed_projects.insert(at.min(self.listed_projects.len()), project);
+            }
+        }
+        if removed.hidden {
+            self.hidden_projects.insert(removed.name);
+        }
+        for (session, project) in removed.placed {
+            self.projects.entry(session).or_insert(project);
+        }
     }
 
     /// The first start with a project list: takes over `projects` (those of the sessions running
@@ -455,11 +490,48 @@ mod tests {
         prefs.set_project(&b, Some("web".into()));
         prefs.set_project(&c, Some("api".into()));
 
-        assert_eq!(prefs.remove_project("api"), 2);
+        let removed = prefs.remove_project("api");
+        assert_eq!(removed.freed(), 2);
         assert!(!prefs.is_project_listed("api") && prefs.is_project_listed("web"));
         assert!(!prefs.is_project_hidden("api"));
         assert_eq!((prefs.project(&a), prefs.project(&b), prefs.project(&c)), (None, Some("web"), None));
-        assert_eq!(prefs.remove_project("api"), 0, "nothing left to remove");
+        assert_eq!(prefs.remove_project("api").freed(), 0, "nothing left to remove");
+    }
+
+    #[test]
+    fn undoing_a_removal_restores_the_whole_state() {
+        let mut prefs = Prefs::default();
+        prefs.list_project("api", Some("/w/api"));
+        prefs.list_project("web", None);
+        prefs.list_project("docs", None);
+        prefs.toggle_project_hidden("web");
+        for (id, project) in [("a", "web"), ("b", "api"), ("c", "web")] {
+            prefs.set_project(&SessionKey { account: "main".into(), id: id.into() }, Some(project.into()));
+        }
+        let before = serde_json::to_value(&prefs).unwrap();
+
+        let removed = prefs.remove_project("web");
+        assert_ne!(serde_json::to_value(&prefs).unwrap(), before);
+        prefs.restore_project(removed);
+
+        assert_eq!(serde_json::to_value(&prefs).unwrap(), before);
+        assert_eq!(prefs.listed_projects().iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["api", "web", "docs"]);
+    }
+
+    #[test]
+    fn undoing_a_removal_leaves_a_session_the_user_put_elsewhere_in_the_meantime() {
+        let mut prefs = Prefs::default();
+        prefs.list_project("web", None);
+        prefs.list_project("docs", None);
+        let (a, c) = (SessionKey { account: "main".into(), id: "a".into() }, SessionKey { account: "main".into(), id: "c".into() });
+        prefs.set_project(&a, Some("web".into()));
+        prefs.set_project(&c, Some("web".into()));
+
+        let removed = prefs.remove_project("web");
+        prefs.set_project(&c, Some("docs".into()));
+        prefs.restore_project(removed);
+
+        assert_eq!((prefs.project(&a), prefs.project(&c)), (Some("web"), Some("docs")));
     }
 
     #[test]

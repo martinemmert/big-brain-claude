@@ -85,7 +85,6 @@ impl Brain {
             })
             .collect();
         self.adopt = AdoptDialog { entries: adoption_entries(&sessions, now_ms(), &home_dir()) };
-        self.armed = None;
         self.mode = Mode::Adopt;
     }
 

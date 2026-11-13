@@ -84,7 +84,6 @@ impl Brain {
             Preset::Move => self.move_targets().first().copied().unwrap_or(own),
             _ => own,
         };
-        self.armed = None;
         self.relaunch = RelaunchDialog { target, keep: preset == Preset::Fork, restart: preset == Preset::Restart, flags: String::new(), error: None };
         self.mode = Mode::Relaunch;
         if preset == Preset::Restart {

@@ -33,6 +33,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
     let detail = match brain.mode {
         _ if brain.overview => overview(brain),
         Mode::Cleanup => cleanup(brain),
+        Mode::Confirm => confirm(brain),
         Mode::Later => later(brain),
         Mode::Pairing => pairing(brain),
         Mode::AccountSetup => account_setup(brain),
@@ -99,9 +100,16 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
 fn toast(brain: &Brain) -> Element<'_, Message> {
     let Some((message, _)) = &brain.status else { return Space::new().into() };
     let left = if brain.prefs.hide_sidebar { 0.0 } else { brain.prefs.sidebar_width.unwrap_or(app::SIDEBAR_DEFAULT) };
-    let card = container(text(clip(message, 110)).size(12).color(TEXT_STRONG).font(UI).wrapping(text::Wrapping::None))
-        .padding([8, 14])
-        .style(|_| boxed(RAISED, LINE_STRONG, 10.0));
+    let label = text(clip(message, 110)).size(12).color(TEXT_STRONG).font(UI).wrapping(text::Wrapping::None);
+    // With a button the card is a little taller and its right edge closer: the button has its own.
+    let (content, padding): (Element<'_, Message>, Padding) = match &brain.status_action {
+        Some(act) => (
+            row![label, action(act.label.clone(), "⌘Z", false, Some(Message::Undo(act.undo.clone())))].spacing(14).align_y(iced::Center).into(),
+            Padding { top: 5.0, right: 6.0, bottom: 5.0, left: 14.0 },
+        ),
+        None => (label.into(), Padding::from([8, 14])),
+    };
+    let card = container(content).padding(padding).style(|_| boxed(RAISED, LINE_STRONG, 10.0));
     container(card).width(Fill).height(Fill).align_x(iced::Center).align_y(iced::Bottom).padding(Padding { left, bottom: 24.0, ..Padding::ZERO }).into()
 }
 
@@ -2560,7 +2568,7 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
         text(summary).size(12.5).color(TEXT_MUTED).font(UI),
         scrollable(column(rows).spacing(2)).height(Fill).style(scrollbar),
         container(
-            text(t("H alle ausblenden · ⌘⌫ ⌘⌫ alle in den Papierkorb · ⇥ Alter · esc", "H hide all · ⌘⌫ ⌘⌫ move all to the Trash · ⇥ age · esc"))
+            text(t("H alle ausblenden · ⌘⌫ alle in den Papierkorb · ⇥ Alter · esc", "H hide all · ⌘⌫ move all to the Trash · ⇥ age · esc"))
                 .size(11.5)
                 .color(TEXT_FAINT)
                 .font(UI),
@@ -2569,6 +2577,51 @@ fn cleanup(brain: &Brain) -> Element<'_, Message> {
     ]
     .spacing(14)
     .padding(Padding { top: 24.0, right: 28.0, bottom: 0.0, left: 28.0 })
+    .into()
+}
+
+/// A short question before something that can't be taken back: the red button does it (⏎), the
+/// other one (esc) goes back.
+fn confirm(brain: &Brain) -> Element<'_, Message> {
+    let Some((what, _)) = &brain.confirm else { return Space::new().into() };
+    let (title, sentence, button) = match what {
+        app::Confirm::ForceEnd(key) => {
+            let name = brain.model.board.get(key).map(|s| s.display_name()).unwrap_or_default();
+            (
+                t("Hart beenden?", "End by force?").to_string(),
+                tr!(
+                    "„{name}“: Brain stoppt den Prozess (claude stop, sonst SIGTERM, zuletzt SIGKILL). Was noch nicht gesendet war, geht verloren; das Gespräch bleibt und lässt sich fortsetzen.",
+                    "“{name}”: Brain stops the process (claude stop, else SIGTERM, last SIGKILL). Whatever wasn't sent yet is lost; the conversation stays and can be resumed."
+                ),
+                t("Hart beenden", "End by force"),
+            )
+        }
+        app::Confirm::Cleanup(keys) => {
+            let n = keys.len();
+            (
+                t("Aufräumen?", "Clean up?").to_string(),
+                tr!("{n} Sessions in den Papierkorb legen? Im Finder lassen sie sich zurückholen.", "Move {n} sessions to the Trash? Finder can put them back."),
+                t("In den Papierkorb", "Move to the Trash"),
+            )
+        }
+    };
+    container(
+        column![
+            text(title).size(20).color(TEXT_STRONG).font(style::bold()),
+            text(sentence).size(13).line_height(1.5).color(TEXT).font(UI),
+            row![
+                Space::new().width(Fill),
+                action(t("Abbrechen", "Cancel"), "esc", false, Some(Message::Close)),
+                action(button, "⏎", true, Some(Message::ConfirmRun)),
+            ]
+            .spacing(10),
+        ]
+        .spacing(14)
+        .max_width(460),
+    )
+    .padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 })
+    .center_x(Fill)
+    .center_y(Fill)
     .into()
 }
 
@@ -3356,11 +3409,11 @@ fn keys_sheet(_brain: &Brain) -> Element<'_, Message> {
                 ("⌘R", t("umbenennen", "rename")),
                 ("⌥⌘P", t("anheften", "pin")),
                 ("⌥⌘M", t("stummschalten", "mute")),
-                ("⌫ ⌫", t("ausblenden, bis sich etwas tut", "hide until something happens")),
+                ("⌫", t("ausblenden, bis sich etwas tut", "hide until something happens")),
                 ("⌥⌘O", t("aus iTerm in Brain holen", "move from iTerm into Brain")),
                 ("⌥⌘I", t("in iTerm öffnen", "open in iTerm")),
-                ("⌥⌘X ⌥⌘X", t("beenden", "end")),
-                ("⌥⌘⌫ ⌥⌘⌫", t("in den Papierkorb", "move to the Trash")),
+                ("⌥⌘X", t("beenden (⌘Z setzt fort)", "end (⌘Z resumes)")),
+                ("⌥⌘⌫", t("in den Papierkorb (⌘Z legt zurück)", "move to the Trash (⌘Z puts back)")),
                 ("⌘E", t("längerer Prompt (Composer)", "longer prompt (composer)")),
                 ("⌘F", t("im ganzen Gespräch suchen", "find in the whole conversation")),
                 ("⌘⇧C", t("letzte Antwort kopieren", "copy the last answer")),

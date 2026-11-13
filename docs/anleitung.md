@@ -35,7 +35,7 @@ springt unter der Maus. Welche Projekte im Baum stehen, bestimmst du:
   zum nächsten Start aus. Danach gilt wieder: Projekte kommen nur von Hand.
 
 Ein Projekt bleibt, bis du es ausblendest (Rechtsklick auf den Projektkopf, oder `⌘K`); unten holt
-„N Projekte ausgeblendet“ es zum Nachsehen zurück. **Projekt entfernen …** (Rechtsklick auf den Kopf, zweimal; auch Ablage → Projekt „X“ entfernen …) nimmt es ganz aus dem Baum und gibt die von Hand zugeordneten Sessions frei: sie stehen dann unter „Weitere“, nichts wird gelöscht. Ein Klick auf den Kopf klappt es zu oder auf; ein
+„N Projekte ausgeblendet“ es zum Nachsehen zurück. **Projekt entfernen …** (Rechtsklick auf den Kopf; auch Ablage → Projekt „X“ entfernen …) nimmt es ganz aus dem Baum und gibt die von Hand zugeordneten Sessions frei: sie stehen dann unter „Weitere“, nichts wird gelöscht, und die Einblendung unten hat ein *Rückgängig*. Ein Klick auf den Kopf klappt es zu oder auf; ein
 zugeklapptes zeigt rote und gelbe Zähler. „ruht“ steht an einem Projekt ohne lebende Session. Daneben
 steht das Konto.
 
@@ -233,18 +233,20 @@ hat:
 |---|---|
 | `⌥⌘P` | anheften; bei einer beendeten Session: zum Fortsetzen merken |
 | Menü *Pausieren* | 15 Min, 1 Std, bis morgen 9 Uhr, bis sich in der Session etwas tut, Pause aufheben |
-| `⌫` `⌫` | gleich „bis sich etwas tut“ (nochmal: wieder einblenden) |
+| `⌫` | gleich „bis sich etwas tut“ (nochmal: wieder einblenden; die Einblendung hat *Rückgängig*) |
 | Rechtsklick → *Stummschalten* | keine Benachrichtigungen mehr für diese Session (auch in ⌘K) |
 | `⌘R` | umbenennen (auch während die Session arbeitet; `/rename` geht hinein, sobald sie frei ist) |
-| `⌥⌘X` `⌥⌘X` | beenden (bleibt fortsetzbar) |
-| `⌥⌘⌫` `⌥⌘⌫` | beendete Session in den Papierkorb |
+| `⌥⌘X` | sofort beenden (bleibt fortsetzbar; die Einblendung hat *Fortsetzen*) |
+| `⌥⌘⌫` | beendete Session sofort in den Papierkorb (die Einblendung hat *Rückgängig* und legt die Dateien zurück) |
 | Menü *Ablage → Aufräumen …* | alles, was seit N Tagen ruht, ausblenden oder in den Papierkorb |
 | `⌘L` | für später: Aufgaben aus `/later`, `⏎` startet eine als neue Session, `⌫` hakt ab |
 | Menü *In anderes Konto*, *Forken in* | **in ein anderes Konto oder forken …**: ein Dialog für Konto (`1`, `2`, … – mit dem Verbrauch jedes Kontos), ob das Original weiterläuft (`⇥`), und Flags. Er sagt, was `⏎` tut: anderes Konto → *umziehen* (z. B. wenn ein Limit voll ist); Original läuft weiter → *forken*. Neu starten mit Flags (`--chrome`, `--model opus`) geht über Menü *Session* oder ⌘K → „Neu starten mit …“, nach Brain holen mit `⌥⌘O` |
 | Menü *Session → Neu starten mit …* | derselbe Dialog, vorbelegt mit Flags |
 
-Tasten, die zweimal gedrückt werden wollen, fragen im Rechtsklick-Menü nicht nach: Der Klick
-zählt als Bestätigung.
+Was sich zurücknehmen lässt (beenden, ausblenden, in den Papierkorb, Projekt entfernen), geschieht sofort; die
+Einblendung unten hat dann einen Knopf (*Rückgängig* oder *Fortsetzen*, 10 Sekunden), den auch `⌘Z` auslöst,
+solange kein Terminal und kein Textfeld die Tastatur hat. Was sich nicht zurücknehmen lässt (*Hart beenden*,
+*Aufräumen*), fragt vorher in einem kleinen Dialog: `⏎` bestätigt, `esc` bricht ab.
 
 **Der Gärtner** (⌘K → „Gärtner“, oder „✂ N kaputt“ in der Titelleiste, oder `brain garden`)
 findet Sessions, die Brain listet, aber nicht mehr steuern kann, und beendet sie endgültig:
@@ -373,7 +375,8 @@ Alles optional, in `~/.claude-brain/config.json`:
 | `⌥⌘P` / `⌥⌘M` | anheften / stummschalten |
 | `⌫` `⌫` | ausblenden, bis sich etwas tut |
 | `⌥⌘O` | aus iTerm nach Brain holen (sofort, ohne Dialog) |
-| `⌥⌘X` `⌥⌘X`, `⌥⌘⌫` `⌥⌘⌫` | beenden, in den Papierkorb |
+| `⌥⌘X`, `⌥⌘⌫` | beenden, in den Papierkorb |
+| `⌘Z` | Knopf der Einblendung unten (Rückgängig, Fortsetzen) |
 | `⌘F` | in der ganzen Session suchen |
 | `⌘⇧C` | letzte Antwort kopieren |
 | `⌘C` | im Terminal: was Claude Code nach deiner Maus-Auswahl kopiert hat, sonst Brains Auswahl |

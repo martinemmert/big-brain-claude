@@ -122,8 +122,7 @@ impl Brain {
     }
 
     /// Right-click "End by force": the gardener's way for one session that won't end.
-    pub(super) fn force_end_selected(&mut self) -> Task<Message> {
-        let Some(key) = self.selected.clone() else { return Task::none() };
+    pub(super) fn force_end(&mut self, key: SessionKey) -> Task<Message> {
         let finding = Finding { key, reason: garden::Reason::Stuck { quiet_ms: 0 }, sure: true };
         self.garden = GardenDialog { findings: vec![finding], chosen: vec![true], selected: 0, busy: false };
         self.garden_end()

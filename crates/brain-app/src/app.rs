@@ -91,6 +91,35 @@ pub enum Mode {
     Adopt,
     /// Where the selected session goes: a project to choose or name.
     MoveProject,
+    /// A short question before something that can't be taken back.
+    Confirm,
+}
+
+/// What the confirm dialog asks about; ⏎ does it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Confirm {
+    /// Stops the session's process.
+    ForceEnd(SessionKey),
+    /// Moves these sessions to the Trash (the clean-up dialog's list).
+    Cleanup(Vec<SessionKey>),
+}
+
+/// What the button of a toast takes back (or, for an ended session, continues).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Undo {
+    /// An ended session goes on.
+    Resume(SessionKey),
+    Unhide(SessionKey),
+    RestoreProject(crate::prefs::RemovedProject),
+    /// The transcripts of a deleted session go back from the Trash: (in the Trash, where they were).
+    RestoreFromTrash(Vec<(std::path::PathBuf, std::path::PathBuf)>),
+}
+
+/// The toast's button: its label and what it does.
+#[derive(Debug, Clone)]
+pub struct StatusAction {
+    pub label: String,
+    pub undo: Undo,
 }
 
 /// What a line of the command palette does.
@@ -229,8 +258,12 @@ pub enum Message {
     /// A note for later starts as a new session; check it off.
     StartNote(String),
     CheckOffNote(String),
-    /// A choice in the context menu; the click is the confirmation keys get by pressing twice.
+    /// A choice in the context menu.
     MenuPick(Action),
+    /// The button of the toast (or ⌘Z).
+    Undo(Undo),
+    /// ⏎ or the red button in the confirm dialog.
+    ConfirmRun,
     CloseMenu,
     /// The pointer over the list, in window coordinates (where a context menu opens).
     Pointer(iced::Point),
@@ -697,6 +730,8 @@ pub struct Brain {
     pub later_pick: usize,
     later_stamp: Option<(std::time::SystemTime, u64)>,
     pub status: Option<(String, Instant)>,
+    /// The button of the message, if it has one (it stays up longer).
+    pub status_action: Option<StatusAction>,
     pub conversation: Option<Conversation>,
     /// The selected ended session in a few lines (shown before resuming it).
     pub brief: Option<(SessionKey, brain_core::brief::Brief)>,
@@ -768,8 +803,8 @@ pub struct Brain {
     /// Sessions whose terminal rang the bell while another session was selected.
     pub bells: HashSet<SessionKey>,
     pub new_session: NewSession,
-    /// ⌥⌘X, ⌫ or ⌥⌘⌫ was chosen once on this session: a second press within 5 s acts.
-    armed: Option<(char, SessionKey, Instant)>,
+    /// What the confirm dialog asks, and the mode it goes back to on esc.
+    pub confirm: Option<(Confirm, Mode)>,
     /// Sessions a move just started for: until the board lists them as moved, a second move
     /// (a double tap on the phone) would fork them into the target twice.
     moving: HashMap<SessionKey, Instant>,
@@ -930,6 +965,7 @@ impl Brain {
             later_pick: 0,
             later_stamp: None,
             status: None,
+            status_action: None,
             conversation: None,
             mode: Mode::Normal,
             search: String::new(),
@@ -972,7 +1008,7 @@ impl Brain {
             expanded: None,
             bells: HashSet::new(),
             new_session: NewSession::default(),
-            armed: None,
+            confirm: None,
             moving: HashMap::new(),
             context_menu: None,
             project_menu: None,
@@ -1129,8 +1165,14 @@ impl Brain {
             }
             Message::MenuPick(action) => {
                 self.context_menu = None;
-                self.perform(action, true)
+                self.perform(action)
             }
+            Message::Undo(undo) => {
+                self.status = None;
+                self.status_action = None;
+                self.undo(undo)
+            }
+            Message::ConfirmRun => self.confirm_run(),
             Message::CloseMenu => {
                 self.context_menu = None;
                 self.project_menu = None;
@@ -1991,8 +2033,10 @@ impl Brain {
         tasks.push(self.refresh_open_diff());
         tasks.push(self.continue_takeover());
         tasks.push(self.continue_restart());
-        if self.status.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(6)) {
+        let shown_for = Duration::from_secs(if self.status_action.is_some() { 10 } else { 6 });
+        if self.status.as_ref().is_some_and(|(_, at)| at.elapsed() > shown_for) {
             self.status = None;
+            self.status_action = None;
         }
         Task::batch(tasks)
     }
@@ -2524,7 +2568,6 @@ impl Brain {
             PaletteCommand::NewSession => self.open_new_session_dialog(),
             PaletteCommand::Find => self.start_find(),
             PaletteCommand::Cleanup => {
-                self.armed = None;
                 self.mode = Mode::Cleanup;
                 Task::none()
             }
@@ -3037,16 +3080,17 @@ impl Brain {
         self.set_status(status);
     }
 
-    /// Takes a project out of the tree (the second press within 5 s): off the list and from the
-    /// hidden ones, its hand-placed sessions free again. Nothing is deleted.
+    /// Takes a project out of the tree at once: off the list and from the hidden ones, its
+    /// hand-placed sessions free again. Nothing is deleted; the toast puts it all back.
     fn remove_project(&mut self, name: &str) {
-        if !self.arm('p', &SessionKey { account: String::new(), id: format!("project:{name}") }) {
-            self.set_status(t("Nochmal „Projekt entfernen“ – die Sessions bleiben, sie stehen dann unter „Weitere“.", "Press “Remove project” again – the sessions stay, they are then under “More”."));
-            return;
-        }
-        let freed = self.prefs.remove_project(name);
+        let removed = self.prefs.remove_project(name);
         self.prefs.save();
-        self.set_status(tr!("Projekt „{name}“ entfernt – seine Sessions stehen unter „Weitere“ ({freed} von Hand zugeordnete wieder frei).", "Project “{name}” removed – its sessions are under “More” ({freed} placed by hand are free again)."));
+        let freed = removed.freed();
+        self.set_status_with(
+            tr!("Projekt „{name}“ entfernt – seine Sessions stehen unter „Weitere“ ({freed} von Hand zugeordnete wieder frei).", "Project “{name}” removed – its sessions are under “More” ({freed} placed by hand are free again)."),
+            t("Rückgängig", "Undo"),
+            Undo::RestoreProject(removed),
+        );
     }
 
     // ---- the list ---------------------------------------------------------------
@@ -3385,6 +3429,14 @@ impl Brain {
         if named == Some(Named::Escape) && !terminal_keeps_keys {
             return self.escape();
         }
+        // ⌘Z presses the toast's button, unless a terminal or a text field has the keyboard (the
+        // terminal's keys are Claude's, a field has its own undo).
+        if cmd && !modifiers.shift() && !modifiers.alt() && character.as_deref() == Some("z") && self.mode == Mode::Normal && !captured && !terminal_keeps_keys {
+            if let Some(action) = self.status_action.take() {
+                self.status = None;
+                return self.undo(action.undo);
+            }
+        }
         if cmd && self.focused_terminal.is_some() && character.as_deref() == Some("v") {
             // A copied screenshot: the terminal pastes text only, so Brain saves the picture and
             // pastes its path, which Claude Code turns into an attachment.
@@ -3449,6 +3501,12 @@ impl Brain {
             Mode::Later => return self.on_later_key(named, cmd),
             Mode::Pairing | Mode::AccountSetup => return Task::none(),
             Mode::Sync => return self.on_sync_key(named, character.as_deref()),
+            Mode::Confirm => {
+                if named == Some(Named::Enter) {
+                    return self.confirm_run();
+                }
+                return Task::none();
+            }
             Mode::Garden => return self.on_garden_key(named),
             Mode::Adopt => return self.on_adopt_key(named),
             Mode::MoveProject => return self.on_move_project_key(named),
@@ -3516,7 +3574,7 @@ impl Brain {
                 return Task::none();
             }
             Some(Named::Backspace) => {
-                self.hide_selected(false);
+                self.hide_selected();
                 return Task::none();
             }
             _ => {}
@@ -3553,6 +3611,10 @@ impl Brain {
             }
             Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden | Mode::Adopt | Mode::MoveProject => {
                 self.mode = Mode::Normal;
+                unfocus()
+            }
+            Mode::Confirm => {
+                self.mode = self.confirm.take().map_or(Mode::Normal, |(_, back)| back);
                 unfocus()
             }
             Mode::Normal if !self.search.is_empty() => {
@@ -3602,6 +3664,13 @@ impl Brain {
             heard.said = Some(message.clone());
         }
         self.status = Some((message, Instant::now()));
+        self.status_action = None;
+    }
+
+    /// A message with a button; the button (or ⌘Z) takes `undo`.
+    pub fn set_status_with(&mut self, message: impl Into<String>, label: &str, undo: Undo) {
+        self.set_status(message);
+        self.status_action = Some(StatusAction { label: label.to_string(), undo });
     }
 
     /// Says why a command from the phone (or anything) wasn't carried out: in the status line,
@@ -3673,14 +3742,12 @@ impl Brain {
 
     // ---- actions ----------------------------------------------------------------
 
-    /// A button or a key. Actions that ask to be pressed twice ask here.
+    /// A button or a key.
     fn act(&mut self, action: Action) -> Task<Message> {
-        self.perform(action, false)
+        self.perform(action)
     }
 
-    /// `confirmed`: the user already chose deliberately (a menu click), so actions that
-    /// normally want a second press run at once.
-    fn perform(&mut self, action: Action, confirmed: bool) -> Task<Message> {
+    fn perform(&mut self, action: Action) -> Task<Message> {
         match action {
             // A session that runs in Brain opens here; everything else in its terminal app.
             // Whatever Brain can run opens in its terminal: background sessions attach, ended
@@ -3731,10 +3798,10 @@ impl Brain {
             Action::RestartWith => return self.open_relaunch(relaunch::Preset::Restart),
             Action::MoveTo(index) => return self.move_selected(index, Vec::new()),
             Action::ForkTo(index) => return self.fork_selected(index, Vec::new()),
-            Action::End => return self.end_selected(confirmed),
-            Action::Hide => self.hide_selected(confirmed),
-            Action::Trash => self.trash_selected(confirmed),
-            Action::ForceEnd => return self.force_end_selected(),
+            Action::End => return self.end_selected(),
+            Action::Hide => self.hide_selected(),
+            Action::Trash => self.trash_selected(),
+            Action::ForceEnd => self.ask_force_end(),
             Action::Resume => self.resume_selected(),
             Action::Allow => self.answer_permission(true),
             Action::Deny => self.answer_permission(false),
@@ -3889,7 +3956,7 @@ impl Brain {
     }
 
     /// `S`: not snoozed → 15 min → 1 h → until tomorrow 9:00 → until something happens in it
-    /// (hidden, as `⌫ ⌫`) → back.
+    /// (hidden, as `⌫`) → back.
     fn cycle_snooze(&mut self) {
         let Some(session) = self.selected_session() else { return };
         let key = session.key.clone();
@@ -3927,30 +3994,92 @@ impl Brain {
         });
     }
 
-    /// The first press of a two-press action arms it; returns whether this press is the second,
-    /// within 5 s, on the same session.
-    fn arm(&mut self, action: char, key: &SessionKey) -> bool {
-        let confirmed = self.armed.as_ref().is_some_and(|(a, k, at)| *a == action && k == key && at.elapsed() < Duration::from_secs(5));
-        self.armed = if confirmed { None } else { Some((action, key.clone(), Instant::now())) };
-        confirmed
+    /// "Hart beenden": asks first, since the process stops and nothing brings it back as it was.
+    fn ask_force_end(&mut self) {
+        let Some(key) = self.selected.clone() else { return };
+        self.confirm = Some((Confirm::ForceEnd(key), self.mode));
+        self.mode = Mode::Confirm;
     }
 
-    /// ⌥⌘X twice: ends a waiting session with `/exit` (a background one with `claude stop`).
-    fn end_selected(&mut self, confirmed: bool) -> Task<Message> {
+    /// ⏎ or the red button in the confirm dialog.
+    fn confirm_run(&mut self) -> Task<Message> {
+        let Some((what, _)) = self.confirm.take() else { return Task::none() };
+        self.mode = Mode::Normal;
+        if self.blocked_in_demo() {
+            return Task::none();
+        }
+        match what {
+            Confirm::ForceEnd(key) => self.force_end(key),
+            Confirm::Cleanup(keys) => {
+                let (mut done, mut failed) = (0, Vec::new());
+                for key in keys {
+                    match self.delete_session(&key) {
+                        Ok(_) => done += 1,
+                        Err(err) => failed.push(err),
+                    }
+                }
+                self.set_status(match failed.first() {
+                    None => tr!("{done} Sessions in den Papierkorb gelegt.", "Moved {done} sessions to the Trash."),
+                    Some(err) => {
+                        let n = failed.len();
+                        tr!("{done} gelöscht, {n} fehlgeschlagen: {err}", "{done} deleted, {n} failed: {err}")
+                    }
+                });
+                Task::none()
+            }
+        }
+    }
+
+    /// What a toast's button does.
+    fn undo(&mut self, undo: Undo) -> Task<Message> {
+        match undo {
+            Undo::Resume(key) => {
+                self.prefs.unhide(&key);
+                self.prefs.save();
+                self.selected = Some(key.clone());
+                if self.model.board.get(&key).and_then(|s| self.terminal_command_for(s)).is_none() {
+                    self.set_status(t("Die Session ist noch nicht ganz zu – gleich nochmal versuchen (⏎ setzt sie fort).", "The session isn't quite closed yet – try again in a moment (⏎ resumes it)."));
+                    return Task::none();
+                }
+                return self.open_terminal(true);
+            }
+            Undo::Unhide(key) => {
+                self.prefs.unhide(&key);
+                self.prefs.save();
+                self.set_status(t("Wieder eingeblendet.", "Shown again."));
+            }
+            Undo::RestoreProject(removed) => {
+                let name = removed.name.clone();
+                self.prefs.restore_project(removed);
+                self.prefs.save();
+                self.set_status(tr!("Projekt „{name}“ ist wieder da.", "Project “{name}” is back."));
+            }
+            Undo::RestoreFromTrash(files) => {
+                let failed: Vec<String> = files.iter().filter_map(|(in_trash, origin)| crate::trash::put_back(in_trash, origin).err()).collect();
+                self.model.relist_transcripts();
+                match failed.first() {
+                    None => self.set_status(t("Aus dem Papierkorb zurückgelegt.", "Put back from the Trash.")),
+                    Some(err) => self.set_status(tr!("Zurücklegen fehlgeschlagen: {err} – im Finder wiederherstellen.", "Putting back failed: {err} – restore it in Finder.")),
+                }
+            }
+        }
+        Task::none()
+    }
+
+    /// ⌥⌘X: ends a waiting session with `/exit` (a background one with `claude stop`) at once;
+    /// the toast resumes it.
+    fn end_selected(&mut self) -> Task<Message> {
         let Some(session) = self.selected_session() else { return Task::none() };
         let key = session.key.clone();
+        let name = session.display_name();
         // Asleep, it has no process to stop: out of the list, until it wakes.
         if session.phase() == Phase::Asleep {
             self.prefs.hide(&key, now_ms());
             self.prefs.save();
-            self.set_status(t("Die Session schläft schon – aus der Liste genommen.", "The session is asleep already – taken off the list."));
+            self.set_status_with(t("Die Session schläft schon – aus der Liste genommen.", "The session is asleep already – taken off the list."), t("Rückgängig", "Undo"), Undo::Unhide(key));
             return Task::none();
         }
         if let Some(agent) = session.agent.clone().filter(|a| a.is_active()) {
-            if !confirmed && !self.arm('x', &key) {
-                self.set_status(t("Nochmal ⌥⌘X stoppt die Hintergrund-Session (das Gespräch bleibt).", "Press ⌥⌘X again to stop the background session (its conversation is kept)."));
-                return Task::none();
-            }
             if self.blocked_in_demo() {
                 return Task::none();
             }
@@ -3962,7 +4091,7 @@ impl Brain {
                     // when something happens in it.
                     self.prefs.hide(&key, now_ms());
                     self.prefs.save();
-                    self.set_status(t("Hintergrund-Session gestoppt.", "Stopped the background session."));
+                    self.set_status_with(tr!("„{name}“ beendet – das Gespräch bleibt.", "“{name}” ended – the conversation stays."), t("Fortsetzen", "Resume"), Undo::Resume(key));
                 }
                 Err(err) => self.set_status(tr!("Stoppen fehlgeschlagen: {err} – Rechtsklick → Hart beenden hilft.", "Stopping failed: {err} – right-click → End by force helps.")),
             }
@@ -3976,14 +4105,17 @@ impl Brain {
             self.set_status(t("Beenden geht, sobald die Session fertig ist und auf dich wartet. Hängt sie: Rechtsklick → Hart beenden.", "Ending works once the session has finished and waits for you. If it hangs: right-click → End by force."));
             return Task::none();
         }
-        if !confirmed && !self.arm('x', &key) {
-            self.set_status(t("Nochmal ⌥⌘X beendet die Session (fortsetzen mit ⏎).", "Press ⌥⌘X again to end the session (⏎ resumes it)."));
+        if !session.waits_for_input() {
+            self.set_status(t("Die Session arbeitet inzwischen wieder – nichts geschickt.", "The session is working again – nothing sent."));
             return Task::none();
         }
         if self.blocked_in_demo() {
             return Task::none();
         }
-        self.type_into_selected("/exit", t("Session beendet – ⏎ setzt sie fort, ⌥⌘P merkt sie dir.", "Session ended – ⏎ resumes it, ⌥⌘P saves it for later.").into())
+        if self.send_text(&key, "/exit") {
+            self.set_status_with(tr!("„{name}“ beendet – das Gespräch bleibt.", "“{name}” ended – the conversation stays."), t("Fortsetzen", "Resume"), Undo::Resume(key));
+        }
+        Task::none()
     }
 
     /// `A` twice: continues a session in the next account. The transcript is copied and resumed
@@ -4138,52 +4270,49 @@ impl Brain {
         self.prefs.save();
     }
 
-    /// `⌫` twice: hides the session (or shows it again) until something new happens in it.
-    fn hide_selected(&mut self, confirmed: bool) {
+    /// `⌫`: hides the session (or shows it again) until something new happens in it.
+    fn hide_selected(&mut self) {
         let Some(session) = self.selected_session() else { return };
         let key = session.key.clone();
+        let name = session.display_name();
         if self.prefs.is_hidden(&key, session.last_activity_ms) {
             self.prefs.unhide(&key);
             self.prefs.save();
             self.set_status(t("Wieder eingeblendet.", "Shown again."));
             return;
         }
-        if !confirmed && !self.arm('h', &key) {
-            self.set_status(t("Nochmal ⌫ blendet die Session aus, bis sich in ihr etwas tut.", "Press ⌫ again to hide the session until something happens in it."));
-            return;
-        }
         self.prefs.hide(&key, now_ms());
         self.prefs.save();
         self.selected = None;
-        self.set_status(t("Ausgeblendet – über ⌥⌘F findest du sie wieder.", "Hidden – ⌥⌘F finds it again."));
+        self.set_status_with(tr!("„{name}“ ausgeblendet – über ⌥⌘F findest du sie wieder.", "“{name}” hidden – ⌥⌘F finds it again."), t("Rückgängig", "Undo"), Undo::Unhide(key));
     }
 
-    /// ⌥⌘⌫ twice: an ended session's transcript goes to the Trash; a background session is
-    /// removed with `claude rm` after its transcript went to the Trash.
-    fn trash_selected(&mut self, confirmed: bool) {
+    /// ⌥⌘⌫: an ended session's transcript goes to the Trash at once; a background session is
+    /// removed with `claude rm` after its transcript went to the Trash. The toast puts the
+    /// transcript back.
+    fn trash_selected(&mut self) {
         let Some(session) = self.selected_session() else { return };
         let key = session.key.clone();
+        let name = session.display_name();
         let deletable = session.phase() == Phase::Ended || session.agent.as_ref().is_some_and(|a| !a.is_active());
         if !deletable {
             self.set_status(t("Löschen geht nur bei beendeten Sessions – erst beenden (⌥⌘X).", "Only ended sessions can be deleted – end it first (⌥⌘X)."));
-            return;
-        }
-        if !confirmed && !self.arm('d', &key) {
-            self.set_status(t("Nochmal ⌥⌘⌫ legt die Session in den Papierkorb.", "Press ⌥⌘⌫ again to move the session to the Trash."));
             return;
         }
         if self.blocked_in_demo() {
             return;
         }
         match self.delete_session(&key) {
-            Ok(()) => self.set_status(t("In den Papierkorb gelegt.", "Moved to the Trash.")),
+            Ok(moved) if moved.is_empty() => self.set_status(tr!("„{name}“ entfernt.", "“{name}” removed.")),
+            Ok(moved) => self.set_status_with(tr!("„{name}“ in den Papierkorb gelegt.", "“{name}” moved to the Trash."), t("Rückgängig", "Undo"), Undo::RestoreFromTrash(moved)),
             Err(err) => self.set_status(tr!("Löschen fehlgeschlagen: {err}", "Deleting failed: {err}")),
         }
     }
 
     /// Moves a session's transcript and its folder to the Trash, removes a background session
-    /// with `claude rm`, and forgets the session.
-    fn delete_session(&mut self, key: &SessionKey) -> Result<(), String> {
+    /// with `claude rm`, and forgets the session. Returns where each file went in the Trash and
+    /// where it was.
+    fn delete_session(&mut self, key: &SessionKey) -> Result<Vec<(std::path::PathBuf, std::path::PathBuf)>, String> {
         let session = self.model.board.get(key).ok_or("unknown session")?;
         let account = self.model.account(&key.account).cloned().ok_or("unknown account")?;
         let agent = session.agent.clone();
@@ -4192,10 +4321,12 @@ impl Brain {
         if let Some(agent) = &agent {
             let _ = brain_core::agents::stop(&account, &agent.id);
         }
+        let mut moved = Vec::new();
         if let Some(session_id) = session.session_id.clone() {
             // A file already gone (moved, deleted elsewhere) is no reason to keep the entry.
             for path in brain_core::transcript::session_files(&account, &session_id).into_iter().filter(|p| p.exists()) {
-                crate::trash::move_to_trash(&path)?;
+                let in_trash = crate::trash::move_to_trash(&path)?;
+                moved.push((in_trash, path));
             }
         }
         // Claude Code may not know the background session any more (removed elsewhere, moved):
@@ -4212,7 +4343,7 @@ impl Brain {
         if self.selected.as_ref() == Some(key) {
             self.selected = None;
         }
-        Ok(())
+        Ok(moved)
     }
 
     // ---- clean-up dialog ----------------------------------------------------------
@@ -4261,7 +4392,6 @@ impl Brain {
 
     /// `L`: the tasks noted for later, read again each time the dialog opens.
     fn open_later(&mut self) {
-        self.armed = None;
         self.later_stamp = None;
         self.refresh_later();
         self.mode = Mode::Later;
@@ -4382,31 +4512,10 @@ impl Brain {
     fn on_cleanup_key(&mut self, named: Option<Named>, character: Option<&str>, cmd: bool) {
         if cmd && named == Some(Named::Backspace) {
             let keys: Vec<SessionKey> = self.cleanup_candidates().iter().map(|s| s.key.clone()).collect();
-            if keys.is_empty() || !self.arm('d', &SessionKey { account: String::new(), id: "cleanup".into() }) {
-                if !keys.is_empty() {
-                    let n = keys.len();
-                    self.set_status(tr!("Nochmal ⌘⌫ legt {n} Sessions in den Papierkorb.", "Press ⌘⌫ again to move {n} sessions to the Trash."));
-                }
-                return;
+            if !keys.is_empty() {
+                self.confirm = Some((Confirm::Cleanup(keys), Mode::Cleanup));
+                self.mode = Mode::Confirm;
             }
-            if self.blocked_in_demo() {
-                return;
-            }
-            let (mut done, mut failed) = (0, Vec::new());
-            for key in keys {
-                match self.delete_session(&key) {
-                    Ok(()) => done += 1,
-                    Err(err) => failed.push(err),
-                }
-            }
-            self.mode = Mode::Normal;
-            self.set_status(match failed.first() {
-                None => tr!("{done} Sessions in den Papierkorb gelegt.", "Moved {done} sessions to the Trash."),
-                Some(err) => {
-                    let n = failed.len();
-                    tr!("{done} gelöscht, {n} fehlgeschlagen: {err}", "{done} deleted, {n} failed: {err}")
-                }
-            });
             return;
         }
         if named == Some(Named::Tab) {
