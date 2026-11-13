@@ -267,7 +267,15 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
     if hidden {
         keep.push((t("Wieder einblenden", "Show again").to_string(), "", Action::Snooze, false));
     } else if !ended {
-        keep.push((t("Pausieren (15 min → 1 h → morgen → bis sich etwas tut)", "Snooze (15 min → 1 h → tomorrow → until something happens)").to_string(), "", Action::Snooze, false));
+        // One line: each click snoozes one step longer; the hint names the step it goes to.
+        let now = now_ms();
+        let next = match brain.prefs.snoozed_until(&s.key, now) {
+            None => t("15 min", "15 min"),
+            Some(until) if until <= now + 16 * 60 * 1000 => t("1 Std", "1 h"),
+            Some(until) if until <= now + 61 * 60 * 1000 => t("morgen", "tomorrow"),
+            Some(_) => t("bis sich was tut", "until active"),
+        };
+        keep.push((t("Pausieren", "Snooze").to_string(), next, Action::Snooze, false));
     }
     keep.push((t("In ein anderes Konto oder forken …", "Into another account or fork …").to_string(), "", Action::Relaunch, false));
     keep.push((t("In ein anderes Projekt …", "Into another project …").to_string(), "", Action::MoveToProject, false));
@@ -346,11 +354,13 @@ fn menu_panel<'a>(brain: &Brain, lines: Vec<Option<(String, &'static str, Messag
                 .into();
         };
         let color = if danger { CALLS_SOFT } else { TEXT };
-        button(
-            row![text(label).size(13).color(color).font(UI).width(Fill), text(keys).size(11.5).color(TEXT_FAINT).font(UI)]
+        // One line each, centred in its row: a long label is cut, never wrapped over the next.
+        let label = text(label).size(13).color(color).font(UI).wrapping(text::Wrapping::None);
+        button(style::centered(
+            row![container(label).width(Fill).clip(true), text(keys).size(11.5).color(TEXT_FAINT).font(UI).wrapping(text::Wrapping::None)]
                 .spacing(12)
                 .align_y(iced::Center),
-        )
+        ))
         .padding([0, 10])
         .height(MENU_ROW)
         .width(Fill)
