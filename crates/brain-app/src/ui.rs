@@ -985,7 +985,6 @@ fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> El
     let selected = brain.selected.as_ref() == Some(&s.key);
     let hovered = brain.hovered.as_ref() == Some(&s.key);
     let ended = mark == Mark::Ended;
-    let asking = matches!(mark, Mark::Asks(_));
     let name_color = match (ended, selected) {
         (true, _) => TEXT_FAINT,
         (false, true) => TEXT_STRONG,
@@ -1039,7 +1038,8 @@ fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> El
                 .padding(Padding { left: NAME - NEST, ..Padding::ZERO }),
         );
     }
-    let background = if selected { style::ISLAND_SELECTED } else if asking { alpha(CALLS, 0x24) } else if hovered { style::ISLAND_HOVER } else { Color::TRANSPARENT };
+    // A question shows in its red dot and its red "Frage:"; a red fill read like an error.
+    let background = if selected { style::ISLAND_SELECTED } else if hovered { style::ISLAND_HOVER } else { Color::TRANSPARENT };
     let content = container(body)
         .height(tree::row_height(mark))
         .width(Fill)
