@@ -3,7 +3,7 @@
 use brain_core::changes::SessionChange;
 use brain_core::later;
 use brain_core::state::{Ask, Phase, Session};
-use iced::widget::{button, column, container, mouse_area, row, scrollable, stack, text, text_input, Space};
+use iced::widget::{button, column, container, mouse_area, pick_list, row, scrollable, stack, text, text_input, Space};
 use iced::{Background, Border, Color, Element, Fill, Length, Padding};
 
 use crate::companion::Command;
@@ -83,8 +83,6 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
     // So does the list of changed files; never both at once.
     let changes: Element<'_, Message> = if brain.changes_open {
         changes_popover_layer(brain)
-    } else if brain.targets_open {
-        targets_popover_layer(brain)
     } else {
         Space::new().into()
     };
@@ -447,6 +445,9 @@ fn titlebar(brain: &Brain) -> Element<'_, Message> {
             let line = container(header_line(brain, s, None)).width(Fill).padding(Padding { left: 4.0, right: 8.0, ..Padding::ZERO }).clip(true);
             bar = bar.push(iced::widget::tooltip(line, detail_card(brain, s), iced::widget::tooltip::Position::Bottom).gap(6));
             if let Some(cache) = brain.selected_cache().filter(|_| brain.has_changes_button()) {
+                if let Some(select) = branch_target(brain, cache) {
+                    bar = bar.push(select);
+                }
                 bar = bar.push(changes_button(brain, cache));
             }
         }
@@ -572,10 +573,8 @@ fn branch_room(brain: &Brain, rest: usize) -> usize {
     ((budget / GLYPH).max(0.0) as usize).clamp(8, 60)
 }
 
-/// "feature/x → main · 4 Dateien +67 −3" right of the session's line, like the head of a merge
-/// request. The branch and the counts open the list of the files, "→ main" the choice of the
-/// target. Without git: "4 Dateien +67 −3" for the files the transcript names. The name of the
-/// branch is cut before anything else is.
+/// "4 Dateien +67 −3" right of the session's line: opens the list of the files (or closes it).
+/// An empty merge request says "keine Änderungen" and has nothing to open.
 fn changes_button<'a>(brain: &Brain, cache: &app::ChangesCache) -> Element<'a, Message> {
     let files = &cache.files;
     let (added, removed) = change_sums(files);
@@ -585,50 +584,83 @@ fn changes_button<'a>(brain: &Brain, cache: &app::ChangesCache) -> Element<'a, M
         1 => t("1 Datei", "1 file").to_string(),
         _ => tr!("{count} Dateien", "{count} files"),
     };
-    let mut tail = row![text(label.clone()).size(12).color(TEXT).font(UI)].spacing(8).align_y(iced::Center);
-    if count > 0 {
-        tail = tail.push(counts(Some(added), Some(removed)));
+    if count == 0 {
+        return container(text(label).size(12).color(TEXT_FAINT).font(UI)).padding([0, 8]).into();
     }
+    let mut tail = row![text(label).size(12).color(TEXT).font(UI), counts(Some(added), Some(removed))].spacing(8).align_y(iced::Center);
     // A violet dot: a review of this session waits for it to want a prompt.
     if brain.selected.as_ref().is_some_and(|key| brain.review_waits(key)) {
         tail = tail.push(review::waiting_sign());
     }
-    let (list_open, picking) = (brain.changes_open, brain.targets_open);
-    let segment = |content: Element<'a, Message>, message: Message, active: bool| -> Element<'a, Message> {
-        button(style::centered(content))
-            .padding([0, 8])
-            .height(26)
-            .on_press(message)
-            .style(move |_, status| {
-                let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-                button::Style {
-                    background: (active || hovered).then_some(Background::Color(if active { LINE_STRONG } else { RAISED })),
-                    text_color: TEXT,
-                    border: iced::border::rounded(7),
-                    ..button::Style::default()
-                }
-            })
-            .into()
-    };
-    let Some(merge) = &cache.merge else {
-        return container(segment(tail.into(), Message::ToggleChanges, list_open)).style(|_| boxed(INK, LINE, 8.0)).padding(1).into();
-    };
-    let target = merge.target.as_deref().map_or_else(|| t("Ziel wählen", "choose target").to_string(), |t| crate::format::clip_branch(t, 24));
-    let rest = target.chars().count() + label.chars().count() + 14;
+    let list_open = brain.changes_open;
+    let segment = button(style::centered(tail))
+        .padding([0, 8])
+        .height(26)
+        .on_press(Message::ToggleChanges)
+        .style(move |_, status| {
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            button::Style {
+                background: (list_open || hovered).then_some(Background::Color(if list_open { LINE_STRONG } else { RAISED })),
+                text_color: TEXT,
+                border: iced::border::rounded(7),
+                ..button::Style::default()
+            }
+        });
+    container(segment).padding(1).style(|_| boxed(INK, LINE, 8.0)).into()
+}
+
+/// The select's width: room for most branch names.
+const TARGET_SELECT_WIDTH: f32 = 170.0;
+
+/// "feature/x → [main ⌄]": the branch as plain text, then a select for the target. Picking one
+/// reads the merge request anew. Without git there is none.
+fn branch_target<'a>(brain: &Brain, cache: &app::ChangesCache) -> Option<Element<'a, Message>> {
+    let merge = cache.merge.as_ref()?;
+    let rest = (TARGET_SELECT_WIDTH / 6.6) as usize + 10;
     let branch = crate::format::clip_branch(&merge.branch, branch_room(brain, rest));
-    let arrow = row![text("→").size(12).color(TEXT_MUTED).font(UI), text(target).size(12).color(TEXT_STRONG).font(style::semibold())].spacing(5).align_y(iced::Center);
-    let tail = row![text("·").size(12).color(TEXT_FAINT).font(UI), tail].spacing(8).align_y(iced::Center);
-    container(
+    let mut options = cache.choices.clone();
+    if let Some(target) = merge.target.as_ref().filter(|target| !options.contains(target)) {
+        options.insert(0, target.clone());
+    }
+    let select = pick_list(options, merge.target.clone(), Message::PickTarget)
+        .placeholder(t("Ziel wählen", "Choose target"))
+        .width(TARGET_SELECT_WIDTH)
+        .padding([5, 8])
+        .text_size(12)
+        .font(UI)
+        .handle(pick_list::Handle::Arrow { size: Some(iced::Pixels(10.0)) })
+        .style(|_, status| {
+            let (background, border) = match status {
+                pick_list::Status::Active => (INK, LINE),
+                pick_list::Status::Hovered => (RAISED, LINE_STRONG),
+                pick_list::Status::Opened { .. } => (RAISED, alpha(WORKING, 0x99)),
+            };
+            pick_list::Style {
+                text_color: TEXT_STRONG,
+                placeholder_color: TEXT_FAINT,
+                handle_color: TEXT_MUTED,
+                background: Background::Color(background),
+                border: Border { color: border, width: 1.0, radius: 7.0.into() },
+            }
+        })
+        .menu_style(|_| iced::overlay::menu::Style {
+            background: Background::Color(style::MENU_BG),
+            border: Border { color: style::MENU_LINE, width: 1.0, radius: 8.0.into() },
+            text_color: TEXT,
+            selected_text_color: TEXT_STRONG,
+            selected_background: Background::Color(LINE_STRONG),
+            shadow: iced::Shadow { color: Color::from_rgba8(0, 0, 0, 0.6), offset: iced::Vector::new(0.0, 8.0), blur_radius: 24.0 },
+        });
+    Some(
         row![
-            segment(text(branch).size(12).color(TEXT_STRONG).font(style::semibold()).wrapping(text::Wrapping::None).into(), Message::ToggleChanges, list_open),
-            segment(arrow.into(), Message::ToggleTargets, picking),
-            segment(tail.into(), Message::ToggleChanges, list_open),
+            text(branch).size(12).color(TEXT_STRONG).font(style::semibold()).wrapping(text::Wrapping::None),
+            text("→").size(12).color(TEXT_MUTED).font(UI),
+            select,
         ]
-        .align_y(iced::Center),
+        .spacing(6)
+        .align_y(iced::Center)
+        .into(),
     )
-    .padding(1)
-    .style(|_| boxed(INK, LINE, 8.0))
-    .into()
 }
 
 /// The card hung under the title bar's right end: a backdrop over the window that closes it, the
@@ -711,44 +743,6 @@ fn changes_popover_layer(brain: &Brain) -> Element<'_, Message> {
     };
     let card = column![top, body, container(tip).padding([4, 8])].spacing(4);
     popover_card(container(card).max_height(CHANGE_ROW_H * 12.0 + 70.0), 460.0, brain)
-}
-
-/// The branches to choose the merge request's target from: local first, remote after, the current
-/// target marked; a search field when there are many.
-fn targets_popover_layer(brain: &Brain) -> Element<'_, Message> {
-    let Some(cache) = brain.selected_cache() else { return Space::new().into() };
-    let current = cache.merge.as_ref().and_then(|m| m.target.as_deref());
-    let query = brain.target_query.trim().to_lowercase();
-    let shown: Vec<&String> = cache.choices.iter().filter(|name| query.is_empty() || name.to_lowercase().contains(&query)).collect();
-    let mut card = column![container(text(t("Ziel-Branch wählen", "Choose the target branch")).size(12).color(TEXT_MUTED).font(style::semibold())).padding([6, 8])].spacing(4);
-    if cache.choices.len() > app::TARGETS_WITH_SEARCH || !query.is_empty() {
-        let field = text_input(t("Branches durchsuchen", "Search branches"), &brain.target_query)
-            .id(app::TARGET_SEARCH)
-            .on_input(Message::TargetQuery)
-            .size(12.5)
-            .font(UI)
-            .padding([6, 8])
-            .style(field_style);
-        card = card.push(container(field).padding([0, 2]));
-    }
-    let rows = shown.into_iter().map(|name| {
-        let chosen = current == Some(name.as_str());
-        let line = row![
-            text(if chosen { "✓" } else { "" }).size(12).color(DONE).font(UI).width(14),
-            text(clip_start(name, 46)).size(12).color(if chosen { TEXT_STRONG } else { TEXT }).font(MONO).wrapping(text::Wrapping::None),
-        ]
-        .spacing(6)
-        .align_y(iced::Center);
-        row_button(container(line).height(CHANGE_ROW_H).center_y(CHANGE_ROW_H).padding([0, 8]), Message::PickTarget(name.clone()))
-    });
-    let rows: Vec<Element<'_, Message>> = rows.collect();
-    if rows.is_empty() {
-        let none = if cache.choices.is_empty() { t("Keine anderen Branches.", "No other branches.") } else { t("Kein Branch passt.", "No branch matches.") };
-        card = card.push(hint(none));
-    } else {
-        card = card.push(scrollable(column(rows).width(Fill)).style(scrollbar));
-    }
-    popover_card(container(card).max_height(CHANGE_ROW_H * 10.0 + 90.0), 340.0, brain)
 }
 
 /// The sheet's head: which branch goes where.

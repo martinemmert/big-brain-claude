@@ -77,6 +77,8 @@ pub struct Model {
     pub demo_messages: Option<HashMap<SessionKey, Vec<Message>>>,
     /// The files the demo's sessions changed.
     pub demo_changes: HashMap<SessionKey, brain_core::changes::Changeset>,
+    /// What Rate-Limits changes against each target of the select.
+    pub demo_targets: HashMap<String, brain_core::changes::Changeset>,
     /// Their diffs, by path.
     pub demo_diffs: HashMap<String, String>,
 }
@@ -106,6 +108,7 @@ impl Model {
             usage_history_read: None,
             demo_messages: None,
             demo_changes: HashMap::new(),
+            demo_targets: HashMap::new(),
             demo_diffs: HashMap::new(),
         };
         if demo::enabled() {
@@ -115,6 +118,7 @@ impl Model {
             model.usage = demo.usage;
             model.demo_messages = Some(demo.messages);
             model.demo_changes = demo.changes;
+            model.demo_targets = demo.targets;
             model.demo_diffs = demo.diffs;
             return model;
         }

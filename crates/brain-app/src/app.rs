@@ -159,9 +159,6 @@ const CHANGES_EVERY: Duration = Duration::from_secs(4);
 /// And at least this often while the session works (a commit or a file written by a shell doesn't
 /// grow the transcript at once).
 const CHANGES_WHILE_WORKING: Duration = Duration::from_secs(10);
-/// More branches than this get a search field.
-pub const TARGETS_WITH_SEARCH: usize = 8;
-pub const TARGET_SEARCH: &str = "target-search";
 
 /// Buttons in the detail pane and the list's context menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -284,11 +281,9 @@ pub enum Message {
     /// The files the session changed, read in the background for a transcript of this size.
     /// The number counts the targets chosen since start; a reading begun before is dropped.
     ChangesLoaded(SessionKey, u64, u64, brain_core::changes::Changeset),
-    /// Open or close the list of branches to choose the merge request's target from.
-    ToggleTargets,
+    /// The branches the title bar's select offers as target, read with the files.
     TargetsLoaded(SessionKey, Vec<String>),
-    /// The search field of that list.
-    TargetQuery(String),
+    /// A branch picked in the title bar's select.
     PickTarget(String),
     /// Open or close the list of files the selected session changed, under the title bar.
     ToggleChanges,
@@ -641,12 +636,8 @@ pub struct Brain {
     menubar: Option<MenuBar>,
     /// The status popup floats over the window's top right.
     pub status_open: bool,
-    /// The list of changed files hangs under the title bar. Only one of the two popovers is open.
+    /// The list of changed files hangs under the title bar.
     pub changes_open: bool,
-    /// The list of branches for the merge request's target, from the title bar's button. Only one
-    /// popover is open.
-    pub targets_open: bool,
-    pub target_query: String,
     /// Counts the targets chosen: a reading begun before is out of date.
     target_epoch: u64,
     /// The menu bar of the app, and what its items stand for.
@@ -867,8 +858,6 @@ impl Brain {
             menubar: MenuBar::new(),
             status_open: false,
             changes_open: false,
-            targets_open: false,
-            target_query: String::new(),
             target_epoch: 0,
             appmenu: crate::appmenu::AppMenu::new(),
             menu_commands: HashMap::new(),
@@ -1198,7 +1187,6 @@ impl Brain {
             }
             Message::CloseChanges => {
                 self.changes_open = false;
-                self.targets_open = false;
                 Task::none()
             }
             Message::PopupClicked => Task::none(),
@@ -1287,20 +1275,23 @@ impl Brain {
                 if epoch == self.target_epoch {
                     let kept = self.changes.take().filter(|c| c.key == key);
                     let choices = kept.map(|c| c.choices).unwrap_or_default();
-                    self.changes = Some(ChangesCache { key, len, loaded: Instant::now(), files: set.files, merge: set.merge, choices, reload: false });
+                    let root = set.merge.as_ref().map(|m| m.root.clone());
+                    self.changes = Some(ChangesCache { key: key.clone(), len, loaded: Instant::now(), files: set.files, merge: set.merge, choices, reload: false });
+                    // The branches for the select, read along with the files.
+                    if let Some(root) = root {
+                        return Task::perform(
+                            off_thread(move || brain_core::changes::target_choices(&root, brain_core::changes::branch_of(&root).as_deref())),
+                            move |choices| Message::TargetsLoaded(key.clone(), choices),
+                        );
+                    }
                 }
                 Task::none()
             }
             Message::ToggleChanges => self.toggle_changes_popover(),
-            Message::ToggleTargets => self.toggle_targets_popover(),
             Message::TargetsLoaded(key, choices) => {
                 if let Some(cache) = self.changes.as_mut().filter(|c| c.key == key) {
                     cache.choices = choices;
                 }
-                Task::none()
-            }
-            Message::TargetQuery(query) => {
-                self.target_query = query;
                 Task::none()
             }
             Message::PickTarget(target) => self.pick_target(target),
@@ -1885,9 +1876,6 @@ impl Brain {
         if self.changes_open && !self.has_changes_button() {
             self.changes_open = false;
         }
-        if self.targets_open && self.selected_cache().is_none_or(|c| c.merge.is_none()) {
-            self.targets_open = false;
-        }
         self.sync_conversation();
         let attach = self.sync_terminal();
         self.sync_shown_terminal();
@@ -1997,8 +1985,16 @@ impl Brain {
         }
         let Some(key) = self.selected.clone() else { return Task::none() };
         if self.model.is_demo() {
-            if self.changes.as_ref().is_none_or(|c| c.key != key) {
-                let set = self.model.demo_changes.get(&key).cloned().unwrap_or_default();
+            if self.changes.as_ref().is_none_or(|c| c.key != key || c.reload) {
+                let mut set = self.model.demo_changes.get(&key).cloned().unwrap_or_default();
+                // The files of the target chosen, if the demo has them for it.
+                if let Some(merge) = &set.merge {
+                    let branch = if merge.detached { "HEAD" } else { merge.branch.as_str() };
+                    let chosen = self.prefs.merge_target(&merge.root, branch).or_else(|| merge.target.clone());
+                    if let Some(other) = chosen.and_then(|target| self.model.demo_targets.get(&target)) {
+                        set = other.clone();
+                    }
+                }
                 self.changes = Some(ChangesCache {
                     key,
                     len: 0,
@@ -2044,17 +2040,16 @@ impl Brain {
         self.changes.as_ref().filter(|c| c.key == *key)
     }
 
-    /// Whether the title bar has a button for the changes: there is a merge request (even an empty
-    /// one: its target can be chosen), or the transcript names files.
+    /// Whether the title bar has the branch, the target's select and the button for the changes:
+    /// there is a merge request (even an empty one: its target can be chosen), or the transcript
+    /// names files.
     pub fn has_changes_button(&self) -> bool {
         self.selected_cache().is_some_and(|c| c.merge.is_some() || !c.files.is_empty())
     }
 
-    /// The title bar's button for the changes: opens their list, or closes it. The list, the
-    /// choice of the target and the status popup are never open together; the open one has the
-    /// keyboard.
+    /// The title bar's button for the changes: opens their list, or closes it. The list and the
+    /// status popup are never open together; the open one has the keyboard.
     fn toggle_changes_popover(&mut self) -> Task<Message> {
-        self.targets_open = false;
         if self.changes_open {
             self.changes_open = false;
             return Task::none();
@@ -2067,31 +2062,13 @@ impl Brain {
         self.keys_leave_terminal()
     }
 
-    /// "→ main" in the title bar: the branches to choose the target from, read when it opens.
-    fn toggle_targets_popover(&mut self) -> Task<Message> {
-        self.changes_open = false;
-        if self.targets_open {
-            self.targets_open = false;
-            return Task::none();
-        }
-        let Some(merge) = self.selected_cache().and_then(|c| c.merge.clone()) else { return Task::none() };
-        self.targets_open = true;
-        self.status_open = false;
-        self.target_query.clear();
-        let leave = self.keys_leave_terminal();
-        let focus = operation::focus(TARGET_SEARCH);
-        let Some(key) = self.selected.clone().filter(|_| !self.model.is_demo()) else { return Task::batch([leave, focus]) };
-        let read = Task::perform(
-            off_thread(move || brain_core::changes::target_choices(&merge.root, brain_core::changes::branch_of(&merge.root).as_deref())),
-            move |choices| Message::TargetsLoaded(key.clone(), choices),
-        );
-        Task::batch([leave, read, focus])
-    }
-
     /// A branch picked as the target: kept for this repository and branch, and the merge request
-    /// is read anew.
+    /// is read anew. The list of files and a file in Quick Look show the old target's files, so
+    /// they close.
     fn pick_target(&mut self, target: String) -> Task<Message> {
-        self.targets_open = false;
+        self.changes_open = false;
+        self.preview = None;
+        self.review_editor = None;
         let Some(cache) = self.changes.as_mut().filter(|c| Some(&c.key) == self.selected.as_ref()) else { return Task::none() };
         let Some(merge) = cache.merge.as_mut() else { return Task::none() };
         // A detached HEAD is remembered as `HEAD`, as `merge_request` asks for it.
@@ -3122,10 +3099,9 @@ impl Brain {
             self.status_open = false;
             return Task::none();
         }
-        // The same for the list of changed files and the choice of the target.
-        if named == Some(Named::Escape) && (self.changes_open || self.targets_open) {
+        // The same for the list of changed files.
+        if named == Some(Named::Escape) && self.changes_open {
             self.changes_open = false;
-            self.targets_open = false;
             return Task::none();
         }
         // Space in the list of changes shows the newest file.

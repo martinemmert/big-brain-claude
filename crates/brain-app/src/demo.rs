@@ -54,6 +54,8 @@ pub struct Demo {
     pub messages: HashMap<SessionKey, Vec<Message>>,
     /// The files each session changed, newest first.
     pub changes: HashMap<SessionKey, brain_core::changes::Changeset>,
+    /// What the first of them (Rate-Limits) changes against each target the select offers.
+    pub targets: HashMap<String, brain_core::changes::Changeset>,
     /// Their diffs, by path.
     pub diffs: HashMap<String, String>,
 }
@@ -314,10 +316,10 @@ pub fn build() -> Demo {
         snapshot("second", 4102, 12.0, 34.0, 30.0, 0.92),
     ];
 
-    let (files, diffs) = rate_limit_changes(now.timestamp_millis());
-    let changes = HashMap::from([(SessionKey { account: "main".into(), id: "demo-4101".into() }, files)]);
+    let (targets, diffs) = rate_limit_changes(now.timestamp_millis());
+    let changes = HashMap::from([(SessionKey { account: "main".into(), id: "demo-4101".into() }, targets["main"].clone())]);
 
-    Demo { accounts, board, usage, messages, changes, diffs }
+    Demo { accounts, board, usage, messages, changes, targets, diffs }
 }
 
 /// "Rate-Limits" has two drafts of a review: one on `burst` in the configuration, one on the
@@ -343,10 +345,12 @@ pub fn reviews() -> Vec<brain_core::review::Review> {
     vec![review]
 }
 
-/// The merge request of "Rate-Limits", `feature/rate-limit → main`: its files by path with their
-/// made-up diffs. The counts are those of the diffs. One file is not the session's (a colleague's
-/// commit on the branch), so it has no sentence and no mark.
-fn rate_limit_changes(now_ms: i64) -> (brain_core::changes::Changeset, HashMap<String, String>) {
+/// The merge requests of "Rate-Limits", `feature/rate-limit → <target>`, one for each target the
+/// select offers: `main` has four files, `develop` two (the rest is there already), `origin/main`
+/// and `feature/billing` more (a README, a dependency). The files by path with their made-up
+/// diffs; the counts are those of the diffs. A file without a sentence is not the session's (a
+/// colleague's commit on the branch), it has no mark.
+fn rate_limit_changes(now_ms: i64) -> (HashMap<String, brain_core::changes::Changeset>, HashMap<String, String>) {
     let root = "~/Projects/api-gateway";
     let files = [
         (
@@ -355,14 +359,16 @@ fn rate_limit_changes(now_ms: i64) -> (brain_core::changes::Changeset, HashMap<S
             Some("Neuer Abschnitt „rate_limit“ in der Konfiguration: wie viele Anfragen pro Sekunde, wie viele auf Vorrat und ob das Limit global oder pro Mandant gilt."),
             "M ",
             CONFIG_DIFF.to_string(),
+            &["main", "origin/main", "feature/billing"][..],
         ),
-        ("src/middleware/mod.rs", 24, None, "M ", MOD_DIFF.to_string()),
+        ("src/middleware/mod.rs", 24, None, "M ", MOD_DIFF.to_string(), &["main", "origin/main", "feature/billing"][..]),
         (
             "src/middleware/rate_limit.rs",
             19,
             Some("Der Limiter selbst, ein Token-Bucket: Jede Anfrage kostet eine Marke, der Eimer füllt sich mit der Zeit wieder."),
             "A ",
             new_file("src/middleware/rate_limit.rs", LIMITER_BODY),
+            &["main", "develop", "origin/main", "feature/billing"][..],
         ),
         (
             "tests/rate_limit.rs",
@@ -370,15 +376,25 @@ fn rate_limit_changes(now_ms: i64) -> (brain_core::changes::Changeset, HashMap<S
             Some("Zwei Tests für den Limiter: Ein voller Eimer lässt drei Anfragen durch und lehnt die vierte ab, nach 30 ms kommt wieder eine durch."),
             "A ",
             new_file("tests/rate_limit.rs", TEST_BODY),
+            &["main", "develop", "origin/main", "feature/billing"][..],
         ),
+        (
+            "README.md",
+            3,
+            Some("Ein Abschnitt „Rate limiting“ in der README: wie man das Limit einstellt und was Clients bei 429 tun sollen."),
+            "M ",
+            README_DIFF.to_string(),
+            &["origin/main", "feature/billing"][..],
+        ),
+        ("Cargo.toml", 31, None, "M ", CARGO_DIFF.to_string(), &["feature/billing"][..]),
     ];
-    let mut changes = Vec::new();
+    let mut changes: Vec<(brain_core::changes::SessionChange, &[&str])> = Vec::new();
     let mut diffs = HashMap::new();
-    for (relative, minutes, said, status, diff) in files {
+    for (relative, minutes, said, status, diff, targets) in files {
         let count = |sign: char, header: &str| diff.lines().filter(|l| l.starts_with(sign) && !l.starts_with(header)).count() as u64;
         let path = format!("{root}/{relative}");
         let (added, removed) = (Some(count('+', "+++")), Some(count('-', "---")));
-        changes.push(brain_core::changes::SessionChange {
+        changes.push((brain_core::changes::SessionChange {
             path: path.clone(),
             relative: relative.to_string(),
             last_ms: now_ms - minutes * 60_000,
@@ -390,11 +406,24 @@ fn rate_limit_changes(now_ms: i64) -> (brain_core::changes::Changeset, HashMap<S
             from_session: said.is_some(),
             base: None,
             original: None,
-        });
+        }, targets));
         diffs.insert(path, diff);
     }
-    let merge = brain_core::changes::MergeInfo { root: PathBuf::from(root), branch: "feature/rate-limit".into(), detached: false, target: Some("main".into()), base: "demo".into() };
-    (brain_core::changes::Changeset { files: changes, merge: Some(merge) }, diffs)
+    let sets = target_choices()
+        .into_iter()
+        .map(|target| {
+            let merge = brain_core::changes::MergeInfo {
+                root: PathBuf::from(root),
+                branch: "feature/rate-limit".into(),
+                detached: false,
+                target: Some(target.clone()),
+                base: "demo".into(),
+            };
+            let files = changes.iter().filter(|(_, targets)| targets.contains(&target.as_str())).map(|(change, _)| change.clone()).collect();
+            (target, brain_core::changes::Changeset { files, merge: Some(merge) })
+        })
+        .collect();
+    (sets, diffs)
 }
 
 /// The branches the demo offers as targets.
@@ -444,6 +473,43 @@ index 3f2a1c4..9b7e0d2 100644
 +        Ok(config)
      }
  }
+"#;
+
+const README_DIFF: &str = r#"diff --git a/README.md b/README.md
+index 8d41c02..e7a9f35 100644
+--- a/README.md
++++ b/README.md
+@@ -18,6 +18,16 @@ listen = "0.0.0.0:8080"
+ upstream = "http://localhost:9000"
+ ```
+
++## Rate limiting
++
++Every client may make `per_second` requests per second and save up `burst` of them. A request
++over the limit gets `429 Too Many Requests` with a `Retry-After` header.
++
++```toml
++[rate_limit]
++per_second = 50
++burst = 100
++scope = "tenant"
++```
++
+ ## Development
+"#;
+
+const CARGO_DIFF: &str = r#"diff --git a/Cargo.toml b/Cargo.toml
+index 6b2d9e1..f40c8a7 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -9,6 +9,7 @@ edition = "2021"
+ anyhow = "1"
+ serde = { version = "1", features = ["derive"] }
+ tokio = { version = "1", features = ["full"] }
++toml = "0.8"
+ tower = "0.5"
+-tracing = "0.1"
++tracing = "0.1.40"
 "#;
 
 const MOD_DIFF: &str = r#"diff --git a/src/middleware/mod.rs b/src/middleware/mod.rs
