@@ -462,7 +462,9 @@ impl Brain {
     }
 
     fn set_zoom(&mut self, zoom: f32) {
+        let before = self.zoom();
         self.prefs.zoom = (zoom != 1.0).then_some(zoom);
+        self.window_size = super::quick_look::rescaled(self.window_size, before, self.zoom());
         self.prefs.save();
         let percent = (zoom * 100.0).round() as u32;
         self.set_status(tr!("Darstellung auf {percent} %.", "Zoom {percent} %."));

@@ -106,6 +106,28 @@ pub fn clip_branch(name: &str, max: usize) -> String {
     format!("…{tail}")
 }
 
+/// A file's name shortened to `max` characters in the middle, so its extension stays and the end
+/// of its stem with it: `2026-11-11-brain-new-l…design.md`. Names that fit are left alone.
+pub fn clip_file_name(name: &str, max: usize) -> String {
+    let count = name.chars().count();
+    if count <= max {
+        return name.to_string();
+    }
+    // The extension is what follows the last dot, if the dot isn't the name's first character
+    // and the extension is short.
+    let extension_at = name.rfind('.').filter(|at| *at > 0 && name.len() - at <= 9).unwrap_or(name.len());
+    let (stem, extension) = name.split_at(extension_at);
+    let room = max.saturating_sub(extension.chars().count() + 1);
+    if room < 2 {
+        return clip(name, max);
+    }
+    let tail_len = (room / 3).min(stem.chars().count().saturating_sub(1));
+    let head_len = room - tail_len;
+    let head: String = stem.chars().take(head_len).collect();
+    let tail: String = stem.chars().skip(stem.chars().count() - tail_len).collect();
+    format!("{head}…{tail}{extension}")
+}
+
 /// A path shortened from the left, so its end (the file) stays: `…/middleware/rate_limit.rs`.
 pub fn clip_start(path: &str, max: usize) -> String {
     let count = path.chars().count();
@@ -160,6 +182,19 @@ pub fn shell_quote(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_name_is_cut_only_when_it_does_not_fit_and_keeps_its_extension() {
+        assert_eq!(clip_file_name("konsil.rs", 9), "konsil.rs");
+        assert_eq!(clip_file_name("konsil.rs", 20), "konsil.rs");
+        let long = "2026-11-11-brain-new-line-design.md";
+        let cut = clip_file_name(long, 30);
+        assert_eq!(cut.chars().count(), 30);
+        assert_eq!(cut, "2026-11-11-brain-n…e-design.md");
+        // No extension, or one that is the whole name: cut like any text.
+        assert_eq!(clip_file_name("Makefile_for_everything", 10).chars().count(), 10);
+        assert_eq!(clip_file_name(".gitignore_of_the_world", 8).chars().count(), 8);
+    }
 
     #[test]
     fn a_long_path_keeps_its_end_from_a_folder_on() {

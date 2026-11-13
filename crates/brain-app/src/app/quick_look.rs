@@ -98,22 +98,31 @@ const SHEET_MARGIN: f32 = 24.0;
 const SHEET_GAP: f32 = 12.0;
 
 /// The sheet's size in a window: the one dragged (kept inside the bounds the window allows now),
-/// else 80 % each way. `top` is what the title bar takes from the top: the sheet is centred, so it
-/// is never taller than the window less that band and a gap, above and below, and its head
-/// stays under the title bar and the traffic lights.
+/// else 80 % each way. `top` is what the title bar takes from the top: the sheet lives in the
+/// area below it and is centred there, so it is never taller than that area less a gap above and
+/// below, and its head stays under the title bar and the traffic lights. `window` is in the
+/// layout's points (what the zoom leaves), as is `top`.
 pub fn sheet_size(chosen: Option<(f32, f32)>, window: iced::Size, top: f32) -> iced::Size {
-    let (w, h) = chosen.unwrap_or((window.width * 0.8, window.height * 0.8));
+    let area = (window.height - top).max(0.0);
+    let (w, h) = chosen.unwrap_or((window.width * 0.8, area * 0.8));
     let most_width = (window.width - SHEET_MARGIN).max(SHEET_MIN.width);
-    let most_height = (window.height - 2.0 * (top + SHEET_GAP)).max(SHEET_MIN.height);
+    let most_height = (area - 2.0 * SHEET_GAP).max(SHEET_MIN.height);
     iced::Size::new(w.clamp(SHEET_MIN.width, most_width), h.clamp(SHEET_MIN.height, most_height))
 }
 
+/// The window's size in the layout's points after the zoom went from `from` to `to`: iced tells
+/// the size only when the window is resized, so a zoom has to move what was told.
+pub fn rescaled(window: iced::Size, from: f32, to: f32) -> iced::Size {
+    iced::Size::new(window.width * from / to, window.height * from / to)
+}
+
 /// The sheet's size while an edge (`horizontal`: left or right, `vertical`: top or bottom) follows
-/// the pointer. The sheet stays centred, so the edge is as far from the window's middle as the
-/// pointer is, and the opposite one moves with it.
+/// the pointer. The sheet stays centred in the area below the title bar, so the edge is as far
+/// from that area's middle as the pointer is, and the opposite one moves with it.
 pub fn dragged_size(pointer: iced::Point, horizontal: bool, vertical: bool, window: iced::Size, top: f32, current: iced::Size) -> iced::Size {
+    let middle = top + (window.height - top) / 2.0;
     let width = if horizontal { 2.0 * (pointer.x - window.width / 2.0).abs() } else { current.width };
-    let height = if vertical { 2.0 * (pointer.y - window.height / 2.0).abs() } else { current.height };
+    let height = if vertical { 2.0 * (pointer.y - middle).abs() } else { current.height };
     sheet_size(Some((width, height)), window, top)
 }
 
@@ -490,34 +499,45 @@ mod tests {
     }
 
     #[test]
-    fn dragging_an_edge_keeps_the_sheet_centred_and_inside_its_bounds() {
+    fn dragging_an_edge_keeps_the_sheet_centred_below_the_title_bar_and_inside_its_bounds() {
         let window = iced::Size::new(1200.0, 800.0);
         let current = sheet_size(None, window, TOP);
-        assert_eq!(current, iced::Size::new(960.0, 640.0));
+        assert_eq!(current, iced::Size::new(960.0, 598.4));
 
         // The right edge at x = 900 is 300 from the middle: 600 wide, height untouched.
-        assert_eq!(dragged_size(iced::Point::new(900.0, 10.0), true, false, window, TOP, current), iced::Size::new(600.0, 640.0));
-        // Past the window, and across the middle, are held to the bounds: the height leaves the
-        // title bar and a gap above and below.
-        assert_eq!(dragged_size(iced::Point::new(5000.0, 5000.0), true, true, window, TOP, current), iced::Size::new(1176.0, 672.0));
-        assert_eq!(dragged_size(iced::Point::new(610.0, 395.0), true, true, window, TOP, current), SHEET_MIN);
+        assert_eq!(dragged_size(iced::Point::new(900.0, 10.0), true, false, window, TOP, current), iced::Size::new(600.0, 598.4));
+        // The bottom edge at y = 700 is 326 from the middle of the area below the title bar (426).
+        assert_eq!(dragged_size(iced::Point::new(600.0, 700.0), false, true, window, TOP, current), iced::Size::new(960.0, 548.0));
+        // Past the window, and across the middle, are held to the bounds: the height leaves a gap
+        // above and below the area under the title bar.
+        assert_eq!(dragged_size(iced::Point::new(5000.0, 5000.0), true, true, window, TOP, current), iced::Size::new(1176.0, 724.0));
+        assert_eq!(dragged_size(iced::Point::new(610.0, 426.0), true, true, window, TOP, current), SHEET_MIN);
     }
 
     #[test]
     fn a_kept_size_is_pulled_in_when_the_window_got_smaller() {
         let small = iced::Size::new(900.0, 520.0);
-        assert_eq!(sheet_size(Some((1100.0, 700.0)), small, TOP), iced::Size::new(876.0, 392.0));
-        assert_eq!(sheet_size(Some((600.0, 400.0)), small, TOP), iced::Size::new(600.0, 392.0));
-        assert_eq!(sheet_size(Some((600.0, 330.0)), small, TOP), iced::Size::new(600.0, 330.0));
+        assert_eq!(sheet_size(Some((1100.0, 700.0)), small, TOP), iced::Size::new(876.0, 444.0));
+        assert_eq!(sheet_size(Some((600.0, 400.0)), small, TOP), iced::Size::new(600.0, 400.0));
+        assert_eq!(sheet_size(Some((600.0, 300.0)), small, TOP), iced::Size::new(600.0, 320.0));
     }
 
     #[test]
     fn the_sheet_never_reaches_above_the_title_bar() {
-        // At any zoom, however large it is dragged or kept, the top edge lies below the title bar.
+        // At any zoom, however large it is dragged or kept, the sheet centred in the area below
+        // the title bar has its top edge below the title bar, with its gap.
         for (window, top) in [(iced::Size::new(1400.0, 900.0), 52.0), (iced::Size::new(1400.0, 900.0), 52.0 / 0.8), (iced::Size::new(1000.0, 600.0), 52.0 / 1.5)] {
             let size = sheet_size(Some((5000.0, 5000.0)), window, top);
-            assert!((window.height - size.height) / 2.0 >= top, "{window:?} {top}");
+            let edge = top + ((window.height - top) - size.height) / 2.0;
+            assert!(edge >= top + SHEET_GAP, "{window:?} {top}: {edge}");
         }
+        // The size the window had before the zoom went from 100 % to 125 % is the old one
+        // divided; used unscaled, the sheet of a 1800 x 1125 window would be taller than the 900
+        // points the layout has left.
+        let layout = rescaled(iced::Size::new(1800.0, 1125.0), 1.0, 1.25);
+        assert_eq!(layout, iced::Size::new(1440.0, 900.0));
+        let size = sheet_size(Some((5000.0, 5000.0)), layout, 52.0 / 1.25);
+        assert!(52.0 / 1.25 + SHEET_GAP + size.height + SHEET_GAP <= layout.height);
     }
 
     fn change(relative: &str, last_ms: i64) -> SessionChange {

@@ -10,7 +10,7 @@ use crate::companion::Command;
 use crate::app::move_project::ProjectChoice;
 use crate::app::{self, Action, Brain, Choice, Groups, Message, Mode, CLEANUP_DAYS};
 use crate::tree::{self, Mark, Node, Project, Tree};
-use crate::format::{ago, ago_phrase, background_summary, clip, clip_start, clock, format_tokens, now_ms, plain, short_model, tilde};
+use crate::format::{ago, ago_phrase, background_summary, clip, clip_file_name, clip_start, clock, format_tokens, now_ms, plain, short_model, tilde};
 use crate::i18n::t;
 use crate::markdown;
 use crate::style::{
@@ -590,7 +590,7 @@ fn badge<'a>(label: &'static str, color: Color, size: f32) -> Element<'a, Messag
 fn branch_room(brain: &Brain, rest: usize) -> usize {
     const GLYPH: f32 = 6.6;
     let sidebar = if brain.prefs.hide_sidebar { 0.0 } else { brain.prefs.sidebar_width.unwrap_or(app::SIDEBAR_DEFAULT) };
-    let pane = brain.window_size.width / brain.zoom() - sidebar;
+    let pane = brain.window_size.width - sidebar;
     let budget = pane * 0.5 - 48.0 - rest as f32 * GLYPH;
     ((budget / GLYPH).max(0.0) as usize).clamp(8, 60)
 }
@@ -898,6 +898,12 @@ fn tree_inner(brain: &Brain) -> f32 {
 /// little over half its size.
 fn fitting(width: f32, size: f32) -> usize {
     (width / (size * 0.56)).max(6.0) as usize
+}
+
+/// Like `fitting`, for file names: the UI font's glyphs in names (lower case, digits, dots) average
+/// about 0.46 of their size, so half is a safe measure that doesn't cut names that would fit.
+fn fitting_name(width: f32, size: f32) -> usize {
+    (width / (size * 0.5)).max(6.0) as usize
 }
 
 /// A tree head's line (project, "Weitere"), centred in its row at the top of the island.
@@ -1662,6 +1668,8 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
         .width(Length::Fixed(size.width))
         .height(Length::Fixed(size.height))
         .center(Fill);
+    // The layer starts below the title bar, so the sheet is centred in what is left of the window.
+    let centered = container(centered).width(Fill).height(Fill).padding(Padding { top: brain.sheet_top(), ..Padding::ZERO });
     // The backdrop claims the pointer, so what lies under it (the sidebar's tooltips) doesn't
     // think the pointer is over it.
     let backdrop = mouse_area(container(Space::new().width(Fill).height(Fill)).style(|_| style::fill(Color::from_rgba8(6, 8, 15, 0.55))))
@@ -1670,6 +1678,8 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
     stack![backdrop, centered].into()
 }
 
+/// The height of the line above the list ("44 files" and the totals): the list begins below it.
+const SHEET_LIST_HEAD_H: f32 = 34.0;
 /// How wide the sheet's list of files is.
 const SHEET_LIST_W: f32 = 300.0;
 /// The "+" for a comment on the whole file at a row's right end, and the number of comments after
@@ -1721,7 +1731,8 @@ fn sheet_files<'a>(brain: &'a Brain, files: &[&'a SessionChange], index: usize, 
         .spacing(FILE_GAP)
         .align_y(iced::Center),
     )
-    .padding(Padding { top: 10.0, right: 12.0 + tree::ISLAND_PAD_X + FILE_PAD, bottom: 0.0, left: 12.0 + tree::ISLAND_PAD_X + FILE_PAD + HEAD_GUTTER });
+    .center_y(SHEET_LIST_HEAD_H)
+    .padding(Padding { top: 0.0, right: 12.0 + tree::ISLAND_PAD_X + FILE_PAD, bottom: 0.0, left: 12.0 + tree::ISLAND_PAD_X + FILE_PAD + HEAD_GUTTER });
 
     let mut islands: Vec<Element<'a, Message>> = Vec::new();
     if tree_mode {
@@ -1835,7 +1846,7 @@ fn sheet_file_row<'a>(
     }
     line = line
         .push(
-            text(clip(name, fitting(inner - taken, 12.5)))
+            text(clip_file_name(name, fitting_name(inner - taken, 12.5)))
                 .size(12.5)
                 .color(if current { TEXT_STRONG } else { TEXT })
                 .font(if current { style::medium() } else { UI })
