@@ -199,6 +199,14 @@ impl Review {
         dir.join(format!("{}-{}.json", safe(&key.account), safe(&key.id)))
     }
 
+    /// Removes a session's review file (none is fine).
+    pub fn delete_file(dir: &Path, key: &SessionKey) -> std::io::Result<()> {
+        match std::fs::remove_file(Self::file(dir, key)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+
     /// Writes the review; one without comments and nothing sent removes its file.
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         let file = Self::file(dir, &self.key());

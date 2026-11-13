@@ -255,7 +255,8 @@ impl Brain {
         let can_force = session.is_some_and(|s| s.phase() != Phase::Ended && s.alive);
         entries.push(commands.act(Action::ForceEnd, t("Hart beenden (Prozess stoppen)", "End by force (stop the process)"), "force-end").enabled(can_force).into());
         let can_trash = session.is_some_and(|s| s.phase() == Phase::Ended || s.agent.as_ref().is_some_and(|a| !a.is_active()));
-        entries.push(commands.act(Action::Trash, t("In den Papierkorb", "Move to Trash"), "trash").keys("\u{8}", CMD | OPT).enabled(can_trash).into());
+        entries.push(commands.act(Action::Trash, t("In den Papierkorb", "Move to Trash"), "trash").enabled(can_trash).into());
+        entries.push(commands.act(Action::Delete, t("Löschen …", "Delete …"), "delete").keys("\u{8}", CMD | OPT).enabled(session.is_some()).into());
         Menu { title: "Session".into(), role: Role::Plain, entries }
     }
 

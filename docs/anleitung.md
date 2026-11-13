@@ -237,7 +237,8 @@ hat:
 | Rechtsklick → *Stummschalten* | keine Benachrichtigungen mehr für diese Session (auch in ⌘K) |
 | `⌘R` | umbenennen (auch während die Session arbeitet; `/rename` geht hinein, sobald sie frei ist) |
 | `⌥⌘X` | sofort beenden (bleibt fortsetzbar; die Einblendung hat *Fortsetzen*) |
-| `⌥⌘⌫` | beendete Session sofort in den Papierkorb (die Einblendung hat *Rückgängig* und legt die Dateien zurück) |
+| `⌥⌘⌫` | *Löschen …*: Session stoppen und ihr Transkript endgültig löschen (fragt erst nach, nicht rücknehmbar) |
+| Rechtsklick → *In den Papierkorb* | beendete Session sofort in den Papierkorb (die Einblendung hat *Rückgängig* und legt die Dateien zurück) |
 | Menü *Ablage → Aufräumen …* | alles, was seit N Tagen ruht, ausblenden oder in den Papierkorb |
 | `⌘L` | für später: Aufgaben aus `/later`, `⏎` startet eine als neue Session, `⌫` hakt ab |
 | Menü *In anderes Konto*, *Forken in* | **in ein anderes Konto oder forken …**: ein Dialog für Konto (`1`, `2`, … – mit dem Verbrauch jedes Kontos), ob das Original weiterläuft (`⇥`), und Flags. Er sagt, was `⏎` tut: anderes Konto → *umziehen* (z. B. wenn ein Limit voll ist); Original läuft weiter → *forken*. Neu starten mit Flags (`--chrome`, `--model opus`) geht über Menü *Session* oder ⌘K → „Neu starten mit …“, nach Brain holen mit `⌥⌘O` |
@@ -376,7 +377,7 @@ Alles optional, in `~/.claude-brain/config.json`:
 | `⌥⌘P` / `⌥⌘M` | anheften / stummschalten |
 | `⌫` `⌫` | ausblenden, bis sich etwas tut |
 | `⌥⌘O` | aus iTerm nach Brain holen (sofort, ohne Dialog) |
-| `⌥⌘X`, `⌥⌘⌫` | beenden, in den Papierkorb |
+| `⌥⌘X`, `⌥⌘⌫` | beenden, löschen … |
 | `⌘Z` | Knopf der Einblendung unten (Rückgängig, Fortsetzen) |
 | `⌘F` | in der ganzen Session suchen |
 | `⌘⇧C` | letzte Antwort kopieren |

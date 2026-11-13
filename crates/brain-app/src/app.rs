@@ -105,6 +105,8 @@ pub enum Mode {
 pub enum Confirm {
     /// Stops the session's process.
     ForceEnd(SessionKey),
+    /// Stops the session and deletes it for good, transcript included.
+    Delete(SessionKey),
     /// Moves these sessions to the Trash (the clean-up dialog's list).
     Cleanup(Vec<SessionKey>),
 }
@@ -240,6 +242,8 @@ pub enum Action {
     End,
     Hide,
     Trash,
+    /// ⌥⌘⌫: asks, then stops the session and deletes it with its transcript.
+    Delete,
     /// End a session that won't end, by force (the gardener's way).
     ForceEnd,
     /// ⌘K with the selected session's projects to move it to.
@@ -488,6 +492,8 @@ pub enum Message {
     GardenToggle(usize),
     GardenEnd,
     GardenDone(Vec<(SessionKey, Result<String, String>)>),
+    /// A session was deleted for good: (key, shown name, what went wrong on the way).
+    DeleteDone(SessionKey, String, Option<String>),
     SyncPlanned(brain_core::sync::Plan),
     SyncPick(usize, String),
     SyncKeep(usize),
@@ -1906,6 +1912,10 @@ impl Brain {
                 Task::none()
             }
             Message::GardenEnd => self.garden_end(),
+            Message::DeleteDone(key, name, problem) => {
+                self.delete_done(key, name, problem);
+                Task::none()
+            }
             Message::GardenDone(results) => {
                 self.garden_done(results);
                 Task::none()
@@ -2554,7 +2564,8 @@ impl Brain {
             all.push((t("Neu starten mit … (z. B. --chrome)", "Restart with … (e.g. --chrome)").to_string(), "", PaletteCommand::Act(Action::RestartWith)));
             all.push((t("Beenden / Hintergrund-Session stoppen", "End / stop the background session").to_string(), "⌥⌘X", PaletteCommand::Act(Action::End)));
             all.push((t("Ausblenden", "Hide").to_string(), "⌫", PaletteCommand::Act(Action::Hide)));
-            all.push((t("In den Papierkorb", "Move to Trash").to_string(), "⌥⌘⌫", PaletteCommand::Act(Action::Trash)));
+            all.push((t("In den Papierkorb", "Move to Trash").to_string(), "", PaletteCommand::Act(Action::Trash)));
+            all.push((t("Löschen …", "Delete …").to_string(), "⌥⌘⌫", PaletteCommand::Act(Action::Delete)));
         }
         all.push((t("Terminal teilen", "Split the terminal").to_string(), "⌘D", PaletteCommand::Split));
         all.push((t("Alle Terminals im Überblick", "All terminals at a glance").to_string(), "⌘⇧A", PaletteCommand::Overview));
@@ -3900,6 +3911,7 @@ impl Brain {
             Action::End => return self.end_selected(),
             Action::Hide => self.hide_selected(),
             Action::Trash => self.trash_selected(),
+            Action::Delete => self.ask_delete(),
             Action::ForceEnd => self.ask_force_end(),
             Action::Resume => self.resume_selected(),
             Action::Allow => self.answer_permission(true),
@@ -4100,6 +4112,80 @@ impl Brain {
         self.mode = Mode::Confirm;
     }
 
+    /// "Delete …": asks first, since the transcript is gone for good.
+    fn ask_delete(&mut self) {
+        let Some(key) = self.selected.clone() else { return };
+        self.confirm = Some((Confirm::Delete(key), self.mode));
+        self.mode = Mode::Confirm;
+    }
+
+    /// Confirmed "Delete …": closes the session's terminal, then off the UI thread stops the
+    /// session (`claude stop` and `claude rm` for a background one, else the process by force as
+    /// "End by force" does) and deletes its transcript and review for good.
+    fn delete_forever(&mut self, key: SessionKey) -> Task<Message> {
+        let Some(session) = self.model.board.get(&key) else { return Task::none() };
+        let Some(account) = self.model.account(&key.account).cloned() else { return Task::none() };
+        let name = session.display_name();
+        let (pid, running) = (session.pid, session.alive && session.phase() != Phase::Ended);
+        let agent = session.agent.as_ref().map(|a| a.id.clone());
+        let session_id = session.session_id.clone();
+        self.terminals.remove(&key);
+        self.terminal_titles.remove(&key);
+        self.typed_input.remove(&key);
+        self.terminal_started.remove(&key);
+        self.unreachable.remove(&key);
+        self.set_status(tr!("„{name}“ wird gelöscht …", "Deleting “{name}” …"));
+        let review_key = key.clone();
+        let (shown, done_key) = (name.clone(), key.clone());
+        Task::perform(
+            off_thread(move || {
+                let mut problems = Vec::new();
+                if let Some(id) = &agent {
+                    let _ = brain_core::agents::stop(&account, id);
+                }
+                if running {
+                    if let Err(err) = brain_core::garden::end(&account, pid, None) {
+                        problems.push(err);
+                    }
+                }
+                if let Some(id) = &agent {
+                    if let Err(err) = brain_core::agents::remove(&account, id) {
+                        problems.push(format!("claude rm: {err}"));
+                    }
+                }
+                if let Some(id) = &session_id {
+                    if let Err(err) = brain_core::transcript::delete_session_files(&account, id) {
+                        problems.push(err);
+                    }
+                }
+                if let Err(err) = brain_core::review::Review::delete_file(&brain_core::review::Review::dir(&brain_core::account::home_dir()), &review_key) {
+                    problems.push(format!("review: {err}"));
+                }
+                (!problems.is_empty()).then(|| problems.join("; "))
+            }),
+            move |problem| Message::DeleteDone(done_key.clone(), shown.clone(), problem),
+        )
+    }
+
+    fn delete_done(&mut self, key: SessionKey, name: String, problem: Option<String>) {
+        self.prefs.forget(&key);
+        self.prefs.save();
+        self.reviews.remove(&key);
+        self.review_dirty.remove(&key);
+        self.model.board.remove(&key);
+        self.model.relist_transcripts();
+        if self.selected.as_ref() == Some(&key) {
+            self.selected = None;
+        }
+        self.set_status(match problem {
+            None => tr!("„{name}“ gelöscht.", "“{name}” deleted."),
+            Some(err) => {
+                brain_core::log::write(&brain_core::account::home_dir(), "delete", &format!("{name} ({}): {err}", key.account));
+                tr!("„{name}“ gelöscht, aber: {err}", "“{name}” deleted, but: {err}")
+            }
+        });
+    }
+
     /// ⏎ or the red button in the confirm dialog.
     fn confirm_run(&mut self) -> Task<Message> {
         let Some((what, _)) = self.confirm.take() else { return Task::none() };
@@ -4109,6 +4195,7 @@ impl Brain {
         }
         match what {
             Confirm::ForceEnd(key) => self.force_end(key),
+            Confirm::Delete(key) => self.delete_forever(key),
             Confirm::Cleanup(keys) => {
                 let (mut done, mut failed) = (0, Vec::new());
                 for key in keys {

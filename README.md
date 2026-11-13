@@ -109,13 +109,14 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   *snoozed*, *in the background*, *automated* and *older* ones. A slim header over the terminal
   shows project › session, branch, account and context fill; a line at the bottom appears only while an account has a limit used up to 80 % or more.
   Messages of the last command show as a small card at the bottom of the window; what can be taken back has a button on it (or `⌘Z`).
-  `⌥⌘⌫` moves an ended session's transcript
-  to the **Trash** at once; the card's *Undo* puts it back. *File → Clean up …* shows everything ended (or in the background) and quiet for
+  *Move to Trash* (context menu) puts an ended session's transcript
+  in the **Trash** at once; the card's *Undo* puts it back. `⌥⌘⌫` (*Delete …*, any session, running or not) asks first, then stops the session
+  and deletes its transcript, its folder and its review for good – no undo. *File → Clean up …* shows everything ended (or in the background) and quiet for
   1, 3, 7 or 14 days, to hide or, after a question, trash. Pinned and saved sessions always stay.
 - **Claude Code's background sessions** (`claude --bg`, listed by `claude agents`) show with
   their own state (blocked, failed, done …) while something happens; after a day without activity
   they go to *Quiet in the background*, and like those programs started, they never notify. `⏎`
-  attaches to one, `⌥⌘X` stops it, `⌥⌘⌫` stops it, moves its transcript to the Trash
+  attaches to one, `⌥⌘X` stops it, *Move to Trash* moves its transcript to the Trash
   and runs `claude rm`.
 - **End now, resume later.** `⌥⌘X` ends a waiting session (`/exit`) at once, and the card's *Resume* goes on; closing the tab works
   too. Ended sessions stay in the list as long as Claude Code keeps their transcript
@@ -368,7 +369,7 @@ start and end), and none of the menu's shortcuts uses them.
 | `⌫` | hide until something happens in the session (again: show it; the card has *Undo*) |
 | `⌥⌘O` | move a session from iTerm into Brain (right away, no dialog) |
 | `⌥⌘X` | end the session (`/exit`; a background session: `claude stop`); it stays resumable, the card has *Resume* |
-| `⌥⌘⌫` | move an ended session's transcript to the Trash (the card has *Undo*) |
+| `⌥⌘⌫` | *Delete …*: stop the session and delete its transcript for good (asks first; no undo) |
 | `⌘Z` | press the button of the card at the bottom (not while a terminal or a text field has the keyboard) |
 | `⌘F` | find in the session's whole conversation (`esc` closes) |
 | `⌘⇧C` | copy Claude's last answer |

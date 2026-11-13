@@ -342,8 +342,9 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
         remove.push((t("Ausblenden", "Hide").to_string(), "⌫", Action::Hide, false));
     }
     if ended || s.agent.as_ref().is_some_and(|a| !a.is_active()) {
-        remove.push((t("In den Papierkorb", "Move to Trash").to_string(), "⌥⌘⌫", Action::Trash, true));
+        remove.push((t("In den Papierkorb", "Move to Trash").to_string(), "", Action::Trash, true));
     }
+    remove.push((t("Löschen …", "Delete …").to_string(), "⌥⌘⌫", Action::Delete, true));
     groups.push(remove);
 
     let mut lines = Vec::new();
@@ -2630,6 +2631,18 @@ fn confirm(brain: &Brain) -> Element<'_, Message> {
                 t("Hart beenden", "End by force"),
             )
         }
+        app::Confirm::Delete(key) => {
+            let name = brain.model.board.get(key).map(|s| s.display_name()).unwrap_or_default();
+            (
+                tr!("„{name}“ endgültig löschen?", "Delete “{name}” for good?"),
+                t(
+                    "Die Session wird gestoppt, aus Claude Codes Liste entfernt und ihr Transkript gelöscht. Das lässt sich nicht rückgängig machen.",
+                    "The session is stopped, removed from Claude Code's list and its transcript deleted. This can't be undone.",
+                )
+                .to_string(),
+                t("Löschen", "Delete"),
+            )
+        }
         app::Confirm::Cleanup(keys) => {
             let n = keys.len();
             (
@@ -3489,7 +3502,7 @@ fn keys_sheet(_brain: &Brain) -> Element<'_, Message> {
                 ("⌥⌘O", t("aus iTerm in Brain holen", "move from iTerm into Brain")),
                 ("⌥⌘I", t("in iTerm öffnen", "open in iTerm")),
                 ("⌥⌘X", t("beenden (⌘Z setzt fort)", "end (⌘Z resumes)")),
-                ("⌥⌘⌫", t("in den Papierkorb (⌘Z legt zurück)", "move to the Trash (⌘Z puts back)")),
+                ("⌥⌘⌫", t("löschen … (endgültig, mit Rückfrage)", "delete … (for good, asks first)")),
                 ("⌘E", t("längerer Prompt (Composer)", "longer prompt (composer)")),
                 ("⌘F", t("im ganzen Gespräch suchen", "find in the whole conversation")),
                 ("⌘⇧C", t("letzte Antwort kopieren", "copy the last answer")),

@@ -71,6 +71,30 @@ pub fn session_files(account: &Account, session_id: &str) -> Vec<PathBuf> {
     files
 }
 
+/// Deletes a session's files for good (not into the Trash), but only what lies inside the
+/// account's `projects/` folder, checked with canonical paths (a link out of it is refused).
+/// A file already gone is fine. Returns what was deleted.
+pub fn delete_session_files(account: &Account, session_id: &str) -> Result<Vec<PathBuf>, String> {
+    delete_within(&account.config_dir.join("projects"), &session_files(account, session_id))
+}
+
+fn delete_within(projects: &Path, files: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    let root = projects.canonicalize().map_err(|e| format!("{}: {e}", projects.display()))?;
+    let mut deleted = Vec::new();
+    for file in files {
+        let Ok(real) = file.canonicalize() else { continue };
+        if real == root || !real.starts_with(&root) {
+            return Err(format!("{} lies outside {}; left alone", file.display(), projects.display()));
+        }
+        let result = if real.is_dir() { std::fs::remove_dir_all(&real) } else { std::fs::remove_file(&real) };
+        match result {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("{}: {e}", real.display())),
+            _ => deleted.push(real),
+        }
+    }
+    Ok(deleted)
+}
+
 /// Every session whose transcript Claude Code still keeps for this account (the sessions that
 /// can still be resumed), by id, with the transcript's path.
 pub fn kept_transcripts(account: &Account) -> std::collections::HashMap<String, PathBuf> {
@@ -504,6 +528,27 @@ fn tool_summary(name: &str, input: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deleting_a_session_removes_transcript_and_folder_but_nothing_outside_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let account = Account { id: "t".into(), config_dir: dir.path().join("cfg") };
+        let project = account.config_dir.join("projects/-tmp-x");
+        std::fs::create_dir_all(project.join("abc/subagents")).unwrap();
+        std::fs::write(project.join("abc.jsonl"), "{}").unwrap();
+        std::fs::write(project.join("abc/subagents/a.jsonl"), "{}").unwrap();
+        std::fs::write(project.join("other.jsonl"), "{}").unwrap();
+        assert_eq!(delete_session_files(&account, "abc").unwrap().len(), 2);
+        assert!(!project.join("abc.jsonl").exists() && !project.join("abc").exists());
+        assert!(project.join("other.jsonl").exists());
+        // Already gone is fine.
+        assert!(delete_session_files(&account, "abc").unwrap().is_empty());
+        // Outside projects/: refused, and the file stays.
+        let outside = dir.path().join("keep.jsonl");
+        std::fs::write(&outside, "{}").unwrap();
+        assert!(delete_within(&account.config_dir.join("projects"), &[outside.clone()]).is_err());
+        assert!(outside.exists());
+    }
 
     const LINES: &[&str] = &[
         r#"{"type":"user","message":{"role":"user","content":"Baue den Export"},"timestamp":"2026-10-02T14:00:00Z"}"#,
