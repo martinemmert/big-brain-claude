@@ -11,6 +11,7 @@ use iced::Task;
 use std::time::{Duration, Instant};
 
 use super::{off_thread, unfocus, Brain, Message, Mode};
+use crate::format::now_ms;
 use crate::i18n::t;
 use crate::tr;
 
@@ -144,6 +145,10 @@ impl Brain {
                 self.send_text(&old, "/exit");
             }
         }
+        // The new one takes the old one's place: the old conversation leaves the tree (it stays
+        // findable through the search, and comes back by itself if something happens in it).
+        self.prefs.hide(&old, now_ms());
+        self.prefs.save();
         self.model.relist_transcripts();
         self.set_status(tr!("„{name}“ startet …", "“{name}” is starting …"));
         task
