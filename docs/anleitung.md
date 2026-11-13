@@ -27,6 +27,12 @@ springt unter der Maus. Welche Projekte im Baum stehen, bestimmst du:
   später“), kommt sein Projekt dazu. So auch **In ein anderes Projekt …** mit einem neuen Namen.
 - Beim ersten Start nach dem Update übernimmt Brain einmal die Projekte der Sessions, die gerade in
   Brain laufen. Sonst nichts.
+- Ist die Liste leer und stehen Sessions unter „Weitere“, liegt oben im Baum die Karte **Projekte
+  übernehmen**. Sie öffnet einen Dialog (auch: Ablage → **Projekte übernehmen …**) mit den Ordnern
+  dieser Sessions als Projekte, je mit Pfad und Zahl der Sessions (ein Worktree zählt zu seinem
+  Haupt-Ordner). Vorgewählt sind Ordner mit Sessions der letzten 7 Tage, nicht dein Home-Ordner und
+  `/tmp`. **Übernehmen** (`⏎`) schreibt die gewählten in den Baum, **Später** blendet die Karte bis
+  zum nächsten Start aus. Danach gilt wieder: Projekte kommen nur von Hand.
 
 Ein Projekt bleibt, bis du es ausblendest (Rechtsklick auf den Projektkopf, oder `⌘K`); unten holt
 „N Projekte ausgeblendet“ es zum Nachsehen zurück. Ein Klick auf den Kopf klappt es zu oder auf; ein
@@ -85,7 +91,8 @@ Oben in der Titelleiste steht der Kontofilter (umschalten mit `⇥`).
   im Titel von *Originalgröße*, wenn sie nicht 100 % ist.
 - **Tasten:** `⌘?` zeigt alle.
 
-Über dem Terminal steht eine schmale Zeile: Projekt › Session (ein Klick benennt um), Branch, Konto,
+Über dem Terminal steht eine schmale Zeile: Projekt › Session (ein Klick benennt um), Branch (nur
+solange die Titelleiste ihn nicht schon vor dem Ziel zeigt; im zweiten, geteilten Terminal immer), Konto,
 wie voll der Kontext ist (ab 80 % mit **/compact**) und ein ⚠, wenn die Session dieselben Dateien
 bearbeitet wie eine andere. Modell, Kosten, pid und Ordner erscheinen beim Überfahren.
 
@@ -103,7 +110,11 @@ Rechts steht die ausgewählte Session.
   pid und Startzeit zeigt sie beim Überfahren.
 - **Das Terminal:** darunter läuft die Session selbst, in Brains Terminal (siehe unten). Bei einer
   beendeten Session steht dort vorher ein **Steckbrief**: Anfang, letzte Frage, letzte Antwort,
-  offene Rückfrage, geänderte Dateien. Läuft die Session in einem iTerm-Tab, steht dort ein Hinweis;
+  offene Rückfrage, geänderte Dateien. Eine **schlafende** Session (Claude Code hat ihren Prozess
+  beendet, sie steht noch in der Liste) weckt Brain nicht beim Auswählen: dort steht der Steckbrief
+  unter „Schläft – wacht auf, wenn du sie weckst“ mit dem Knopf **Aufwecken** (`⏎`, oder das erste
+  getippte Zeichen; es selbst geht nicht ins Terminal). Erst dann hängt Brain das Terminal an und
+  startet den Prozess neu. Läuft die Session in einem iTerm-Tab, steht dort ein Hinweis;
   „Nach Brain holen“ (Rechtsklick oder `⌥⌘O`) holt sie herüber.
 - **Suchen in der Session:** `⌘F` öffnet über dem Terminal eine Suchleiste für das ganze Gespräch;
   mit Text darin ersetzen die Treffer das Terminal, ein Klick öffnet einen ganz. `esc` schließt sie.

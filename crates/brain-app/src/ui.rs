@@ -38,6 +38,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::Sync => sync_accounts(brain),
         Mode::Keys => keys_sheet(brain),
         Mode::Garden => garden(brain),
+        Mode::Adopt => adopt(brain),
         Mode::Relaunch => relaunch(brain),
         Mode::NewSession => new_session(brain),
         _ => detail(brain),
@@ -824,6 +825,7 @@ fn tree<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Mess
             Node::OthersHead { count } => others_head(count),
             Node::Footer => tree_footer(brain, &tree),
             Node::NewProject => new_project_row(),
+            Node::AdoptOffer { count } => adopt_offer(count),
         }
     };
     // Each project (and "Weitere") on an island of its own; the rest stands between them.
@@ -1206,6 +1208,31 @@ fn tree_footer<'a>(brain: &'a Brain, tree: &Tree<'_>) -> Element<'a, Message> {
         line = line.push(toggle(label, brain.show_hidden_projects, Message::ToggleHiddenProjects));
     }
     container(row(std::iter::once(line.wrap().into()))).padding(Padding { top: 6.0, ..Padding::ZERO }).into()
+}
+
+/// The card at the top of an empty tree: the sessions stand among the others, their projects can
+/// be taken over in one go.
+fn adopt_offer<'a>(count: usize) -> Element<'a, Message> {
+    let card = column![
+        text(t("Projekte übernehmen", "Adopt projects")).size(13).color(TEXT_STRONG).font(style::semibold()),
+        text(tr!("{count} Sessions stehen unter „Weitere“. Wähle die Ordner, die als Projekte in den Baum sollen.", "{count} sessions are among the others. Choose the folders that become projects in the tree."))
+            .size(11.5)
+            .color(TEXT_MUTED)
+            .font(UI),
+    ]
+    .spacing(3);
+    button(card)
+        .padding([8, 12])
+        .height(tree::ADOPT_H)
+        .width(Fill)
+        .on_press(Message::OpenAdopt)
+        .style(|_, status| button::Style {
+            background: Some(Background::Color(if matches!(status, button::Status::Hovered | button::Status::Pressed) { RAISED } else { SURFACE })),
+            text_color: TEXT,
+            border: Border { color: alpha(style::PRIMARY, 0x99), width: 1.0, radius: 10.0.into() },
+            ..button::Style::default()
+        })
+        .into()
 }
 
 fn new_project_row<'a>() -> Element<'a, Message> {
@@ -2659,6 +2686,58 @@ fn garden(brain: &Brain) -> Element<'_, Message> {
     let count = dialog.chosen.iter().filter(|c| **c).count();
     let label = if dialog.busy { t("Beende …", "Ending …").to_string() } else { tr!("{count} beenden", "End {count}") };
     body = body.push(action(label, "⏎", true, (!dialog.busy && count > 0).then_some(Message::GardenEnd)));
+    body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
+}
+
+/// "Projekte übernehmen": the folders of the sessions among the others, as projects, each with its
+/// sessions; those with recent sessions are chosen.
+fn adopt(brain: &Brain) -> Element<'_, Message> {
+    let dialog = &brain.adopt;
+    let mut body = column![
+        dialog_title(t("Projekte übernehmen", "Adopt projects")),
+        text(t(
+            "Die Ordner der Sessions unter „Weitere“, als Projekte zusammengefasst (ein Worktree zählt zu seinem Haupt-Checkout). Gewählte Projekte kommen in den Baum; danach wächst die Liste wieder nur von Hand.",
+            "The folders of the sessions among the others, grouped as projects (a worktree counts as its main checkout). Chosen projects go into the tree; after that the list grows by hand again.",
+        ))
+        .size(13)
+        .line_height(1.5)
+        .color(TEXT)
+        .font(UI),
+    ]
+    .spacing(14)
+    .max_width(720);
+    if dialog.entries.is_empty() {
+        body = body.push(text(t("Nichts zu übernehmen: Unter „Weitere“ stehen keine Sessions mit Ordner.", "Nothing to adopt: no sessions with a folder among the others.")).size(13).color(TEXT_MUTED).font(UI));
+        return body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into();
+    }
+    let rows = dialog.entries.iter().enumerate().map(|(index, entry)| {
+        let sessions = entry.sessions;
+        let mark = if entry.chosen { "☑" } else { "☐" };
+        let place = entry.folder.as_deref().map(tilde).unwrap_or_else(|| t("ohne Ordner", "no folder").to_string());
+        let line = row![
+            text(mark).size(15).color(if entry.chosen { WORKING } else { TEXT_MUTED }),
+            text(clip(&entry.name, 32)).size(13).color(TEXT_STRONG).font(style::semibold()),
+            text(clip(&place, 64)).size(11.5).color(TEXT_FAINT).font(MONO).wrapping(text::Wrapping::None).width(Fill),
+            text(tr!("{sessions} Sessions", "{sessions} sessions")).size(12).color(TEXT_MUTED).font(UI),
+        ]
+        .spacing(10)
+        .align_y(iced::Center);
+        let chosen = entry.chosen;
+        mouse_area(container(line).padding([8, 12]).width(Fill).style(move |_| boxed(if chosen { RAISED } else { SURFACE }, if chosen { LINE_STRONG } else { LINE }, 8.0)))
+            .on_press(Message::AdoptToggle(index))
+            .interaction(iced::mouse::Interaction::Pointer)
+            .into()
+    });
+    body = body.push(scrollable(column(rows).spacing(6)).height(Fill).style(scrollbar));
+    let count = dialog.entries.iter().filter(|e| e.chosen).count();
+    let label = t("Übernehmen", "Adopt");
+    body = body.push(
+        row![
+            style::primary_action(label, "⏎", (count > 0).then_some(Message::AdoptConfirm)),
+            action(t("Später", "Later"), "", false, Some(Message::AdoptLater)),
+        ]
+        .spacing(8),
+    );
     body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
 }
 

@@ -137,6 +137,7 @@ impl Brain {
             None => Item::new(t("Neue Session im Projekt", "New session in the project"), "new-session-in").keys("n", CMD | OPT).enabled(false).into(),
         });
         entries.push(commands.item(t("Neues Projekt …", "New project …"), "new-project", Message::NewProject).keys("n", CMD | SHIFT).enabled(acts).into());
+        entries.push(commands.palette(PaletteCommand::AdoptProjects, t("Projekte übernehmen …", "Adopt projects …"), "adopt-projects").into());
         entries.push(Entry::Separator);
         entries.push(commands.menu(MenuCommand::ResumeSearch, t("Session fortsetzen …", "Resume a session …"), "resume").keys("o", CMD).enabled(acts).into());
         let takes_over = session.is_some_and(|s| s.agent.is_none() && (s.phase() == Phase::Ended || s.accepts_input()));

@@ -64,6 +64,9 @@ pub struct Tree<'a> {
     pub others: Vec<Row<'a>>,
     pub other_notes: Vec<&'a later::Item>,
     pub others_open: bool,
+    /// An empty project list with sessions among the others: the card on top offers to take
+    /// their projects over.
+    pub adopt_offer: bool,
     /// Listed projects left out of the tree because the user hid them.
     pub hidden_projects: usize,
     /// Snoozed or hidden sessions, quiet background sessions, sessions programs started, and
@@ -162,6 +165,7 @@ impl<'a> Tree<'a> {
             others,
             other_notes,
             others_open: views.others_open || searching,
+            adopt_offer: false,
             hidden_projects,
             paused: closed(groups.paused.len(), groups.paused_open),
             background: closed(groups.background.len(), groups.background_open),
@@ -203,6 +207,7 @@ pub const BUTTONS_H: f32 = 30.0;
 pub const NOTE_H: f32 = 26.0;
 pub const FOOTER_H: f32 = 30.0;
 pub const HINT_H: f32 = 34.0;
+pub const ADOPT_H: f32 = 78.0;
 pub const GAP: f32 = 2.0;
 pub const TOP: f32 = 0.0;
 /// The air inside an island, above its first and below its last line.
@@ -226,6 +231,8 @@ pub enum Node<'t, 'a> {
     OthersHead { count: usize },
     Footer,
     NewProject,
+    /// "Projekte übernehmen": the card at the top, with how many sessions are among the others.
+    AdoptOffer { count: usize },
 }
 
 impl Node<'_, '_> {
@@ -238,6 +245,7 @@ impl Node<'_, '_> {
             Node::OthersHead { .. } => PROJECT_H,
             Node::Footer => FOOTER_H,
             Node::NewProject => PROJECT_H,
+            Node::AdoptOffer { .. } => ADOPT_H,
         }
     }
 }
@@ -256,6 +264,9 @@ impl<'a> Tree<'a> {
     /// The tree line by line. `searching` with nothing found says so.
     pub fn nodes<'t>(&'t self, searching: bool) -> Vec<Node<'t, 'a>> {
         let mut nodes = Vec::new();
+        if self.adopt_offer {
+            nodes.push(Node::AdoptOffer { count: self.others.len() });
+        }
         let nothing = self.sessions().is_empty() && self.projects.iter().all(|p| p.notes.is_empty()) && self.other_notes.is_empty();
         if nothing && (searching || self.projects.is_empty()) {
             nodes.push(Node::Hint(searching));
@@ -310,7 +321,7 @@ impl Node<'_, '_> {
         match self {
             Node::Project(_) | Node::OthersHead { .. } => Place::Opens,
             Node::Session(_) | Node::NotesHead { .. } | Node::Note { .. } => Place::Inside,
-            Node::Hint(_) | Node::Footer | Node::NewProject => Place::Alone,
+            Node::Hint(_) | Node::Footer | Node::NewProject | Node::AdoptOffer { .. } => Place::Alone,
         }
     }
 }

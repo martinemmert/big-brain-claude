@@ -12,6 +12,7 @@ use iced::{window, Subscription, Task};
 
 
 mod account;
+mod adopt;
 pub(crate) mod relaunch;
 pub use relaunch::{Relaunch, RELAUNCH_FLAGS};
 mod sync;
@@ -83,6 +84,8 @@ pub enum Mode {
     Keys,
     /// The gardener: broken sessions to end for good.
     Garden,
+    /// The projects of the sessions among the others, to take into the tree.
+    Adopt,
 }
 
 /// What a line of the command palette does.
@@ -113,6 +116,8 @@ pub enum PaletteCommand {
     SyncAccounts,
     /// The gardener: sessions Brain can't steer any more.
     Garden,
+    /// The projects of the sessions among the others, to take into the tree.
+    AdoptProjects,
     /// Today's log in the editor.
     OpenLog,
     /// The selected session into this project, or back into its own (`None`).
@@ -397,6 +402,11 @@ pub enum Message {
     /// The sync dialog: open it, its plan, a version picked or kept for a row, apply, and the outcome.
     OpenSync,
     /// The gardener: open it, a finding (un)chosen, end the chosen, and how each went.
+    /// Taking projects over: open the dialog, (un)choose one, take the chosen, not now.
+    OpenAdopt,
+    AdoptToggle(usize),
+    AdoptConfirm,
+    AdoptLater,
     OpenGarden,
     GardenToggle(usize),
     GardenEnd,
@@ -805,6 +815,10 @@ pub struct Brain {
     pub sync: sync::SyncDialog,
     /// The gardener's dialog, and how many sessions it is sure are broken (for the title bar).
     pub garden: garden::GardenDialog,
+    /// The dialog that takes projects over, and whether "Später" hid its card (until Brain
+    /// restarts).
+    pub adopt: adopt::AdoptDialog,
+    pub adopt_dismissed: bool,
     pub garden_count: usize,
     /// Sessions whose terminal closed right after attaching, with its last lines.
     unreachable: HashMap<SessionKey, Vec<String>>,
@@ -967,6 +981,8 @@ impl Brain {
             asking: None,
             sync: sync::SyncDialog::default(),
             garden: garden::GardenDialog::default(),
+            adopt: adopt::AdoptDialog::default(),
+            adopt_dismissed: false,
             garden_count: 0,
             unreachable: HashMap::new(),
             terminal_started: HashMap::new(),
@@ -1662,6 +1678,22 @@ impl Brain {
             }
             Message::RelaunchSubmit => self.submit_relaunch(),
             Message::OpenSync => self.open_sync(),
+            Message::OpenAdopt => {
+                self.open_adopt();
+                Task::none()
+            }
+            Message::AdoptToggle(index) => {
+                self.adopt_toggle(index);
+                Task::none()
+            }
+            Message::AdoptConfirm => {
+                self.adopt_confirm();
+                Task::none()
+            }
+            Message::AdoptLater => {
+                self.adopt_later();
+                Task::none()
+            }
             Message::OpenGarden => self.open_garden(),
             Message::GardenToggle(index) => {
                 self.garden_toggle(index);
@@ -2318,6 +2350,7 @@ impl Brain {
         all.push((t("Neues Claude-Konto einrichten", "Set up a new Claude account").to_string(), "", PaletteCommand::SetUpAccount));
         all.push((t("Konten abgleichen (Einstellungen, Skills, Gedächtnis)", "Sync accounts (settings, skills, memory)").to_string(), "", PaletteCommand::SyncAccounts));
         all.push((t("Alle Tasten", "All keys").to_string(), "⌘?", PaletteCommand::Keys));
+        all.push((t("Projekte übernehmen", "Adopt projects").to_string(), "", PaletteCommand::AdoptProjects));
         all.push((t("Gärtner: kaputte Sessions finden und beenden", "Gardener: find and end broken sessions").to_string(), "", PaletteCommand::Garden));
         all.push((t("Log öffnen (Meldungen und Fehler)", "Open the log (messages and errors)").to_string(), "", PaletteCommand::OpenLog));
         all.push((t("Änderungen der Session zeigen", "Show the session's changes").to_string(), "", PaletteCommand::ToggleChanges));
@@ -2406,6 +2439,10 @@ impl Brain {
             PaletteCommand::SetUpAccount => self.open_account_setup(),
             PaletteCommand::SyncAccounts => self.open_sync(),
             PaletteCommand::Garden => self.open_garden(),
+            PaletteCommand::AdoptProjects => {
+                self.open_adopt();
+                Task::none()
+            }
             PaletteCommand::OpenLog => {
                 self.open_log();
                 Task::none()
@@ -3035,7 +3072,9 @@ impl Brain {
             others_open: !self.prefs.is_section_folded("others"),
             show_hidden: self.show_hidden_projects,
         };
-        Tree::build(groups, self.prefs.listed_projects(), &|s| self.project_name(s), notes, &views, searching)
+        let mut tree = Tree::build(groups, self.prefs.listed_projects(), &|s| self.project_name(s), notes, &views, searching);
+        tree.adopt_offer = !searching && !self.adopt_dismissed && self.prefs.listed_projects().is_empty() && !tree.others.is_empty();
+        tree
     }
 
     /// The sessions ↑↓ reach, in the tree's drawing order.
@@ -3303,6 +3342,7 @@ impl Brain {
             Mode::Pairing | Mode::AccountSetup => return Task::none(),
             Mode::Sync => return self.on_sync_key(named, character.as_deref()),
             Mode::Garden => return self.on_garden_key(named),
+            Mode::Adopt => return self.on_adopt_key(named),
             Mode::Keys => {
                 if text.as_deref() == Some("?") {
                     self.mode = Mode::Normal;
@@ -3402,7 +3442,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden => {
+            Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden | Mode::Adopt => {
                 self.mode = Mode::Normal;
                 unfocus()
             }
