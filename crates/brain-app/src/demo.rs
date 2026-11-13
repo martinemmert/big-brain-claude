@@ -387,6 +387,9 @@ fn rate_limit_changes(now_ms: i64) -> (Vec<brain_core::changes::SessionChange>, 
             said: Some(said.to_string()),
             root: PathBuf::from(root),
             git: None,
+            from_session: true,
+            base: None,
+            original: None,
         });
         diffs.insert(path, diff);
     }
