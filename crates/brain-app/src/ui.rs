@@ -1916,6 +1916,9 @@ fn terminal_or_hint<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
         }
         return container(layers).padding(Padding { top: 6.0, bottom: 12.0, ..Padding::ZERO }).width(Fill).height(Fill).into();
     }
+    if brain.shows_sleeping_summary() {
+        return sleeping_summary(brain, s);
+    }
     let why = if brain.model.is_demo() {
         t("Im Demo-Modus startet Brain keine Terminals.", "In demo mode Brain starts no terminals.")
     } else if brain.terminal_command().is_none() {
@@ -1939,6 +1942,34 @@ fn terminal_or_hint<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
         .into();
     };
     hint(why)
+}
+
+/// A sleeping session instead of a terminal: what it did and asks, and the button that wakes it
+/// (`claude attach` starts its process again, so Brain doesn't do that on selecting).
+fn sleeping_summary<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
+    let mut body = column![text(t("Schläft – wacht auf, wenn du sie weckst", "Asleep – wakes when you wake it")).size(15).color(TEXT_STRONG).font(style::semibold())].spacing(10);
+    let brief = brain.brief.as_ref().filter(|(k, _)| *k == s.key).map(|(_, b)| b);
+    if let Some(brief) = brief {
+        body = body.push(brief_card(brief));
+    }
+    // The question a hook reported stands there even where the transcript shows none.
+    let asks = matches!(s.ask(false), Some(brain_core::state::Ask::Question));
+    if let Some(question) = s.headline().filter(|_| asks && brief.is_none_or(|b| b.open_question.is_none())) {
+        body = body.push(
+            container(row![text(t("Offen", "Open")).size(11.5).color(TURN).font(style::semibold()), text(clip(&question, 260)).size(12.5).color(TEXT_STRONG).font(UI).width(Fill)].spacing(8))
+                .padding([12, 14])
+                .width(Fill)
+                .style(|_| boxed(SURFACE, LINE, 10.0)),
+        );
+    }
+    scrollable(
+        body.push(hint(t("Brain hängt erst ein Terminal an, wenn du aufweckst – das startet die Session wieder.", "Brain attaches a terminal only once you wake it – that starts the session again.")))
+            .push(style::primary_action(t("Aufwecken", "Wake"), "⏎", Some(Message::Do(Action::StartTerminal))))
+            .padding(Padding { top: 8.0, right: 12.0, bottom: 20.0, left: 0.0 }),
+    )
+    .height(Fill)
+    .style(scrollbar)
+    .into()
 }
 
 /// An ended session in a few lines: how it began and ended, an open question, what it changed.

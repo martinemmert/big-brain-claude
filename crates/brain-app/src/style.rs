@@ -229,6 +229,37 @@ pub fn action<'a, M: Clone + 'a>(label: impl Into<String>, key: impl Into<String
         .into()
 }
 
+/// The button for what the user most likely wants here: filled with the primary colour.
+pub fn primary_action<'a, M: Clone + 'a>(label: impl Into<String>, key: impl Into<String>, on_press: Option<M>) -> Element<'a, M> {
+    let enabled = on_press.is_some();
+    let key = key.into();
+    let mut content = row![text(label.into()).size(12.5).color(TEXT_STRONG).font(semibold())].spacing(8).align_y(iced::Center);
+    if !key.is_empty() {
+        content = content.push(
+            container(text(key).size(10.5).color(TEXT_STRONG).font(UI))
+                .padding([1, 5])
+                .height(18)
+                .center_y(18)
+                .style(|_| boxed(alpha(TEXT_STRONG, 0x2e), alpha(TEXT_STRONG, 0x40), 4.0)),
+        );
+    }
+    button(centered(content))
+        .padding([0, 12])
+        .height(30)
+        .on_press_maybe(on_press)
+        .style(move |_, status| {
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            let faded = |c: Color| if enabled { c } else { Color { a: c.a * 0.4, ..c } };
+            button::Style {
+                background: Some(Background::Color(faded(if hovered { alpha(PRIMARY, 0xdd) } else { PRIMARY }))),
+                text_color: faded(TEXT_STRONG),
+                border: border::rounded(8),
+                ..button::Style::default()
+            }
+        })
+        .into()
+}
+
 /// A segmented control; picking an option produces its message.
 pub fn segmented<'a, M: Clone + 'a>(options: Vec<(String, bool, M)>) -> Element<'a, M> {
     segmented_in(options, RAISED, Color::TRANSPARENT)

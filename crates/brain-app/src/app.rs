@@ -2568,10 +2568,10 @@ impl Brain {
         Task::batch([operation::focus(FIND), self.load_history()])
     }
 
-    /// Sums up the selected session once it has ended, before resuming it.
+    /// Sums up the selected session once it has ended or fell asleep, before resuming or waking it.
     fn load_brief(&mut self) -> Task<Message> {
         let Some(session) = self.selected_session() else { return Task::none() };
-        if session.phase() != Phase::Ended || self.has_terminal() {
+        if !matches!(session.phase(), Phase::Ended | Phase::Asleep) || self.has_terminal() {
             return Task::none();
         }
         let key = session.key.clone();
@@ -2609,10 +2609,16 @@ impl Brain {
 
     /// The selected session and whether Brain can attach to it: what `sync_terminal` follows.
     fn selection_state(&self) -> Option<(SessionKey, bool)> {
-        let attachable = self
-            .selected_session()
-            .is_some_and(|s| s.agent.as_ref().is_some_and(|a| !matches!(a.state.as_str(), "failed" | "stopped")));
+        let attachable = self.selected_session().is_some_and(|s| attaches_on_select(s.phase(), s.agent.as_ref().map(|a| a.state.as_str())));
         self.selected.clone().map(|k| (k, attachable))
+    }
+
+    /// Whether the selected session sleeps and Brain has no terminal on it: the main area shows
+    /// its summary and the button to wake it, since attaching starts its process again.
+    pub fn shows_sleeping_summary(&self) -> bool {
+        !self.model.is_demo()
+            && !self.has_terminal()
+            && self.selected_session().is_some_and(|s| s.phase() == Phase::Asleep && s.agent.is_some())
     }
 
     /// In a split, the other pane becomes the active one (its session selected); the keyboard
@@ -3337,6 +3343,11 @@ impl Brain {
         }
         if cmd || modifiers.control() {
             return Task::none();
+        }
+        // The first typed character wakes a sleeping session whose summary is shown (it is not
+        // passed on: the terminal isn't up to take it yet).
+        if character.is_some() && !modifiers.alt() && text.as_ref().is_some_and(|t| !t.is_empty()) && self.mode == Mode::Normal && !self.overview && self.shows_sleeping_summary() {
+            return self.open_terminal(true);
         }
 
         let list: Vec<SessionKey> = self.nav_keys();
@@ -4596,6 +4607,12 @@ impl Brain {
     }
 }
 
+/// Whether selecting a session attaches Brain's terminal: a background session Claude Code still
+/// runs. An asleep one has no process; `claude attach` would start it, so that waits for the user.
+fn attaches_on_select(phase: Phase, agent_state: Option<&str>) -> bool {
+    phase != Phase::Asleep && agent_state.is_some_and(|state| !matches!(state, "failed" | "stopped"))
+}
+
 /// A project as the tree lists it: its name and the folder of its main checkout.
 fn listed_entry(project: &brain_core::project::Project) -> (String, String) {
     (project.name.clone(), project.root.display().to_string())
@@ -4840,6 +4857,16 @@ mod tests {
     use super::*;
     use brain_core::event::{Event, Kind, Source};
     use chrono::TimeZone;
+
+    #[test]
+    fn selecting_a_sleeping_session_starts_no_terminal_but_a_running_one_gets_it() {
+        assert!(!attaches_on_select(Phase::Asleep, Some("idle")), "attaching would start its process");
+        assert!(!attaches_on_select(Phase::Asleep, Some("running")));
+        assert!(attaches_on_select(Phase::YourTurn, Some("idle")));
+        assert!(attaches_on_select(Phase::NeedsYou, Some("running")));
+        assert!(!attaches_on_select(Phase::Ended, Some("failed")));
+        assert!(!attaches_on_select(Phase::YourTurn, None), "a session without a background agent has nothing to attach to");
+    }
 
     #[test]
     fn text_claude_copies_after_a_mouse_selection_is_held_and_a_slash_copy_goes_at_once() {
