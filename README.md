@@ -42,9 +42,7 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
 - **Links in the account's Chrome profile.** Every link Brain opens for a session (⌘-click in the terminal,
   artifacts) opens in the Chrome profile of its account. Pick it under Brain → "Chrome profile per account"
   (`chrome_profiles` in `~/.claude-brain/config.json`); a profile named like the account ("Claude Second" for
-  `second`) is suggested while nothing is picked. Without a profile or Chrome: the default browser. Claude knows it too:
-  the Brain section of the account's `CLAUDE.md` (`brain install`) gets a line with the profile, and Brain keeps
-  it current when you pick one and when it starts. Running sessions read it on their next start.
+  `second`) is suggested while nothing is picked. Without a profile or Chrome: the default browser.
 - **Quick terminal.** A key you pick, e.g. `"quick_terminal": "cmd+shift+b"` in
   `~/.claude-brain/config.json`, brings Brain forward from any app with the longest-waiting
   session's terminal; again hides Brain. Off until set: a global key takes the combination

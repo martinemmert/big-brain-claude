@@ -228,7 +228,7 @@ fn snapshot(account: &Account, home: &Path) -> Snapshot {
     }
     for name in PLAIN_FILES {
         let path = dir.join(name);
-        if let Some((hash, at)) = if name == "CLAUDE.md" { claude_md_hash(&path) } else { tree_hash(&path) } {
+        if let Some((hash, at)) = tree_hash(&path) {
             snap.present.insert(format!("file {name}"));
             snap.items.insert(format!("file {name}"), Seen { value: Value::String(hash), at });
         }
@@ -466,15 +466,6 @@ fn tree_hash(path: &Path) -> Option<(String, Option<SystemTime>)> {
     Some((format!("{:016x}", hash.0), newest))
 }
 
-/// CLAUDE.md without Brain's section: that one is each account's own (it names the account's
-/// Chrome profile), so it never counts as a change and never spreads.
-fn claude_md_hash(path: &Path) -> Option<(String, Option<SystemTime>)> {
-    let Ok(text) = std::fs::read_to_string(path) else { return tree_hash(path) };
-    let mut hash = Fnv(0xcbf2_9ce4_8422_2325);
-    hash.feed(crate::install::unpatch_claude_md(&text).as_bytes());
-    Some((format!("{:016x}", hash.0), std::fs::metadata(path).and_then(|m| m.modified()).ok()))
-}
-
 fn feed_tree(hash: &mut Fnv, newest: &mut Option<SystemTime>, path: &Path, rel: &str) {
     let Ok(meta) = std::fs::symlink_metadata(path) else { return };
     if let Ok(at) = meta.modified() {
@@ -668,8 +659,6 @@ fn write_ops(ops: &[Op], home: &Path, backup: &Path) -> std::io::Result<()> {
             "file" | "entry" | "memory" => {
                 let rel = if kind == "memory" { format!("projects/{}", rest.replacen('/', "/memory/", 1)) } else { rest.to_string() };
                 let dst = dir.join(&rel);
-                // The account keeps its own Brain section in CLAUDE.md.
-                let own_section = (rel == "CLAUDE.md").then(|| std::fs::read_to_string(&dst).ok()).flatten().and_then(|t| crate::install::current_section(&t).map(str::to_string));
                 if std::fs::symlink_metadata(&dst).is_ok() {
                     let saved = backup.join(&op.account.id).join(&rel);
                     std::fs::create_dir_all(saved.parent().unwrap_or(backup))?;
@@ -677,9 +666,6 @@ fn write_ops(ops: &[Op], home: &Path, backup: &Path) -> std::io::Result<()> {
                 }
                 if op.value.is_some() {
                     copy_tree(&op.from.config_dir.join(&rel), &dst)?;
-                    if let (Some(section), Ok(copied)) = (own_section, std::fs::read_to_string(&dst)) {
-                        std::fs::write(&dst, crate::install::put_section(&copied, &section))?;
-                    }
                 }
             }
             _ => {}
@@ -958,28 +944,6 @@ mod tests {
         assert_eq!(read(&backup.join("main/skills/old/SKILL.md")), "old", "what goes is kept");
         assert_eq!(read(&backup.join("main/CLAUDE.md")), "rules");
         assert!(plan_is_empty(&dir, &accounts, h));
-    }
-
-    #[test]
-    fn each_accounts_brain_section_stays_its_own() {
-        use crate::browser::ChromeProfile;
-        let home = tempfile::tempdir().unwrap();
-        let (h, dir) = (home.path(), home.path().join("sync"));
-        let (main, second) = (account(h, "main"), account(h, "second"));
-        let accounts = [main.clone(), second.clone()];
-        let profile = ChromeProfile { dir: "Profile 9".into(), name: "Claude Second".into() };
-        put(&main.config_dir.join("CLAUDE.md"), &crate::install::patch_claude_md("# Rules\n", None));
-        put(&second.config_dir.join("CLAUDE.md"), &crate::install::patch_claude_md("# Rules\n", Some(&profile)));
-
-        assert!(plan_is_empty(&dir, &accounts, h), "the section alone is no difference");
-        sync(&dir, &accounts, h, &[]);
-        put(&main.config_dir.join("CLAUDE.md"), &crate::install::patch_claude_md("# Rules\n\nMore.\n", None));
-        sync(&dir, &accounts, h, &[]);
-
-        let copied = read(&second.config_dir.join("CLAUDE.md"));
-        assert!(copied.contains("More."));
-        assert!(copied.contains("Profile 9"), "second keeps its Chrome profile line");
-        assert!(!read(&main.config_dir.join("CLAUDE.md")).contains("Profile 9"));
     }
 
     #[test]
