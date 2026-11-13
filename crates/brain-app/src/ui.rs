@@ -3,6 +3,7 @@
 use brain_core::changes::SessionChange;
 use brain_core::later;
 use brain_core::state::{Ask, Phase, Session};
+use brain_core::worktrees::Verdict;
 use iced::widget::{button, column, combo_box, container, mouse_area, pin, row, scrollable, stack, text, text_input, Space};
 use iced::{Background, Border, Color, Element, Fill, Length, Padding};
 
@@ -10,7 +11,7 @@ use crate::companion::Command;
 use crate::app::move_project::ProjectChoice;
 use crate::app::{self, Action, Brain, Choice, DragTarget, Grab, Groups, Message, Mode, CLEANUP_DAYS};
 use crate::tree::{self, Mark, Node, Project, Tree};
-use crate::format::{ago, ago_phrase, background_summary, clip, clip_file_name, clip_start, clock, format_tokens, now_ms, plain, short_model, tilde};
+use crate::format::{ago, ago_phrase, background_summary, clip, clip_branch, clip_file_name, clip_start, clock, format_tokens, now_ms, plain, short_model, tilde};
 use crate::i18n::t;
 use crate::markdown;
 use crate::style::{
@@ -43,6 +44,8 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::Adopt => adopt(brain),
         Mode::MoveProject => move_project(brain),
         Mode::Fresh => fresh(brain),
+        Mode::Worktrees => worktrees(brain),
+        Mode::WorktreeAsk => worktree_ask(brain),
         Mode::Relaunch => relaunch(brain),
         Mode::NewSession => new_session(brain),
         _ => detail(brain),
@@ -374,6 +377,7 @@ fn project_menu(brain: &Brain) -> Option<Element<'_, Message>> {
     let hidden = brain.prefs.is_project_hidden(name);
     let lines = vec![
         Some((t("Neue Session hier …", "New session here …").to_string(), "", Message::NewSessionIn(name.clone()), false)),
+        Some((t("Worktrees prüfen …", "Check worktrees …").to_string(), "", Message::OpenWorktrees(Some(name.clone())), false)),
         None,
         Some((if hidden { t("Wieder einblenden", "Show again") } else { t("Projekt ausblenden", "Hide project") }.to_string(), "", Message::ToggleProjectHidden(name.clone()), false)),
         Some((t("Projekt entfernen …", "Remove project …").to_string(), "", Message::RemoveProject(name.clone()), true)),
@@ -2643,6 +2647,28 @@ fn confirm(brain: &Brain) -> Element<'_, Message> {
                 t("Löschen", "Delete"),
             )
         }
+        app::Confirm::RemoveWorktree { path, .. } => {
+            let path = tilde(&path.display().to_string());
+            (
+                t("Worktree entfernen?", "Remove worktree?").to_string(),
+                tr!(
+                    "{path} wird entfernt (git worktree remove, ohne --force). Der Branch bleibt. Hat der Worktree inzwischen Änderungen, lehnt git ab und Brain zeigt die Meldung.",
+                    "{path} is removed (git worktree remove, without --force). The branch stays. If the worktree has changes by now, git refuses and Brain shows its message."
+                ),
+                t("Entfernen", "Remove"),
+            )
+        }
+        app::Confirm::PruneWorktrees { main } => {
+            let main = tilde(&main.display().to_string());
+            (
+                t("Aufräumen?", "Clean up?").to_string(),
+                tr!(
+                    "git worktree prune in {main}: Einträge von Worktrees, deren Ordner fehlt, werden gelöscht.",
+                    "git worktree prune in {main}: entries of worktrees whose folder is gone are deleted."
+                ),
+                t("Aufräumen", "Clean up"),
+            )
+        }
         app::Confirm::Cleanup(keys) => {
             let n = keys.len();
             (
@@ -2761,6 +2787,145 @@ fn fresh(brain: &Brain) -> Element<'_, Message> {
     .spacing(12)
     .max_width(640)
     .padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 })
+    .into()
+}
+
+/// "Worktrees prüfen …": a row for every linked worktree of the tree's projects.
+fn worktrees(brain: &Brain) -> Element<'_, Message> {
+    let dialog = &brain.worktrees;
+    let now = now_ms();
+    let title = match &dialog.filter {
+        Some(project) => tr!("Worktrees von „{project}“", "Worktrees of “{project}”"),
+        None => t("Worktrees prüfen", "Check worktrees").to_string(),
+    };
+    let mut body = column![
+        dialog_title(title),
+        text(t(
+            "Brain liest nur. „Kann weg“: sauber, nichts Ungepushtes, keine lebende Session darin. Entfernen fragt vorher und geht nie mit --force; der Branch bleibt.",
+            "Brain only reads. “Can go”: clean, nothing unpushed, no living session in it. Removing asks first and never uses --force; the branch stays.",
+        ))
+        .size(13)
+        .line_height(1.5)
+        .color(TEXT)
+        .font(UI),
+    ]
+    .spacing(14)
+    .max_width(820);
+    if dialog.rows.is_empty() {
+        let line = if dialog.loading { t("Liest die Worktrees …", "Reading the worktrees …") } else { t("Keine Worktrees außer den Haupt-Checkouts.", "No worktrees besides the main checkouts.") };
+        body = body.push(text(line).size(13).color(TEXT_MUTED).font(UI));
+        return body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into();
+    }
+    let rows = dialog.rows.iter().enumerate().map(|(index, row)| {
+        let inspection = &row.inspection;
+        let worktree = &inspection.worktree;
+        let sessions = brain.sessions_in_worktree(&worktree.path);
+        let verdict = brain.worktree_verdict(row);
+        let (label, color) = match verdict {
+            Verdict::Removable => (t("kann weg", "can go"), WORKING),
+            Verdict::Check => (t("prüfen", "check"), CALLS_SOFT),
+            Verdict::InUse => (t("in Benutzung", "in use"), TEXT_STRONG),
+            Verdict::Orphaned => (t("verwaist", "orphaned"), TEXT_MUTED),
+        };
+        let branch = worktree.branch.as_deref().map(|b| clip_branch(b, 36)).unwrap_or_else(|| t("(losgelöst)", "(detached)").to_string());
+        let mut facts: Vec<String> = Vec::new();
+        if !worktree.prunable {
+            if let Some(ms) = inspection.last_commit_ms {
+                let age = ago(ms, now);
+                facts.push(tr!("letzter Commit vor {age}", "last commit {age} ago"));
+            }
+            facts.push(if inspection.dirty { t("offene Änderungen", "open changes").to_string() } else { t("sauber", "clean").to_string() });
+            facts.push(match inspection.unpushed {
+                Some(0) => t("nichts ungepusht", "nothing unpushed").to_string(),
+                Some(n) => tr!("{n} ungepusht", "{n} unpushed"),
+                None => t("Ungepushtes unbekannt", "unpushed unknown").to_string(),
+            });
+            facts.push(if inspection.merged { t("gemergt", "merged").to_string() } else { t("nicht gemergt", "not merged").to_string() });
+        }
+        if worktree.locked {
+            facts.push(t("gesperrt", "locked").to_string());
+        }
+        if let Some(session) = sessions.first() {
+            let state = match session.phase() {
+                Phase::Ended => t("beendet", "ended"),
+                Phase::Asleep => t("schläft", "asleep"),
+                _ => t("läuft", "running"),
+            };
+            let name = clip(&session.display_name(), 28);
+            facts.push(tr!("Session „{name}“ {state}", "session “{name}” {state}"));
+        }
+        let facts = facts.join("  ·  ");
+        let button: Option<Element<'_, Message>> = match verdict {
+            Verdict::Removable => Some(action(t("Entfernen", "Remove"), "", false, Some(Message::WorktreeRemove(index)))),
+            Verdict::Orphaned => Some(action(t("Aufräumen", "Clean up"), "", false, Some(Message::WorktreePrune(index)))),
+            Verdict::Check if !sessions.is_empty() => Some(action(t("Session fragen", "Ask the session"), "", false, Some(Message::WorktreeAskRow(index)))),
+            _ => None,
+        };
+        let path = clip_start(&tilde(&worktree.path.display().to_string()), 52);
+        let head = row![
+            text(label).size(12.5).color(color).font(style::semibold()).width(96),
+            text(clip(&row.project, 24)).size(13).color(TEXT_STRONG).font(style::semibold()),
+            text(branch).size(12.5).color(TEXT).font(MONO),
+            text(path).size(11.5).color(TEXT_FAINT).font(MONO).wrapping(text::Wrapping::None).width(Fill),
+        ]
+        .spacing(10)
+        .align_y(iced::Center);
+        let mut line = row![column![head, text(facts).size(12).color(TEXT_MUTED).font(UI)].spacing(4).width(Fill)].spacing(10).align_y(iced::Center);
+        if let Some(button) = button {
+            line = line.push(button);
+        }
+        container(line).padding([8, 12]).width(Fill).style(|_| boxed(SURFACE, LINE, 8.0)).into()
+    });
+    body = body.push(scrollable(column(rows).spacing(6)).height(Fill).style(scrollbar));
+    body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
+}
+
+/// A session in a worktree is about to end, clear or be deleted: Brain offers to ask it first,
+/// and later shows its answer.
+fn worktree_ask(brain: &Brain) -> Element<'_, Message> {
+    let Some(ask) = &brain.worktree_ask else { return Space::new().into() };
+    let Some(intent) = ask.intent else { return Space::new().into() };
+    let (name, verb) = (&ask.name, intent.verb());
+    let path = clip_start(&tilde(&ask.worktree.path.display().to_string()), 52);
+    let branch = ask.worktree.branch.as_deref().map(|b| tr!(" (Branch {b})", " (branch {b})")).unwrap_or_default();
+    let (title, sentence, buttons) = match &ask.answer {
+        None => (
+            tr!("„{name}“ arbeitet im Worktree {path}{branch}.", "“{name}” works in the worktree {path}{branch}."),
+            t(
+                "Soll ich die Session vorher fragen, ob sie den Worktree noch braucht oder aufräumen muss?",
+                "Shall I ask the session first whether it still needs the worktree or has to clean up?",
+            )
+            .to_string(),
+            row![
+                Space::new().width(Fill),
+                action(t("Abbrechen", "Cancel"), "esc", false, Some(Message::Close)),
+                action(tr!("Einfach {verb}", "Just {verb}"), "", false, Some(Message::WorktreeJustDo)),
+                style::primary_action(t("Session fragen", "Ask the session"), "⏎", Some(Message::WorktreeSend)),
+            ]
+            .spacing(10),
+        ),
+        Some(answer) => (
+            tr!("„{name}“ antwortet", "“{name}” answers"),
+            answer.clone(),
+            row![
+                Space::new().width(Fill),
+                action(t("Doch nicht", "Not now"), "esc", false, Some(Message::Close)),
+                style::primary_action(tr!("Jetzt {verb}", "{verb} now"), "⏎", Some(Message::WorktreeJustDo)),
+            ]
+            .spacing(10),
+        ),
+    };
+    container(
+        column![
+            text(title).size(20).color(TEXT_STRONG).font(style::bold()),
+            text(sentence).size(13).line_height(1.5).color(TEXT).font(UI),
+            buttons,
+        ]
+        .spacing(14)
+        .max_width(560),
+    )
+    .padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 })
+    .center_x(Fill)
     .into()
 }
 

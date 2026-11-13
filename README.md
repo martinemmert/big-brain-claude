@@ -54,6 +54,14 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   repository's default branch; on that branch itself `origin/<branch>`), changed in the select
   after the branch (a new target reads the files anew), and remembered per repository and branch. Without git the list is what the transcript
   names.
+- **Worktrees.** *File → Check worktrees …* (also the palette and a project's right-click menu, then
+  for that project) lists the linked worktrees of your projects: branch, age of the last commit,
+  open changes, unpushed commits, merged or not, and the session working there. *Can go* (clean, nothing
+  unpushed, no living session) can be removed after a question (`git worktree remove`, never
+  `--force`; the branch stays); *orphaned* ones (folder gone) are cleaned up with `git worktree
+  prune`; for *check* ones Brain can ask the session. Ending, clearing or deleting a session that
+  works in a worktree first offers to ask it whether it still needs the worktree, and shows its
+  answer before it goes on.
 - **Review comments.** In a changed file's Quick Look a `+` in front of a diff line (or the button
   for the whole file) opens a field; `⌘⏎` saves the comment as a draft. `Send review to Claude`
   hands all drafts to the session as one message, at once when it waits for a new prompt, else

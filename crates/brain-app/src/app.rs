@@ -14,7 +14,9 @@ use iced::{window, Subscription, Task};
 mod account;
 mod adopt;
 mod fresh;
+mod worktrees;
 pub use fresh::FRESH_PROMPT;
+pub use worktrees::{Intent, WorktreeAsk, WorktreeRow};
 pub(crate) mod move_project;
 mod tree_drag;
 pub use tree_drag::{DragTarget, Grab, TreeDrag};
@@ -96,6 +98,10 @@ pub enum Mode {
     /// Where the selected session goes: a project to choose or name.
     MoveProject,
     Fresh,
+    /// The worktrees of the projects, and which can go.
+    Worktrees,
+    /// A session in a worktree is asked about it before it ends, clears or is deleted.
+    WorktreeAsk,
     /// A short question before something that can't be taken back.
     Confirm,
 }
@@ -109,6 +115,10 @@ pub enum Confirm {
     Delete(SessionKey),
     /// Moves these sessions to the Trash (the clean-up dialog's list).
     Cleanup(Vec<SessionKey>),
+    /// `git worktree remove` (never forced).
+    RemoveWorktree { main: std::path::PathBuf, path: std::path::PathBuf },
+    /// `git worktree prune`.
+    PruneWorktrees { main: std::path::PathBuf },
 }
 
 /// What the button of a toast takes back (or, for an ended session, continues).
@@ -161,6 +171,8 @@ pub enum PaletteCommand {
     Garden,
     /// The projects of the sessions among the others, to take into the tree.
     AdoptProjects,
+    /// The worktrees of the projects, to check and clean up.
+    Worktrees,
     /// Today's log in the editor.
     OpenLog,
     /// The selected session into this project, or back into its own (`None`).
@@ -484,6 +496,20 @@ pub enum Message {
     /// The move dialog: what is typed, and a line picked.
     FreshEdit(iced::widget::text_editor::Action),
     FreshSubmit,
+    /// The worktree dialog: open it (for one project or all), what it read, remove / clean up /
+    /// ask the session of a row, and how git's command went.
+    OpenWorktrees(Option<String>),
+    WorktreesRead(u64, Vec<WorktreeRow>),
+    WorktreeRemove(usize),
+    WorktreePrune(usize),
+    WorktreeAskRow(usize),
+    WorktreeDone(Result<String, String>),
+    /// Whether the folder of a session about to end, clear or be deleted is a worktree.
+    WorktreeChecked(SessionKey, Intent, Option<brain_core::worktrees::WorktreeRef>),
+    /// The question dialog: ask the session, or go on without; the session answered.
+    WorktreeSend,
+    WorktreeJustDo,
+    WorktreeAnswered(WorktreeAsk, Option<String>),
     /// The new session of "Clear …" started (or not): the old one (key) ends.
     Cleared(SessionKey, String, String, Option<String>, Result<String, String>),
     MoveProjectQuery(String),
@@ -894,6 +920,11 @@ pub struct Brain {
     /// A session started by "Clear …": once it is ready, Brain renames it like the old one and
     /// feeds the prompt.
     pending_fresh: Option<fresh::PendingFresh>,
+    /// A session in a worktree Brain asks about it before ending, clearing or deleting it.
+    pending_worktree_check: Option<worktrees::PendingWorktreeCheck>,
+    /// The question dialog for such a session, and later its answer.
+    pub worktree_ask: Option<WorktreeAsk>,
+    pub worktrees: worktrees::WorktreeDialog,
     /// An iTerm session being moved into Brain: its `/exit` was sent; once the process ended it
     /// continues in the background (`claude --bg --resume`).
     takeover: Option<SessionKey>,
@@ -1081,6 +1112,9 @@ impl Brain {
             reader: None,
             pending_attach: None,
             pending_fresh: None,
+            pending_worktree_check: None,
+            worktree_ask: None,
+            worktrees: worktrees::WorktreeDialog::default(),
             takeover: None,
             synced_selection: None,
             dragging_sidebar: false,
@@ -1900,6 +1934,25 @@ impl Brain {
                 Task::none()
             }
             Message::FreshSubmit => self.submit_fresh(),
+            Message::OpenWorktrees(project) => self.open_worktrees(project),
+            Message::WorktreesRead(scan, rows) => {
+                self.worktrees_read(scan, rows);
+                Task::none()
+            }
+            Message::WorktreeRemove(index) => {
+                self.ask_remove_worktree(index);
+                Task::none()
+            }
+            Message::WorktreePrune(index) => {
+                self.ask_prune_worktrees(index);
+                Task::none()
+            }
+            Message::WorktreeAskRow(index) => self.ask_worktree_session(index),
+            Message::WorktreeDone(result) => self.worktree_done(result),
+            Message::WorktreeChecked(key, intent, worktree) => self.worktree_checked(key, intent, worktree),
+            Message::WorktreeSend => self.send_worktree_question(),
+            Message::WorktreeJustDo => self.do_without_asking(),
+            Message::WorktreeAnswered(ask, answer) => self.worktree_answered(ask, answer),
             Message::Cleared(old, account, name, prompt, result) => self.finish_fresh(old, account, name, prompt, result),
             Message::MoveProjectPick(index) => self.move_project_pick(index),
             Message::AdoptLater => {
@@ -2111,6 +2164,7 @@ impl Brain {
         tasks.push(self.continue_takeover());
         tasks.push(self.continue_restart());
         self.continue_fresh();
+        tasks.push(self.continue_worktree_check());
         let shown_for = Duration::from_secs(if self.status_action.is_some() { 10 } else { 6 });
         if self.status.as_ref().is_some_and(|(_, at)| at.elapsed() > shown_for) {
             self.status = None;
@@ -2577,6 +2631,7 @@ impl Brain {
         all.push((t("Konten abgleichen (Einstellungen, Skills, Gedächtnis)", "Sync accounts (settings, skills, memory)").to_string(), "", PaletteCommand::SyncAccounts));
         all.push((t("Alle Tasten", "All keys").to_string(), "⌘?", PaletteCommand::Keys));
         all.push((t("Projekte übernehmen", "Adopt projects").to_string(), "", PaletteCommand::AdoptProjects));
+        all.push((t("Worktrees prüfen …", "Check worktrees …").to_string(), "", PaletteCommand::Worktrees));
         all.push((t("Gärtner: kaputte Sessions finden und beenden", "Gardener: find and end broken sessions").to_string(), "", PaletteCommand::Garden));
         all.push((t("Log öffnen (Meldungen und Fehler)", "Open the log (messages and errors)").to_string(), "", PaletteCommand::OpenLog));
         all.push((t("Änderungen der Session zeigen", "Show the session's changes").to_string(), "", PaletteCommand::ToggleChanges));
@@ -2663,6 +2718,7 @@ impl Brain {
             PaletteCommand::SetUpAccount => self.open_account_setup(),
             PaletteCommand::SyncAccounts => self.open_sync(),
             PaletteCommand::Garden => self.open_garden(),
+            PaletteCommand::Worktrees => self.open_worktrees(None),
             PaletteCommand::AdoptProjects => {
                 self.open_adopt();
                 Task::none()
@@ -3608,6 +3664,13 @@ impl Brain {
             }
             Mode::Garden => return self.on_garden_key(named),
             Mode::Adopt => return self.on_adopt_key(named),
+            Mode::WorktreeAsk => {
+                if named == Some(Named::Enter) {
+                    return self.on_worktree_ask_enter();
+                }
+                return Task::none();
+            }
+            Mode::Worktrees => return Task::none(),
             Mode::MoveProject => return self.on_move_project_key(named),
             Mode::Keys => {
                 if text.as_deref() == Some("?") {
@@ -3708,7 +3771,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden | Mode::Adopt | Mode::MoveProject | Mode::Fresh => {
+            Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden | Mode::Adopt | Mode::MoveProject | Mode::Fresh | Mode::Worktrees | Mode::WorktreeAsk => {
                 self.mode = Mode::Normal;
                 unfocus()
             }
@@ -3905,13 +3968,13 @@ impl Brain {
                     }
                 };
             }
-            Action::Fresh => return self.open_fresh(),
+            Action::Fresh => return self.guarded(Intent::Clear),
             Action::MoveTo(index) => return self.move_selected(index, Vec::new()),
             Action::ForkTo(index) => return self.fork_selected(index, Vec::new()),
-            Action::End => return self.end_selected(),
+            Action::End => return self.guarded(Intent::End),
             Action::Hide => self.hide_selected(),
             Action::Trash => self.trash_selected(),
-            Action::Delete => self.ask_delete(),
+            Action::Delete => return self.guarded(Intent::Delete),
             Action::ForceEnd => self.ask_force_end(),
             Action::Resume => self.resume_selected(),
             Action::Allow => self.answer_permission(true),
@@ -4196,6 +4259,7 @@ impl Brain {
         match what {
             Confirm::ForceEnd(key) => self.force_end(key),
             Confirm::Delete(key) => self.delete_forever(key),
+            what @ (Confirm::RemoveWorktree { .. } | Confirm::PruneWorktrees { .. }) => self.run_worktree_command(what),
             Confirm::Cleanup(keys) => {
                 let (mut done, mut failed) = (0, Vec::new());
                 for key in keys {
