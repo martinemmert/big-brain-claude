@@ -14,9 +14,9 @@ pub const HOVER: Color = color!(0x1a2033);
 /// A project's island on the sidebar: only a shade lighter than the sidebar, so the islands part
 /// the projects without standing out.
 pub const ISLAND: Color = color!(0x151b2e);
-/// The selected session (or file): the accent blue at about 40 % on the island, like a Mac
-/// sidebar's selection, so it is found at a glance.
-pub const ISLAND_SELECTED: Color = color!(0x243d72);
+/// The selected session (or file): the accent blue at about 25 % on the island, like a Mac
+/// sidebar's selection: found at a glance without shouting.
+pub const ISLAND_SELECTED: Color = color!(0x1e3058);
 /// The pointer over a session.
 pub const ISLAND_HOVER: Color = Color::from_rgba8(0xff, 0xff, 0xff, 0.05);
 pub const LINE: Color = color!(0x232a40);
