@@ -2,6 +2,9 @@ use std::path::Path;
 
 use serde_json::{json, Map, Value};
 
+use crate::account::Account;
+use crate::browser::{ChromeProfile, CHROME_APP};
+
 /// Recognises hook entries written by an earlier install: Brain's mod reports from inside
 /// Claude Code now, and an install takes them out again.
 const HOOK_MARKER: &str = "brain hook";
@@ -16,7 +19,16 @@ const MOD_MARKER: &str = "/.claude-brain/mod/brain";
 const SECTION_START: &str = "<!-- brain:start -->";
 const SECTION_END: &str = "<!-- brain:end -->";
 
-pub fn protocol_section() -> String {
+/// The protocol for one account's CLAUDE.md. With a Chrome profile it ends with where the account's
+/// links open: Claude's own `open` would take the default browser, where another account is signed in.
+pub fn protocol_section(browser: Option<&ChromeProfile>) -> String {
+    let browser = browser.map_or(String::new(), |profile| {
+        let clean = |text: &str| text.chars().filter(|c| !c.is_control() && *c != '"' && *c != '`').collect::<String>();
+        let (name, dir) = (clean(&profile.name), clean(&profile.dir));
+        format!(
+            "\n\n**Browser for this account:** open links and artifacts of this account in the Chrome profile \"{name}\": `open -n -a \"{CHROME_APP}\" --args --profile-directory=\"{dir}\" <url>` – not in the default browser, another Claude account is signed in there."
+        )
+    });
     format!(
         "{SECTION_START}
 ## Brain status protocol
@@ -30,7 +42,7 @@ The user tracks all Claude Code sessions in the Brain dashboard. Report there wi
 - When the user wants to put a task off for later, or agrees to leave something for later: `brain later \"<the task, self-contained>\"`. Brain keeps it with this folder and can start it as a new session; `brain later` lists the open ones.
 - To message a Claude session in another account (`ListAgents` shows only this one's): `brain peers [part of its name]` lists the running sessions of all accounts with their address; send with `SendMessage`, that `uds:…` address as `to`.
 
-Session state (working, permission prompts, turn end) is tracked automatically by Brain's mod; only report content. If `brain` fails, ignore it and continue.
+Session state (working, permission prompts, turn end) is tracked automatically by Brain's mod; only report content. If `brain` fails, ignore it and continue.{browser}
 {SECTION_END}
 "
     )
@@ -161,9 +173,22 @@ fn group_is_brain(group: &Value) -> bool {
 /// Puts exactly one protocol section into a CLAUDE.md: every earlier one goes (between markers,
 /// and copies whose markers another edit removed), stray markers too, then the current section
 /// takes the place of the first one, or the end of the file.
-pub fn patch_claude_md(content: &str) -> String {
-    let section = protocol_section();
-    let body = section.trim_start_matches(SECTION_START).trim_end_matches(SECTION_END).trim().to_string();
+pub fn patch_claude_md(content: &str, browser: Option<&ChromeProfile>) -> String {
+    put_section(content, &protocol_section(browser))
+}
+
+/// The section of a CLAUDE.md as it stands, markers included.
+pub fn current_section(content: &str) -> Option<&str> {
+    let start = content.find(SECTION_START)?;
+    let end = start + content[start..].find(SECTION_END)? + SECTION_END.len();
+    Some(&content[start..end])
+}
+
+/// [`patch_claude_md`] with a finished section. Unmarked copies of an old install are recognised
+/// by the protocol without the browser paragraph.
+pub fn put_section(content: &str, section: &str) -> String {
+    let plain = protocol_section(None);
+    let body = plain.trim_start_matches(SECTION_START).trim_end_matches(SECTION_END).trim().to_string();
     let mut rest = content.to_string();
     let mut place: Option<usize> = None;
     // Marked sections: a start and the next end after it.
@@ -199,6 +224,17 @@ pub fn patch_claude_md(content: &str) -> String {
     }
     out.push('\n');
     out
+}
+
+/// Writes the protocol section of the account's CLAUDE.md (with its Chrome profile paragraph) when
+/// the file has one: an account that never had Brain installed gets none from here. The file
+/// changes only when the section differs.
+pub fn refresh_claude_md(account: &Account, browser: Option<&ChromeProfile>) -> std::io::Result<Change> {
+    let path = account.config_dir.join("CLAUDE.md");
+    if !std::fs::read_to_string(&path).is_ok_and(|text| text.contains(SECTION_START)) {
+        return Ok(Change::Unchanged);
+    }
+    rewrite_file(&path, |text| patch_claude_md(text, browser))
 }
 
 /// Removes Brain's mod, permission rules and an earlier install's hooks from a `settings.json` value,
@@ -379,31 +415,82 @@ mod tests {
     #[test]
     fn claude_md_section_is_appended_once_and_replaced_in_place() {
         let original = "# Prefs\n\nBe nice.\n";
-        let first = patch_claude_md(original);
+        let first = patch_claude_md(original, None);
         assert!(first.starts_with("# Prefs\n\nBe nice.\n\n<!-- brain:start -->"));
-        assert_eq!(patch_claude_md(&first), first);
+        assert_eq!(patch_claude_md(&first, None), first);
 
         let stale = first.replace("Brain status protocol", "Old title") + "\n## After\n";
-        let refreshed = patch_claude_md(&stale);
+        let refreshed = patch_claude_md(&stale, None);
         assert_eq!(refreshed.matches(SECTION_START).count(), 1);
         assert!(refreshed.contains("Brain status protocol"));
         assert!(refreshed.ends_with("<!-- brain:end -->\n\n## After\n"));
     }
 
+    fn second() -> ChromeProfile {
+        ChromeProfile { dir: "Profile 9".into(), name: "Claude Second".into() }
+    }
+
+    #[test]
+    fn browser_paragraph_only_with_a_profile() {
+        assert!(!protocol_section(None).contains("Browser for this account"));
+        let with = protocol_section(Some(&second()));
+        assert!(with.contains("Chrome profile \"Claude Second\""));
+        assert!(with.contains("open -n -a \"Google Chrome\" --args --profile-directory=\"Profile 9\" <url>"));
+        assert!(with.ends_with("<!-- brain:end -->\n"));
+    }
+
+    #[test]
+    fn profile_change_replaces_the_old_line_in_place_and_leaves_foreign_text() {
+        let original = "# Prefs\n\nBe nice.\n";
+        let old = patch_claude_md(original, Some(&second()));
+        let stale = format!("{old}\n## After\n");
+
+        let other = ChromeProfile { dir: "Profile 10".into(), name: "Claude Third".into() };
+        let changed = patch_claude_md(&stale, Some(&other));
+        assert!(changed.starts_with("# Prefs\n\nBe nice.\n\n<!-- brain:start -->"));
+        assert!(changed.ends_with("<!-- brain:end -->\n\n## After\n"));
+        assert_eq!(changed.matches("Browser for this account").count(), 1);
+        assert!(changed.contains("Profile 10") && !changed.contains("Profile 9"));
+
+        let without = patch_claude_md(&changed, None);
+        assert!(!without.contains("Browser for this account"));
+        assert_eq!(without, format!("{}\n## After\n", patch_claude_md(original, None)));
+    }
+
+    #[test]
+    fn refresh_writes_only_when_the_section_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let account = Account { id: "second".into(), config_dir: dir.path().to_path_buf() };
+        let md = dir.path().join("CLAUDE.md");
+
+        // No section, none written.
+        std::fs::write(&md, "# Mine\n").unwrap();
+        assert_eq!(refresh_claude_md(&account, Some(&second())).unwrap(), Change::Unchanged);
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), "# Mine\n");
+
+        std::fs::write(&md, patch_claude_md("# Mine\n", None)).unwrap();
+        assert!(matches!(refresh_claude_md(&account, Some(&second())).unwrap(), Change::Updated { .. }));
+        let written = std::fs::read_to_string(&md).unwrap();
+        assert!(written.starts_with("# Mine\n\n") && written.contains("Profile 9"));
+
+        assert_eq!(refresh_claude_md(&account, Some(&second())).unwrap(), Change::Unchanged);
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), written);
+    }
+
     #[test]
     fn duplicated_sections_and_stray_markers_collapse_into_one() {
         // Another edit removed the first start marker; each install then appended a section.
-        let section = protocol_section();
+        let section = protocol_section(None);
         let body = section.trim_start_matches(SECTION_START).trim_end_matches(SECTION_END).trim();
         let broken = format!("# Prefs\n\n{body}\n<!-- brain:end -->\n\n{section}\n\n{section}\n");
 
-        let fixed = patch_claude_md(&broken);
+        let fixed = patch_claude_md(&broken, None);
 
         assert_eq!(fixed.matches("## Brain status protocol").count(), 1);
         assert_eq!(fixed.matches(SECTION_START).count(), 1);
         assert_eq!(fixed.matches(SECTION_END).count(), 1);
         assert!(fixed.starts_with("# Prefs\n\n<!-- brain:start -->"));
-        assert_eq!(patch_claude_md(&fixed), fixed, "installing again changes nothing");
+        assert_eq!(patch_claude_md(&fixed, None), fixed, "installing again changes nothing");
     }
 
     #[test]
@@ -436,12 +523,12 @@ mod tests {
     #[test]
     fn claude_md_unpatch_restores_the_original() {
         for original in ["", "# Prefs\n\nBe nice.\n"] {
-            let patched = patch_claude_md(original);
+            let patched = patch_claude_md(original, None);
             assert_eq!(unpatch_claude_md(&patched), original);
             assert_eq!(unpatch_claude_md(original), original);
         }
 
-        let with_text_after = patch_claude_md("# Prefs\n") + "\n## After\n";
+        let with_text_after = patch_claude_md("# Prefs\n", None) + "\n## After\n";
         assert_eq!(unpatch_claude_md(&with_text_after), "# Prefs\n\n## After\n");
     }
 

@@ -478,7 +478,7 @@ fn run_install(accounts: &[Account]) -> ExitCode {
         }
 
         let claude_md = account.config_dir.join("CLAUDE.md");
-        report_change("CLAUDE.md", install::rewrite_file(&claude_md, install::patch_claude_md), UP_TO_DATE);
+        report_change("CLAUDE.md", install::rewrite_file(&claude_md, |text| install::patch_claude_md(text, brain_core::browser::effective_profile(&account.id).as_ref())), UP_TO_DATE);
     }
 
     if accounts.is_empty() {

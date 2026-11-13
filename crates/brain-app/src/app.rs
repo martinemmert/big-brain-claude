@@ -814,7 +814,7 @@ pub struct Brain {
     appmenu: Option<crate::appmenu::AppMenu>,
     menu_commands: HashMap<String, Message>,
     /// Chrome's profiles for the Chrome-profile menu, read again after half a minute.
-    chrome_profiles: (Option<Instant>, Vec<crate::browser::ChromeProfile>),
+    chrome_profiles: (Option<Instant>, Vec<brain_core::browser::ChromeProfile>),
     /// ⌘O: the session search lists the ended sessions too.
     resume_search: bool,
     /// `None` shows every account.
@@ -1055,6 +1055,10 @@ impl Brain {
         let demo = model.is_demo();
         if !demo {
             brain_core::requests::prune(&brain_core::requests::dir(&brain_core::account::home_dir()));
+            // The Chrome profile line of each account's CLAUDE.md follows the assignment, a suggestion included.
+            for account in &model.accounts {
+                let _ = brain_core::install::refresh_claude_md(account, brain_core::browser::effective_profile(&account.id).as_ref());
+            }
             let now = now_ms();
             let finished: Vec<(SessionKey, i64)> =
                 model.board.sorted().into_iter().filter(|s| s.phase() == Phase::YourTurn).map(|s| (s.key.clone(), s.phase_since_ms())).collect();

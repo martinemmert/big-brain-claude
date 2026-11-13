@@ -6,6 +6,7 @@ pub mod account_setup;
 pub mod agents;
 pub mod artifacts;
 pub mod brief;
+pub mod browser;
 pub mod changes;
 pub mod commands;
 pub mod conflicts;

@@ -138,9 +138,9 @@ impl Brain {
             .accounts
             .iter()
             .map(|account| {
-                let stored = crate::browser::stored_profile(&config, &account.id);
-                let current = crate::browser::profile_for(&config, &account.id, profiles);
-                let suggested = crate::browser::suggest_profile(&account.id, profiles).filter(|_| stored.is_none());
+                let stored = brain_core::browser::stored_profile(&config, &account.id);
+                let current = brain_core::browser::profile_for(&config, &account.id, profiles);
+                let suggested = brain_core::browser::suggest_profile(&account.id, profiles).filter(|_| stored.is_none());
                 let mut entries: Vec<Entry> = profiles
                     .iter()
                     .map(|p| {
@@ -402,7 +402,7 @@ impl Brain {
     pub(super) fn refresh_menus(&mut self) {
         let now = now_ms();
         if self.chrome_profiles.0.is_none_or(|read| read.elapsed() > std::time::Duration::from_secs(30)) {
-            self.chrome_profiles = (Some(std::time::Instant::now()), crate::browser::chrome_profiles());
+            self.chrome_profiles = (Some(std::time::Instant::now()), brain_core::browser::chrome_profiles());
         }
         let (menus, commands) = {
             let groups = self.groups_for(now, "", None);
@@ -437,8 +437,18 @@ impl Brain {
             MenuCommand::Run(command) => self.run_palette(command),
             MenuCommand::Palette => self.open_palette(),
             MenuCommand::ChromeProfile(account, dir) => {
-                if let Err(err) = crate::browser::set_profile(&crate::config::path(), &account, dir.as_deref()) {
+                if let Err(err) = brain_core::browser::set_profile(&crate::config::path(), &account, dir.as_deref()) {
                     self.set_status(tr!("Konnte das Chrome-Profil nicht speichern: {err}", "Couldn't save the Chrome profile: {err}"));
+                } else if let Some(target) = self.model.account(&account).cloned() {
+                    // Claude reads its CLAUDE.md when a session starts: running ones keep what they have.
+                    let written = brain_core::install::refresh_claude_md(&target, brain_core::browser::effective_profile(&account).as_ref());
+                    self.set_status(match written {
+                        Ok(_) => tr!(
+                            "Chrome-Profil für {account} gesetzt – neue Sessions dieses Kontos öffnen Links dort.",
+                            "Chrome profile for {account} set – new sessions of this account open links there."
+                        ),
+                        Err(err) => tr!("Konnte die CLAUDE.md von {account} nicht aktualisieren: {err}", "Couldn't update the CLAUDE.md of {account}: {err}"),
+                    });
                 }
                 self.refresh_menus();
                 Task::none()
