@@ -94,22 +94,104 @@ pub fn quick_diff(diff: &str, limit: usize) -> QuickDiff {
 /// The smallest the sheet gets when dragged, and the margin it leaves around itself at most.
 pub const SHEET_MIN: iced::Size = iced::Size::new(520.0, 320.0);
 const SHEET_MARGIN: f32 = 24.0;
+/// The air between the title bar and the sheet's top edge when the sheet is as tall as it gets.
+const SHEET_GAP: f32 = 12.0;
 
 /// The sheet's size in a window: the one dragged (kept inside the bounds the window allows now),
-/// else 80 % each way.
-pub fn sheet_size(chosen: Option<(f32, f32)>, window: iced::Size) -> iced::Size {
-    let most = |window: f32, least: f32| (window - SHEET_MARGIN).max(least);
+/// else 80 % each way. `top` is what the title bar takes from the top: the sheet is centred, so it
+/// is never taller than the window less that band and a gap, above and below, and its head
+/// stays under the title bar and the traffic lights.
+pub fn sheet_size(chosen: Option<(f32, f32)>, window: iced::Size, top: f32) -> iced::Size {
     let (w, h) = chosen.unwrap_or((window.width * 0.8, window.height * 0.8));
-    iced::Size::new(w.clamp(SHEET_MIN.width, most(window.width, SHEET_MIN.width)), h.clamp(SHEET_MIN.height, most(window.height, SHEET_MIN.height)))
+    let most_width = (window.width - SHEET_MARGIN).max(SHEET_MIN.width);
+    let most_height = (window.height - 2.0 * (top + SHEET_GAP)).max(SHEET_MIN.height);
+    iced::Size::new(w.clamp(SHEET_MIN.width, most_width), h.clamp(SHEET_MIN.height, most_height))
 }
 
 /// The sheet's size while an edge (`horizontal`: left or right, `vertical`: top or bottom) follows
 /// the pointer. The sheet stays centred, so the edge is as far from the window's middle as the
 /// pointer is, and the opposite one moves with it.
-pub fn dragged_size(pointer: iced::Point, horizontal: bool, vertical: bool, window: iced::Size, current: iced::Size) -> iced::Size {
+pub fn dragged_size(pointer: iced::Point, horizontal: bool, vertical: bool, window: iced::Size, top: f32, current: iced::Size) -> iced::Size {
     let width = if horizontal { 2.0 * (pointer.x - window.width / 2.0).abs() } else { current.width };
     let height = if vertical { 2.0 * (pointer.y - window.height / 2.0).abs() } else { current.height };
-    sheet_size(Some((width, height)), window)
+    sheet_size(Some((width, height)), window, top)
+}
+
+/// The folder of a path relative to the repository: "" for a file at the top.
+pub fn folder_of(relative: &str) -> &str {
+    relative.rsplit_once('/').map_or("", |(dir, _)| dir)
+}
+
+/// Puts the files in the order of the sheet's list, whose islands are folders: a merge request
+/// by folder, then path; else the folders in the order their newest file comes, each folder's
+/// files keeping their order (`files` comes newest first).
+pub fn order_files(files: &mut [&SessionChange], by_path: bool) {
+    if by_path {
+        files.sort_by(|a, b| (folder_of(&a.relative), &a.relative).cmp(&(folder_of(&b.relative), &b.relative)));
+        return;
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    for file in files.iter() {
+        if !seen.contains(&folder_of(&file.relative)) {
+            seen.push(folder_of(&file.relative));
+        }
+    }
+    files.sort_by_key(|f| seen.iter().position(|d| *d == folder_of(&f.relative)));
+}
+
+/// A run of files in one folder: the island of the sheet's list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Folder {
+    pub dir: String,
+    /// Index of its first file in the ordered list, and how many it has.
+    pub first: usize,
+    pub len: usize,
+}
+
+/// The ordered files cut into their folders.
+pub fn folders(files: &[&SessionChange]) -> Vec<Folder> {
+    let mut out: Vec<Folder> = Vec::new();
+    for (i, file) in files.iter().enumerate() {
+        let dir = folder_of(&file.relative);
+        match out.last_mut() {
+            Some(last) if last.dir == dir => last.len += 1,
+            _ => out.push(Folder { dir: dir.to_string(), first: i, len: 1 }),
+        }
+    }
+    out
+}
+
+/// Where the sheet's list starts below its top edge, before the first island.
+pub const LIST_TOP: f32 = 8.0;
+
+/// The top and bottom of file `index`'s row in the sheet's scrolled list, by the heights the list
+/// is drawn with; `None` when its folder is folded.
+pub fn file_span(folders: &[Folder], folded: impl Fn(&str) -> bool, index: usize) -> Option<(f32, f32)> {
+    use crate::tree::{BLOCK_GAP, GAP, ISLAND_PAD_Y, PROJECT_H, ROW_H};
+    let mut top = LIST_TOP;
+    for folder in folders {
+        top += ISLAND_PAD_Y + PROJECT_H + GAP;
+        if !folded(&folder.dir) {
+            if (folder.first..folder.first + folder.len).contains(&index) {
+                top += (index - folder.first) as f32 * (ROW_H + GAP);
+                return Some((top, top + ROW_H));
+            }
+            top += folder.len as f32 * (ROW_H + GAP);
+        }
+        top += ISLAND_PAD_Y - GAP + BLOCK_GAP;
+    }
+    None
+}
+
+/// Where to scroll a list so the row between `top` and `bottom` is in view: `None` when it is
+/// (`viewport`: the offset and the height seen), else the offset that brings it in with a little air.
+pub fn scroll_target(top: f32, bottom: f32, viewport: Option<(f32, f32)>) -> Option<f32> {
+    match viewport {
+        Some((offset, _)) if top < offset => Some((top - 8.0).max(0.0)),
+        Some((offset, seen)) if bottom > offset + seen => Some(bottom - seen + 8.0),
+        Some(_) => None,
+        None => Some((top - 8.0).max(0.0)),
+    }
 }
 
 /// The file `delta` places from `index` in a list of `len`; `None` past either end.
@@ -118,15 +200,35 @@ pub fn stepped(index: usize, len: usize, delta: isize) -> Option<usize> {
 }
 
 impl Brain {
-    /// The selected session's changed files: the order of the list and of paging. A merge request
-    /// lists its files by path; the files a transcript names, without git, newest first.
+    /// What the title bar takes from the sheet's window at the current zoom.
+    pub fn sheet_top(&self) -> f32 {
+        crate::chrome::TITLEBAR_HEIGHT / self.zoom()
+    }
+
+    /// Scrolls the sheet's list so the open file's row is in view; its folder is opened first.
+    fn scroll_sheet_to_file(&mut self) -> Task<Message> {
+        let Some((index, _)) = self.preview_position() else { return Task::none() };
+        let files = self.changes_in_order();
+        let dir = folder_of(&files[index].relative).to_string();
+        let folders = folders(&files);
+        self.folded_dirs.remove(&dir);
+        let Some((top, bottom)) = file_span(&folders, |d| self.folded_dirs.contains(d), index) else { return Task::none() };
+        match scroll_target(top, bottom, self.sheet_viewport) {
+            Some(y) => iced::widget::operation::scroll_to(super::SHEET_FILES, iced::widget::scrollable::AbsoluteOffset { x: 0.0, y }),
+            None => Task::none(),
+        }
+    }
+
+    /// The selected session's changed files: the order of the list and of paging, folder by folder.
+    /// A merge request lists its folders by path; the files a transcript names, without git, by
+    /// the time of each folder's newest file.
     pub fn changes_in_order(&self) -> Vec<&SessionChange> {
         let mut files: Vec<&SessionChange> = self.selected_changes().into_iter().flatten().collect();
-        if self.selected_cache().is_some_and(|c| c.merge.is_some()) {
-            files.sort_by(|a, b| a.relative.cmp(&b.relative));
-        } else {
+        let by_path = self.selected_cache().is_some_and(|c| c.merge.is_some());
+        if !by_path {
             files.sort_by_key(|c| std::cmp::Reverse(c.last_ms));
         }
+        order_files(&mut files, by_path);
         files
     }
 
@@ -171,15 +273,17 @@ impl Brain {
         let path = change.path.clone();
         let reading = change.clone();
         self.preview = Some(Preview { key: key.clone(), change, exists, diffs });
+        let scroll = self.scroll_sheet_to_file();
         if known {
-            return Task::none();
+            return scroll;
         }
-        match demo_diff {
+        let load = match demo_diff {
             Some(diff) => self.update(Message::PreviewLoaded(key, path, diff)),
             None => Task::perform(super::off_thread(move || brain_core::changes::session_diff(&reading)), move |diff| {
                 Message::PreviewLoaded(key.clone(), path.clone(), diff)
             }),
-        }
+        };
+        Task::batch([scroll, load])
     }
 
     /// A diff came in: kept for its file, shown when that is the open one.
@@ -199,6 +303,9 @@ impl Brain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the title bar takes at 100 % zoom.
+    const TOP: f32 = 52.0;
 
     #[test]
     fn rows_carry_old_and_new_line_numbers_from_the_hunk_heads() {
@@ -240,21 +347,102 @@ mod tests {
     #[test]
     fn dragging_an_edge_keeps_the_sheet_centred_and_inside_its_bounds() {
         let window = iced::Size::new(1200.0, 800.0);
-        let current = sheet_size(None, window);
+        let current = sheet_size(None, window, TOP);
         assert_eq!(current, iced::Size::new(960.0, 640.0));
 
         // The right edge at x = 900 is 300 from the middle: 600 wide, height untouched.
-        assert_eq!(dragged_size(iced::Point::new(900.0, 10.0), true, false, window, current), iced::Size::new(600.0, 640.0));
-        // Past the window, and across the middle, are held to the bounds.
-        assert_eq!(dragged_size(iced::Point::new(5000.0, 5000.0), true, true, window, current), iced::Size::new(1176.0, 776.0));
-        assert_eq!(dragged_size(iced::Point::new(610.0, 395.0), true, true, window, current), SHEET_MIN);
+        assert_eq!(dragged_size(iced::Point::new(900.0, 10.0), true, false, window, TOP, current), iced::Size::new(600.0, 640.0));
+        // Past the window, and across the middle, are held to the bounds: the height leaves the
+        // title bar and a gap above and below.
+        assert_eq!(dragged_size(iced::Point::new(5000.0, 5000.0), true, true, window, TOP, current), iced::Size::new(1176.0, 672.0));
+        assert_eq!(dragged_size(iced::Point::new(610.0, 395.0), true, true, window, TOP, current), SHEET_MIN);
     }
 
     #[test]
     fn a_kept_size_is_pulled_in_when_the_window_got_smaller() {
         let small = iced::Size::new(900.0, 520.0);
-        assert_eq!(sheet_size(Some((1100.0, 700.0)), small), iced::Size::new(876.0, 496.0));
-        assert_eq!(sheet_size(Some((600.0, 400.0)), small), iced::Size::new(600.0, 400.0));
+        assert_eq!(sheet_size(Some((1100.0, 700.0)), small, TOP), iced::Size::new(876.0, 392.0));
+        assert_eq!(sheet_size(Some((600.0, 400.0)), small, TOP), iced::Size::new(600.0, 392.0));
+        assert_eq!(sheet_size(Some((600.0, 330.0)), small, TOP), iced::Size::new(600.0, 330.0));
+    }
+
+    #[test]
+    fn the_sheet_never_reaches_above_the_title_bar() {
+        // At any zoom, however large it is dragged or kept, the top edge lies below the title bar.
+        for (window, top) in [(iced::Size::new(1400.0, 900.0), 52.0), (iced::Size::new(1400.0, 900.0), 52.0 / 0.8), (iced::Size::new(1000.0, 600.0), 52.0 / 1.5)] {
+            let size = sheet_size(Some((5000.0, 5000.0)), window, top);
+            assert!((window.height - size.height) / 2.0 >= top, "{window:?} {top}");
+        }
+    }
+
+    fn change(relative: &str, last_ms: i64) -> SessionChange {
+        SessionChange {
+            path: format!("/repo/{relative}"),
+            relative: relative.to_string(),
+            last_ms,
+            added: None,
+            removed: None,
+            said: None,
+            root: "/repo".into(),
+            git: None,
+            from_session: true,
+            base: None,
+            original: None,
+        }
+    }
+
+    #[test]
+    fn files_are_grouped_by_folder_and_a_merge_request_orders_them_by_path() {
+        let all = [change("src/b.rs", 1), change("README.md", 2), change("src/a/x.rs", 3), change("src/a.rs", 4), change("src/a/y.rs", 5)];
+        let mut files: Vec<&SessionChange> = all.iter().collect();
+
+        order_files(&mut files, true);
+
+        let order: Vec<&str> = files.iter().map(|f| f.relative.as_str()).collect();
+        assert_eq!(order, ["README.md", "src/a.rs", "src/b.rs", "src/a/x.rs", "src/a/y.rs"]);
+        assert_eq!(
+            folders(&files),
+            [
+                Folder { dir: String::new(), first: 0, len: 1 },
+                Folder { dir: "src".into(), first: 1, len: 2 },
+                Folder { dir: "src/a".into(), first: 3, len: 2 },
+            ]
+        );
+    }
+
+    #[test]
+    fn without_a_merge_request_the_folders_follow_their_newest_file() {
+        let all = [change("src/new.rs", 9), change("docs/a.md", 8), change("src/old.rs", 1)];
+        let mut files: Vec<&SessionChange> = all.iter().collect();
+
+        order_files(&mut files, false);
+
+        let order: Vec<&str> = files.iter().map(|f| f.relative.as_str()).collect();
+        assert_eq!(order, ["src/new.rs", "src/old.rs", "docs/a.md"]);
+    }
+
+    #[test]
+    fn a_files_row_is_found_by_the_heights_of_the_list_and_skips_folded_folders() {
+        use crate::tree::{BLOCK_GAP, GAP, ISLAND_PAD_Y, PROJECT_H, ROW_H};
+        let groups = [Folder { dir: "a".into(), first: 0, len: 2 }, Folder { dir: "b".into(), first: 2, len: 3 }];
+
+        let (top, bottom) = file_span(&groups, |_| false, 3).unwrap();
+        let second_island = LIST_TOP + ISLAND_PAD_Y + PROJECT_H + GAP + 2.0 * (ROW_H + GAP) + ISLAND_PAD_Y - GAP + BLOCK_GAP;
+        assert_eq!(top, second_island + ISLAND_PAD_Y + PROJECT_H + GAP + (ROW_H + GAP));
+        assert_eq!(bottom - top, ROW_H);
+
+        // Folded, the first folder takes only its head; a file inside a folded folder has no row.
+        let (folded_top, _) = file_span(&groups, |d| d == "a", 3).unwrap();
+        assert_eq!(top - folded_top, 2.0 * (ROW_H + GAP));
+        assert_eq!(file_span(&groups, |d| d == "a", 1), None);
+    }
+
+    #[test]
+    fn the_list_scrolls_only_when_the_selected_row_is_out_of_view() {
+        assert_eq!(scroll_target(300.0, 330.0, Some((100.0, 400.0))), None);
+        assert_eq!(scroll_target(50.0, 80.0, Some((100.0, 400.0))), Some(42.0));
+        assert_eq!(scroll_target(600.0, 630.0, Some((100.0, 400.0))), Some(238.0));
+        assert_eq!(scroll_target(4.0, 34.0, None), Some(0.0));
     }
 
     #[test]

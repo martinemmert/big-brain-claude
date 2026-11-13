@@ -1484,31 +1484,34 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
     }
     let said: Element<'_, Message> = container(strip).padding([10, 16]).width(Fill).style(|_| style::fill(RAISED)).into();
 
-    let number = |n: Option<u32>, color: Color, tint: Color| -> Element<'_, Message> {
-        container(text(n.map(|n| n.to_string()).unwrap_or_default()).size(font.size).color(color).font(font.regular))
-            .width(46)
-            .padding(Padding { right: 9.0, ..Padding::ZERO })
-            .align_x(iced::alignment::Horizontal::Right)
-            .style(move |_| style::fill(tint))
-            .into()
-    };
+    // The diff is built anew for the width it is given, so what it needs is moved into it.
+    let numbers_of: Vec<&brain_core::review::Comment> = open_comments.clone();
     let body: Element<'_, Message> = match diff {
         None => container(hint(t("Lade den Diff …", "Reading the diff …"))).padding(14).into(),
         Some(diff) if diff.rows.is_empty() => {
             let against = merge.and_then(|m| m.target.clone()).unwrap_or_else(|| "HEAD".to_string());
             container(hint(tr!("Gegenüber {against} hat sich an dieser Datei nichts geändert.", "This file does not differ from {against}."))).padding(14).into()
         }
-        Some(diff) => {
+        Some(diff) => iced::widget::responsive(move |size| -> Element<'_, Message> {
             // The rows scroll sideways too, where Fill has no width to fill: they get the width of
-            // the longest line (monospace: a glyph is about 0.62 of the size), and at least a wide
-            // sheet's, so their tints run across.
+            // the longest line (monospace: a glyph is about 0.62 of the size), and at least the
+            // diff area's, so their tints run to its right edge.
+            let numbered = |c: &brain_core::review::Comment| numbers_of.iter().position(|x| x.id == c.id).map(|i| i + 1);
+            let number = |n: Option<u32>, color: Color, tint: Color| -> Element<'_, Message> {
+                container(text(n.map(|n| n.to_string()).unwrap_or_default()).size(font.size).color(color).font(font.regular))
+                    .width(46)
+                    .padding(Padding { right: 9.0, ..Padding::ZERO })
+                    .align_x(iced::alignment::Horizontal::Right)
+                    .style(move |_| style::fill(tint))
+                    .into()
+            };
             let longest = diff.rows.iter().map(|r| match r {
                 DiffRow::Line { text: content, .. } => content.chars().count(),
                 DiffRow::Hunk { context, raw, .. } => context.chars().count() + raw.chars().count() + 30,
             });
             let numbers = if diff.new_file { 46.0 } else { 92.0 };
             let gutters = numbers + 20.0 + 18.0 + review::PLUS_W;
-            let row_w = Length::Fixed((longest.max().unwrap_or(0) as f32 * font.size * 0.62 + gutters).max(1100.0));
+            let row_w = Length::Fixed((longest.max().unwrap_or(0) as f32 * font.size * 0.62 + gutters).max(size.width));
             let mut rows: Vec<Element<'_, Message>> = Vec::with_capacity(diff.rows.len() + 1);
             for (i, entry) in diff.rows.iter().enumerate() {
                 match entry {
@@ -1569,63 +1572,11 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
                 .height(Fill)
                 .style(scrollbar)
                 .into()
-        }
+        })
+        .into(),
     };
 
-    // The list of files on the left, newest first: folder muted under a strong name, the counts and
-    // a mark for new files; the open one is lit, a click goes there. Fixed width: dragging the
-    // sheet gives the diff the rest.
-    let (total_added, total_removed) = files.iter().fold((0, 0), |(a, r), f| (a + f.added.unwrap_or(0), r + f.removed.unwrap_or(0)));
-    let file_count = files.len();
-    let mut list = column![row![
-        text(tr!("{file_count} Dateien", "{file_count} files")).size(12).color(TEXT_MUTED).font(style::semibold()),
-        Space::new().width(Fill),
-        counts(Some(total_added), Some(total_removed)),
-    ]
-    .padding([0, 8])
-    .spacing(8)
-    .align_y(iced::Center)]
-    .spacing(2);
-    for (i, file) in files.iter().enumerate() {
-        let (dir, name) = file.relative.rsplit_once('/').map_or(("", file.relative.as_str()), |(d, n)| (d, n));
-        let current = i == index;
-        let mut first = row![].spacing(8).align_y(iced::Center);
-        if merge.is_some() {
-            first = first.push(if file.from_session { session_mark() } else { Space::new().width(6).into() });
-        }
-        first = first.push(text(name.to_string()).size(12.5).color(TEXT_STRONG).font(MONO).wrapping(text::Wrapping::None));
-        if let Some((label, color)) = status_label(file) {
-            first = first.push(badge(label, color, 9.5));
-        }
-        first = first.push(Space::new().width(Fill)).push(counts(file.added, file.removed));
-        let mut entry = column![first].spacing(3);
-        // The folder, the number of comments on the file, and on hover the button for one more.
-        let count = review::file_count(reviewing, &file.path);
-        let adding = brain.review_hover_file == Some(i);
-        if !dir.is_empty() || count.is_some() || adding {
-            let folder = if dir.is_empty() { String::new() } else { clip_start(&format!("{dir}/"), 34) };
-            let mut second = row![text(folder).size(11).color(TEXT_FAINT).font(MONO).wrapping(text::Wrapping::None), Space::new().width(Fill)].spacing(6).align_y(iced::Center).height(22);
-            if let Some(count) = count {
-                second = second.push(count);
-            }
-            if adding {
-                second = second.push(review::file_button(None, i));
-            }
-            entry = entry.push(second);
-        }
-        let entry = container(entry).padding([8, 10]).width(Fill).style(move |_| boxed(if current { style::ISLAND_SELECTED } else { Color::TRANSPARENT }, Color::TRANSPARENT, 8.0));
-        list = list.push(
-            mouse_area(entry)
-                .on_press(Message::PreviewGo(i))
-                .on_enter(Message::ReviewHoverFile(Some(i)))
-                .on_exit(Message::ReviewHoverFile(None))
-                .interaction(iced::mouse::Interaction::Pointer),
-        );
-    }
-    let list = container(scrollable(list.padding([12, 10])).width(Fill).height(Fill).style(scrollbar))
-        .width(240)
-        .height(Fill)
-        .style(|_| style::fill(CHROME));
+    let list = sheet_files(brain, &files, index, merge.is_some(), reviewing);
     let mut hints = row![].spacing(6).align_y(iced::Center);
     if merge.is_some() {
         hints = hints.push(session_mark()).push(text(t("von dieser Session", "from this session")).size(11.5).color(TEXT_MUTED).font(UI)).push(Space::new().width(10));
@@ -1667,7 +1618,7 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
     let grip = |horizontal: bool, vertical: bool, cursor: Cursor, width: Length, height: Length| -> Element<'_, Message> {
         mouse_area(Space::new().width(width).height(height)).on_press(Message::SheetGrab(horizontal, vertical)).interaction(cursor).into()
     };
-    let (g, size) = (Length::Fixed(GRIP), app::sheet_size(brain.prefs.quick_look_size, brain.window_size));
+    let (g, size) = (Length::Fixed(GRIP), app::sheet_size(brain.prefs.quick_look_size, brain.window_size, brain.sheet_top()));
     let ring = column![
         row![
             grip(true, true, Cursor::ResizingDiagonallyDown, g, g),
@@ -1693,6 +1644,140 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
         .on_press(Message::ClosePreview)
         .interaction(iced::mouse::Interaction::Idle);
     stack![backdrop, centered].into()
+}
+
+/// How wide the sheet's list of files is.
+const SHEET_LIST_W: f32 = 300.0;
+/// The "+" for a comment on the whole file at a row's right end, and the number of comments after
+/// the counts: both keep their room, so nothing moves as the pointer comes and goes.
+const FILE_PLUS_W: f32 = 22.0;
+const FILE_COMMENTS_W: f32 = 26.0;
+/// The air at both ends of a file's row, and between its parts.
+const FILE_PAD: f32 = 6.0;
+const FILE_GAP: f32 = 4.0;
+
+/// The sheet's list of files in the look of the sidebar: a folder is an island, its head the
+/// path (cut at the front, so the end stays) and a click folds it; a file's row has the dot for
+/// "from this session", the name cut with "…", a mark for new, deleted or renamed files, the
+/// counts in a column of their own and the number of comments. The open file is lit, a click goes
+/// there. Fixed width: dragging the sheet gives the diff the rest.
+fn sheet_files<'a>(brain: &'a Brain, files: &[&'a SessionChange], index: usize, merged: bool, reviewing: Option<&brain_core::review::Review>) -> Element<'a, Message> {
+    let inner = SHEET_LIST_W - 24.0 - 2.0 * tree::ISLAND_PAD_X;
+    // The counts column is as wide as the longest counts need (monospace, 11 pt: 6.6 per glyph).
+    let counts_len = |added: Option<u64>, removed: Option<u64>| -> usize {
+        let added = added.filter(|a| *a > 0 || removed.unwrap_or(0) == 0).map(|a| format!("+{a}").chars().count() + 1);
+        let removed = removed.filter(|r| *r > 0).map(|r| format!("−{r}").chars().count() + 1);
+        (added.unwrap_or(0) + removed.unwrap_or(0)).saturating_sub(1)
+    };
+    let counts_w = files.iter().map(|f| counts_len(f.added, f.removed)).max().unwrap_or(0) as f32 * 6.6 + 4.0;
+    let (total_added, total_removed) = files.iter().fold((0, 0), |(a, r), f| (a + f.added.unwrap_or(0), r + f.removed.unwrap_or(0)));
+    let file_count = files.len();
+    let header = container(
+        row![
+            text(tr!("{file_count} Dateien", "{file_count} files")).size(12).color(TEXT_MUTED).font(style::semibold()).wrapping(text::Wrapping::None),
+            Space::new().width(Fill),
+            container(counts(Some(total_added), Some(total_removed))).width(counts_w).align_x(iced::alignment::Horizontal::Right),
+            Space::new().width(FILE_COMMENTS_W),
+        ]
+        .spacing(FILE_GAP)
+        .align_y(iced::Center),
+    )
+    .padding(Padding { top: 12.0, right: 12.0 + tree::ISLAND_PAD_X + FILE_PAD, bottom: 0.0, left: 12.0 + tree::ISLAND_PAD_X + FILE_PAD + HEAD_GUTTER });
+
+    let mut islands: Vec<Element<'a, Message>> = Vec::new();
+    for folder in app::folders(files) {
+        let folded = brain.folded_dirs.contains(&folder.dir);
+        let label = if folder.dir.is_empty() {
+            t("Oberste Ebene", "Top level").to_string()
+        } else {
+            let room = inner - HEAD_GUTTER - 6.0 - 28.0 - 6.0;
+            clip_start(&format!("{}/", folder.dir), fitting(room, 12.5))
+        };
+        let head_line = row![
+            head_gutter(),
+            text(label).size(12.5).color(if folded { TEXT_MUTED } else { TEXT_STRONG }).font(style::semibold()).wrapping(text::Wrapping::None),
+            Space::new().width(Fill),
+            text(folder.len.to_string()).size(11.5).color(TEXT_FAINT).font(UI).wrapping(text::Wrapping::None),
+        ]
+        .spacing(6)
+        .height(HEAD_LINE_H)
+        .align_y(iced::Center);
+        let head = mouse_area(head_cell(head_line)).on_press(Message::ToggleSheetDir(folder.dir.clone())).interaction(iced::mouse::Interaction::Pointer);
+        let mut lines: Vec<Element<'a, Message>> = vec![head.into()];
+        if !folded {
+            for i in folder.first..folder.first + folder.len {
+                lines.push(sheet_file_row(brain, files[i], i, i == index, merged, reviewing, inner, counts_w));
+            }
+        }
+        islands.push(island(column(lines).spacing(tree::GAP)));
+    }
+    // A thin scroller inside the list's right padding, as the tree has it.
+    let bar = scrollable::Scrollbar::new().width(5).scroller_width(5).margin(3);
+    let scrolled = scrollable(column(islands).spacing(tree::BLOCK_GAP).padding(Padding { top: app::LIST_TOP, right: 12.0, bottom: 16.0, left: 12.0 }))
+        .id(app::SHEET_FILES)
+        .on_scroll(Message::SheetListScrolled)
+        .direction(scrollable::Direction::Vertical(bar))
+        .width(Fill)
+        .height(Fill)
+        .style(scrollbar);
+    container(column![header, scrolled]).width(SHEET_LIST_W).height(Fill).style(|_| style::fill(CHROME)).into()
+}
+
+/// One file in the sheet's list: `inner` is the width inside an island, `counts_w` the width of
+/// the column of counts.
+fn sheet_file_row<'a>(
+    brain: &Brain,
+    file: &SessionChange,
+    index: usize,
+    current: bool,
+    merged: bool,
+    reviewing: Option<&brain_core::review::Review>,
+    inner: f32,
+    counts_w: f32,
+) -> Element<'a, Message> {
+    let name = file.relative.rsplit_once('/').map_or(file.relative.as_str(), |(_, name)| name);
+    let hovered = brain.review_hover_file == Some(index);
+    let label = status_label(file);
+    // What the name leaves: the padding, the dot, the mark, the fixed columns and the gaps.
+    let mark_w = label.map_or(0.0, |(label, _)| label.chars().count() as f32 * 9.5 * 0.56 + 12.0);
+    let items = 5 + merged as usize + label.is_some() as usize;
+    let taken = 2.0 * FILE_PAD + if merged { 6.0 } else { 0.0 } + mark_w + FILE_PLUS_W + counts_w + FILE_COMMENTS_W + (items - 1) as f32 * FILE_GAP;
+    let mut line = row![].spacing(FILE_GAP).align_y(iced::Center);
+    if merged {
+        line = line.push(if file.from_session { session_mark() } else { Space::new().width(6).into() });
+    }
+    line = line
+        .push(
+            text(clip(name, fitting(inner - taken, 12.5)))
+                .size(12.5)
+                .color(if current { TEXT_STRONG } else { TEXT })
+                .font(if current { style::medium() } else { UI })
+                .wrapping(text::Wrapping::None),
+        )
+        .push(Space::new().width(Fill));
+    if let Some((label, color)) = label {
+        line = line.push(badge(label, color, 9.5));
+    }
+    let plus: Element<'a, Message> = if hovered { review::file_button(None, index) } else { Space::new().into() };
+    let comments: Element<'a, Message> = review::file_count(reviewing, &file.path).unwrap_or_else(|| Space::new().into());
+    line = line
+        .push(container(plus).width(FILE_PLUS_W))
+        .push(container(counts(file.added, file.removed)).width(counts_w).align_x(iced::alignment::Horizontal::Right))
+        .push(container(comments).width(FILE_COMMENTS_W).align_x(iced::alignment::Horizontal::Right));
+    let background = if current { style::ISLAND_SELECTED } else if hovered { style::ISLAND_HOVER } else { Color::TRANSPARENT };
+    let entry = container(line)
+        .height(tree::ROW_H)
+        .center_y(tree::ROW_H)
+        .width(Fill)
+        .padding([0.0, FILE_PAD])
+        .clip(true)
+        .style(move |_| boxed(background, Color::TRANSPARENT, 6.0));
+    mouse_area(entry)
+        .on_press(Message::PreviewGo(index))
+        .on_enter(Message::ReviewHoverFile(Some(index)))
+        .on_exit(Message::ReviewHoverFile(None))
+        .interaction(iced::mouse::Interaction::Pointer)
+        .into()
 }
 
 /// The line above the split's other terminal (the selected session's stands in the title bar).

@@ -22,7 +22,7 @@ mod menus;
 pub(crate) mod status_popup;
 mod quick_look;
 mod review;
-pub use quick_look::{sheet_size, DiffRow, Preview};
+pub use quick_look::{folders, sheet_size, DiffRow, Preview, LIST_TOP};
 pub use review::{place as place_comments, ReviewEditor, REVIEW_EDITOR};
 
 pub use account::ACCOUNT_NAME;
@@ -54,6 +54,7 @@ pub const SEARCH: &str = "search";
 pub const RENAME: &str = "rename";
 pub const NEW_SESSION: &str = "new-session";
 pub const LIST: &str = "session-list";
+pub const SHEET_FILES: &str = "sheet-files";
 pub const FIND: &str = "find";
 pub const PALETTE: &str = "palette";
 pub const COMPOSER: &str = "composer";
@@ -265,6 +266,9 @@ pub enum Message {
     CleanupAge(usize),
     OpenUrl(String),
     ListScrolled(scrollable::Viewport),
+    /// The sheet's list of files was scrolled; a folder in it is folded or opened.
+    SheetListScrolled(scrollable::Viewport),
+    ToggleSheetDir(String),
     CheckPrs,
     PrsLoaded(HashMap<SessionKey, brain_core::github::PullRequest>),
     BriefLoaded(SessionKey, brain_core::brief::Brief),
@@ -458,6 +462,7 @@ impl Message {
                 | Message::Hover(_)
                 | Message::HoverHead(_)
                 | Message::ListScrolled(_)
+                | Message::SheetListScrolled(_)
                 | Message::FileHover(_)
                 | Message::MousePressed
                 | Message::MouseReleased
@@ -763,6 +768,9 @@ pub struct Brain {
     pub update: Option<crate::links::Update>,
     /// What the list shows, to keep the selection in view.
     list_viewport: Option<(f32, f32)>,
+    /// What the sheet's list of files shows (offset, height), and the folders folded in it.
+    sheet_viewport: Option<(f32, f32)>,
+    pub folded_dirs: std::collections::HashSet<String>,
     /// Terminals running sessions inside Brain, per session; they keep running while another
     /// session is selected.
     pub terminals: HashMap<SessionKey, iced_term::Terminal>,
@@ -949,6 +957,8 @@ impl Brain {
             window_size: iced::Size::new(1180.0, 760.0),
             update: None,
             list_viewport: None,
+            sheet_viewport: None,
+            folded_dirs: std::collections::HashSet::new(),
             terminals: HashMap::new(),
             next_terminal: 1,
             focused_terminal: None,
@@ -1240,6 +1250,16 @@ impl Brain {
                 self.list_viewport = Some((viewport.absolute_offset().y, viewport.bounds().height));
                 Task::none()
             }
+            Message::SheetListScrolled(viewport) => {
+                self.sheet_viewport = Some((viewport.absolute_offset().y, viewport.bounds().height));
+                Task::none()
+            }
+            Message::ToggleSheetDir(dir) => {
+                if !self.folded_dirs.remove(&dir) {
+                    self.folded_dirs.insert(dir);
+                }
+                Task::none()
+            }
             Message::CheckPrs => {
                 let work = self.pr_lookups();
                 Task::perform(off_thread(move || lookup_prs(work)), Message::PrsLoaded)
@@ -1353,6 +1373,7 @@ impl Brain {
             }
             Message::ClosePreview => {
                 self.preview = None;
+                self.sheet_viewport = None;
                 Task::none()
             }
             Message::PreviewInEditor => {
@@ -1422,8 +1443,9 @@ impl Brain {
             }
             Message::SheetTo(pointer) => {
                 if let Some((horizontal, vertical)) = self.dragging_sheet {
-                    let current = sheet_size(self.prefs.quick_look_size, self.window_size);
-                    let size = quick_look::dragged_size(pointer, horizontal, vertical, self.window_size, current);
+                    let top = self.sheet_top();
+                    let current = sheet_size(self.prefs.quick_look_size, self.window_size, top);
+                    let size = quick_look::dragged_size(pointer, horizontal, vertical, self.window_size, top, current);
                     self.prefs.quick_look_size = Some((size.width, size.height));
                 }
                 Task::none()
