@@ -77,6 +77,7 @@ fürs Handy (⋯ → **In anderes Projekt …**, oder lange drücken in der List
 
 Oben in der Titelleiste steht der Kontofilter (umschalten mit `⇥`).
 
+- **Konto:** Jede Session nennt rechts in ihrer Zeile ihr Konto, leise in der Kontofarbe (auch das erste).
 - **Suchen:** `⌥⌘F` filtert den Baum nach Name, Ordner, Konto und Überschrift; `⌘O` sucht auch unter den beendeten.
 - **Klick auf eine Session** gibt die Tastatur an ihr Terminal.
 - **Rechtsklick** auf eine Session zeigt alle passenden Aktionen mit ihren Kürzeln.

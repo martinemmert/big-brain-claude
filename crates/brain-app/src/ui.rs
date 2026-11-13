@@ -1050,7 +1050,10 @@ fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> El
     // The name gets what the dot and the markers leave. No time: how long something lies there
     // helps nobody decide what to do next.
     let waiting_review = brain.review_waits(&s.key);
-    let name_room = tree_inner(brain) - NAME - ROW_RIGHT - 18.0 * (pinned as u8 + conflict as u8 + waiting_review as u8) as f32;
+    // The account sits quietly at the right edge of every session's line, the first account too.
+    let account = clip(&s.key.account, 12);
+    let account_w = account.chars().count() as f32 * 11.0 * 0.56 + 8.0;
+    let name_room = tree_inner(brain) - NAME - ROW_RIGHT - account_w - 18.0 * (pinned as u8 + conflict as u8 + waiting_review as u8) as f32;
     let mut head = row![
         state_dot(s, mark),
         text(clip(&s.display_name(), fitting(name_room, 13.0))).size(13).color(name_color).font(if selected { style::medium() } else { UI }).wrapping(text::Wrapping::None),
@@ -1067,6 +1070,8 @@ fn session_row<'a>(brain: &'a Brain, s: &'a Session, mark: Mark, now: i64) -> El
     if waiting_review {
         head = head.push(review::waiting_sign());
     }
+    let (_, account_color) = style::account_colors(brain.account_index(&s.key.account));
+    head = head.push(text(account).size(11).color(Color { a: 0.6, ..account_color }).font(UI).wrapping(text::Wrapping::None));
     let mut body = column![container(head).height(tree::ROW_H).center_y(tree::ROW_H)];
     if let Some((prefix, line)) = status_line(s, mark) {
         let prefix_w = prefix.as_ref().map_or(0.0, |p| p.chars().count() as f32 * 12.0 * 0.56 + 3.0);
@@ -1187,7 +1192,7 @@ fn tooltip_card<'a>(brain: &'a Brain, s: &'a Session, now: i64) -> Element<'a, M
     let mut card = column![
         text(clip(&s.display_name(), 60)).size(12.5).color(TEXT_STRONG).font(style::semibold()),
         text(clip(&about, 140)).size(12).color(TEXT).font(UI),
-        text(format!("{} · {}", clip(&folder, 48), phase_word(phase))).size(11).color(TEXT_MUTED).font(UI),
+        text(format!("{} · {} · {}", clip(&folder, 48), phase_word(phase), s.key.account)).size(11).color(TEXT_MUTED).font(UI),
     ]
     .spacing(4)
     .max_width(380);

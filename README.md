@@ -135,6 +135,7 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   pane; VS Code and Cursor bring the project window forward.
 - **Search** by name, path, account or last message; **pin** and **mute**
   (right-click or ⌘K) sessions. The title bar keeps the account filter (`⇥`) and alerts.
+  Every session in the sidebar names its account at the right of its line, in the account's colour.
 - **Rename** a session (`⌘R`); Brain types `/rename <name>` into its terminal, once the session is
   idle.
 - **The menu bar** has every command, in German or English as macOS is set: *Brain, File, Edit,
