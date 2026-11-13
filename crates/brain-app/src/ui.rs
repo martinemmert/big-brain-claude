@@ -850,7 +850,15 @@ fn tree<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Mess
     let items: Vec<Element<'a, Message>> = tree::blocks(tree.nodes(searching))
         .into_iter()
         .map(|block| match block {
-            tree::Block::Island(lines) => island(column(lines.into_iter().map(node)).spacing(tree::GAP)),
+            tree::Block::Island(lines) => {
+                // A folded project steps back: its island is darker.
+                let folded = match lines.first() {
+                    Some(Node::Project(project)) => project.folded,
+                    _ => false,
+                };
+                let fill = if folded { style::ISLAND_FOLDED } else { style::ISLAND };
+                island(column(lines.into_iter().map(node)).spacing(tree::GAP), fill)
+            }
             tree::Block::Alone(line) => node(line),
         })
         .collect();
@@ -867,11 +875,11 @@ fn tree<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Mess
 
 /// A project's island: a softly tinted, rounded area under its head, sessions and notes. Its left
 /// edge is the search field's.
-fn island<'a>(lines: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+fn island<'a>(lines: impl Into<Element<'a, Message>>, fill: Color) -> Element<'a, Message> {
     container(lines)
         .width(Fill)
         .padding(Padding { top: tree::ISLAND_PAD_Y, bottom: tree::ISLAND_PAD_Y, left: tree::ISLAND_PAD_X, right: tree::ISLAND_PAD_X })
-        .style(|_| boxed(style::ISLAND, Color::TRANSPARENT, 10.0))
+        .style(move |_| boxed(fill, Color::TRANSPARENT, 10.0))
         .into()
 }
 
@@ -935,7 +943,8 @@ fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Messa
         Vec::new()
     };
     // Folded, also how many sessions live in it, quietly before the dots.
-    let count = (project.folded && project.live > 0).then(|| project.live.to_string());
+    let shown = project.rows.iter().filter(|r| r.mark != Mark::Ended).count();
+    let count = (project.folded && shown > 0).then(|| shown.to_string());
     // Gutter, gap, "+", the head's right padding, the count, the dots, and "hidden" when it is.
     let extra = dots.len() as f32 * 14.0 + count.as_ref().map_or(0.0, |c| c.len() as f32 * 7.0 + 8.0) + if project.hidden { 70.0 } else { 0.0 };
     let room = tree_inner(brain) - HEAD_GUTTER - 6.0 - PLUS_W - 6.0 - extra;
@@ -1775,7 +1784,7 @@ fn sheet_files<'a>(brain: &'a Brain, files: &[&'a SessionChange], index: usize, 
                 }
             })
             .collect();
-        islands.push(island(column(rows).spacing(tree::GAP)));
+        islands.push(island(column(rows).spacing(tree::GAP), style::ISLAND));
     }
     for folder in if tree_mode { Vec::new() } else { app::folders(files) } {
         let folded = brain.folded_dirs.contains(&folder.dir);
@@ -1801,7 +1810,7 @@ fn sheet_files<'a>(brain: &'a Brain, files: &[&'a SessionChange], index: usize, 
                 lines.push(sheet_file_row(brain, files[i], i, i == index, merged, reviewing, inner, counts_w, 0.0));
             }
         }
-        islands.push(island(column(lines).spacing(tree::GAP)));
+        islands.push(island(column(lines).spacing(tree::GAP), style::ISLAND));
     }
     // A thin scroller inside the list's right padding, as the tree has it.
     let bar = scrollable::Scrollbar::new().width(5).scroller_width(5).margin(3);

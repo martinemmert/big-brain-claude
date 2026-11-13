@@ -14,6 +14,8 @@ pub const HOVER: Color = color!(0x1a2033);
 /// A project's island on the sidebar: only a shade lighter than the sidebar, so the islands part
 /// the projects without standing out.
 pub const ISLAND: Color = color!(0x151b2e);
+/// A folded project's island: barely off the sidebar, it steps back behind the open ones.
+pub const ISLAND_FOLDED: Color = color!(0x13192a);
 /// The selected session (or file): the accent blue at about 25 % on the island, like a Mac
 /// sidebar's selection: found at a glance without shouting.
 pub const ISLAND_SELECTED: Color = color!(0x1e3058);
