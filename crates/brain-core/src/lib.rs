@@ -34,3 +34,4 @@ pub mod tailscale;
 pub mod templates;
 pub mod transcript;
 pub mod usage;
+pub mod worktrees;

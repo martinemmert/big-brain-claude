@@ -29,12 +29,12 @@ impl Changes {
 
 /// git in `cwd`. Paths are always literal: a file named `*` or `:(top)` is that file, never a
 /// pattern that matches others.
-fn git(cwd: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git(cwd: &Path, args: &[&str]) -> Option<String> {
     let out = git_command(cwd).args(args).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn git_command(cwd: &Path) -> Command {
+pub(crate) fn git_command(cwd: &Path) -> Command {
     let mut command = Command::new("git");
     command.arg("-C").arg(cwd).arg("--literal-pathspecs");
     command
@@ -450,7 +450,7 @@ pub fn restore_from_head(cwd: &Path, change: &FileChange) -> Result<(), String> 
 }
 
 /// `git rev-list --left-right --count @{upstream}...HEAD` prints `behind<TAB>ahead`.
-fn parse_ahead_behind(out: &str) -> Option<(u64, u64)> {
+pub(crate) fn parse_ahead_behind(out: &str) -> Option<(u64, u64)> {
     let mut parts = out.split_whitespace();
     let behind = parts.next()?.parse().ok()?;
     let ahead = parts.next()?.parse().ok()?;
