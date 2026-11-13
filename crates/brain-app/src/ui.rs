@@ -2759,6 +2759,17 @@ fn confirm(brain: &Brain) -> Element<'_, Message> {
                 t("Aufräumen", "Clean up"),
             )
         }
+        app::Confirm::TrustFolder { account, folder, .. } => {
+            let place = clip_start(&tilde(folder), 48);
+            (
+                t("Ordner vertrauen?", "Trust the folder?").to_string(),
+                tr!(
+                    "Vertraust du dem Ordner „{place}“ im Konto {account}? Claude darf dort Dateien lesen, ändern und Befehle ausführen.",
+                    "Do you trust the folder “{place}” in the account {account}? Claude may read and change files and run commands there."
+                ),
+                t("Vertrauen und starten", "Trust and start"),
+            )
+        }
         app::Confirm::Cleanup(keys) => {
             let n = keys.len();
             (

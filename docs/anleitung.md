@@ -173,6 +173,8 @@ hat:
 
 ## Sessions in Brain laufen lassen
 
+- **Vertrauen:** Vertraut das Konto dem Ordner noch nicht, fragt Brain vor dem Start „Ordner vertrauen?“
+  (auch bei einer Notiz „Für später“). „Vertrauen und starten“ trägt es ein und startet; in iTerm fragt Claude selbst.
 - **Neue Session:** `⌘N`. Ordner, Konto, Modell und erster Prompt, auf Wunsch aus einer
   Vorlage. Zuletzt benutzte Ordner stehen oben; tippst du einen Pfad (`~/`), listet Brain die
   Ordner darin, `→` geht in den gewählten hinein. `⇧⇥` wählt das Antwort-Profil (Output-Style),

@@ -124,6 +124,32 @@ pub enum Confirm {
     RemoveWorktree { main: std::path::PathBuf, path: std::path::PathBuf },
     /// `git worktree prune`.
     PruneWorktrees { main: std::path::PathBuf },
+    /// The account doesn't trust the folder yet: records it, then starts.
+    TrustFolder { account: String, folder: String, then: AfterTrust },
+}
+
+/// What starts once the folder is trusted: the dialog's session (still filled in) or a note.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AfterTrust {
+    NewSession,
+    Note(String),
+}
+
+/// What a start does about Claude's question "Do you trust this folder?". In iTerm Claude asks it
+/// itself; a session Brain starts in the background refuses ("Workspace not trusted"), so Brain
+/// asks first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustStep {
+    Start,
+    Ask,
+}
+
+pub fn trust_step(trusted: bool, in_iterm: bool) -> TrustStep {
+    if trusted || in_iterm {
+        TrustStep::Start
+    } else {
+        TrustStep::Ask
+    }
 }
 
 /// What the button of a toast takes back (or, for an ended session, continues).
@@ -4310,6 +4336,7 @@ impl Brain {
             Confirm::ForceEnd(key) => self.force_end(key),
             Confirm::Delete(key) => self.delete_forever(key),
             what @ (Confirm::RemoveWorktree { .. } | Confirm::PruneWorktrees { .. }) => self.run_worktree_command(what),
+            Confirm::TrustFolder { account, folder, then } => self.trust_and_start(&account, folder, then),
             Confirm::Cleanup(keys) => {
                 let (mut done, mut failed) = (0, Vec::new());
                 for key in keys {
@@ -4327,6 +4354,31 @@ impl Brain {
                 });
                 Task::none()
             }
+        }
+    }
+
+    /// Asks whether the account may trust the folder before a background session starts there;
+    /// `true` when the question is up (the start waits for the answer).
+    fn asks_trust(&mut self, account: &brain_core::account::Account, folder: &str, in_iterm: bool, then: AfterTrust) -> bool {
+        let trusted = self.model.is_demo() || brain_core::account_setup::trusts(account, &brain_core::account::home_dir(), folder);
+        if trust_step(trusted, in_iterm) == TrustStep::Start {
+            return false;
+        }
+        self.confirm = Some((Confirm::TrustFolder { account: account.id.clone(), folder: folder.to_string(), then }, self.mode));
+        self.mode = Mode::Confirm;
+        true
+    }
+
+    /// "Vertrauen und starten": the folder is recorded as trusted, then the start goes on as before.
+    fn trust_and_start(&mut self, account: &str, folder: String, then: AfterTrust) -> Task<Message> {
+        let Some(account) = self.model.account(account).cloned() else { return Task::none() };
+        if let Err(err) = brain_core::account_setup::trust(&account, &brain_core::account::home_dir(), &folder) {
+            self.set_status(tr!("Konnte den Ordner nicht als vertraut eintragen: {err}", "Couldn't record the folder as trusted: {err}"));
+            return Task::none();
+        }
+        match then {
+            AfterTrust::NewSession => self.start_new_session(Some(folder)),
+            AfterTrust::Note(id) => self.start_note(&id),
         }
     }
 
@@ -4759,6 +4811,9 @@ impl Brain {
         if self.blocked_in_demo() {
             return Task::none();
         }
+        if self.asks_trust(&account, &folder, false, AfterTrust::Note(task.id.clone())) {
+            return Task::none();
+        }
         self.list_project_of(&folder);
         let _ = brain_core::later::done(&brain_core::later::file(&brain_core::account::home_dir()), &task.id);
         self.later_stamp = None;
@@ -5052,6 +5107,11 @@ impl Brain {
         let name = chosen.map(|c| c.template.name.clone());
         let in_iterm = self.new_session.in_iterm;
         let style = self.new_session.style.clone();
+        if let Some(account) = self.model.accounts.get(self.new_session.account).cloned() {
+            if self.asks_trust(&account, &folder, in_iterm, AfterTrust::NewSession) {
+                return Task::none();
+            }
+        }
         self.mode = Mode::Normal;
         let Some(account) = self.model.accounts.get(self.new_session.account).cloned() else { return unfocus() };
         if self.blocked_in_demo() {
@@ -5412,6 +5472,13 @@ mod tests {
     use super::*;
     use brain_core::event::{Event, Kind, Source};
     use chrono::TimeZone;
+
+    #[test]
+    fn a_background_start_in_an_untrusted_folder_asks_first() {
+        assert_eq!(trust_step(true, false), TrustStep::Start);
+        assert_eq!(trust_step(false, false), TrustStep::Ask);
+        assert_eq!(trust_step(false, true), TrustStep::Start, "iTerm: Claude asks itself");
+    }
 
     #[test]
     fn selecting_a_sleeping_session_starts_no_terminal_but_a_running_one_gets_it() {

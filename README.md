@@ -159,6 +159,8 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   beside it or another click on the button closes it.
 - **New sessions** in a recent folder and any account (`⌘N`), or from a **template**: a
   Markdown file with folder, account, model and a first prompt with placeholders (below).
+  If the account doesn't trust the folder yet, Brain asks first (*Trust the folder?*, also when a
+  note for later starts there) and records the yes before it starts; in iTerm Claude asks itself.
 - **Into another account or fork …** (*Session → Into another account*): one dialog for the account a session goes on in.
   Pick the account (`1`, `2`, …, each with its current usage), whether the original keeps
   running (`⇥`), and flags such as `--chrome` or `--model opus`; the dialog says what ⏎ will do:
