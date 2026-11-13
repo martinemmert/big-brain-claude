@@ -125,6 +125,21 @@ hat:
   **löschen**. Entwürfe bleiben über einen Neustart erhalten (`~/.claude-brain/reviews/`).
   Verschiebt sich die Zeile, findet Brain sie über ihren Text; ist sie weg, steht die Karte
   oben an der Datei.
+- Der **Merge Request** hinter dem Änderungen-Knopf: Brain vergleicht den Stand im Ordner der
+  Session mit einem **Ziel-Branch**, ab dem Merge-Base (`git merge-base <ziel> HEAD`). Dabei sind
+  die Commits des Branches, nicht committete Änderungen und neue, nicht ignorierte Dateien. Die
+  Liste kommt aus Git, egal wer die Dateien geändert hat; Dateien, die die Session selbst
+  geschrieben hat, tragen einen Punkt und den Satz, den Claude dazu gesagt hat. Neu, gelöscht
+  und umbenannt steht an der Datei.
+- Das **Ziel** schlägt Brain vor: der Standard-Branch des Repos (`origin/HEAD`, sonst `main`, sonst
+  `master`); steht der Branch selbst darauf, `origin/<branch>` (die noch nicht gepushten Commits),
+  ohne Remote nur, was nicht committet ist. Ein Klick auf „→ main“ öffnet die Liste der lokalen und
+  Remote-Branches (mit Suchfeld ab neun); die Wahl gilt für dieses Repo und diesen Branch, nicht für
+  die Session. Ohne Git (oder ohne Commit) fällt Brain auf die Dateien aus dem Transkript zurück,
+  ohne Diff-Basis. Brain liest nur (`merge-base`, `diff`, `status`, `rev-parse`, `for-each-ref`),
+  im Hintergrund: beim Wechsel der Session oder des Ziels, wenn das Transkript wächst und alle
+  10 Sekunden, solange die Session arbeitet. Große ungetrackte Dateien (über 1 MB) und
+  Binärdateien zählen keine Zeilen.
 - Unten im Blatt steht die **Review-Leiste**: Zahl der Kommentare, **Nachricht ansehen** (genau
   der Text, den Claude bekommt), **Review an Claude schicken** (`⇧⌘⏎`) und **Verwerfen**.
 - Das Review geht als **eine Nachricht** über Brains Mod in die Session, sobald sie auf einen
@@ -347,7 +362,7 @@ Alles optional, in `~/.claude-brain/config.json`:
 | `⌘T` | Shell im Projektordner |
 | `⌘D` | Terminal teilen |
 | `⌘⇧A` | alle Terminals im Überblick |
-| `⌃⌘S` / `⌥⌘0` | Seitenleiste ein- und ausblenden / Liste der geänderten Dateien der Session öffnen (auch der Knopf „4 Dateien +67 −3“ rechts in der Titelleiste; ein Klick auf eine Datei, oder die Leertaste in der Liste, zeigt sie groß wie in Quick Look: mit dem Satz, den Claude vor dem Schreiben dazu gesagt hat, und dem Diff mit Zeilennummern; links steht die Liste aller geänderten Dateien (neueste oben, ein Klick wechselt), `←` `→` blättern ebenso; `⌘C` oder „Diff kopieren“ kopiert den Diff der Datei, `⌘⏎` öffnet im Editor, Leertaste und `esc` schließen. Das Blatt lässt sich an den Rändern und Ecken größer und kleiner ziehen (es bleibt in der Mitte, die Größe wird gemerkt); ein Doppelklick auf die Kopfzeile setzt es zurück) |
+| `⌃⌘S` / `⌥⌘0` | Seitenleiste ein- und ausblenden / Liste der geänderten Dateien der Session öffnen (auch der Knopf „feature/x → main · 4 Dateien +67 −3“ rechts in der Titelleiste, siehe unten „Merge Request“; ein Klick auf eine Datei, oder die Leertaste in der Liste, zeigt sie groß wie in Quick Look: mit dem Satz, den Claude vor dem Schreiben dazu gesagt hat, und dem Diff mit Zeilennummern; links steht die Liste aller geänderten Dateien (neueste oben, ein Klick wechselt), `←` `→` blättern ebenso; `⌘C` oder „Diff kopieren“ kopiert den Diff der Datei, `⌘⏎` öffnet im Editor, Leertaste und `esc` schließen. Das Blatt lässt sich an den Rändern und Ecken größer und kleiner ziehen (es bleibt in der Mitte, die Größe wird gemerkt); ein Doppelklick auf die Kopfzeile setzt es zurück) |
 | `⌘+` `⌘-` `⌘0` | Fenster größer / kleiner / Originalgröße (die Stufe bleibt gemerkt) |
 | `⌘`-Klick | Pfad oder Link aus der Ausgabe öffnen |
 | `⌘K` | Befehlspalette: alles, auch was keine Taste hat (Abschnitte aufklappen, Konten abgleichen …) |

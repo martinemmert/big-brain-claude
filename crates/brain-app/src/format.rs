@@ -96,6 +96,16 @@ pub fn clip(text: &str, max: usize) -> String {
     format!("{}…", cut.trim_end())
 }
 
+/// A branch's name shortened to `max` characters: the end stays, it says most (`…ate-limit`).
+pub fn clip_branch(name: &str, max: usize) -> String {
+    let count = name.chars().count();
+    if count <= max {
+        return name.to_string();
+    }
+    let tail: String = name.chars().skip(count - max.saturating_sub(1)).collect();
+    format!("…{tail}")
+}
+
 /// A path shortened from the left, so its end (the file) stays: `…/middleware/rate_limit.rs`.
 pub fn clip_start(path: &str, max: usize) -> String {
     let count = path.chars().count();
@@ -155,6 +165,13 @@ mod tests {
     fn a_long_path_keeps_its_end_from_a_folder_on() {
         assert_eq!(clip_start("src/config.rs", 30), "src/config.rs");
         assert_eq!(clip_start("src/middleware/limits/rate_limit.rs", 24), "…/limits/rate_limit.rs");
+    }
+
+    #[test]
+    fn a_long_branch_name_is_cut_at_its_start_and_a_short_one_stays() {
+        assert_eq!(clip_branch("feature/x", 20), "feature/x");
+        assert_eq!(clip_branch("feature/rate-limit", 11), "…rate-limit");
+        assert_eq!(clip_branch("feature/rate-limit", 11).chars().count(), 11);
     }
 
     #[test]

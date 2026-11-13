@@ -47,6 +47,13 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   commands for the session, and any text sent to it or to every session whose turn it is.
 - **Composer.** `⌘E`: a large editor for a longer prompt, with your templates, dictation and
   screenshots pasted with `⌘V`; `⌘⏎` sends it as one paste.
+- **Merge request.** The button in the title bar reads `feature/x → main · 12 files +340 −20`: what
+  the folder of the session differs in from the merge base with a target branch, whoever made it
+  (commits on the branch, uncommitted edits, new files that aren't ignored). Files the session
+  wrote itself are marked with a dot and keep Claude's sentence. The target is proposed (the
+  repository's default branch; on that branch itself `origin/<branch>`), changed with a click on
+  `→ main`, and remembered per repository and branch. Without git the list is what the transcript
+  names.
 - **Review comments.** In a changed file's Quick Look a `+` in front of a diff line (or the button
   for the whole file) opens a field; `⌘⏎` saves the comment as a draft. `Send review to Claude`
   hands all drafts to the session as one message, at once when it waits for a new prompt, else

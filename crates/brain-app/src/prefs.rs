@@ -2,12 +2,12 @@
 //! user has seen and the like, in `~/.claude-brain/state.json`.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use brain_core::state::SessionKey;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Prefs {
     #[serde(default)]
     pinned: BTreeSet<String>,
@@ -73,6 +73,10 @@ pub struct Prefs {
     /// Projects whose "for later" notes are unfolded in the tree.
     #[serde(default)]
     open_notes: BTreeSet<String>,
+    /// Repository folder and branch → the branch its merge request goes to, as chosen. A merge
+    /// request belongs to the branch, not to a session.
+    #[serde(default)]
+    merge_targets: BTreeMap<String, String>,
 }
 
 /// A project in the tree: its name (a worktree counts as its main checkout) and the folder of
@@ -87,6 +91,11 @@ pub struct ListedProject {
 /// Sessions are remembered by account and session id, so a pin outlives the process.
 fn id(key: &SessionKey) -> String {
     format!("{}:{}", key.account, key.id)
+}
+
+/// A branch is remembered by the repository's folder and its name.
+fn merge_key(root: &Path, branch: &str) -> String {
+    format!("{}\n{branch}", root.display())
 }
 
 impl Prefs {
@@ -116,6 +125,15 @@ impl Prefs {
         if let Ok(json) = serde_json::to_vec_pretty(self) {
             let _ = std::fs::write(path, json);
         }
+    }
+
+    /// The target the user chose for the merge request of `branch` in the repository at `root`.
+    pub fn merge_target(&self, root: &Path, branch: &str) -> Option<String> {
+        self.merge_targets.get(&merge_key(root, branch)).cloned()
+    }
+
+    pub fn set_merge_target(&mut self, root: &Path, branch: &str, target: &str) {
+        self.merge_targets.insert(merge_key(root, branch), target.to_string());
     }
 
     /// Every pinned or saved session (`account:session id`).
@@ -413,6 +431,19 @@ mod tests {
         assert!(!prefs.is_project_listed("docs"));
         let again: Prefs = serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
         assert!(again.is_project_listed("api"));
+    }
+
+    #[test]
+    fn a_merge_target_belongs_to_the_repository_and_the_branch() {
+        let mut prefs = Prefs::default();
+        let (api, web) = (Path::new("/work/api"), Path::new("/work/web"));
+        prefs.set_merge_target(api, "feature/x", "develop");
+
+        assert_eq!(prefs.merge_target(api, "feature/x").as_deref(), Some("develop"));
+        assert_eq!(prefs.merge_target(api, "feature/y"), None);
+        assert_eq!(prefs.merge_target(web, "feature/x"), None);
+        let json = serde_json::to_string(&prefs).unwrap();
+        assert_eq!(serde_json::from_str::<Prefs>(&json).unwrap().merge_target(api, "feature/x").as_deref(), Some("develop"));
     }
 
     #[test]

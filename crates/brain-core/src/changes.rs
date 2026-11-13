@@ -247,6 +247,8 @@ pub struct MergeInfo {
     pub root: PathBuf,
     /// The checked-out branch; the short commit id on a detached HEAD.
     pub branch: String,
+    /// HEAD is no branch.
+    pub detached: bool,
     /// The branch the changes are compared with; `None` when there is none to propose (the default
     /// branch without a remote): then only what isn't committed shows.
     pub target: Option<String>,
@@ -421,7 +423,7 @@ pub fn merge_request(transcript: Option<&Path>, cwd: &Path, chosen: &dyn Fn(&Pat
             }
         })
         .collect();
-    Changeset { files, merge: Some(MergeInfo { root, branch: label, target, base }) }
+    Changeset { files, merge: Some(MergeInfo { root, detached: branch.is_none(), branch: label, target, base }) }
 }
 
 /// Whether Brain offers to discard the change: a modified, deleted, added or untracked file

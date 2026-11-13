@@ -140,16 +140,28 @@ pub struct HistoryCache {
     pub messages: Vec<brain_core::transcript::Message>,
 }
 
-/// The files the selected session changed, as of a transcript size.
+/// The merge request of the selected session's folder, as of a transcript size.
 pub struct ChangesCache {
     pub key: SessionKey,
     pub len: u64,
     pub loaded: Instant,
     pub files: Vec<brain_core::changes::SessionChange>,
+    /// Branch, target and diff base; `None` without git, then `files` are those the transcript names.
+    pub merge: Option<brain_core::changes::MergeInfo>,
+    /// The branches to choose a target from, read when the choice opens.
+    pub choices: Vec<String>,
+    /// Read again at the next chance (another target was chosen).
+    pub reload: bool,
 }
 
 /// The reading of a session's files is repeated at most this often while its transcript grows.
 const CHANGES_EVERY: Duration = Duration::from_secs(4);
+/// And at least this often while the session works (a commit or a file written by a shell doesn't
+/// grow the transcript at once).
+const CHANGES_WHILE_WORKING: Duration = Duration::from_secs(10);
+/// More branches than this get a search field.
+pub const TARGETS_WITH_SEARCH: usize = 8;
+pub const TARGET_SEARCH: &str = "target-search";
 
 /// Buttons in the detail pane and the list's context menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,7 +282,14 @@ pub enum Message {
     Find(String),
     HistoryLoaded(SessionKey, u64, Vec<brain_core::transcript::Message>),
     /// The files the session changed, read in the background for a transcript of this size.
-    ChangesLoaded(SessionKey, u64, Vec<brain_core::changes::SessionChange>),
+    /// The number counts the targets chosen since start; a reading begun before is dropped.
+    ChangesLoaded(SessionKey, u64, u64, brain_core::changes::Changeset),
+    /// Open or close the list of branches to choose the merge request's target from.
+    ToggleTargets,
+    TargetsLoaded(SessionKey, Vec<String>),
+    /// The search field of that list.
+    TargetQuery(String),
+    PickTarget(String),
     /// Open or close the list of files the selected session changed, under the title bar.
     ToggleChanges,
     CloseChanges,
@@ -624,6 +643,12 @@ pub struct Brain {
     pub status_open: bool,
     /// The list of changed files hangs under the title bar. Only one of the two popovers is open.
     pub changes_open: bool,
+    /// The list of branches for the merge request's target, from the title bar's button. Only one
+    /// popover is open.
+    pub targets_open: bool,
+    pub target_query: String,
+    /// Counts the targets chosen: a reading begun before is out of date.
+    target_epoch: u64,
     /// The menu bar of the app, and what its items stand for.
     appmenu: Option<crate::appmenu::AppMenu>,
     menu_commands: HashMap<String, Message>,
@@ -842,6 +867,9 @@ impl Brain {
             menubar: MenuBar::new(),
             status_open: false,
             changes_open: false,
+            targets_open: false,
+            target_query: String::new(),
+            target_epoch: 0,
             appmenu: crate::appmenu::AppMenu::new(),
             menu_commands: HashMap::new(),
             resume_search: false,
@@ -1170,6 +1198,7 @@ impl Brain {
             }
             Message::CloseChanges => {
                 self.changes_open = false;
+                self.targets_open = false;
                 Task::none()
             }
             Message::PopupClicked => Task::none(),
@@ -1252,14 +1281,31 @@ impl Brain {
                 self.history_loading = false;
                 Task::none()
             }
-            Message::ChangesLoaded(key, len, files) => {
-                self.changes = Some(ChangesCache { key, len, loaded: Instant::now(), files });
+            Message::ChangesLoaded(key, len, epoch, set) => {
                 self.changes_loading = false;
+                // Another target was chosen meanwhile: the next reading is the one that counts.
+                if epoch == self.target_epoch {
+                    let kept = self.changes.take().filter(|c| c.key == key);
+                    let choices = kept.map(|c| c.choices).unwrap_or_default();
+                    self.changes = Some(ChangesCache { key, len, loaded: Instant::now(), files: set.files, merge: set.merge, choices, reload: false });
+                }
                 Task::none()
             }
             Message::ToggleChanges => self.toggle_changes_popover(),
+            Message::ToggleTargets => self.toggle_targets_popover(),
+            Message::TargetsLoaded(key, choices) => {
+                if let Some(cache) = self.changes.as_mut().filter(|c| c.key == key) {
+                    cache.choices = choices;
+                }
+                Task::none()
+            }
+            Message::TargetQuery(query) => {
+                self.target_query = query;
+                Task::none()
+            }
+            Message::PickTarget(target) => self.pick_target(target),
             Message::OpenPreview(path) => self.open_preview(&path),
-            Message::PreviewGo(index) => match self.changes_newest_first().get(index).map(|c| c.path.clone()) {
+            Message::PreviewGo(index) => match self.changes_in_order().get(index).map(|c| c.path.clone()) {
                 Some(path) => self.open_preview(&path),
                 None => Task::none(),
             },
@@ -1836,8 +1882,11 @@ impl Brain {
         if self.preview.is_none() {
             self.review_editor = None;
         }
-        if self.changes_open && self.selected_changes().is_none() {
+        if self.changes_open && !self.has_changes_button() {
             self.changes_open = false;
+        }
+        if self.targets_open && self.selected_cache().is_none_or(|c| c.merge.is_none()) {
+            self.targets_open = false;
         }
         self.sync_conversation();
         let attach = self.sync_terminal();
@@ -1939,8 +1988,9 @@ impl Brain {
         })
     }
 
-    /// Reads the files the selected session changed when it is selected and when its transcript
-    /// grew (at most every few seconds: the reading runs git).
+    /// Reads the merge request of the selected session's folder when it is selected, when the
+    /// target changed, when its transcript grew (at most every few seconds: the reading runs git)
+    /// and every few seconds more while the session works.
     fn load_changes(&mut self) -> Task<Message> {
         if self.changes_loading {
             return Task::none();
@@ -1948,44 +1998,110 @@ impl Brain {
         let Some(key) = self.selected.clone() else { return Task::none() };
         if self.model.is_demo() {
             if self.changes.as_ref().is_none_or(|c| c.key != key) {
-                let files = self.model.demo_changes.get(&key).cloned().unwrap_or_default();
-                self.changes = Some(ChangesCache { key, len: 0, loaded: Instant::now(), files });
+                let set = self.model.demo_changes.get(&key).cloned().unwrap_or_default();
+                self.changes = Some(ChangesCache {
+                    key,
+                    len: 0,
+                    loaded: Instant::now(),
+                    files: set.files,
+                    merge: set.merge,
+                    choices: crate::demo::target_choices(),
+                    reload: false,
+                });
             }
             return Task::none();
         }
-        let Some((path, len)) = self.conversation.as_ref().filter(|c| c.key == key).and_then(|c| c.transcript()) else {
-            return Task::none();
-        };
-        if self.changes.as_ref().is_some_and(|c| c.key == key && (c.len == len || c.loaded.elapsed() < CHANGES_EVERY)) {
+        let Some(conversation) = self.conversation.as_ref().filter(|c| c.key == key) else { return Task::none() };
+        let transcript = conversation.transcript().map(|(path, len)| (path.to_path_buf(), len));
+        let len = transcript.as_ref().map_or(0, |(_, len)| *len);
+        let working = self.model.board.get(&key).is_some_and(|s| s.phase() == brain_core::state::Phase::Working);
+        let due = |c: &ChangesCache| c.reload || (c.len != len && c.loaded.elapsed() >= CHANGES_EVERY) || (working && c.loaded.elapsed() >= CHANGES_WHILE_WORKING);
+        if self.changes.as_ref().is_some_and(|c| c.key == key && !due(c)) {
             return Task::none();
         }
         let Some(cwd) = self.selected_session().and_then(|s| s.cwd.clone()) else { return Task::none() };
-        let path = path.to_path_buf();
+        let prefs = self.prefs.clone();
+        let epoch = self.target_epoch;
         self.changes_loading = true;
-        Task::perform(off_thread(move || brain_core::changes::session_changes(&path, std::path::Path::new(&cwd))), move |files| {
-            Message::ChangesLoaded(key.clone(), len, files)
-        })
+        Task::perform(
+            off_thread(move || {
+                let chosen = |root: &std::path::Path, branch: &str| prefs.merge_target(root, branch);
+                brain_core::changes::merge_request(transcript.as_ref().map(|(path, _)| path.as_path()), std::path::Path::new(&cwd), &chosen)
+            }),
+            move |set| Message::ChangesLoaded(key.clone(), len, epoch, set),
+        )
     }
 
-    /// The files the selected session changed, once they are read; none when it changed nothing.
+    /// The files of the selected session's merge request, once they are read; none when there are
+    /// none.
     pub fn selected_changes(&self) -> Option<&[brain_core::changes::SessionChange]> {
-        let key = self.selected.as_ref()?;
-        self.changes.as_ref().filter(|c| c.key == *key && !c.files.is_empty()).map(|c| c.files.as_slice())
+        self.selected_cache().filter(|c| !c.files.is_empty()).map(|c| c.files.as_slice())
     }
 
-    /// The title bar's button for the changes: opens their list, or closes it. The list and the
-    /// status popup are never open together; the open one has the keyboard.
+    /// The selected session's reading of its folder, once it is there.
+    pub fn selected_cache(&self) -> Option<&ChangesCache> {
+        let key = self.selected.as_ref()?;
+        self.changes.as_ref().filter(|c| c.key == *key)
+    }
+
+    /// Whether the title bar has a button for the changes: there is a merge request (even an empty
+    /// one: its target can be chosen), or the transcript names files.
+    pub fn has_changes_button(&self) -> bool {
+        self.selected_cache().is_some_and(|c| c.merge.is_some() || !c.files.is_empty())
+    }
+
+    /// The title bar's button for the changes: opens their list, or closes it. The list, the
+    /// choice of the target and the status popup are never open together; the open one has the
+    /// keyboard.
     fn toggle_changes_popover(&mut self) -> Task<Message> {
+        self.targets_open = false;
         if self.changes_open {
             self.changes_open = false;
             return Task::none();
         }
-        if self.selected_changes().is_none() {
+        if !self.has_changes_button() {
             return Task::none();
         }
         self.changes_open = true;
         self.status_open = false;
         self.keys_leave_terminal()
+    }
+
+    /// "→ main" in the title bar: the branches to choose the target from, read when it opens.
+    fn toggle_targets_popover(&mut self) -> Task<Message> {
+        self.changes_open = false;
+        if self.targets_open {
+            self.targets_open = false;
+            return Task::none();
+        }
+        let Some(merge) = self.selected_cache().and_then(|c| c.merge.clone()) else { return Task::none() };
+        self.targets_open = true;
+        self.status_open = false;
+        self.target_query.clear();
+        let leave = self.keys_leave_terminal();
+        let focus = operation::focus(TARGET_SEARCH);
+        let Some(key) = self.selected.clone().filter(|_| !self.model.is_demo()) else { return Task::batch([leave, focus]) };
+        let read = Task::perform(
+            off_thread(move || brain_core::changes::target_choices(&merge.root, brain_core::changes::branch_of(&merge.root).as_deref())),
+            move |choices| Message::TargetsLoaded(key.clone(), choices),
+        );
+        Task::batch([leave, read, focus])
+    }
+
+    /// A branch picked as the target: kept for this repository and branch, and the merge request
+    /// is read anew.
+    fn pick_target(&mut self, target: String) -> Task<Message> {
+        self.targets_open = false;
+        let Some(cache) = self.changes.as_mut().filter(|c| Some(&c.key) == self.selected.as_ref()) else { return Task::none() };
+        let Some(merge) = cache.merge.as_mut() else { return Task::none() };
+        // A detached HEAD is remembered as `HEAD`, as `merge_request` asks for it.
+        let branch = if merge.detached { "HEAD" } else { merge.branch.as_str() };
+        self.prefs.set_merge_target(&merge.root, branch, &target);
+        self.prefs.save();
+        merge.target = Some(target);
+        cache.reload = true;
+        self.target_epoch += 1;
+        Task::none()
     }
 
     /// Writes the selected session's conversation to `~/.claude-brain/exports/` as Markdown.
@@ -3006,14 +3122,15 @@ impl Brain {
             self.status_open = false;
             return Task::none();
         }
-        // The same for the list of changed files.
-        if named == Some(Named::Escape) && self.changes_open {
+        // The same for the list of changed files and the choice of the target.
+        if named == Some(Named::Escape) && (self.changes_open || self.targets_open) {
             self.changes_open = false;
+            self.targets_open = false;
             return Task::none();
         }
         // Space in the list of changes shows the newest file.
         if named == Some(Named::Space) && self.changes_open {
-            let newest = self.changes_newest_first().first().map(|c| c.path.clone());
+            let newest = self.changes_in_order().first().map(|c| c.path.clone());
             return newest.map_or(Task::none(), |path| self.open_preview(&path));
         }
         // The Quick Look sheet has the keyboard while it is open: esc and space close it, the

@@ -87,7 +87,7 @@ impl Brain {
 
     /// The paths of the selected session's files in the sheet's order.
     pub fn review_file_order(&self) -> Vec<String> {
-        self.changes_newest_first().iter().map(|c| c.path.clone()).collect()
+        self.changes_in_order().iter().map(|c| c.path.clone()).collect()
     }
 
     fn touched(&mut self, key: &SessionKey) {
@@ -130,7 +130,7 @@ impl Brain {
 
     /// A comment on a whole file: the file at `index` of the sheet's list opens first.
     pub(super) fn review_comment_file(&mut self, index: usize) -> Task<Message> {
-        let Some(path) = self.changes_newest_first().get(index).map(|c| c.path.clone()) else { return Task::none() };
+        let Some(path) = self.changes_in_order().get(index).map(|c| c.path.clone()) else { return Task::none() };
         let open = if self.preview.as_ref().is_some_and(|p| p.change.path == path) { Task::none() } else { self.open_preview(&path) };
         let Some(preview) = self.preview.as_ref() else { return open };
         self.review_editor = Some(ReviewEditor {
@@ -330,7 +330,7 @@ impl Brain {
     /// The open file was written again (Claude works on): its diff is read anew.
     pub(super) fn refresh_open_diff(&mut self) -> Task<Message> {
         let Some(preview) = self.preview.as_ref() else { return Task::none() };
-        let Some(current) = self.changes_newest_first().into_iter().find(|c| c.path == preview.change.path).cloned() else { return Task::none() };
+        let Some(current) = self.changes_in_order().into_iter().find(|c| c.path == preview.change.path).cloned() else { return Task::none() };
         if current.last_ms == preview.change.last_ms && current.added == preview.change.added && current.removed == preview.change.removed {
             return Task::none();
         }

@@ -76,7 +76,7 @@ pub struct Model {
     /// Fixed conversations in demo mode; `None` reads real transcripts.
     pub demo_messages: Option<HashMap<SessionKey, Vec<Message>>>,
     /// The files the demo's sessions changed.
-    pub demo_changes: HashMap<SessionKey, Vec<brain_core::changes::SessionChange>>,
+    pub demo_changes: HashMap<SessionKey, brain_core::changes::Changeset>,
     /// Their diffs, by path.
     pub demo_diffs: HashMap<String, String>,
 }

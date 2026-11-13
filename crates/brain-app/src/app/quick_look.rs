@@ -118,17 +118,22 @@ pub fn stepped(index: usize, len: usize, delta: isize) -> Option<usize> {
 }
 
 impl Brain {
-    /// The selected session's changed files, newest first: the order of the list and of paging.
-    pub fn changes_newest_first(&self) -> Vec<&SessionChange> {
+    /// The selected session's changed files: the order of the list and of paging. A merge request
+    /// lists its files by path; the files a transcript names, without git, newest first.
+    pub fn changes_in_order(&self) -> Vec<&SessionChange> {
         let mut files: Vec<&SessionChange> = self.selected_changes().into_iter().flatten().collect();
-        files.sort_by_key(|c| std::cmp::Reverse(c.last_ms));
+        if self.selected_cache().is_some_and(|c| c.merge.is_some()) {
+            files.sort_by(|a, b| a.relative.cmp(&b.relative));
+        } else {
+            files.sort_by_key(|c| std::cmp::Reverse(c.last_ms));
+        }
         files
     }
 
     /// Where the open sheet's file stands in the list: its place and how many there are.
     pub fn preview_position(&self) -> Option<(usize, usize)> {
         let open = &self.preview.as_ref()?.change.path;
-        let files = self.changes_newest_first();
+        let files = self.changes_in_order();
         Some((files.iter().position(|c| c.path == *open)?, files.len()))
     }
 
@@ -137,7 +142,7 @@ impl Brain {
     pub(super) fn open_preview(&mut self, path: &str) -> Task<Message> {
         self.changes_open = false;
         let Some(key) = self.selected.clone() else { return Task::none() };
-        let Some(change) = self.changes_newest_first().into_iter().find(|c| c.path == path).cloned() else { return Task::none() };
+        let Some(change) = self.changes_in_order().into_iter().find(|c| c.path == path).cloned() else { return Task::none() };
         self.focused_terminal = None;
         self.focused_shell = None;
         self.review_editor = None;
@@ -149,7 +154,7 @@ impl Brain {
     pub(super) fn step_preview(&mut self, delta: isize) -> Task<Message> {
         let Some((index, len)) = self.preview_position() else { return Task::none() };
         let Some(next) = stepped(index, len, delta) else { return Task::none() };
-        let (Some(key), Some(change)) = (self.selected.clone(), self.changes_newest_first().get(next).map(|c| (*c).clone())) else {
+        let (Some(key), Some(change)) = (self.selected.clone(), self.changes_in_order().get(next).map(|c| (*c).clone())) else {
             return Task::none();
         };
         self.review_editor = None;

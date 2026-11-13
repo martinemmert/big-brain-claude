@@ -81,7 +81,13 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
     // The status popup hangs under the title bar's right end, over the whole window.
     let popup: Element<'_, Message> = if brain.status_open { status_popup_layer(brain, now) } else { Space::new().into() };
     // So does the list of changed files; never both at once.
-    let changes: Element<'_, Message> = if brain.changes_open { changes_popover_layer(brain) } else { Space::new().into() };
+    let changes: Element<'_, Message> = if brain.changes_open {
+        changes_popover_layer(brain)
+    } else if brain.targets_open {
+        targets_popover_layer(brain)
+    } else {
+        Space::new().into()
+    };
     // A changed file in Quick Look lies over everything but the toast.
     let sheet: Element<'_, Message> = if brain.preview.is_some() { quick_look(brain) } else { Space::new().into() };
     stack![window, overlay, popup, changes, sheet, toast(brain)].into()
@@ -440,8 +446,8 @@ fn titlebar(brain: &Brain) -> Element<'_, Message> {
         Some(s) => {
             let line = container(header_line(brain, s, None)).width(Fill).padding(Padding { left: 4.0, right: 8.0, ..Padding::ZERO }).clip(true);
             bar = bar.push(iced::widget::tooltip(line, detail_card(brain, s), iced::widget::tooltip::Position::Bottom).gap(6));
-            if let Some(files) = brain.selected_changes() {
-                bar = bar.push(changes_button(brain, files));
+            if let Some(cache) = brain.selected_cache().filter(|_| brain.has_changes_button()) {
+                bar = bar.push(changes_button(brain, cache));
             }
         }
         None => bar = bar.push(Space::new().width(Fill)),
@@ -536,66 +542,101 @@ fn change_sums(files: &[SessionChange]) -> (u64, u64) {
     (files.iter().filter_map(|c| c.added).sum(), files.iter().filter_map(|c| c.removed).sum())
 }
 
-/// "4 Dateien +67 −3" right of the session's line, like the changes of a merge request. Opens the
-/// list of the files; pressed while it is open.
-fn changes_button<'a>(brain: &Brain, files: &[SessionChange]) -> Element<'a, Message> {
-    let (added, removed) = change_sums(files);
-    let count = files.len();
-    let label = if count == 1 { t("1 Datei", "1 file").to_string() } else { tr!("{count} Dateien", "{count} files") };
-    let mut content = row![text(label).size(12).color(TEXT).font(UI), counts(Some(added), Some(removed))].spacing(8).align_y(iced::Center);
-    // A violet dot: a review of this session waits for it to want a prompt.
-    if brain.selected.as_ref().is_some_and(|key| brain.review_waits(key)) {
-        content = content.push(review::waiting_sign());
-    }
-    let open = brain.changes_open;
-    button(style::centered(content))
-        .padding([0, 10])
-        .height(28)
-        .on_press(Message::ToggleChanges)
-        .style(move |_, status| {
-            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-            button::Style {
-                background: Some(Background::Color(if open { LINE_STRONG } else if hovered { RAISED } else { INK })),
-                text_color: TEXT,
-                border: Border { color: LINE, width: 1.0, radius: 8.0.into() },
-                ..button::Style::default()
-            }
-        })
-        .into()
+/// A merge request's mark for a file this session wrote itself.
+fn session_mark<'a>() -> Element<'a, Message> {
+    style::dot(WORKING, 6.0)
 }
 
-/// The list of changed files under the title bar, newest first, over the whole window: a backdrop
-/// that closes it, the card at the top right (a click on the card itself stays on it). A file
-/// closes the list and opens its diff.
-fn changes_popover_layer(brain: &Brain) -> Element<'_, Message> {
-    let top = crate::chrome::TITLEBAR_HEIGHT / brain.zoom() + 4.0;
-    let Some(files) = brain.selected_changes() else { return Space::new().into() };
+/// What a file's status says to the reader, if it is worth saying: new, deleted, renamed.
+fn status_label(change: &SessionChange) -> Option<(&'static str, Color)> {
+    match change.git.as_ref()?.status.as_str() {
+        "??" | "A " | "AM" => Some((t("neu", "new"), DONE)),
+        "D " | " D" => Some((t("gelöscht", "deleted"), CALLS_SOFT)),
+        status if status.starts_with('R') => Some((t("umbenannt", "renamed"), WORKING)),
+        _ => None,
+    }
+}
+
+fn badge<'a>(label: &'static str, color: Color, size: f32) -> Element<'a, Message> {
+    container(text(label).size(size).color(color).font(style::semibold())).padding([0, 5]).style(move |_| boxed(Color::TRANSPARENT, alpha(color, 0x73), 4.0)).into()
+}
+
+/// How many characters of the branch's name the title bar has room for: the button gets at most
+/// half the window beside the sidebar, and what is left after `rest` characters of the target and
+/// the counts goes to the name.
+fn branch_room(brain: &Brain, rest: usize) -> usize {
+    const GLYPH: f32 = 6.6;
+    let sidebar = if brain.prefs.hide_sidebar { 0.0 } else { brain.prefs.sidebar_width.unwrap_or(app::SIDEBAR_DEFAULT) };
+    let pane = brain.window_size.width / brain.zoom() - sidebar;
+    let budget = pane * 0.5 - 48.0 - rest as f32 * GLYPH;
+    ((budget / GLYPH).max(0.0) as usize).clamp(8, 60)
+}
+
+/// "feature/x → main · 4 Dateien +67 −3" right of the session's line, like the head of a merge
+/// request. The branch and the counts open the list of the files, "→ main" the choice of the
+/// target. Without git: "4 Dateien +67 −3" for the files the transcript names. The name of the
+/// branch is cut before anything else is.
+fn changes_button<'a>(brain: &Brain, cache: &app::ChangesCache) -> Element<'a, Message> {
+    let files = &cache.files;
     let (added, removed) = change_sums(files);
     let count = files.len();
-    let title = if count == 1 { t("1 Datei geändert", "1 file changed").to_string() } else { tr!("{count} Dateien geändert", "{count} files changed") };
-    let head = row![text(title).size(12).color(TEXT_MUTED).font(style::semibold()), Space::new().width(Fill), counts(Some(added), Some(removed))]
-        .spacing(8)
-        .align_y(iced::Center);
-    let newest_first = brain.changes_newest_first();
-    let open = brain.preview.as_ref().map(|p| p.change.path.as_str());
-    let rows = newest_first.into_iter().map(|change| {
-        let line = row![
-            text(clip_start(&change.relative, 46)).size(12).color(TEXT).font(MONO).wrapping(text::Wrapping::None),
-            Space::new().width(Fill),
-            counts(change.added, change.removed),
+    let label = match count {
+        0 => t("keine Änderungen", "no changes").to_string(),
+        1 => t("1 Datei", "1 file").to_string(),
+        _ => tr!("{count} Dateien", "{count} files"),
+    };
+    let mut tail = row![text(label.clone()).size(12).color(TEXT).font(UI)].spacing(8).align_y(iced::Center);
+    if count > 0 {
+        tail = tail.push(counts(Some(added), Some(removed)));
+    }
+    // A violet dot: a review of this session waits for it to want a prompt.
+    if brain.selected.as_ref().is_some_and(|key| brain.review_waits(key)) {
+        tail = tail.push(review::waiting_sign());
+    }
+    let (list_open, picking) = (brain.changes_open, brain.targets_open);
+    let segment = |content: Element<'a, Message>, message: Message, active: bool| -> Element<'a, Message> {
+        button(style::centered(content))
+            .padding([0, 8])
+            .height(26)
+            .on_press(message)
+            .style(move |_, status| {
+                let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+                button::Style {
+                    background: (active || hovered).then_some(Background::Color(if active { LINE_STRONG } else { RAISED })),
+                    text_color: TEXT,
+                    border: iced::border::rounded(7),
+                    ..button::Style::default()
+                }
+            })
+            .into()
+    };
+    let Some(merge) = &cache.merge else {
+        return container(segment(tail.into(), Message::ToggleChanges, list_open)).style(|_| boxed(INK, LINE, 8.0)).padding(1).into();
+    };
+    let target = merge.target.as_deref().map_or_else(|| t("Ziel wählen", "choose target").to_string(), |t| crate::format::clip_branch(t, 24));
+    let rest = target.chars().count() + label.chars().count() + 14;
+    let branch = crate::format::clip_branch(&merge.branch, branch_room(brain, rest));
+    let arrow = row![text("→").size(12).color(TEXT_MUTED).font(UI), text(target).size(12).color(TEXT_STRONG).font(style::semibold())].spacing(5).align_y(iced::Center);
+    let tail = row![text("·").size(12).color(TEXT_FAINT).font(UI), tail].spacing(8).align_y(iced::Center);
+    container(
+        row![
+            segment(text(branch).size(12).color(TEXT_STRONG).font(style::semibold()).wrapping(text::Wrapping::None).into(), Message::ToggleChanges, list_open),
+            segment(arrow.into(), Message::ToggleTargets, picking),
+            segment(tail.into(), Message::ToggleChanges, list_open),
         ]
-        .spacing(10)
-        .align_y(iced::Center);
-        let line = container(line).height(CHANGE_ROW_H).center_y(CHANGE_ROW_H).padding([0, 8]).style(move |_| {
-            boxed(if open == Some(change.path.as_str()) { alpha(Color::WHITE, 0x10) } else { Color::TRANSPARENT }, Color::TRANSPARENT, 6.0)
-        });
-        row_button(line, Message::OpenPreview(change.path.clone()))
-    });
-    let list = scrollable(column(rows.collect::<Vec<_>>()).width(Fill)).style(scrollbar);
-    let tip = container(text(t("Klick oder Leertaste zeigt die Datei groß", "Click or space shows the file large")).size(11).color(TEXT_MUTED).font(UI)).padding([4, 8]);
-    let card = container(column![container(head).padding([6, 8]), list, tip].spacing(4))
-        .width(Length::Fixed(460.0))
-        .max_height(CHANGE_ROW_H * 12.0 + 40.0)
+        .align_y(iced::Center),
+    )
+    .padding(1)
+    .style(|_| boxed(INK, LINE, 8.0))
+    .into()
+}
+
+/// The card hung under the title bar's right end: a backdrop over the window that closes it, the
+/// card at the top right (a click on the card itself stays on it).
+fn popover_card<'a>(card: impl Into<Element<'a, Message>>, width: f32, brain: &Brain) -> Element<'a, Message> {
+    let top = crate::chrome::TITLEBAR_HEIGHT / brain.zoom() + 4.0;
+    let card = container(card)
+        .width(Length::Fixed(width))
         .padding(6)
         .clip(true)
         .style(|_| container::Style {
@@ -608,6 +649,119 @@ fn changes_popover_layer(brain: &Brain) -> Element<'_, Message> {
         backdrop,
         container(card).width(Fill).height(Fill).align_x(iced::Right).align_y(iced::Top).padding(Padding { top, right: 14.0, ..Padding::ZERO }),
     ]
+    .into()
+}
+
+/// The list of changed files under the title bar, over the whole window. A file closes the list
+/// and opens its diff.
+fn changes_popover_layer(brain: &Brain) -> Element<'_, Message> {
+    let Some(cache) = brain.selected_cache() else { return Space::new().into() };
+    let files = &cache.files;
+    let (added, removed) = change_sums(files);
+    let count = files.len();
+    let title = match count {
+        0 => t("Keine Änderungen", "No changes").to_string(),
+        1 => t("1 Datei geändert", "1 file changed").to_string(),
+        _ => tr!("{count} Dateien geändert", "{count} files changed"),
+    };
+    let head = row![text(title).size(12).color(TEXT_MUTED).font(style::semibold()), Space::new().width(Fill), counts(Some(added), Some(removed))]
+        .spacing(8)
+        .align_y(iced::Center);
+    let mut top = column![container(head).padding([6, 8])];
+    if let Some(merge) = &cache.merge {
+        let target = merge.target.as_deref().unwrap_or("?");
+        let line = format!("{} → {}", crate::format::clip_branch(&merge.branch, 28), crate::format::clip_branch(target, 28));
+        top = top.push(container(text(line).size(11.5).color(TEXT_FAINT).font(MONO).wrapping(text::Wrapping::None)).padding([0, 8]));
+    }
+    let in_order = brain.changes_in_order();
+    let open = brain.preview.as_ref().map(|p| p.change.path.as_str());
+    let merged = cache.merge.is_some();
+    let rows = in_order.into_iter().map(|change| {
+        let mark: Element<'_, Message> = if change.from_session && merged { session_mark() } else { Space::new().width(6).into() };
+        let mut line = row![
+            container(mark).width(10),
+            text(clip_start(&change.relative, 42)).size(12).color(TEXT).font(MONO).wrapping(text::Wrapping::None),
+        ]
+        .spacing(6)
+        .align_y(iced::Center);
+        if let Some((label, color)) = status_label(change) {
+            line = line.push(badge(label, color, 9.5));
+        }
+        line = line.push(Space::new().width(Fill)).push(counts(change.added, change.removed));
+        let line = container(line).height(CHANGE_ROW_H).center_y(CHANGE_ROW_H).padding([0, 8]).style(move |_| {
+            boxed(if open == Some(change.path.as_str()) { alpha(Color::WHITE, 0x10) } else { Color::TRANSPARENT }, Color::TRANSPARENT, 6.0)
+        });
+        row_button(line, Message::OpenPreview(change.path.clone()))
+    });
+    let body: Element<'_, Message> = if count == 0 {
+        let text = match cache.merge.as_ref().and_then(|m| m.target.as_deref()) {
+            Some(target) => tr!("Gegenüber {target} hat sich nichts geändert.", "Nothing differs from {target}."),
+            None => t("Kein Ziel gewählt: Brain zeigt nur, was nicht committet ist.", "No target chosen: Brain shows only what isn't committed.").to_string(),
+        };
+        hint(text)
+    } else {
+        scrollable(column(rows.collect::<Vec<_>>()).width(Fill)).style(scrollbar).into()
+    };
+    let tip = if merged {
+        row![session_mark(), text(t("von dieser Session  ·  Klick oder Leertaste zeigt die Datei groß", "from this session  ·  click or space shows the file large")).size(11).color(TEXT_MUTED).font(UI)]
+            .spacing(6)
+            .align_y(iced::Center)
+    } else {
+        row![text(t("Klick oder Leertaste zeigt die Datei groß", "Click or space shows the file large")).size(11).color(TEXT_MUTED).font(UI)]
+    };
+    let card = column![top, body, container(tip).padding([4, 8])].spacing(4);
+    popover_card(container(card).max_height(CHANGE_ROW_H * 12.0 + 70.0), 460.0, brain)
+}
+
+/// The branches to choose the merge request's target from: local first, remote after, the current
+/// target marked; a search field when there are many.
+fn targets_popover_layer(brain: &Brain) -> Element<'_, Message> {
+    let Some(cache) = brain.selected_cache() else { return Space::new().into() };
+    let current = cache.merge.as_ref().and_then(|m| m.target.as_deref());
+    let query = brain.target_query.trim().to_lowercase();
+    let shown: Vec<&String> = cache.choices.iter().filter(|name| query.is_empty() || name.to_lowercase().contains(&query)).collect();
+    let mut card = column![container(text(t("Ziel-Branch wählen", "Choose the target branch")).size(12).color(TEXT_MUTED).font(style::semibold())).padding([6, 8])].spacing(4);
+    if cache.choices.len() > app::TARGETS_WITH_SEARCH || !query.is_empty() {
+        let field = text_input(t("Branches durchsuchen", "Search branches"), &brain.target_query)
+            .id(app::TARGET_SEARCH)
+            .on_input(Message::TargetQuery)
+            .size(12.5)
+            .font(UI)
+            .padding([6, 8])
+            .style(field_style);
+        card = card.push(container(field).padding([0, 2]));
+    }
+    let rows = shown.into_iter().map(|name| {
+        let chosen = current == Some(name.as_str());
+        let line = row![
+            text(if chosen { "✓" } else { "" }).size(12).color(DONE).font(UI).width(14),
+            text(clip_start(name, 46)).size(12).color(if chosen { TEXT_STRONG } else { TEXT }).font(MONO).wrapping(text::Wrapping::None),
+        ]
+        .spacing(6)
+        .align_y(iced::Center);
+        row_button(container(line).height(CHANGE_ROW_H).center_y(CHANGE_ROW_H).padding([0, 8]), Message::PickTarget(name.clone()))
+    });
+    let rows: Vec<Element<'_, Message>> = rows.collect();
+    if rows.is_empty() {
+        let none = if cache.choices.is_empty() { t("Keine anderen Branches.", "No other branches.") } else { t("Kein Branch passt.", "No branch matches.") };
+        card = card.push(hint(none));
+    } else {
+        card = card.push(scrollable(column(rows).width(Fill)).style(scrollbar));
+    }
+    popover_card(container(card).max_height(CHANGE_ROW_H * 10.0 + 90.0), 340.0, brain)
+}
+
+/// The sheet's head: which branch goes where.
+fn merge_line<'a>(merge: Option<&brain_core::changes::MergeInfo>) -> Element<'a, Message> {
+    let Some(merge) = merge else { return Space::new().into() };
+    let target = merge.target.as_deref().map_or_else(|| "?".to_string(), |t| crate::format::clip_branch(t, 24));
+    row![
+        text(crate::format::clip_branch(&merge.branch, 32)).size(12).color(TEXT_STRONG).font(style::semibold()).wrapping(text::Wrapping::None),
+        text("→").size(12).color(TEXT_MUTED).font(UI),
+        text(target).size(12).color(TEXT_STRONG).font(style::semibold()).wrapping(text::Wrapping::None),
+    ]
+    .spacing(6)
+    .align_y(iced::Center)
     .into()
 }
 
@@ -1223,10 +1377,10 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
     let Some(preview) = brain.preview.as_ref().filter(|_| brain.mode == Mode::Normal && !brain.overview) else { return Space::new().into() };
     let font = crate::chat_font::get();
     let change = &preview.change;
-    let files = brain.changes_newest_first();
+    let files = brain.changes_in_order();
     let (index, total) = brain.preview_position().unwrap_or((0, 1));
     let diff = preview.diffs.get(&change.path);
-    let is_new = diff.is_some_and(|d| d.new_file) || change.git.as_ref().is_some_and(|g| matches!(g.status.as_str(), "??" | "A " | "AM"));
+    let merge = brain.selected_cache().and_then(|c| c.merge.as_ref());
     // The review comments: under their lines in the diff, at the file's head, in the list.
     let reviewing = brain.review_of(&preview.key);
     let file_order: Vec<String> = files.iter().map(|c| c.path.clone()).collect();
@@ -1260,6 +1414,7 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
     let mut title = row![
         row![step("←", -1, index > 0), step("→", 1, index + 1 < total)].spacing(4),
         text(tr!("{place} von {total}", "{place} of {total}")).size(12).color(TEXT_MUTED).font(UI),
+        merge_line(merge),
         row![
             text(clip_start(&dir, 60)).size(14).color(TEXT_MUTED).font(MONO).wrapping(text::Wrapping::None),
             text(base.to_string()).size(14).color(TEXT_STRONG).font(MONO).wrapping(text::Wrapping::None),
@@ -1267,8 +1422,13 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
     ]
     .spacing(10)
     .align_y(iced::Center);
-    if is_new {
-        title = title.push(container(text(t("neu", "new")).size(10.5).color(DONE).font(style::semibold())).padding([0, 5]).style(|_| boxed(Color::TRANSPARENT, alpha(DONE, 0x73), 4.0)));
+    match status_label(change) {
+        Some((label, color)) => title = title.push(badge(label, color, 10.5)),
+        None if diff.is_some_and(|d| d.new_file) => title = title.push(badge(t("neu", "new"), DONE, 10.5)),
+        None => {}
+    }
+    if let Some(original) = &change.original {
+        title = title.push(text(format!("← {}", clip_start(original, 40))).size(12).color(TEXT_FAINT).font(MONO).wrapping(text::Wrapping::None));
     }
     title = title.push(counts(change.added, change.removed));
     title = title.push(Space::new().width(Fill));
@@ -1304,7 +1464,8 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
     let body: Element<'_, Message> = match diff {
         None => container(hint(t("Lade den Diff …", "Reading the diff …"))).padding(14).into(),
         Some(diff) if diff.rows.is_empty() => {
-            container(hint(t("Gegen HEAD hat sich an dieser Datei nichts geändert.", "This file does not differ from HEAD."))).padding(14).into()
+            let against = merge.and_then(|m| m.target.clone()).unwrap_or_else(|| "HEAD".to_string());
+            container(hint(tr!("Gegenüber {against} hat sich an dieser Datei nichts geändert.", "This file does not differ from {against}."))).padding(14).into()
         }
         Some(diff) => {
             // The rows scroll sideways too, where Fill has no width to fill: they get the width of
@@ -1397,10 +1558,13 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
     for (i, file) in files.iter().enumerate() {
         let (dir, name) = file.relative.rsplit_once('/').map_or(("", file.relative.as_str()), |(d, n)| (d, n));
         let current = i == index;
-        let file_is_new = file.git.as_ref().is_some_and(|g| matches!(g.status.as_str(), "??" | "A " | "AM"));
-        let mut first = row![text(name.to_string()).size(12.5).color(TEXT_STRONG).font(MONO).wrapping(text::Wrapping::None)].spacing(8).align_y(iced::Center);
-        if file_is_new {
-            first = first.push(container(text(t("neu", "new")).size(9.5).color(DONE).font(style::semibold())).padding([0, 4]).style(|_| boxed(Color::TRANSPARENT, alpha(DONE, 0x73), 4.0)));
+        let mut first = row![].spacing(8).align_y(iced::Center);
+        if merge.is_some() {
+            first = first.push(if file.from_session { session_mark() } else { Space::new().width(6).into() });
+        }
+        first = first.push(text(name.to_string()).size(12.5).color(TEXT_STRONG).font(MONO).wrapping(text::Wrapping::None));
+        if let Some((label, color)) = status_label(file) {
+            first = first.push(badge(label, color, 9.5));
         }
         first = first.push(Space::new().width(Fill)).push(counts(file.added, file.removed));
         let mut entry = column![first].spacing(3);
@@ -1431,7 +1595,11 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
         .width(240)
         .height(Fill)
         .style(|_| style::fill(CHROME));
-    let hints = row![
+    let mut hints = row![].spacing(6).align_y(iced::Center);
+    if merge.is_some() {
+        hints = hints.push(session_mark()).push(text(t("von dieser Session", "from this session")).size(11.5).color(TEXT_MUTED).font(UI)).push(Space::new().width(10));
+    }
+    let hints = hints.push(row![
         kbd("←"),
         kbd("→"),
         text(t("andere Datei", "other file")).size(11.5).color(TEXT_MUTED).font(UI),
@@ -1441,7 +1609,7 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
         text(t("schließt", "closes")).size(11.5).color(TEXT_MUTED).font(UI),
     ]
     .spacing(6)
-    .align_y(iced::Center);
+    .align_y(iced::Center));
     let foot = container(row![Space::new().width(Fill), hints].align_y(iced::Center))
         .height(34)
         .center_y(34)

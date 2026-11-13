@@ -53,7 +53,7 @@ pub struct Demo {
     pub usage: Vec<Snapshot>,
     pub messages: HashMap<SessionKey, Vec<Message>>,
     /// The files each session changed, newest first.
-    pub changes: HashMap<SessionKey, Vec<brain_core::changes::SessionChange>>,
+    pub changes: HashMap<SessionKey, brain_core::changes::Changeset>,
     /// Their diffs, by path.
     pub diffs: HashMap<String, String>,
 }
@@ -343,57 +343,63 @@ pub fn reviews() -> Vec<brain_core::review::Review> {
     vec![review]
 }
 
-/// The files "Rate-Limits" changed, newest first, and their made-up diffs by path. The counts
-/// are those of the diffs.
-fn rate_limit_changes(now_ms: i64) -> (Vec<brain_core::changes::SessionChange>, HashMap<String, String>) {
+/// The merge request of "Rate-Limits", `feature/rate-limit → main`: its files by path with their
+/// made-up diffs. The counts are those of the diffs. One file is not the session's (a colleague's
+/// commit on the branch), so it has no sentence and no mark.
+fn rate_limit_changes(now_ms: i64) -> (brain_core::changes::Changeset, HashMap<String, String>) {
     let root = "~/Projects/api-gateway";
     let files = [
         (
             "src/config.rs",
             7,
-            "Neuer Abschnitt „rate_limit“ in der Konfiguration: wie viele Anfragen pro Sekunde, wie viele auf Vorrat und ob das Limit global oder pro Mandant gilt.",
+            Some("Neuer Abschnitt „rate_limit“ in der Konfiguration: wie viele Anfragen pro Sekunde, wie viele auf Vorrat und ob das Limit global oder pro Mandant gilt."),
+            "M ",
             CONFIG_DIFF.to_string(),
+        ),
+        ("src/middleware/mod.rs", 24, None, "M ", MOD_DIFF.to_string()),
+        (
+            "src/middleware/rate_limit.rs",
+            19,
+            Some("Der Limiter selbst, ein Token-Bucket: Jede Anfrage kostet eine Marke, der Eimer füllt sich mit der Zeit wieder."),
+            "A ",
+            new_file("src/middleware/rate_limit.rs", LIMITER_BODY),
         ),
         (
             "tests/rate_limit.rs",
             11,
-            "Zwei Tests für den Limiter: Ein voller Eimer lässt drei Anfragen durch und lehnt die vierte ab, nach 30 ms kommt wieder eine durch.",
+            Some("Zwei Tests für den Limiter: Ein voller Eimer lässt drei Anfragen durch und lehnt die vierte ab, nach 30 ms kommt wieder eine durch."),
+            "A ",
             new_file("tests/rate_limit.rs", TEST_BODY),
-        ),
-        (
-            "src/middleware/rate_limit.rs",
-            19,
-            "Der Limiter selbst, ein Token-Bucket: Jede Anfrage kostet eine Marke, der Eimer füllt sich mit der Zeit wieder.",
-            new_file("src/middleware/rate_limit.rs", LIMITER_BODY),
-        ),
-        (
-            "src/middleware/mod.rs",
-            24,
-            "Meldet das neue Modul „rate_limit“ an und macht den Limiter für den Rest des Gateways sichtbar.",
-            MOD_DIFF.to_string(),
         ),
     ];
     let mut changes = Vec::new();
     let mut diffs = HashMap::new();
-    for (relative, minutes, said, diff) in files {
+    for (relative, minutes, said, status, diff) in files {
         let count = |sign: char, header: &str| diff.lines().filter(|l| l.starts_with(sign) && !l.starts_with(header)).count() as u64;
         let path = format!("{root}/{relative}");
+        let (added, removed) = (Some(count('+', "+++")), Some(count('-', "---")));
         changes.push(brain_core::changes::SessionChange {
             path: path.clone(),
             relative: relative.to_string(),
             last_ms: now_ms - minutes * 60_000,
-            added: Some(count('+', "+++")),
-            removed: Some(count('-', "---")),
-            said: Some(said.to_string()),
+            added,
+            removed,
+            said: said.map(str::to_string),
             root: PathBuf::from(root),
-            git: None,
-            from_session: true,
+            git: Some(brain_core::changes::FileChange { path: relative.to_string(), status: status.to_string(), added, removed }),
+            from_session: said.is_some(),
             base: None,
             original: None,
         });
         diffs.insert(path, diff);
     }
-    (changes, diffs)
+    let merge = brain_core::changes::MergeInfo { root: PathBuf::from(root), branch: "feature/rate-limit".into(), detached: false, target: Some("main".into()), base: "demo".into() };
+    (brain_core::changes::Changeset { files: changes, merge: Some(merge) }, diffs)
+}
+
+/// The branches the demo offers as targets.
+pub fn target_choices() -> Vec<String> {
+    ["main", "develop", "origin/main", "feature/billing"].map(String::from).to_vec()
 }
 
 /// A new file's diff: every line added.
