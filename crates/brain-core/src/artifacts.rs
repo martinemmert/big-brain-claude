@@ -111,10 +111,27 @@ fn published_url(answer: &str) -> Option<String> {
     if !(answer.starts_with("Published ") || answer.starts_with("Updated ")) {
         return None;
     }
-    let after = answer.split_once(" at ")?.1;
-    let url = after.split_whitespace().next()?.trim_end_matches(['.', ',', ')']);
-    let ok = url.starts_with("https://") && url.contains("claude.ai/") && url.contains("artifact/");
-    ok.then(|| url.to_string())
+    // `Published <file> at <url> (Version 1, …)`: the URL is what follows the last " at " before
+    // the version note (the file's path may hold " at " itself).
+    let head = answer.lines().next()?;
+    let head = head.split_once(" (Version").map_or(head, |(before, _)| before);
+    let url = head.rsplit_once(" at ")?.1.trim().trim_end_matches(['.', ',']);
+    is_artifact_url(url).then(|| url.to_string())
+}
+
+/// `https://claude.ai/artifact/<id>` or `https://claude.ai/code/artifact/<id>`, nothing else:
+/// Brain opens this URL in the browser. The host must be exactly `claude.ai`.
+fn is_artifact_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else { return false };
+    let (host, path) = rest.split_at(rest.find(['/', '?', '#']).unwrap_or(rest.len()));
+    if host != "claude.ai" {
+        return false;
+    }
+    let Some(id) = path.strip_prefix("/artifact/").or_else(|| path.strip_prefix("/code/artifact/")) else { return false };
+    let end = id.find(['/', '?', '#']).unwrap_or(id.len());
+    let (id, tail) = id.split_at(end);
+    let tail_ok = tail.is_empty() || tail == "/" || tail.starts_with(['?', '#']) || tail.starts_with('/') && tail[1..].starts_with(['?', '#']);
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') && tail_ok
 }
 
 /// The text of the first `<title>` in a page.
@@ -194,6 +211,26 @@ mod tests {
         ];
         let file = transcript(&lines.each_ref().map(String::as_str));
         assert!(session_artifacts(file.path()).is_empty());
+    }
+
+    #[test]
+    fn only_claude_ai_artifact_urls_are_taken() {
+        for good in ["https://claude.ai/artifact/4xSG-vPf2", "https://claude.ai/code/artifact/0b1c-22", "https://claude.ai/artifact/abc/", "https://claude.ai/artifact/abc?x=1", "https://claude.ai/artifact/abc#top"] {
+            assert!(is_artifact_url(good), "{good}");
+        }
+        for bad in [
+            "https://evil.example/?x=claude.ai/artifact/1",
+            "https://claude.ai.evil.com/artifact/1",
+            "http://claude.ai/artifact/1",
+            "https://claude.ai/chat/1",
+            "https://evil.com/claude.ai/artifact/x",
+            "https://claude.ai/artifact/",
+            "https://claude.ai/artifact/a_b",
+            "https://claude.ai@evil.com/artifact/1",
+        ] {
+            assert!(!is_artifact_url(bad), "{bad}");
+        }
+        assert_eq!(published_url("Published /t/x at y.html at https://claude.ai/artifact/AAA (Version 1, at https://evil.com)"), Some("https://claude.ai/artifact/AAA".into()));
     }
 
     #[test]
