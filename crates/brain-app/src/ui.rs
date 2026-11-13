@@ -933,15 +933,12 @@ fn head_hover<'a>(head: Element<'a, Message>, key: HeadKey) -> Element<'a, Messa
 /// a right click opens its menu.
 fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Message> {
     let name = project.name.clone();
-    let color = if project.hidden { TEXT_FAINT } else { TEXT_STRONG };
+    // A folded project steps back: its name too is quieter.
+    let color = if project.hidden { TEXT_FAINT } else if project.folded { TEXT_MUTED } else { TEXT_STRONG };
     let hovered = brain.hovered_head.as_ref() == Some(&HeadKey::Project(name.clone()));
-    // Folded, only what calls for you shows: a red dot when a session asks, an amber one when one
-    // finished and wasn't looked at. Nothing else (counts, notes, "resting") helps decide.
-    let dots: Vec<Color> = if project.folded {
-        [(project.asking() > 0).then_some(CALLS), (project.unseen() > 0).then_some(TURN)].into_iter().flatten().collect()
-    } else {
-        Vec::new()
-    };
+    // Folded, two places that are always there: red when a session asks, amber when one finished
+    // and wasn't looked at; a dashed ring while neither is the case, so nothing moves when one is.
+    let dots: Vec<(Color, bool)> = if project.folded { vec![(CALLS, project.asking() > 0), (TURN, project.unseen() > 0)] } else { Vec::new() };
     // Folded, also how many sessions live in it, quietly before the dots.
     let shown = project.rows.iter().filter(|r| r.mark != Mark::Ended).count();
     let count = (project.folded && shown > 0).then(|| shown.to_string());
@@ -962,8 +959,8 @@ fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Messa
     if let Some(count) = count {
         line = line.push(text(count).size(12).color(TEXT_FAINT).font(UI).wrapping(text::Wrapping::None));
     }
-    for dot in dots {
-        line = line.push(style::dot::<Message>(dot, 8.0));
+    for (dot, on) in dots {
+        line = line.push(if on { style::dot::<Message>(dot, 8.0) } else { style::dashed_ring(8.0, alpha(dot, 0x8c)) });
     }
     // The "+" keeps its room (and the line its height) when it is out of sight, so nothing moves
     // as the pointer comes and goes.

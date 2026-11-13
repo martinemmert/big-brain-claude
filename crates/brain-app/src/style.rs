@@ -180,6 +180,40 @@ pub fn dot<'a, M: 'a>(color: Color, size: f32) -> Element<'a, M> {
     container(Space::new().width(size).height(size)).style(move |_| boxed(color, Color::TRANSPARENT, size / 2.0)).into()
 }
 
+/// An empty place for a dot: a dashed ring of the dot's size, so the place is kept while nothing
+/// fills it.
+pub fn dashed_ring<'a, M: 'a>(size: f32, color: Color) -> Element<'a, M> {
+    iced::widget::canvas(DashedRing { color }).width(size).height(size).into()
+}
+
+struct DashedRing {
+    color: Color,
+}
+
+impl<M> iced::widget::canvas::Program<M> for DashedRing {
+    type State = ();
+
+    fn draw(
+        &self,
+        _: &(),
+        renderer: &iced::Renderer,
+        _: &iced::Theme,
+        bounds: iced::Rectangle,
+        _: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas::{Frame, LineDash, Path, Stroke};
+        let mut frame = Frame::new(renderer, bounds.size());
+        let width = 1.2;
+        let radius = bounds.width / 2.0 - width / 2.0;
+        let ring = Path::circle(frame.center(), radius);
+        // About eight dashes around an 8 pt ring.
+        let dash = std::f32::consts::PI * radius / 8.0;
+        let stroke = Stroke { line_dash: LineDash { segments: &[dash, dash], offset: 0 }, ..Stroke::default().with_color(self.color).with_width(width) };
+        frame.stroke(&ring, stroke);
+        vec![frame.into_geometry()]
+    }
+}
+
 /// A muted line of guidance in a list.
 pub fn hint<'a, M: 'a>(label: impl Into<String>) -> Element<'a, M> {
     container(text(label.into()).size(12.5).color(TEXT_MUTED).font(UI)).padding([10, 6]).into()
