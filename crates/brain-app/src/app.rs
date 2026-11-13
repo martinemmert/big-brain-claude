@@ -13,6 +13,7 @@ use iced::{window, Subscription, Task};
 
 mod account;
 mod adopt;
+pub(crate) mod move_project;
 pub(crate) mod relaunch;
 pub use relaunch::{Relaunch, RELAUNCH_FLAGS};
 mod sync;
@@ -57,6 +58,7 @@ pub const LIST: &str = "session-list";
 pub const SHEET_FILES: &str = "sheet-files";
 pub const FIND: &str = "find";
 pub const PALETTE: &str = "palette";
+pub const MOVE_PROJECT: &str = "move-project";
 pub const COMPOSER: &str = "composer";
 
 /// Where typed keys go.
@@ -87,6 +89,8 @@ pub enum Mode {
     Garden,
     /// The projects of the sessions among the others, to take into the tree.
     Adopt,
+    /// Where the selected session goes: a project to choose or name.
+    MoveProject,
 }
 
 /// What a line of the command palette does.
@@ -411,6 +415,9 @@ pub enum Message {
     AdoptToggle(usize),
     AdoptConfirm,
     AdoptLater,
+    /// The move dialog: what is typed, and a line picked.
+    MoveProjectQuery(String),
+    MoveProjectPick(usize),
     OpenGarden,
     GardenToggle(usize),
     GardenEnd,
@@ -827,6 +834,8 @@ pub struct Brain {
     /// restarts).
     pub adopt: adopt::AdoptDialog,
     pub adopt_dismissed: bool,
+    /// The "into another project" dialog.
+    pub move_project: move_project::MoveDialog,
     pub garden_count: usize,
     /// Sessions whose terminal closed right after attaching, with its last lines.
     unreachable: HashMap<SessionKey, Vec<String>>,
@@ -993,6 +1002,7 @@ impl Brain {
             garden: garden::GardenDialog::default(),
             adopt: adopt::AdoptDialog::default(),
             adopt_dismissed: false,
+            move_project: move_project::MoveDialog::default(),
             garden_count: 0,
             unreachable: HashMap::new(),
             terminal_started: HashMap::new(),
@@ -1712,6 +1722,11 @@ impl Brain {
                 self.adopt_confirm();
                 Task::none()
             }
+            Message::MoveProjectQuery(text) => {
+                self.move_project_query(text);
+                Task::none()
+            }
+            Message::MoveProjectPick(index) => self.move_project_pick(index),
             Message::AdoptLater => {
                 self.adopt_later();
                 Task::none()
@@ -2405,8 +2420,7 @@ impl Brain {
         }).collect();
         let text = self.palette.trim();
         if !text.is_empty() {
-            // Not for a project that exists, nor for the word the menu fills in to list them.
-            let offers_new = !self.prefs.is_project_listed(text) && !text.eq_ignore_ascii_case(t("Projekt", "project"));
+            let offers_new = !self.prefs.is_project_listed(text);
             if let Some(session) = self.selected_session().filter(|_| offers_new) {
                 let name = session.display_name();
                 shown.push((tr!("„{name}“ ins neue Projekt „{text}“ verschieben", "Move “{name}” to a new project “{text}”"), "", PaletteCommand::Project(Some(text.to_string()))));
@@ -3365,6 +3379,7 @@ impl Brain {
             Mode::Sync => return self.on_sync_key(named, character.as_deref()),
             Mode::Garden => return self.on_garden_key(named),
             Mode::Adopt => return self.on_adopt_key(named),
+            Mode::MoveProject => return self.on_move_project_key(named),
             Mode::Keys => {
                 if text.as_deref() == Some("?") {
                     self.mode = Mode::Normal;
@@ -3464,7 +3479,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden | Mode::Adopt => {
+            Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden | Mode::Adopt | Mode::MoveProject => {
                 self.mode = Mode::Normal;
                 unfocus()
             }
@@ -3615,11 +3630,7 @@ impl Brain {
                     self.prefs.save();
                 }
             }
-            Action::MoveToProject => {
-                let task = self.open_palette();
-                self.palette = t("Projekt", "project").into();
-                return task;
-            }
+            Action::MoveToProject => return self.open_move_project(),
             Action::OpenBeside => {
                 // The terminal that was on screen stays on the left, this one opens beside it.
                 if let Some(kept) = self.before_menu.take().filter(|k| self.terminals.contains_key(k)) {

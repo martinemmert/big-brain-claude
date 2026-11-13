@@ -7,6 +7,7 @@ use iced::widget::{button, column, combo_box, container, mouse_area, row, scroll
 use iced::{Background, Border, Color, Element, Fill, Length, Padding};
 
 use crate::companion::Command;
+use crate::app::move_project::ProjectChoice;
 use crate::app::{self, Action, Brain, Choice, Groups, Message, Mode, CLEANUP_DAYS};
 use crate::tree::{self, Mark, Node, Project, Tree};
 use crate::format::{ago, ago_phrase, background_summary, clip, clip_start, clock, format_tokens, now_ms, plain, short_model, tilde};
@@ -39,6 +40,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::Keys => keys_sheet(brain),
         Mode::Garden => garden(brain),
         Mode::Adopt => adopt(brain),
+        Mode::MoveProject => move_project(brain),
         Mode::Relaunch => relaunch(brain),
         Mode::NewSession => new_session(brain),
         _ => detail(brain),
@@ -2834,6 +2836,46 @@ fn adopt(brain: &Brain) -> Element<'_, Message> {
         .spacing(8),
     );
     body.padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 }).into()
+}
+
+/// "Into another project": a field that filters the projects, and a line for each.
+fn move_project(brain: &Brain) -> Element<'_, Message> {
+    let field = text_input(t("Projekt suchen oder neu benennen", "Search a project or name a new one"), &brain.move_project.query)
+        .id(app::MOVE_PROJECT)
+        .on_input(Message::MoveProjectQuery)
+        .size(13)
+        .font(UI)
+        .padding([9, 12])
+        .style(field_style);
+    let lines: Vec<Element<'_, Message>> = brain
+        .move_choices()
+        .into_iter()
+        .enumerate()
+        .map(|(i, choice)| {
+            let active = i == brain.move_project.index;
+            let label = match choice {
+                ProjectChoice::Back(own) => tr!("Zurück in „{own}“", "Back into “{own}”"),
+                ProjectChoice::Existing(name) => name,
+                ProjectChoice::New(name) => tr!("Neues Projekt „{name}“ anlegen", "Create new project “{name}”"),
+            };
+            button(text(label).size(13).color(if active { TEXT_STRONG } else { TEXT }).font(UI))
+                .width(Fill)
+                .padding([7, 10])
+                .on_press(Message::MoveProjectPick(i))
+                .style(style::entry_style(active, Color::TRANSPARENT, RAISED, Color::TRANSPARENT, 6.0))
+                .into()
+        })
+        .collect();
+    let lines = if lines.is_empty() { vec![text(t("Kein Projekt passt.", "No project matches.")).size(12.5).color(TEXT_MUTED).font(UI).into()] } else { lines };
+    column![
+        dialog_title(brain.move_project_title()),
+        field,
+        scrollable(column(lines).spacing(2)).height(Fill).style(scrollbar),
+        container(text(t("⏎ verschieben · ↑↓ · esc", "⏎ move · ↑↓ · esc")).size(11.5).color(TEXT_FAINT).font(UI)).padding(Padding { bottom: 16.0, ..Padding::ZERO }),
+    ]
+    .spacing(14)
+    .padding(Padding { top: 24.0, right: 28.0, bottom: 0.0, left: 28.0 })
+    .into()
 }
 
 /// Brain Link: the code the iPhone camera scans, where Brain listens, and the way out.

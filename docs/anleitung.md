@@ -69,8 +69,10 @@ melden sich nie per Mitteilung. So verschwindet keine Session spurlos.
 
 Auf dem Handy ist die Liste weiter nach Zustand und Projekt gruppiert, mit einem Filter nach Projekt oder Konto.
 
-Eine Session gehört woanders hin? Rechtsklick → **In ein anderes Projekt …** (oder ⌘K, „Projekt“ tippen):
-ein vorhandenes Projekt, ein neues per Namen, oder zurück in ihr eigenes. Brain merkt sich das, auch
+Eine Session gehört woanders hin? Rechtsklick → **In ein anderes Projekt …** (oder Session → In anderes Projekt → Anderes Projekt …).
+Ein kleiner Dialog fragt nur nach dem Ziel: tippen filtert die Projekte, ↑/↓ wählen, ⏎ oder ein Klick
+verschiebt, esc schließt. Zur Wahl stehen ein vorhandenes Projekt, ein neues per Namen („Neues Projekt
+anlegen“) oder zurück in ihr eigenes. Die Befehlspalette (⌘K) kennt dieselben Ziele als eigene Zeilen. Brain merkt sich das, auch
 fürs Handy (⋯ → **In anderes Projekt …**, oder lange drücken in der Liste).
 
 Oben in der Titelleiste steht der Kontofilter (umschalten mit `⇥`).
