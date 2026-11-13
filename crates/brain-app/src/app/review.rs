@@ -94,11 +94,27 @@ impl Brain {
         self.review_dirty.insert(key.clone());
     }
 
-    /// Whether the session wants a new prompt now and Brain can hand one to its mod. A question
-    /// or a permission is no "done".
+    /// Whether the user has begun a prompt in the session's Brain terminal that isn't submitted
+    /// yet. Sessions in other terminals show nothing of it.
+    pub fn input_begun(&self, key: &SessionKey) -> bool {
+        self.terminals.contains_key(key) && self.typed_input.get(key).is_some_and(review::TypedInput::begun)
+    }
+
+    /// Text pasted into the terminal (a clipboard, a dropped path), as the terminal got it: one
+    /// bracketed paste without ESC and Ctrl-C.
+    pub(super) fn note_pasted(&mut self, key: &SessionKey, text: &str) {
+        let mut bytes = b"\x1b[200~".to_vec();
+        bytes.extend(text.bytes().filter(|&b| b != 0x1b && b != 0x03));
+        bytes.extend_from_slice(b"\x1b[201~");
+        self.typed_input.entry(key.clone()).or_default().feed(&bytes);
+    }
+
+    /// Whether the session wants a new prompt now, the user hasn't begun one in Brain's terminal
+    /// and Brain can hand one to its mod. A question or a permission is no "done".
     pub fn review_ready(&self, key: &SessionKey) -> bool {
         let Some(session) = self.model.board.get(key) else { return false };
-        review::waits_for_prompt(session.phase(), self.real_ask(key)) && self.request_taker(key).is_some()
+        let waits = review::waits_for_prompt(session.phase(), self.real_ask(key));
+        review::may_deliver(waits, self.input_begun(key)) && self.request_taker(key).is_some()
     }
 
     /// Why a review isn't going out yet.
@@ -106,6 +122,9 @@ impl Brain {
         use brain_core::state::Phase;
         match (self.model.board.get(key).map(|s| s.phase()), self.real_ask(key)) {
             (_, Some(_)) => t("Claude fragt etwas.", "Claude is asking something."),
+            (Some(Phase::YourTurn), None) if self.input_begun(key) => {
+                t("Du schreibst gerade – geht raus, sobald deine Eingabe abgeschickt oder leer ist.", "You are typing – goes out once your input is sent or empty.")
+            }
             (Some(Phase::Working), _) => t("Claude arbeitet gerade.", "Claude is working."),
             (Some(Phase::Background), _) => t("Hintergrundaufgaben laufen noch.", "Background tasks are still running."),
             _ => t("Die Session wartet auf keinen neuen Prompt.", "The session isn't waiting for a new prompt."),

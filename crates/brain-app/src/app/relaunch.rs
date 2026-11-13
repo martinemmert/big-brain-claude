@@ -250,6 +250,7 @@ impl Brain {
     fn resume_in_brain(&mut self, key: SessionKey, flags: Vec<String>) -> Task<Message> {
         // The old terminal (its process has ended) makes way for the new one.
         self.terminals.remove(&key);
+        self.typed_input.remove(&key);
         self.restart_flags.insert(key.clone(), flags.clone());
         self.selected = Some(key.clone());
         let started = self.spawn_terminal(&key);

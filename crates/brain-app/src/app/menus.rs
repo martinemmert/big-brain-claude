@@ -555,9 +555,12 @@ impl Brain {
         let Some(text) = text.filter(|t| !t.is_empty()) else { return };
         let key = self.focused_terminal.clone().or_else(|| self.focused_shell.clone());
         let from_shell = self.focused_terminal.is_none();
-        let term = key.and_then(|k| if from_shell { self.shells.get_mut(&k) } else { self.terminals.get_mut(&k) });
+        let term = key.clone().and_then(|k| if from_shell { self.shells.get_mut(&k) } else { self.terminals.get_mut(&k) });
         if let Some(term) = term {
             term.paste(&text);
+            if let (Some(key), false) = (key, from_shell) {
+                self.note_pasted(&key, &text);
+            }
         }
     }
 

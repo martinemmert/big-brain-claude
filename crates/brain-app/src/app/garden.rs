@@ -109,6 +109,7 @@ impl Brain {
             }
             self.unreachable.remove(key);
             self.terminals.remove(key);
+            self.typed_input.remove(key);
         }
         self.prefs.save();
         self.model.relist_transcripts();

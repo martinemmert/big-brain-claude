@@ -231,6 +231,116 @@ pub fn waits_for_prompt(phase: Phase, ask: Option<Ask>) -> bool {
     phase == Phase::YourTurn && ask.is_none()
 }
 
+/// Whether a waiting review may go out now: the session wants a prompt and the user hasn't
+/// started one in Brain's terminal.
+pub fn may_deliver(waits_for_prompt: bool, typing: bool) -> bool {
+    waits_for_prompt && !typing
+}
+
+/// What the user typed into a session's terminal since the last submit, as far as Brain can tell
+/// from the bytes it passes on. A rough count (a character in, a backspace out), so a prompt
+/// counts as begun unless it is surely empty again.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TypedInput {
+    len: usize,
+    in_paste: bool,
+    lone_escape: bool,
+}
+
+const PASTE_START: &[u8] = b"\x1b[200~";
+const PASTE_END: &[u8] = b"\x1b[201~";
+
+impl TypedInput {
+    /// Whether something typed is waiting to be submitted.
+    pub fn begun(&self) -> bool {
+        self.len > 0
+    }
+
+    /// Takes bytes written to the terminal by the user: keys, a paste, a dropped path, a commit
+    /// of the input method.
+    pub fn feed(&mut self, bytes: &[u8]) {
+        let mut i = 0;
+        while i < bytes.len() {
+            if self.in_paste {
+                match find(&bytes[i..], PASTE_END) {
+                    Some(end) => {
+                        self.len += chars(&bytes[i..i + end]);
+                        self.in_paste = false;
+                        i += end + PASTE_END.len();
+                    }
+                    None => {
+                        self.len += chars(&bytes[i..]);
+                        i = bytes.len();
+                    }
+                }
+                continue;
+            }
+            let byte = bytes[i];
+            if byte == 0x1b {
+                i += self.escape(&bytes[i..]);
+                continue;
+            }
+            self.lone_escape = false;
+            match byte {
+                // Return submits; Ctrl+C empties the line.
+                b'\r' | 0x03 => self.len = 0,
+                // Backspace.
+                0x7f | 0x08 => self.len = self.len.saturating_sub(1),
+                // Ctrl+J is a new line in the prompt.
+                b'\n' => self.len += 1,
+                0x00..=0x1f => {}
+                _ => self.len += usize::from(byte & 0xc0 != 0x80),
+            }
+            i += 1;
+        }
+    }
+
+    /// An escape at the start of `rest`; returns how many bytes it takes.
+    fn escape(&mut self, rest: &[u8]) -> usize {
+        match rest.get(1) {
+            // A lone ESC; two in a row empty Claude Code's prompt.
+            None => {
+                if self.lone_escape {
+                    self.len = 0;
+                }
+                self.lone_escape = !self.lone_escape;
+                1
+            }
+            Some(b'[') => {
+                self.lone_escape = false;
+                if rest.starts_with(PASTE_START) {
+                    self.in_paste = true;
+                    return PASTE_START.len();
+                }
+                // Cursor keys and the like: up to the final byte.
+                rest.iter().skip(2).position(|b| (0x40..=0x7e).contains(b)).map_or(rest.len(), |p| p + 3)
+            }
+            Some(b'O') => {
+                self.lone_escape = false;
+                rest.len().min(3)
+            }
+            // ESC CR is a new line (⇧⏎, ⌥⏎).
+            Some(b'\r') => {
+                self.lone_escape = false;
+                self.len += 1;
+                2
+            }
+            Some(_) => {
+                self.lone_escape = false;
+                2
+            }
+        }
+    }
+}
+
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+fn chars(bytes: &[u8]) -> usize {
+    bytes.iter().filter(|b| **b & 0xc0 != 0x80).count()
+}
+
 /// One line of a diff, as far as finding a comment's line again needs it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AnchorRow<'a> {
@@ -441,6 +551,74 @@ mod tests {
         review.send(1, &[]);
         assert_eq!(review.mark_changed("/p/a.rs", &[]), 1);
         assert_eq!(review.mark_changed("/p/a.rs", &[]), 0);
+    }
+
+    fn typed(parts: &[&[u8]]) -> TypedInput {
+        let mut t = TypedInput::default();
+        for p in parts {
+            t.feed(p);
+        }
+        t
+    }
+
+    #[test]
+    fn typing_begins_an_input() {
+        assert!(!TypedInput::default().begun());
+        assert!(typed(&[b"h", b"i"]).begun());
+        assert!(typed(&["ü".as_bytes()]).begun());
+    }
+
+    #[test]
+    fn return_empties_the_input() {
+        assert!(!typed(&[b"hi", b"\r"]).begun());
+        assert!(typed(&[b"hi", b"\r", b"x"]).begun());
+    }
+
+    #[test]
+    fn backspace_down_to_nothing_is_empty() {
+        assert!(!typed(&[b"h", b"i", b"\x7f", b"\x7f"]).begun());
+        assert!(typed(&[b"h", b"i", b"\x7f"]).begun());
+        assert!(!typed(&[b"\x7f"]).begun());
+        // A character of several bytes is one.
+        assert!(!typed(&["ü".as_bytes(), b"\x7f"]).begun());
+    }
+
+    #[test]
+    fn a_paste_begins_an_input() {
+        assert!(typed(&[b"\x1b[200~/tmp/a.png \x1b[201~"]).begun());
+        assert!(typed(&[b"/tmp/a.png"]).begun());
+        // A line break inside a paste doesn't submit.
+        assert!(typed(&[b"\x1b[200~a\rb\x1b[201~"]).begun());
+        // A paste in pieces.
+        assert!(typed(&[b"\x1b[200~ab", b"c\x1b[201~"]).begun());
+        assert!(!typed(&[b"\x1b[200~ab", b"c\x1b[201~", b"\r"]).begun());
+    }
+
+    #[test]
+    fn ctrl_c_empties_the_input() {
+        assert!(!typed(&[b"hi", b"\x03"]).begun());
+    }
+
+    #[test]
+    fn escape_twice_empties_the_input() {
+        assert!(!typed(&[b"hi", b"\x1b", b"\x1b"]).begun());
+        assert!(typed(&[b"hi", b"\x1b"]).begun());
+        assert!(typed(&[b"hi", b"\x1b", b"x", b"\x1b"]).begun());
+    }
+
+    #[test]
+    fn cursor_keys_and_new_lines() {
+        assert!(!typed(&[b"\x1b[A", b"\x1b[1;2C", b"\x1bOP"]).begun());
+        assert!(typed(&[b"\x1b\r"]).begun());
+        assert!(typed(&[b"a", b"\x1b[A", b"\x7f", b"\x1b[B", b"b"]).begun());
+    }
+
+    #[test]
+    fn a_review_goes_out_when_waiting_and_not_typing() {
+        assert!(may_deliver(true, false));
+        assert!(!may_deliver(true, true));
+        assert!(!may_deliver(false, false));
+        assert!(!may_deliver(false, true));
     }
 
     #[test]

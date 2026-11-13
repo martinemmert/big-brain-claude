@@ -148,8 +148,12 @@ hat:
 - Das Review geht als **eine Nachricht** über Brains Mod in die Session, sobald sie auf einen
   neuen Prompt wartet: Ihre Runde ist zu Ende, sie fragt nichts und will keine Freigabe. Vorher
   wartet es (lila Punkt am Änderungen-Knopf und an der Session in der Liste) und lässt sich
-  **zurücknehmen**; „jetzt senden“ gibt es nicht. Einen halb getippten Prompt im Terminal kann Brain
-  nicht erkennen: Steht dort etwas, wartet das Review deshalb nicht darauf.
+  **zurücknehmen**; „jetzt senden“ gibt es nicht. Läuft die Session in Brains eigenem Terminal,
+  hält Brain das Review zurück, solange Sie einen Prompt angefangen haben („Du schreibst gerade
+  …“): Es geht raus, sobald Sie ihn abschicken (`⏎`) oder leeren (`⌃C`, zweimal `esc`, oder alles
+  löschen). Das ist eine Näherung; im Zweifel gilt die Eingabe als angefangen. In anderen
+  Terminals (iTerm) sieht Brain angefangene Eingaben nicht: Steht dort etwas, wartet das Review
+  nicht darauf.
 - Nach dem Senden gelten die Kommentare als gesendet. Hat Claude die Zeile geändert, steht die
   Karte auf **von Claude geändert** und zeigt die alte Zeile durchgestrichen.
 

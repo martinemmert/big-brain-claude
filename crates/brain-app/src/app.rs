@@ -693,6 +693,8 @@ pub struct Brain {
     pub reviews: HashMap<SessionKey, brain_core::review::Review>,
     /// The reviews that changed and are not written yet.
     review_dirty: HashSet<SessionKey>,
+    /// What the user typed into each Brain terminal since the last submit.
+    typed_input: HashMap<SessionKey, brain_core::review::TypedInput>,
     /// The field for a review comment, open under a line of the sheet.
     pub review_editor: Option<ReviewEditor>,
     /// The review bar shows the message Claude would get.
@@ -915,6 +917,7 @@ impl Brain {
             preview: None,
             reviews: HashMap::new(),
             review_dirty: HashSet::new(),
+            typed_input: HashMap::new(),
             review_editor: None,
             review_preview: false,
             review_hover_row: None,
@@ -1491,12 +1494,17 @@ impl Brain {
                     // Only the terminal on screen copies its screen per event; the others catch
                     // up when they're shown (`sync_shown_terminal`).
                     let shown = self.shown_terminals.contains(&key);
+                    // Only watched: what the user typed or pasted decides if a review may go out.
+                    if let iced_term::BackendCommand::Write(bytes) = &command {
+                        self.typed_input.entry(key.clone()).or_default().feed(bytes);
+                    }
                     let command = iced_term::Command::ProxyToBackend(command);
                     match self.terminals.get_mut(&key).map(|term| if shown { term.handle(command) } else { term.handle_quiet(command) }) {
                         Some(iced_term::actions::Action::Shutdown) => {
                             sync = true;
                             let lines = self.terminals.remove(&key).map(|term| term.text()).unwrap_or_default();
                             self.terminal_titles.remove(&key);
+                            self.typed_input.remove(&key);
                             self.session_terminal_closed(&key, lines);
                         }
                         Some(iced_term::actions::Action::OpenLink(link)) => task = self.open_link(&key, &link),
@@ -2659,9 +2667,12 @@ impl Brain {
     fn write_to_terminal(&mut self, text: &str) -> bool {
         // The terminal with the keyboard (in a split, maybe not the selected session's).
         let key = self.focused_terminal.clone().or_else(|| self.selected.clone());
-        match key.and_then(|k| self.terminals.get_mut(&k)) {
+        match key.clone().and_then(|k| self.terminals.get_mut(&k)) {
             Some(term) => {
                 term.paste(text);
+                if let Some(key) = key {
+                    self.note_pasted(&key, text);
+                }
                 true
             }
             None => false,
