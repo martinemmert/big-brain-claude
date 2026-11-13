@@ -19,8 +19,8 @@ Terminal laufen und hilft, die Liste kurz zu halten.
 ## Der Baum
 
 Links steht der **Baum**: die Projekte als feste Überschriften, darunter ihre Sessions. Die
-Projekte stehen alphabetisch und bleiben dort, auch wenn eine Session zu fragen beginnt: nichts
-springt unter der Maus. Welche Projekte im Baum stehen, bestimmst du:
+Projekte stehen in deiner Reihenfolge (anfangs alphabetisch, neue unten) und bleiben dort, auch wenn eine Session zu fragen beginnt: nichts
+springt unter der Maus. Zum Sortieren ziehst du einen Projektkopf (ab ca. 4 pt; ein Klick klappt weiter zu und auf): eine Linie zeigt, wo er landet. Welche Projekte im Baum stehen, bestimmst du:
 
 - **+ Neues Projekt …** (ganz unten) fragt nach einem Ordner (ein Worktree zählt als sein Haupt-Ordner).
 - Startest du in Brain eine Session in einem Ordner (`⌘N`, das **+** am Projekt, eine Aufgabe „für
@@ -69,7 +69,7 @@ melden sich nie per Mitteilung. So verschwindet keine Session spurlos.
 
 Auf dem Handy ist die Liste weiter nach Zustand und Projekt gruppiert, mit einem Filter nach Projekt oder Konto.
 
-Eine Session gehört woanders hin? Rechtsklick → **In ein anderes Projekt …** (oder Session → In anderes Projekt → Anderes Projekt …).
+Eine Session gehört woanders hin? Zieh ihre Zeile auf ein anderes Projekt (es leuchtet; auf „Weitere“ legst du sie zurück in ihr eigenes, esc bricht ab, am Rand scrollt der Baum); der Hinweis unten hat ein *Rückgängig*. Oder Rechtsklick → **In ein anderes Projekt …** (oder Session → In anderes Projekt → Anderes Projekt …).
 Ein kleiner Dialog fragt nur nach dem Ziel: tippen filtert die Projekte, ↑/↓ wählen, ⏎ oder ein Klick
 verschiebt, esc schließt. Zur Wahl stehen ein vorhandenes Projekt, ein neues per Namen („Neues Projekt
 anlegen“) oder zurück in ihr eigenes. Die Befehlspalette (⌘K) kennt dieselben Ziele als eigene Zeilen. Brain merkt sich das, auch

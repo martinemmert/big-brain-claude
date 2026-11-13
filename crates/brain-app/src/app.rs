@@ -14,6 +14,8 @@ use iced::{window, Subscription, Task};
 mod account;
 mod adopt;
 pub(crate) mod move_project;
+mod tree_drag;
+pub use tree_drag::{DragTarget, Grab, TreeDrag};
 pub(crate) mod relaunch;
 pub use relaunch::{Relaunch, RELAUNCH_FLAGS};
 mod sync;
@@ -111,6 +113,8 @@ pub enum Undo {
     Resume(SessionKey),
     Unhide(SessionKey),
     RestoreProject(crate::prefs::RemovedProject),
+    /// A session goes back to the project it was put in by hand before (none: its own).
+    Move(SessionKey, Option<String>),
     /// The transcripts of a deleted session go back from the Trash: (in the Trash, where they were).
     RestoreFromTrash(Vec<(std::path::PathBuf, std::path::PathBuf)>),
 }
@@ -271,6 +275,15 @@ pub enum Message {
     Hover(Option<SessionKey>),
     /// The pointer over a project's head (or "Weitere"): its "+" and fold arrow show.
     HoverHead(Option<crate::tree::HeadKey>),
+    /// The pointer in the list, from its top left (where a press in the tree starts a drag).
+    TreeMoved(iced::Point),
+    /// A press on a session's row or a project's head: a click, or the start of a drag.
+    TreeGrab(Grab),
+    /// The pointer of a drag in the tree, in window coordinates.
+    DragTo(iced::Point),
+    DragDone,
+    /// A step of the list's scrolling while a drag is at its edge.
+    DragScroll,
     Search(String),
     SearchSubmit,
     Rename(String),
@@ -510,6 +523,9 @@ impl Message {
                 | Message::WindowSized(_)
                 | Message::Hover(_)
                 | Message::HoverHead(_)
+                | Message::TreeMoved(_)
+                | Message::DragTo(_)
+                | Message::DragScroll
                 | Message::ListScrolled(_)
                 | Message::SheetListScrolled(_)
                 | Message::FileHover(_)
@@ -815,6 +831,10 @@ pub struct Brain {
     /// The session selected before a right click selected another one: "open beside" keeps it.
     pub before_menu: Option<SessionKey>,
     pointer: iced::Point,
+    /// The pointer in the list, from its top left corner.
+    tree_pointer: Option<iced::Point>,
+    /// A press in the tree, held or already a drag.
+    pub tree_drag: Option<TreeDrag>,
     pub window_size: iced::Size,
     /// A newer release on GitHub, if the daily check found one.
     pub update: Option<crate::links::Update>,
@@ -940,7 +960,8 @@ impl Brain {
         }
         restore_saved(&mut model, &prefs);
         let seeded = if demo { crate::demo::list_projects(&mut prefs) } else { seed_project_list(&mut model, &mut prefs) };
-        if seeded {
+        // A list that was drawn alphabetically stays so, until the user sorts it.
+        if prefs.sort_projects_once() | seeded {
             prefs.save();
         }
         let mut brain = Self {
@@ -1014,6 +1035,8 @@ impl Brain {
             project_menu: None,
             before_menu: None,
             pointer: iced::Point::ORIGIN,
+            tree_pointer: None,
+            tree_drag: None,
             window_size: iced::Size::new(1180.0, 760.0),
             update: None,
             list_viewport: None,
@@ -1125,6 +1148,16 @@ impl Brain {
                 _ => None,
             }));
         }
+        if self.tree_drag.is_some() {
+            subscriptions.push(iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Message::DragTo(position)),
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => Some(Message::DragDone),
+                _ => None,
+            }));
+            if self.drag_scroll_step().is_some() {
+                subscriptions.push(iced::time::every(Duration::from_millis(30)).map(|_| Message::DragScroll));
+            }
+        }
         if self.dragging_sheet.is_some() {
             subscriptions.push(iced::event::listen_with(|event, _, _| match event {
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Message::SheetTo(position)),
@@ -1214,6 +1247,14 @@ impl Brain {
                 self.hovered_head = head;
                 Task::none()
             }
+            Message::TreeMoved(position) => {
+                self.tree_pointer = Some(position);
+                Task::none()
+            }
+            Message::TreeGrab(grab) => self.grab(grab),
+            Message::DragTo(position) => self.drag_to(position),
+            Message::DragDone => self.drag_done(),
+            Message::DragScroll => self.drag_scroll(),
             Message::Search(text) => {
                 self.search = text;
                 self.mode = Mode::Search;
@@ -3075,9 +3116,10 @@ impl Brain {
         if let Some(project) = &project {
             self.prefs.list_project(project, None);
         }
+        let previous = self.prefs.project(key).map(str::to_string);
         self.prefs.set_project(key, project);
         self.prefs.save();
-        self.set_status(status);
+        self.set_status_with(status, t("Rückgängig", "Undo"), Undo::Move(key.clone(), previous));
     }
 
     /// Takes a project out of the tree at once: off the list and from the hidden ones, its
@@ -3323,6 +3365,13 @@ impl Brain {
 
     fn on_key(&mut self, event: keyboard::Event, captured: bool) -> Task<Message> {
         let keyboard::Event::KeyPressed { key, modifiers, text, .. } = event else { return Task::none() };
+        // While something is dragged in the tree, esc drops the drag and no key goes anywhere else.
+        if self.tree_drag.as_ref().is_some_and(|d| d.active) {
+            if matches!(key.as_ref(), keyboard::Key::Named(Named::Escape)) {
+                self.tree_drag = None;
+            }
+            return Task::none();
+        }
         // Keys only count while Brain is the active app: with another app in front they're that
         // app's, never Brain's shortcuts.
         if !app_is_active() {
@@ -4048,6 +4097,7 @@ impl Brain {
                 self.prefs.save();
                 self.set_status(t("Wieder eingeblendet.", "Shown again."));
             }
+            Undo::Move(key, previous) => self.undo_move(key, previous),
             Undo::RestoreProject(removed) => {
                 let name = removed.name.clone();
                 self.prefs.restore_project(removed);
@@ -5157,6 +5207,8 @@ mod tests {
         assert!(!Message::HoverHead(None).may_change_synced_state());
         assert!(!Message::Pointer(iced::Point::ORIGIN).may_change_synced_state());
         assert!(!Message::MousePressed.may_change_synced_state());
+        assert!(!Message::DragTo(iced::Point::ORIGIN).may_change_synced_state());
+        assert!(!Message::DragScroll.may_change_synced_state());
         assert!(Message::Tick.may_change_synced_state());
         assert!(Message::Close.may_change_synced_state());
     }

@@ -58,7 +58,7 @@ pub struct Closed {
 }
 
 pub struct Tree<'a> {
-    /// The listed projects, alphabetical (case-insensitive).
+    /// The listed projects, in the order of the list.
     pub projects: Vec<Project<'a>>,
     /// Sessions of folders that are not listed.
     pub others: Vec<Row<'a>>,
@@ -124,9 +124,7 @@ impl<'a> Tree<'a> {
                 notes_open: (views.notes_open)(&p.name) || searching,
             })
             .collect();
-        // A fixed order: nothing moves when a session starts to ask.
-        projects.sort_by_cached_key(|p| (p.name.to_lowercase(), p.name.clone()));
-
+        // The list's order, the user's: nothing moves when a session starts to ask.
         let mut others: Vec<Row<'a>> = Vec::new();
         for (session, mark, shown) in sessions {
             let alive = mark != Mark::Ended;
@@ -345,6 +343,60 @@ pub fn blocks<'t, 'a>(nodes: Vec<Node<'t, 'a>>) -> Vec<Block<'t, 'a>> {
     blocks
 }
 
+/// Where a block stands, from the top of the list's content down.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Span {
+    pub top: f32,
+    pub bottom: f32,
+    /// The island's head: a project or "Weitere"; a block without one has none.
+    pub head: Option<HeadKey>,
+}
+
+/// The blocks' places, from the heights the tree is drawn with (the same walk as the one that
+/// keeps the selected session in view).
+pub fn spans(blocks: &[Block]) -> Vec<Span> {
+    let mut top = TOP;
+    blocks
+        .iter()
+        .map(|block| {
+            let (height, head) = match block {
+                Block::Island(lines) => {
+                    let head = match lines.first() {
+                        Some(Node::Project(p)) => Some(HeadKey::Project(p.name.clone())),
+                        Some(Node::OthersHead { .. }) => Some(HeadKey::Others),
+                        _ => None,
+                    };
+                    (2.0 * ISLAND_PAD_Y + lines.iter().map(Node::height).sum::<f32>() + GAP * (lines.len() - 1) as f32, head)
+                }
+                Block::Alone(node) => (node.height(), None),
+            };
+            let span = Span { top, bottom: top + height, head };
+            top += height + BLOCK_GAP;
+            span
+        })
+        .collect()
+}
+
+/// The island at `y` (from the top of the content): which project, or "Weitere".
+pub fn island_at(spans: &[Span], y: f32) -> Option<&HeadKey> {
+    spans.iter().find(|s| y >= s.top && y <= s.bottom).and_then(|s| s.head.as_ref())
+}
+
+/// Where a project dragged to `y` would stand among the projects: the number of projects
+/// whose middle lies above `y`.
+pub fn insert_at(spans: &[Span], y: f32) -> usize {
+    spans.iter().filter(|s| matches!(s.head, Some(HeadKey::Project(_))) && (s.top + s.bottom) / 2.0 < y).count()
+}
+
+/// The y of the insertion line before the project at `index` (after the last one for its count).
+pub fn insert_line_y(spans: &[Span], index: usize) -> Option<f32> {
+    let projects: Vec<&Span> = spans.iter().filter(|s| matches!(s.head, Some(HeadKey::Project(_)))).collect();
+    match index {
+        0 => projects.first().map(|s| s.top - BLOCK_GAP / 2.0),
+        _ => projects.get(index - 1).map(|s| s.bottom + BLOCK_GAP / 2.0),
+    }
+}
+
 /// A session's place among its project's: running ones in the order they were started, then the
 /// ended ones, newest first. Neither a question nor a finished turn moves a row.
 fn order(row: &Row) -> (bool, i64, SessionKey) {
@@ -437,15 +489,15 @@ mod tests {
     }
 
     #[test]
-    fn projects_stand_alphabetically_and_do_not_move_when_a_session_starts_to_ask() {
+    fn projects_stand_in_the_order_of_the_list_and_do_not_move_when_a_session_starts_to_ask() {
         let (a, z) = (session("a", "/w/api", 1, false), session("z", "/w/Zeta", 2, false));
         let list = listed(&["Zeta", "docs", "api"]);
         let quiet = Tree::build(&groups(vec![], vec![], vec![&a, &z], vec![]), &list, &by_folder, [], &views(), false);
         let asking = Tree::build(&groups(vec![(&z, Ask::Permission)], vec![], vec![&a], vec![]), &list, &by_folder, [], &views(), false);
         let order = |t: &Tree| t.projects.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
-        assert_eq!(order(&quiet), ["api", "docs", "Zeta"]);
+        assert_eq!(order(&quiet), ["Zeta", "docs", "api"]);
         assert_eq!(order(&asking), order(&quiet));
-        assert_eq!(asking.projects[2].rows[0].mark, Mark::Asks(Ask::Permission));
+        assert_eq!(asking.projects[0].rows[0].mark, Mark::Asks(Ask::Permission));
     }
 
     #[test]
@@ -530,6 +582,25 @@ mod tests {
         let s = session("s", "/w/api", 1, false);
         let tree = Tree::build(&groups(vec![], vec![], vec![&s], vec![]), &listed(&["api", "docs"]), &by_folder, [], &views(), true);
         assert_eq!(tree.projects.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["api"]);
+    }
+
+    #[test]
+    fn the_pointer_finds_the_island_and_the_place_between_projects() {
+        let (mine, stray) = (session("mine", "/w/api", 1, false), session("stray", "/w/notes", 2, false));
+        let tree = Tree::build(&groups(vec![], vec![], vec![&mine, &stray], vec![]), &listed(&["api", "docs"]), &by_folder, [], &views(), false);
+        let spans = spans(&blocks(tree.nodes(false)));
+        // api: head 34 + gap 2 + row 30 between 6 pt of air = 78; docs 46 at 86; Weitere at 140.
+        assert_eq!((spans[0].top, spans[0].bottom), (0.0, 78.0));
+        assert_eq!((spans[1].top, spans[1].bottom), (86.0, 132.0));
+        assert_eq!(spans[2].top, 140.0);
+        assert_eq!(island_at(&spans, 50.0), Some(&HeadKey::Project("api".into())));
+        assert_eq!(island_at(&spans, 100.0), Some(&HeadKey::Project("docs".into())));
+        assert_eq!(island_at(&spans, 150.0), Some(&HeadKey::Others));
+        assert_eq!(island_at(&spans, 82.0), None, "between two islands");
+        assert_eq!(island_at(&spans, 9999.0), None);
+        // Above the middle of a project it goes before it, below the middle after it; "Weitere" is no project.
+        assert_eq!([0.0, 38.0, 40.0, 110.0, 400.0].map(|y| insert_at(&spans, y)), [0, 0, 1, 2, 2]);
+        assert_eq!([0, 1, 2, 3].map(|i| insert_line_y(&spans, i)), [Some(-4.0), Some(82.0), Some(136.0), None]);
     }
 
     #[test]

@@ -3,12 +3,12 @@
 use brain_core::changes::SessionChange;
 use brain_core::later;
 use brain_core::state::{Ask, Phase, Session};
-use iced::widget::{button, column, combo_box, container, mouse_area, row, scrollable, stack, text, text_input, Space};
+use iced::widget::{button, column, combo_box, container, mouse_area, pin, row, scrollable, stack, text, text_input, Space};
 use iced::{Background, Border, Color, Element, Fill, Length, Padding};
 
 use crate::companion::Command;
 use crate::app::move_project::ProjectChoice;
-use crate::app::{self, Action, Brain, Choice, Groups, Message, Mode, CLEANUP_DAYS};
+use crate::app::{self, Action, Brain, Choice, DragTarget, Grab, Groups, Message, Mode, CLEANUP_DAYS};
 use crate::tree::{self, Mark, Node, Project, Tree};
 use crate::format::{ago, ago_phrase, background_summary, clip, clip_file_name, clip_start, clock, format_tokens, now_ms, plain, short_model, tilde};
 use crate::i18n::t;
@@ -92,7 +92,31 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
     };
     // A changed file in Quick Look lies over everything but the toast.
     let sheet: Element<'_, Message> = if brain.preview.is_some() { quick_look(brain) } else { Space::new().into() };
-    stack![window, overlay, popup, changes, sheet, toast(brain)].into()
+    stack![window, overlay, popup, changes, sheet, toast(brain), drag_layer(brain, &groups)].into()
+}
+
+/// A drag in the tree: the target island lit or the line between two islands, and a small card
+/// with the name at the pointer. It covers the window, so nothing under it gets the pointer.
+fn drag_layer<'a>(brain: &'a Brain, groups: &Groups<'a>) -> Element<'a, Message> {
+    let (Some(drag), Some(label)) = (brain.tree_drag.as_ref().filter(|d| d.active), brain.drag_label()) else { return Space::new().into() };
+    let width = brain.prefs.sidebar_width.unwrap_or(app::SIDEBAR_DEFAULT) - 3.0 - 24.0;
+    let mut layers: Vec<Element<'a, Message>> = Vec::new();
+    match brain.drag_target(groups) {
+        Some(DragTarget::Island(_, from, to)) => {
+            let lit = container(Space::new()).width(width).height(to - from).style(|_| boxed(alpha(style::PRIMARY, 0x2e), alpha(style::PRIMARY, 0xd0), 10.0));
+            layers.push(pin(lit).x(12.0).y(from).into());
+        }
+        Some(DragTarget::Gap(_, y)) => {
+            let line = container(Space::new()).width(width).height(2).style(|_| boxed(style::PRIMARY, Color::TRANSPARENT, 1.0));
+            layers.push(pin(line).x(12.0).y(y - 1.0).into());
+        }
+        _ => {}
+    }
+    let card = container(text(clip(&label, 30)).size(12).color(TEXT_STRONG).font(UI).wrapping(text::Wrapping::None))
+        .padding([5, 10])
+        .style(|_| boxed(style::ISLAND_SELECTED, alpha(style::PRIMARY, 0xd0), 8.0));
+    layers.push(pin(card).x(drag.at.x + 12.0).y(drag.at.y + 12.0).into());
+    mouse_area(stack(layers)).interaction(iced::mouse::Interaction::Grabbing).into()
 }
 
 /// A message of the last command: a small card at the bottom, centred over the main area. It
@@ -873,13 +897,13 @@ fn tree<'a>(brain: &'a Brain, groups: &Groups<'a>, now: i64) -> Element<'a, Mess
         .collect();
     // A thin scroller inside the tree's right padding: it floats, but never over a row.
     let bar = scrollable::Scrollbar::new().width(5).scroller_width(5).margin(3);
-    scrollable(column(items).spacing(tree::BLOCK_GAP).padding(Padding { top: tree::TOP, right: 12.0, bottom: 16.0, left: 12.0 }))
+    let list = scrollable(column(items).spacing(tree::BLOCK_GAP).padding(Padding { top: tree::TOP, right: 12.0, bottom: 16.0, left: 12.0 }))
         .id(app::LIST)
         .on_scroll(Message::ListScrolled)
         .direction(scrollable::Direction::Vertical(bar))
         .height(Fill)
-        .style(scrollbar)
-        .into()
+        .style(scrollbar);
+    mouse_area(list).on_move(Message::TreeMoved).into()
 }
 
 /// A project's island: a softly tinted, rounded area under its head, sessions and notes. Its left
@@ -990,7 +1014,7 @@ fn project_row<'a>(brain: &'a Brain, project: &Project<'_>) -> Element<'a, Messa
         Element::from(Space::new().width(PLUS_W).height(HEAD_LINE_H))
     });
     let head = mouse_area(head_cell(line))
-        .on_press(Message::ToggleProjectFolded(name.clone()))
+        .on_press(Message::TreeGrab(Grab::Project(name.clone())))
         .on_right_press(Message::ProjectMenu(name.clone()))
         .interaction(iced::mouse::Interaction::Pointer);
     head_hover(head.into(), HeadKey::Project(name))
@@ -1361,7 +1385,7 @@ fn name_label<'a>(s: &Session, size: f32, color: Color) -> Element<'a, Message> 
 /// Wraps a list entry so a click selects it and a double click opens it.
 fn clickable<'a>(content: Element<'a, Message>, s: &Session) -> Element<'a, Message> {
     mouse_area(content)
-        .on_press(Message::Select(s.key.clone()))
+        .on_press(Message::TreeGrab(Grab::Session(s.key.clone())))
         .on_double_click(Message::OpenEntry(s.key.clone()))
         .on_right_press(Message::ContextMenu(s.key.clone()))
         .on_enter(Message::Hover(Some(s.key.clone())))

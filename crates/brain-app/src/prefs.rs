@@ -67,6 +67,9 @@ pub struct Prefs {
     /// in Brain, once.
     #[serde(default)]
     projects_seeded: bool,
+    /// The list was put in alphabetical order once, when the user could not yet sort it by hand.
+    #[serde(default)]
+    projects_sorted: bool,
     /// How large the window is drawn, as a factor (View → Larger, Smaller); none is 100 %.
     #[serde(default)]
     pub zoom: Option<f32>,
@@ -300,7 +303,7 @@ impl Prefs {
         }
     }
 
-    /// The projects of the tree, in the order they were added.
+    /// The projects of the tree, in the order the user sorted them (new ones at the end).
     pub fn listed_projects(&self) -> &[ListedProject] {
         &self.listed_projects
     }
@@ -363,6 +366,28 @@ impl Prefs {
             self.list_project(&name, folder.as_deref());
         }
         true
+    }
+
+    /// The first start with a hand-sortable list: puts it in alphabetical order (it stood in the order
+    /// of adding, drawn alphabetically), once. Returns whether anything changed.
+    pub fn sort_projects_once(&mut self) -> bool {
+        if self.projects_sorted {
+            return false;
+        }
+        self.projects_sorted = true;
+        self.listed_projects.sort_by_cached_key(|p| (p.name.to_lowercase(), p.name.clone()));
+        true
+    }
+
+    /// Moves a project in the list to stand before `before` (none: at the end). Returns whether
+    /// the order changed.
+    pub fn move_project(&mut self, name: &str, before: Option<&str>) -> bool {
+        let Some(from) = self.listed_projects.iter().position(|p| p.name == name).filter(|_| before != Some(name)) else { return false };
+        let order: Vec<String> = self.listed_projects.iter().map(|p| p.name.clone()).collect();
+        let project = self.listed_projects.remove(from);
+        let at = before.and_then(|b| self.listed_projects.iter().position(|p| p.name == b)).unwrap_or(self.listed_projects.len());
+        self.listed_projects.insert(at, project);
+        self.listed_projects.iter().map(|p| &p.name).ne(order.iter())
     }
 
     pub fn are_notes_open(&self, project: &str) -> bool {
@@ -516,6 +541,42 @@ mod tests {
 
         assert_eq!(serde_json::to_value(&prefs).unwrap(), before);
         assert_eq!(prefs.listed_projects().iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["api", "web", "docs"]);
+    }
+
+    #[test]
+    fn a_project_moves_before_another_or_to_the_end_and_the_list_is_sorted_once() {
+        let names = |p: &Prefs| p.listed_projects().iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+        let mut prefs = Prefs::default();
+        for n in ["web", "Api", "docs"] {
+            prefs.list_project(n, None);
+        }
+        assert!(prefs.sort_projects_once());
+        assert_eq!(names(&prefs), ["Api", "docs", "web"]);
+        assert!(prefs.move_project("web", Some("Api")));
+        assert_eq!(names(&prefs), ["web", "Api", "docs"]);
+        assert!(!prefs.move_project("web", Some("Api")), "already there");
+        assert!(prefs.move_project("web", None));
+        assert_eq!(names(&prefs), ["Api", "docs", "web"]);
+        assert!(!prefs.move_project("docs", Some("docs")));
+        prefs.move_project("web", Some("Api"));
+        assert!(!prefs.sort_projects_once(), "the user's order is kept");
+        assert_eq!(names(&prefs), ["web", "Api", "docs"]);
+        let again: Prefs = serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
+        assert!(!{ let mut a = again; a.sort_projects_once() });
+    }
+
+    #[test]
+    fn undoing_a_move_puts_the_session_back_where_it_stood_by_hand_or_in_its_own_project() {
+        let mut prefs = Prefs::default();
+        let key = SessionKey { account: "main".into(), id: "a".into() };
+        let before = prefs.project(&key).map(str::to_string);
+        prefs.set_project(&key, Some("web".into()));
+        let second = prefs.project(&key).map(str::to_string);
+        prefs.set_project(&key, Some("docs".into()));
+        prefs.set_project(&key, second);
+        assert_eq!(prefs.project(&key), Some("web"));
+        prefs.set_project(&key, before);
+        assert_eq!(prefs.project(&key), None);
     }
 
     #[test]
