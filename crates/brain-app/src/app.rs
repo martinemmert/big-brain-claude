@@ -4525,7 +4525,7 @@ impl Brain {
             if let Some(transcript) = transcript {
                 brain_core::transcript::copy_to_account(&transcript, &target).map_err(|e| e.to_string())?;
             }
-            brain_core::agents::fork(&target, std::path::Path::new(&cwd), &session_id, name.as_deref(), &flags)
+            brain_core::agents::fork(&target, std::path::Path::new(&cwd), &session_id, name.as_deref(), &[flags, crate::browser::session_args(&target.id)].concat())
         });
         Task::perform(forked, move |result| Message::Started(target_id.clone(), result))
     }
@@ -4582,7 +4582,7 @@ impl Brain {
                     brain_core::agents::stop(&source, &agent.id)?;
                 }
                 brain_core::transcript::copy_to_account(&transcript, &target).map_err(|e| e.to_string())?;
-                brain_core::agents::fork(&target, std::path::Path::new(&cwd), &session_id, name.as_deref(), &flags)
+                brain_core::agents::fork(&target, std::path::Path::new(&cwd), &session_id, name.as_deref(), &[flags, crate::browser::session_args(&target.id)].concat())
             });
             // The session goes on in the target account: the original leaves the list.
             return Task::perform(moved, move |result| Message::Replaced(original.clone(), target_id.clone(), result));
@@ -4827,7 +4827,7 @@ impl Brain {
         self.mode = Mode::Normal;
         self.set_status(t("Starte die Aufgabe als neue Session …", "Starting the task as a new session …"));
         let id = account.id.clone();
-        let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), &brain_core::agents::Start { prompt: Some(task.text.clone()), ..Default::default() }));
+        let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), &brain_core::agents::Start { prompt: Some(task.text.clone()), extra: crate::browser::session_args(&account.id), ..Default::default() }));
         Task::perform(started, move |result| Message::Started(id.clone(), result))
     }
 
@@ -5140,7 +5140,7 @@ impl Brain {
             self.report(outcome, Some(t("Neue Session in iTerm gestartet.", "Started a new session in iTerm.").into()));
             return unfocus();
         }
-        let options = brain_core::agents::Start { model, name, style, prompt, resume: None };
+        let options = brain_core::agents::Start { model, name, style, prompt, resume: None, extra: crate::browser::session_args(&account.id) };
         self.set_status(t("Starte die Session in Brain …", "Starting the session in Brain …"));
         let id = account.id.clone();
         let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), &options));
@@ -5192,7 +5192,7 @@ impl Brain {
         self.started_from.remove(&key);
         self.set_status(t("Setze die Session in Brain fort …", "Continuing the session in Brain …"));
         let id = account.id.clone();
-        let resumed = off_thread(move || brain_core::agents::resume(&account, std::path::Path::new(&cwd), &session_id, name.as_deref()));
+        let resumed = off_thread(move || brain_core::agents::resume_with(&account, std::path::Path::new(&cwd), &session_id, name.as_deref(), &crate::browser::session_args(&account.id)));
         // A copy without a message goes on as the conversation it came from, which takes its place.
         Task::perform(resumed, move |result| if copy { Message::Replaced(key.clone(), id.clone(), result) } else { Message::Started(id.clone(), result) })
     }

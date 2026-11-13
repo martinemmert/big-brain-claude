@@ -496,7 +496,7 @@ impl Brain {
         let folder_name = folder.rsplit('/').find(|p| !p.is_empty()).unwrap_or(folder).to_string();
         self.set_status(tr!("Vom Handy: neue Session in {folder_name} …", "From the phone: new session in {folder_name} …"));
         let folder = folder.to_string();
-        let options = brain_core::agents::Start { style, prompt, ..Default::default() };
+        let options = brain_core::agents::Start { style, prompt, extra: crate::browser::session_args(&account.id), ..Default::default() };
         let started = off_thread(move || brain_core::agents::start(&account, std::path::Path::new(&folder), &options));
         Task::perform(started, Message::LinkStarted)
     }

@@ -362,7 +362,8 @@ Alles optional, in `~/.claude-brain/config.json`:
 Artefakte), geht im Chrome-Profil ihres Kontos auf, damit z. B. ein Artefakt im richtigen Claude-Login
 erscheint. Gewählt wird unter Brain → „Chrome-Profil je Konto“; heißt ein Profil wie das Konto („Claude
 Second“ für `second`) und ist es das einzige, gilt es als „Vorschlag“, solange nichts gewählt ist. Ohne
-Profil oder ohne Chrome öffnet der Standardbrowser.
+Profil oder ohne Chrome öffnet der Standardbrowser. Brain sagt neuen Sessions beim Start, welches
+Chrome-Profil ihr Konto nutzt.
 
 **Vorlagen** liegen in `~/.claude-brain/templates/*.md`, mit Platzhaltern wie `{branch}`. Im Dialog
 „Neue Session“ öffnet `⌘E` die gewählte Vorlage im Editor, `⌘⇧N` legt eine neue an.

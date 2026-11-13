@@ -169,7 +169,7 @@ impl Brain {
                 if agent.is_active() {
                     brain_core::agents::stop(&account, &agent.id)?;
                 }
-                brain_core::agents::resume_with(&account, std::path::Path::new(&cwd), &session_id, name.as_deref(), &flags)
+                brain_core::agents::resume_with(&account, std::path::Path::new(&cwd), &session_id, name.as_deref(), &[flags, crate::browser::session_args(&account.id)].concat())
             });
             return Ok(Task::perform(restarted, move |result| Message::Replaced(key.clone(), id.clone(), result)));
         }
@@ -208,7 +208,7 @@ impl Brain {
             return Task::perform(respawned, move |result| Message::Started(id.clone(), result));
         }
         let original = key.clone();
-        let resumed = off_thread(move || brain_core::agents::resume_with(&account, std::path::Path::new(&cwd), &session_id, name.as_deref(), &flags));
+        let resumed = off_thread(move || brain_core::agents::resume_with(&account, std::path::Path::new(&cwd), &session_id, name.as_deref(), &[flags, crate::browser::session_args(&account.id)].concat()));
         Task::perform(resumed, move |result| if copies { Message::Replaced(original.clone(), id.clone(), result) } else { Message::Started(id.clone(), result) })
     }
 

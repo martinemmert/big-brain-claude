@@ -116,6 +116,8 @@ pub struct Start {
     pub prompt: Option<String>,
     /// The conversation it continues (`--resume <session id>`).
     pub resume: Option<String>,
+    /// More flags for Claude, before the prompt (`--append-system-prompt …`).
+    pub extra: Vec<String>,
 }
 
 /// Starts a background session in `cwd` (`claude --bg`); returns its short id, or what `claude`
@@ -142,6 +144,7 @@ fn start_args(options: &Start) -> Vec<String> {
     if let Some(style) = &options.style {
         args.extend(["--settings".into(), crate::styles::settings(style)]);
     }
+    args.extend(options.extra.iter().cloned());
     // After `--` the prompt is never an option, even one that starts with `-` (a task for later,
     // a prompt from the phone).
     if let Some(prompt) = options.prompt.as_deref().filter(|p| !p.trim().is_empty()) {
@@ -235,5 +238,14 @@ mod tests {
         assert!(agents[1].is_active());
         assert!(!agents[2].is_active());
         assert!(parse("not json").is_empty());
+    }
+
+    #[test]
+    fn extra_flags_stand_before_the_prompt_and_only_when_given() {
+        let plain = Start { prompt: Some("-x los".into()), ..Default::default() };
+        assert_eq!(start_args(&plain), ["--", "-x los"]);
+
+        let with = Start { prompt: Some("los".into()), extra: vec!["--append-system-prompt".into(), "ein Satz mit Leerzeichen".into()], ..Default::default() };
+        assert_eq!(start_args(&with), ["--append-system-prompt", "ein Satz mit Leerzeichen", "--", "los"]);
     }
 }

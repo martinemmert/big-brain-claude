@@ -31,8 +31,8 @@ const READY_TIMEOUT: Duration = Duration::from_secs(60);
 const RENAME_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The new session's options from the old one: its model only (empty, no prompt, no name).
-pub fn fresh_start(model: Option<&str>) -> Start {
-    Start { model: model.map(str::to_string), ..Default::default() }
+pub fn fresh_start(model: Option<&str>, account: &str) -> Start {
+    Start { model: model.map(str::to_string), extra: crate::browser::session_args(account), ..Default::default() }
 }
 
 /// Where a session started by "Clear …" is.
@@ -113,7 +113,7 @@ impl Brain {
             self.set_status(t("Zu dieser Session fehlt der Ordner.", "This session has no folder."));
             return Task::none();
         };
-        let options = fresh_start(session.insight.model.as_deref());
+        let options = fresh_start(session.insight.model.as_deref(), &account.id);
         let prompt = Some(self.fresh.prompt.text().trim().to_string()).filter(|p| !p.is_empty());
         let name = session.display_name();
         self.mode = Mode::Normal;
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn new_session_starts_empty_with_the_model_only() {
-        let start = fresh_start(Some("claude-opus-4"));
+        let start = fresh_start(Some("claude-opus-4"), "main");
         assert_eq!((start.model.as_deref(), start.name, start.prompt, start.resume), (Some("claude-opus-4"), None, None, None));
     }
 

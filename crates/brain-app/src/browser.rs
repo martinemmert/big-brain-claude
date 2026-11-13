@@ -108,6 +108,25 @@ pub fn open_args(url: &str, profile: Option<&str>) -> Option<Vec<String>> {
     })
 }
 
+/// The sentence for a session's system prompt: where it opens links and artifacts. Quotes and
+/// line breaks in the names are defused so they can't end the sentence early.
+pub fn session_prompt(name: &str, dir: &str) -> String {
+    let clean = |s: &str| s.replace(['"', '\n', '\r'], "'");
+    let (name, dir) = (clean(name), clean(dir));
+    format!(
+        "Open links and artifacts for this Claude account in the Chrome profile \"{name}\": open -n -a \"{CHROME_APP}\" --args --profile-directory=\"{dir}\" <url> – not in the default browser, another Claude account is signed in there."
+    )
+}
+
+/// `--append-system-prompt <sentence>` for a session of the account, or nothing without a Chrome
+/// profile (none picked, no suggestion, or the default browser).
+pub fn session_args(account: &str) -> Vec<String> {
+    let profiles = chrome_profiles();
+    let Some(dir) = profile_for(&crate::config::path(), account, &profiles) else { return Vec::new() };
+    let name = profiles.iter().find(|p| p.dir == dir).map_or(dir.as_str(), |p| p.name.as_str());
+    vec!["--append-system-prompt".into(), session_prompt(name, &dir)]
+}
+
 /// Opens a web link, in the Chrome profile of the account when it has one. False when the URL
 /// isn't http(s) or `open` didn't start.
 pub fn open_url(url: &str, account: Option<&str>) -> bool {
@@ -185,5 +204,16 @@ mod tests {
         assert_eq!(value["chat_font_size"], 14);
         assert_eq!(value["chrome_profiles"]["third"], "Profile 10");
         assert_eq!(value["chrome_profiles"]["second"], "Profile 9");
+    }
+
+    #[test]
+    fn the_session_sentence_names_profile_and_directory_and_defuses_quotes() {
+        let sentence = session_prompt("Claude Second", "Profile 9");
+        assert!(sentence.contains("\"Claude Second\""));
+        assert!(sentence.contains("--profile-directory=\"Profile 9\""));
+
+        let odd = session_prompt("Mein \"Konto\"\nzwei", "P\"x");
+        assert!(odd.contains("\"Mein 'Konto''zwei\""));
+        assert!(odd.contains("--profile-directory=\"P'x\""));
     }
 }
