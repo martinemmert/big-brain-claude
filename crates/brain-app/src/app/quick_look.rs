@@ -2,9 +2,12 @@
 //! session's files, and opening and closing it. It floats over the whole window; `ui` draws it.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use brain_core::changes::{DiffKind, SessionChange};
 use brain_core::state::SessionKey;
+use iced::advanced::text::Highlighter as _;
+use iced::highlighter::{Highlighter, Settings, Theme};
 use iced::Task;
 
 use super::{Brain, Message};
@@ -41,6 +44,9 @@ pub struct QuickDiff {
     pub new_file: bool,
     /// The diff as git printed it, for the clipboard.
     pub raw: String,
+    /// The colours of each row's text, by byte range, row for row like `rows`; a row with none
+    /// (a hunk head, an unknown language) is drawn in one colour.
+    pub colors: Vec<Vec<(Range<usize>, [u8; 3])>>,
 }
 
 /// `@@ -12,7 +14,9 @@ context` as (old start, new start, new length, context).
@@ -88,7 +94,51 @@ pub fn quick_diff(diff: &str, limit: usize) -> QuickDiff {
     }
     let cut = rows.len().saturating_sub(limit);
     rows.truncate(limit);
-    QuickDiff { rows, cut, new_file, raw: diff.to_string() }
+    QuickDiff { rows, cut, new_file, raw: diff.to_string(), colors: Vec::new() }
+}
+
+/// The theme the diff's code is coloured in: it reads on the dark ground and on the green and red
+/// tints alike, and it is the one the file reader uses.
+const CODE_THEME: Theme = Theme::Base16Ocean;
+
+/// Colours the code of `diff` by the language of `extension`. The new file (context and added
+/// lines) is run through one highlighter and the old one (context and removed lines) through
+/// another, so a comment or string over several lines is one in each; at a hunk head, where lines
+/// are missing, both begin anew. A file without an extension stays in one colour.
+pub fn highlight(diff: &mut QuickDiff, extension: &str) {
+    diff.colors.clear();
+    if extension.is_empty() {
+        return;
+    }
+    let settings = Settings { theme: CODE_THEME, token: extension.to_string() };
+    let (mut old, mut new) = (Highlighter::new(&settings), Highlighter::new(&settings));
+    let run = |highlighter: &mut Highlighter, text: &str| -> Vec<(Range<usize>, [u8; 3])> {
+        highlighter
+            .highlight_line(text)
+            .filter_map(|(range, highlight)| {
+                let color = highlight.color()?;
+                let [r, g, b, _] = color.into_rgba8();
+                Some((range, [r, g, b]))
+            })
+            .collect()
+    };
+    let mut colors = Vec::with_capacity(diff.rows.len());
+    for row in &diff.rows {
+        colors.push(match row {
+            DiffRow::Hunk { .. } => {
+                old.change_line(0);
+                new.change_line(0);
+                Vec::new()
+            }
+            DiffRow::Line { kind: DiffKind::Added, text, .. } => run(&mut new, text),
+            DiffRow::Line { kind: DiffKind::Removed, text, .. } => run(&mut old, text),
+            DiffRow::Line { text, .. } => {
+                run(&mut old, text);
+                run(&mut new, text)
+            }
+        });
+    }
+    diff.colors = colors;
 }
 
 /// The smallest the sheet gets when dragged, and the margin it leaves around itself at most.
@@ -443,7 +493,8 @@ impl Brain {
     /// A diff came in: kept for its file, shown when that is the open one.
     pub(super) fn preview_loaded(&mut self, key: SessionKey, path: String, diff: Option<String>) {
         if self.preview.as_ref().is_some_and(|p| p.key == key) {
-            let read = quick_diff(diff.as_deref().unwrap_or_default(), MOST_ROWS);
+            let mut read = quick_diff(diff.as_deref().unwrap_or_default(), MOST_ROWS);
+            highlight(&mut read, std::path::Path::new(&path).extension().and_then(|e| e.to_str()).unwrap_or_default());
             if diff.is_some() {
                 self.review_diff_read(&key, &path, &read);
             }
@@ -460,6 +511,56 @@ mod tests {
 
     /// What the title bar takes at 100 % zoom.
     const TOP: f32 = 52.0;
+
+    const COMMENT_DIFF: &str = "@@ -1,3 +1,4 @@\n let a = 1;\n+/* one\n+two */\n let b = 2;\n@@ -20,1 +21,1 @@\n-two */\n+let c = 3;\n";
+
+    fn colors_of(diff: &QuickDiff, row: usize) -> &[(Range<usize>, [u8; 3])] {
+        &diff.colors[row]
+    }
+
+    fn distinct(diff: &QuickDiff, row: usize) -> std::collections::HashSet<[u8; 3]> {
+        colors_of(diff, row).iter().map(|(_, c)| *c).collect()
+    }
+
+    #[test]
+    fn a_rust_line_gets_several_colors() {
+        // sichert: eine Rust-Zeile wird in mehreren Farben gezeichnet
+        let mut diff = quick_diff("@@ -1 +1 @@\n+let x = \"hi\"; // note\n", 100);
+        highlight(&mut diff, "rs");
+        assert!(distinct(&diff, 1).len() >= 3, "{:?}", colors_of(&diff, 1));
+    }
+
+    #[test]
+    fn a_comment_over_two_lines_is_a_comment_in_both() {
+        // sichert: ein mehrzeiliger Kommentar ist in beiden Zeilen als Kommentar gefärbt
+        let mut diff = quick_diff(COMMENT_DIFF, 100);
+        highlight(&mut diff, "rs");
+        let (first, second) = (colors_of(&diff, 2), colors_of(&diff, 3));
+        assert_eq!(first.last().map(|(_, c)| *c), second.first().map(|(_, c)| *c));
+        assert_eq!(second.first().map(|(r, _)| r.start), Some(0));
+        assert_ne!(second.first().map(|(_, c)| *c), colors_of(&diff, 4).first().map(|(_, c)| *c));
+    }
+
+    #[test]
+    fn a_hunk_head_starts_the_state_anew() {
+        // sichert: nach einem Hunk-Kopf beginnt der Zustand neu (das "*/" ohne Anfang ist kein Kommentar)
+        let mut diff = quick_diff(COMMENT_DIFF, 100);
+        highlight(&mut diff, "rs");
+        let mut alone = quick_diff("@@ -1 +1 @@\n-two */\n", 100);
+        highlight(&mut alone, "rs");
+        assert_eq!(colors_of(&diff, 6), colors_of(&alone, 1));
+        assert_ne!(colors_of(&diff, 6).first().map(|(_, c)| *c), colors_of(&diff, 3).first().map(|(_, c)| *c));
+    }
+
+    #[test]
+    fn an_unknown_extension_stays_in_one_color() {
+        // sichert: unbekannte Endung -> eine Farbe, ohne Endung keine
+        let mut diff = quick_diff("@@ -1 +1 @@\n+let x = \"hi\"; // note\n", 100);
+        highlight(&mut diff, "nosuchlang");
+        assert!(distinct(&diff, 1).len() <= 1, "{:?}", colors_of(&diff, 1));
+        highlight(&mut diff, "");
+        assert!(diff.colors.is_empty());
+    }
 
     #[test]
     fn rows_carry_old_and_new_line_numbers_from_the_hunk_heads() {

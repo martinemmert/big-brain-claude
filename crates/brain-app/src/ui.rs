@@ -1428,6 +1428,21 @@ fn session_pane(brain: &Brain) -> Element<'_, Message> {
     container(content).padding(Padding { top: 8.0, right: 12.0, bottom: 0.0, left: 12.0 }).height(Fill).into()
 }
 
+/// A code line cut into spans by the colours the highlighter gave its byte ranges; what they leave
+/// out stays in the text colour.
+fn colored_spans(line: &str, colors: &[(std::ops::Range<usize>, [u8; 3])]) -> Vec<iced::widget::text::Span<'static, (), iced::Font>> {
+    let span = |range: std::ops::Range<usize>, color: Color| line.get(range).filter(|s| !s.is_empty()).map(|s| iced::widget::span(s.to_string()).color(color));
+    let mut spans = Vec::with_capacity(colors.len() + 1);
+    let mut at = 0;
+    for (range, [r, g, b]) in colors {
+        spans.extend(span(at..range.start.max(at), TEXT));
+        spans.extend(span(range.start.max(at)..range.end, Color::from_rgb8(*r, *g, *b)));
+        at = at.max(range.end);
+    }
+    spans.extend(span(at..line.len(), TEXT));
+    spans
+}
+
 /// Quick Look: one changed file of the session, large over the whole window. The diff has line
 /// numbers, hunks say where they are; ← → page through the session's files, space and esc close.
 /// A click beside the sheet closes it; the sheet swallows its own clicks.
@@ -1578,7 +1593,13 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
                         }
                         line = line.push(number(*new, number_color, gutter));
                         line = line.push(container(text(sign).size(font.size).color(sign_color).font(font.regular)).width(20).align_x(iced::Center));
-                        line = line.push(text(shown).size(font.size).color(TEXT).font(font.regular).wrapping(text::Wrapping::None));
+                        match diff.colors.get(i).filter(|c| !c.is_empty()) {
+                            Some(colors) => {
+                                let spans = colored_spans(&shown, colors);
+                                line = line.push(iced::widget::rich_text(spans).size(font.size).font(font.regular).wrapping(text::Wrapping::None));
+                            }
+                            None => line = line.push(text(shown).size(font.size).color(TEXT).font(font.regular).wrapping(text::Wrapping::None)),
+                        }
                         let line = container(line).width(row_w).padding(Padding { right: 18.0, ..Padding::ZERO }).style(move |_| style::fill(tint));
                         rows.push(mouse_area(line).on_enter(Message::ReviewHoverRow(Some(i))).on_exit(Message::ReviewHoverRow(None)).into());
                         // The cards of the line's comments, and the field for a new one.
