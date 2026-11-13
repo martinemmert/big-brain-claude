@@ -442,9 +442,12 @@ fn titlebar(brain: &Brain) -> Element<'_, Message> {
     // The selected session's line, where the window's title would be.
     match brain.selected_session() {
         Some(s) => {
-            let line = container(header_line(brain, s, None)).width(Fill).padding(Padding { left: 4.0, right: 8.0, ..Padding::ZERO }).clip(true);
+            // The merge request part names the branch itself.
+            let cache = brain.selected_cache().filter(|_| brain.has_changes_button());
+            let merge_shown = cache.is_some_and(|c| c.merge.is_some());
+            let line = container(header_line(brain, s, merge_shown, None)).width(Fill).padding(Padding { left: 4.0, right: 8.0, ..Padding::ZERO }).clip(true);
             bar = bar.push(iced::widget::tooltip(line, detail_card(brain, s), iced::widget::tooltip::Position::Bottom).gap(6));
-            if let Some(cache) = brain.selected_cache().filter(|_| brain.has_changes_button()) {
+            if let Some(cache) = cache {
                 if let Some(select) = branch_target(brain, cache) {
                     bar = bar.push(select);
                 }
@@ -1668,13 +1671,13 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
 /// The line above the split's other terminal (the selected session's stands in the title bar).
 /// Everything else on hover.
 fn header<'a>(brain: &'a Brain, s: &'a Session, close: Option<Message>) -> Element<'a, Message> {
-    let bar = container(header_line(brain, s, close)).height(HEADER_H).center_y(HEADER_H).padding([0, 6]).width(Fill).clip(true);
+    let bar = container(header_line(brain, s, false, close)).height(HEADER_H).center_y(HEADER_H).padding([0, 6]).width(Fill).clip(true);
     iced::widget::tooltip(bar, detail_card(brain, s), iced::widget::tooltip::Position::Bottom).gap(2).into()
 }
 
 /// A session's line: project › name, branch, account, how full the context is, a sign when it
 /// edits the same files as another session.
-fn header_line<'a>(brain: &'a Brain, s: &'a Session, close: Option<Message>) -> Element<'a, Message> {
+fn header_line<'a>(brain: &'a Brain, s: &'a Session, branch_shown_elsewhere: bool, close: Option<Message>) -> Element<'a, Message> {
     let renaming = brain.mode == Mode::Rename && brain.selected.as_ref() == Some(&s.key);
     let name: Element<'a, Message> = if renaming {
         text_input("", &brain.rename)
@@ -1703,7 +1706,7 @@ fn header_line<'a>(brain: &'a Brain, s: &'a Session, close: Option<Message>) -> 
     if renaming {
         line = line.push(text(t("⏎ schickt /rename an die Session, esc bricht ab", "⏎ sends /rename to the session, esc cancels")).size(11.5).color(TEXT_FAINT).font(UI));
     }
-    if let Some(branch) = brain.branches.get(&s.key).and_then(|(branch, _)| branch.as_ref()) {
+    if let Some(branch) = brain.branches.get(&s.key).and_then(|(branch, _)| branch.as_ref()).filter(|_| !branch_shown_elsewhere) {
         line = line.push(text(format!("⎇ {}", clip(branch, 32))).size(11.5).color(TEXT_MUTED).font(MONO).wrapping(text::Wrapping::None));
     }
     line = line.push(account_badge(&s.key.account, brain.account_index(&s.key.account)));
