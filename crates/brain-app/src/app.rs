@@ -230,6 +230,8 @@ pub enum Action {
     /// The account dialog, opened for a move or a restart with flags.
     Relaunch,
     RestartWith,
+    /// The same conversation in a fresh process: plugins and Brain's mod load anew.
+    Reload,
     End,
     Hide,
     Trash,
@@ -2518,6 +2520,7 @@ impl Brain {
                 all.push((tr!("In {id} forken", "Fork into {id}"), "", PaletteCommand::Act(Action::ForkTo(index))));
             }
             all.push((t("In ein anderes Konto oder forken …", "Into another account or fork …").to_string(), "", PaletteCommand::Act(Action::Relaunch)));
+            all.push((t("Neu laden (gleiches Gespräch, Plugins frisch)", "Reload (same conversation, fresh plugins)").to_string(), "", PaletteCommand::Act(Action::Reload)));
             all.push((t("Neu starten mit … (z. B. --chrome)", "Restart with … (e.g. --chrome)").to_string(), "", PaletteCommand::Act(Action::RestartWith)));
             all.push((t("Beenden / Hintergrund-Session stoppen", "End / stop the background session").to_string(), "⌥⌘X", PaletteCommand::Act(Action::End)));
             all.push((t("Ausblenden", "Hide").to_string(), "⌫", PaletteCommand::Act(Action::Hide)));
@@ -3845,6 +3848,16 @@ impl Brain {
             Action::Snooze => self.cycle_snooze(),
             Action::Relaunch => return self.open_relaunch(relaunch::Preset::Move),
             Action::RestartWith => return self.open_relaunch(relaunch::Preset::Restart),
+            Action::Reload => {
+                let Some(key) = self.selected.clone() else { return Task::none() };
+                return match self.restart_session(key, Vec::new(), false) {
+                    Ok(task) => task,
+                    Err(err) => {
+                        self.set_status(err);
+                        Task::none()
+                    }
+                };
+            }
             Action::MoveTo(index) => return self.move_selected(index, Vec::new()),
             Action::ForkTo(index) => return self.fork_selected(index, Vec::new()),
             Action::End => return self.end_selected(),

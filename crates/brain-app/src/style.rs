@@ -433,7 +433,7 @@ impl<M> iced::widget::canvas::Program<M> for SidebarIcon {
 
 /// A clickable text that only looks like a link-ish label (e.g. the background filter).
 pub fn text_button<'a, M: Clone + 'a>(label: impl Into<String>, on: bool, message: M) -> Element<'a, M> {
-    button(text(label.into()).size(12).font(UI))
+    button(text(label.into()).size(12).font(UI).wrapping(iced::widget::text::Wrapping::None))
         .padding([3, 9])
         .on_press(message)
         .style(move |_, status| button::Style {

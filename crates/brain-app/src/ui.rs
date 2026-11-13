@@ -311,6 +311,10 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
         };
         keep.push((t("Pausieren", "Snooze").to_string(), next, Action::Snooze, false));
     }
+    // The same conversation in a fresh process (plugins and Brain's mod load anew), e.g. after `/clear`.
+    if !ended {
+        keep.push((t("Neu laden", "Reload").to_string(), "⇧⌘R", Action::Reload, false));
+    }
     keep.push((t("In ein anderes Konto oder forken …", "Into another account or fork …").to_string(), "", Action::Relaunch, false));
     keep.push((t("In ein anderes Projekt …", "Into another project …").to_string(), "", Action::MoveToProject, false));
     if !brain.prefs.is_project_listed(&brain.project_name(s)) {
@@ -1994,9 +1998,10 @@ fn header_line<'a>(brain: &'a Brain, s: &'a Session, branch_shown_elsewhere: boo
     }
     line = line.push(account_badge(&s.key.account, brain.account_index(&s.key.account)));
     line = line.push(Space::new().width(Fill));
-    if let Some(warning) = conflict_text(brain, s) {
-        let card = container(text(warning).size(12).color(TEXT).font(UI)).padding([6, 10]).max_width(420).style(|_| boxed(RAISED, LINE_STRONG, 8.0));
-        line = line.push(iced::widget::tooltip(text("⚠").size(13).color(CALLS).font(UI), card, iced::widget::tooltip::Position::Bottom).gap(6));
+    // Only the sign: what it means stands in the line's own card (a tooltip of its own here
+    // showed over that card).
+    if conflict_text(brain, s).is_some() {
+        line = line.push(text("⚠").size(13).color(CALLS).font(UI));
     }
     if let Some(percent) = brain.model.snapshot(&s.key).and_then(|status| status.context_percent) {
         line = line.push(context_gauge(brain, s, percent));
@@ -2047,10 +2052,12 @@ fn detail_card<'a>(brain: &'a Brain, s: &Session) -> Element<'a, Message> {
         let (symbol, _) = pr_look(pr);
         lines.push(format!("PR #{} {symbol} {}", pr.number, pr.state.to_lowercase()));
     }
-    container(column(lines.into_iter().map(|l| text(l).size(11.5).color(TEXT).font(UI).into())).spacing(3))
-        .padding([6, 10])
-        .style(|_| boxed(RAISED, LINE_STRONG, 8.0))
-        .into()
+    let mut card = column(lines.into_iter().map(|l| text(l).size(11.5).color(TEXT).font(UI).into())).spacing(3);
+    // A conflict with another session leads, in red, as the ⚠ in the line promises.
+    if let Some(warning) = conflict_text(brain, s) {
+        card = column![text(format!("⚠ {warning}")).size(11.5).color(CALLS_SOFT).font(UI), card].spacing(6);
+    }
+    container(card).padding([6, 10]).max_width(460).style(|_| boxed(RAISED, LINE_STRONG, 8.0)).into()
 }
 
 /// "Edits the same files as X: a.rs, b.rs" and "Works in the same checkout as Y", one per line.
@@ -2086,7 +2093,8 @@ fn context_gauge<'a>(brain: &'a Brain, s: &Session, percent: f64) -> Element<'a,
         .width(WIDTH)
         .height(5)
         .style(|_| boxed(RAISED, Color::TRANSPARENT, 2.5));
-    let mut line = row![bar, text(tr!("{percent:.0}% Kontext", "{percent:.0}% context")).size(11.5).color(if percent >= 80.0 { color } else { TEXT_MUTED }).font(UI)]
+    let label = text(tr!("{percent:.0}% Kontext", "{percent:.0}% context")).size(11.5).color(if percent >= 80.0 { color } else { TEXT_MUTED }).font(UI).wrapping(text::Wrapping::None);
+    let mut line = row![bar, label]
         .spacing(7)
         .align_y(iced::Center);
     if percent >= 80.0 && brain.can_send(&s.key) {

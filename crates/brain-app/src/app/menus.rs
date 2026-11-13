@@ -243,6 +243,7 @@ impl Brain {
         };
         entries.push(submenu(t("Forken in", "Fork into"), forks));
         entries.push(self.project_menu_entries(commands, session));
+        entries.push(commands.act(Action::Reload, t("Neu laden (gleiches Gespräch)", "Reload (same conversation)"), "reload").keys("r", CMD | SHIFT).enabled(on).into());
         entries.push(commands.act(Action::RestartWith, t("Neu starten mit … (z. B. --chrome)", "Restart with … (e.g. --chrome)"), "restart").enabled(on).into());
         entries.push(commands.act(Action::OpenInITerm, t("In iTerm öffnen", "Open in iTerm"), "iterm").keys("i", CMD | OPT).enabled(on).into());
         entries.push(commands.palette(PaletteCommand::Composer, t("Composer …", "Composer …"), "composer").keys("e", CMD).enabled(on && self.mode == Mode::Normal).into());
