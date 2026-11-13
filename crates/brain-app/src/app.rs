@@ -827,6 +827,9 @@ pub struct Brain {
     /// The Quick Look sheet's edges held with the mouse: (horizontal, vertical).
     pub dragging_sheet: Option<(bool, bool)>,
     pub dragging_sheet_files: bool,
+    /// Where the pointer was and how wide the list, at the first move of a drag of its edge: the
+    /// width follows the pointer's way from there, so the edge stays under it.
+    sheet_files_drag_from: Option<(f32, f32)>,
     last_sheet_head_press: Option<Instant>,
     last_sheet_files_press: Option<Instant>,
     /// The selection the derived state was last synced for, and whether it ran in Brain then
@@ -1000,6 +1003,7 @@ impl Brain {
             dragging_sidebar: false,
             dragging_sheet: None,
             dragging_sheet_files: false,
+            sheet_files_drag_from: None,
             last_sheet_head_press: None,
             last_sheet_files_press: None,
             titlebar_ready: false,
@@ -1500,20 +1504,24 @@ impl Brain {
                     self.prefs.save();
                 } else {
                     self.dragging_sheet_files = true;
+                    self.sheet_files_drag_from = None;
                 }
                 Task::none()
             }
             Message::SheetFilesTo(x) => {
                 if self.dragging_sheet_files {
-                    // The list starts at the sheet's left edge, inside the ring of grips.
+                    // Relative to where the drag began: the width at the first move plus the
+                    // pointer's way since, so the edge doesn't jump to a computed position.
                     let sheet = sheet_size(self.prefs.quick_look_size, self.window_size, self.sheet_top());
-                    let left = (self.window_size.width - sheet.width) / 2.0 + quick_look::SHEET_RING;
-                    self.prefs.sheet_files_width = Some(sheet_files_width(Some(x - left), sheet.width));
+                    let now = sheet_files_width(self.prefs.sheet_files_width, sheet.width);
+                    let (from_x, from_width) = *self.sheet_files_drag_from.get_or_insert((x, now));
+                    self.prefs.sheet_files_width = Some(sheet_files_width(Some(from_width + (x - from_x)), sheet.width));
                 }
                 Task::none()
             }
             Message::SheetFilesDone => {
                 self.dragging_sheet_files = false;
+                self.sheet_files_drag_from = None;
                 self.prefs.save();
                 Task::none()
             }
