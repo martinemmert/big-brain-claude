@@ -55,6 +55,8 @@ pub enum MenuCommand {
     Paste,
     PasteScreenshot,
     Snooze(SnoozeFor),
+    /// Brain → Chrome-Profil je Konto: the account's id and the profile directory, none for the default browser.
+    ChromeProfile(String, Option<String>),
 }
 
 /// The ids of the items and what they send.
@@ -115,6 +117,7 @@ impl Brain {
             commands.palette(PaletteCommand::SetUpAccount, t("Neues Claude-Konto einrichten …", "Set up a new Claude account …"), "new-account").into(),
             commands.palette(PaletteCommand::SyncAccounts, t("Konten abgleichen …", "Sync accounts …"), "sync-accounts").into(),
             commands.palette(PaletteCommand::PairPhone, t("iPhone koppeln (Brain Link) …", "Pair a phone (Brain Link) …"), "pair-phone").into(),
+            self.chrome_profile_menu(commands),
             Entry::Separator,
             Item::standard(t("Brain ausblenden", "Hide Brain"), c"hide:").keys("h", CMD).into(),
             Item::standard(t("Andere ausblenden", "Hide Others"), c"hideOtherApplications:").keys("h", CMD | OPT).into(),
@@ -123,6 +126,37 @@ impl Brain {
             Item::standard(t("Brain beenden", "Quit Brain"), c"terminate:").keys("q", CMD).into(),
         ];
         Menu { title: "Brain".into(), role: Role::Plain, entries }
+    }
+
+    /// "Chrome-Profil je Konto": for each account the profiles of Chrome and the default browser.
+    /// The tick marks the one in effect: the stored profile, or the suggestion by name when nothing is stored.
+    fn chrome_profile_menu(&self, commands: &mut Commands) -> Entry {
+        let profiles = &self.chrome_profiles.1;
+        let config = crate::config::path();
+        let accounts = self
+            .model
+            .accounts
+            .iter()
+            .map(|account| {
+                let stored = crate::browser::stored_profile(&config, &account.id);
+                let current = crate::browser::profile_for(&config, &account.id, profiles);
+                let suggested = crate::browser::suggest_profile(&account.id, profiles).filter(|_| stored.is_none());
+                let mut entries: Vec<Entry> = profiles
+                    .iter()
+                    .map(|p| {
+                        let name = &p.name;
+                        let title = if suggested.is_some_and(|s| s.dir == p.dir) { tr!("{name} (Vorschlag)", "{name} (suggested)") } else { name.clone() };
+                        let message = Message::Menu(MenuCommand::ChromeProfile(account.id.clone(), Some(p.dir.clone())));
+                        commands.item(title, format!("chrome:{}:{}", account.id, p.dir), message).checked(current.as_deref() == Some(p.dir.as_str())).into()
+                    })
+                    .collect();
+                entries.push(Entry::Separator);
+                let message = Message::Menu(MenuCommand::ChromeProfile(account.id.clone(), None));
+                entries.push(commands.item(t("Standardbrowser", "Default browser"), format!("chrome:{}:", account.id), message).checked(current.is_none()).into());
+                submenu(account.id.clone(), entries)
+            })
+            .collect();
+        submenu(t("Chrome-Profil je Konto", "Chrome profile per account"), accounts)
     }
 
     fn file_menu(&self, commands: &mut Commands, session: Option<&Session>, project: Option<&str>, acts: bool) -> Menu {
@@ -367,6 +401,9 @@ impl Brain {
     /// list is the whole board: neither the search nor the account filter hides a decision.
     pub(super) fn refresh_menus(&mut self) {
         let now = now_ms();
+        if self.chrome_profiles.0.is_none_or(|read| read.elapsed() > std::time::Duration::from_secs(30)) {
+            self.chrome_profiles = (Some(std::time::Instant::now()), crate::browser::chrome_profiles());
+        }
         let (menus, commands) = {
             let groups = self.groups_for(now, "", None);
             let needing = self.needing_you(&groups);
@@ -399,6 +436,13 @@ impl Brain {
         match command {
             MenuCommand::Run(command) => self.run_palette(command),
             MenuCommand::Palette => self.open_palette(),
+            MenuCommand::ChromeProfile(account, dir) => {
+                if let Err(err) = crate::browser::set_profile(&crate::config::path(), &account, dir.as_deref()) {
+                    self.set_status(tr!("Konnte das Chrome-Profil nicht speichern: {err}", "Couldn't save the Chrome profile: {err}"));
+                }
+                self.refresh_menus();
+                Task::none()
+            }
             MenuCommand::Settings => {
                 self.open_settings();
                 Task::none()

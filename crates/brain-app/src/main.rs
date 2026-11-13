@@ -1,5 +1,6 @@
 mod app;
 mod appmenu;
+mod browser;
 mod chat_font;
 mod clipboard;
 mod companion;

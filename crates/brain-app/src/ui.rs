@@ -531,7 +531,7 @@ fn titlebar(brain: &Brain) -> Element<'_, Message> {
         bar = bar.push(
             button(text(tr!("Update {version}", "Update {version}")).size(12).color(DONE).font(UI))
                 .padding([3, 9])
-                .on_press(Message::OpenUrl(update.url.clone()))
+                .on_press(Message::OpenUrl(update.url.clone(), None))
                 .style(|_, _| button::Style { background: Some(Background::Color(alpha(DONE, 0x22))), border: iced::border::rounded(6), ..button::Style::default() }),
         );
     }

@@ -32,6 +32,8 @@ pub struct ArtifactCache {
 /// One artifact of the collected dialog, with the session it belongs to.
 #[derive(Debug, Clone)]
 pub struct ArtifactRow {
+    /// Id of the session's account: its Chrome profile opens the link.
+    pub account: String,
     pub project: String,
     pub session: String,
     pub artifact: Artifact,
@@ -125,7 +127,8 @@ impl Brain {
     /// A click on an artifact: the browser opens it.
     pub(super) fn open_artifact(&mut self, url: String) -> Task<Message> {
         self.artifacts_open = false;
-        self.update(Message::OpenUrl(url))
+        let account = self.selected_session().map(|s| s.key.account.clone());
+        self.update(Message::OpenUrl(url, account))
     }
 
     /// Opens the collected list and reads the sessions of the last 14 days in the background.
@@ -151,9 +154,9 @@ impl Brain {
         let read = off_thread(move || {
             sessions
                 .into_iter()
-                .filter_map(|(account, id, project, session)| Some((brain_core::transcript::find_transcript(&account, &id)?, project, session)))
-                .flat_map(|(transcript, project, session)| {
-                    artifacts::session_artifacts(&transcript).into_iter().map(move |artifact| ArtifactRow { project: project.clone(), session: session.clone(), artifact })
+                .filter_map(|(account, id, project, session)| Some((brain_core::transcript::find_transcript(&account, &id)?, account.id, project, session)))
+                .flat_map(|(transcript, account, project, session)| {
+                    artifacts::session_artifacts(&transcript).into_iter().map(move |artifact| ArtifactRow { account: account.clone(), project: project.clone(), session: session.clone(), artifact })
                 })
                 .collect::<Vec<_>>()
         });
@@ -173,8 +176,8 @@ impl Brain {
     }
 
     pub(super) fn artifact_pick(&mut self, index: usize) -> Task<Message> {
-        let url = arranged(&self.artifact_dialog.rows, &self.artifact_dialog.query).get(index).map(|r| r.artifact.url.clone());
-        url.map_or(Task::none(), |url| self.update(Message::OpenUrl(url)))
+        let row = arranged(&self.artifact_dialog.rows, &self.artifact_dialog.query).get(index).map(|r| (r.artifact.url.clone(), r.account.clone()));
+        row.map_or(Task::none(), |(url, account)| self.update(Message::OpenUrl(url, Some(account))))
     }
 
     pub(super) fn on_artifact_dialog_key(&mut self, named: Option<Named>) -> Task<Message> {
@@ -195,6 +198,7 @@ mod tests {
 
     fn row(project: &str, session: &str, title: &str, last_ms: i64) -> ArtifactRow {
         ArtifactRow {
+            account: "main".into(),
             project: project.into(),
             session: session.into(),
             artifact: Artifact { url: format!("https://claude.ai/artifact/{title}"), title: Some(title.into()), last_ms },

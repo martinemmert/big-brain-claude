@@ -356,6 +356,13 @@ Alles optional, in `~/.claude-brain/config.json`:
 | `language` | `"de"` oder `"en"` |
 | `chat_font`, `chat_font_size` | Schrift des Gesprächs, sonst die von iTerm |
 | `quick_terminal` | Tastenkürzel des Quick Terminals, z. B. `"cmd+shift+b"`; ohne Eintrag aus |
+| `chrome_profiles` | Chrome-Profil je Konto, z. B. `{"second": "Profile 9"}`; `""` = Standardbrowser. Setzt man am besten über Brain → „Chrome-Profil je Konto“ |
+
+**Links im Chrome-Profil des Kontos.** Jeder Link, den Brain für eine Session öffnet (⌘-Klick im Terminal,
+Artefakte), geht im Chrome-Profil ihres Kontos auf, damit z. B. ein Artefakt im richtigen Claude-Login
+erscheint. Gewählt wird unter Brain → „Chrome-Profil je Konto“; heißt ein Profil wie das Konto („Claude
+Second“ für `second`) und ist es das einzige, gilt es als „Vorschlag“, solange nichts gewählt ist. Ohne
+Profil oder ohne Chrome öffnet der Standardbrowser.
 
 **Vorlagen** liegen in `~/.claude-brain/templates/*.md`, mit Platzhaltern wie `{branch}`. Im Dialog
 „Neue Session“ öffnet `⌘E` die gewählte Vorlage im Editor, `⌘⇧N` legt eine neue an.

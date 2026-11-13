@@ -2,9 +2,12 @@
 
 use serde_json::Value;
 
+pub fn path() -> std::path::PathBuf {
+    brain_core::account::home_dir().join(".claude-brain/config.json")
+}
+
 fn read() -> Option<Value> {
-    let path = brain_core::account::home_dir().join(".claude-brain/config.json");
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+    serde_json::from_slice(&std::fs::read(path()).ok()?).ok()
 }
 
 /// The quick-terminal hotkey (`quick_terminal`), e.g. "cmd+shift+b". Off unless set: a global

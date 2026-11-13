@@ -372,7 +372,8 @@ pub enum Message {
     ToggleOlder,
     Do(Action),
     CleanupAge(usize),
-    OpenUrl(String),
+    /// A web link, opened in the Chrome profile of the account (its id) when it has one.
+    OpenUrl(String, Option<String>),
     ListScrolled(scrollable::Viewport),
     /// The sheet's list of files was scrolled; a folder in it is folded or opened.
     SheetListScrolled(scrollable::Viewport),
@@ -812,6 +813,8 @@ pub struct Brain {
     /// The menu bar of the app, and what its items stand for.
     appmenu: Option<crate::appmenu::AppMenu>,
     menu_commands: HashMap<String, Message>,
+    /// Chrome's profiles for the Chrome-profile menu, read again after half a minute.
+    chrome_profiles: (Option<Instant>, Vec<crate::browser::ChromeProfile>),
     /// ⌘O: the session search lists the ended sessions too.
     resume_search: bool,
     /// `None` shows every account.
@@ -1079,6 +1082,7 @@ impl Brain {
             target_epoch: 0,
             appmenu: crate::appmenu::AppMenu::new(),
             menu_commands: HashMap::new(),
+            chrome_profiles: (None, Vec::new()),
             resume_search: false,
             filter: None,
             selected: None,
@@ -1477,8 +1481,8 @@ impl Brain {
                 self.cleanup_age = index;
                 Task::none()
             }
-            Message::OpenUrl(url) => {
-                let _ = std::process::Command::new("open").arg(url).spawn();
+            Message::OpenUrl(url, account) => {
+                crate::browser::open_url(&url, account.as_deref());
                 Task::none()
             }
             Message::ListScrolled(viewport) => {
@@ -3097,7 +3101,9 @@ impl Brain {
             // Only web and mail links: the output may come from anywhere (a fetched page, a file),
             // and `open` would hand other schemes (file://, ssh:, app schemes) to whatever app.
             let lower = link.to_ascii_lowercase();
-            if lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:") {
+            if lower.starts_with("https://") || lower.starts_with("http://") {
+                crate::browser::open_url(link, Some(&key.account));
+            } else if lower.starts_with("mailto:") {
                 let _ = std::process::Command::new("open").arg(link).spawn();
             } else {
                 self.set_status(tr!("Nur Web-Links öffnet Brain: {link}", "Brain opens web links only: {link}"));
