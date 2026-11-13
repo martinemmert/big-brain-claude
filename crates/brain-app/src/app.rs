@@ -283,8 +283,11 @@ pub enum Message {
     ChangesLoaded(SessionKey, u64, u64, brain_core::changes::Changeset),
     /// The branches the title bar's select offers as target, read with the files.
     TargetsLoaded(SessionKey, Vec<String>),
-    /// A branch picked in the title bar's select.
+    /// A branch picked in the title bar's target field.
     PickTarget(String),
+    /// The target field got the keyboard (its list opens) or lost it.
+    TargetOpened,
+    TargetClosed,
     /// Open or close the list of files the selected session changed, under the title bar.
     ToggleChanges,
     CloseChanges,
@@ -755,6 +758,12 @@ pub struct Brain {
     /// Whether the selected session's terminal has the keyboard (drawn as a ring).
     /// The terminal that has the keyboard (Brain's shortcuts are off while one has it).
     pub focused_terminal: Option<SessionKey>,
+    /// The target field's options (the branches, the chosen target among them); rebuilt when they change.
+    pub target_options: iced::widget::combo_box::State<String>,
+    /// The target field has the keyboard: keys are its own, not the terminal's or the list's.
+    target_editing: bool,
+    /// The field just lost the keyboard; an esc that arrives next was meant for it.
+    target_closing: bool,
     /// ⌘T: a login shell per session, in its folder, below its Claude terminal.
     pub shells: HashMap<SessionKey, iced_term::Terminal>,
     pub shell_visible: bool,
@@ -926,6 +935,9 @@ impl Brain {
             terminals: HashMap::new(),
             next_terminal: 1,
             focused_terminal: None,
+            target_options: iced::widget::combo_box::State::new(Vec::new()),
+            target_editing: false,
+            target_closing: false,
             shells: HashMap::new(),
             shell_visible: false,
             focused_shell: None,
@@ -1277,6 +1289,7 @@ impl Brain {
                     let choices = kept.map(|c| c.choices).unwrap_or_default();
                     let root = set.merge.as_ref().map(|m| m.root.clone());
                     self.changes = Some(ChangesCache { key: key.clone(), len, loaded: Instant::now(), files: set.files, merge: set.merge, choices, reload: false });
+                    self.sync_target_options();
                     // The branches for the select, read along with the files.
                     if let Some(root) = root {
                         return Task::perform(
@@ -1292,9 +1305,23 @@ impl Brain {
                 if let Some(cache) = self.changes.as_mut().filter(|c| c.key == key) {
                     cache.choices = choices;
                 }
+                self.sync_target_options();
                 Task::none()
             }
             Message::PickTarget(target) => self.pick_target(target),
+            Message::TargetOpened => {
+                self.target_editing = true;
+                self.target_closing = false;
+                self.focused_terminal = None;
+                Task::none()
+            }
+            Message::TargetClosed => {
+                if self.target_editing {
+                    self.target_editing = false;
+                    self.target_closing = true;
+                }
+                Task::none()
+            }
             Message::OpenPreview(path) => self.open_preview(&path),
             Message::PreviewGo(index) => match self.changes_in_order().get(index).map(|c| c.path.clone()) {
                 Some(path) => self.open_preview(&path),
@@ -1525,6 +1552,7 @@ impl Brain {
                 self.update(Message::Started(account, result))
             }
             Message::MousePressed => {
+                self.target_closing = false;
                 // A new selection (or a click that ends one) replaces the held text.
                 self.held_copy = None;
                 // Clicks move the keyboard in or out of a terminal; ask each shown one.
@@ -2004,6 +2032,7 @@ impl Brain {
                     choices: crate::demo::target_choices(),
                     reload: false,
                 });
+                self.sync_target_options();
             }
             return Task::none();
         }
@@ -2069,6 +2098,10 @@ impl Brain {
         self.changes_open = false;
         self.preview = None;
         self.review_editor = None;
+        self.target_editing = false;
+        self.target_closing = false;
+        // The keyboard goes back to the session's terminal, if it has one.
+        let back = self.focus_terminal();
         let Some(cache) = self.changes.as_mut().filter(|c| Some(&c.key) == self.selected.as_ref()) else { return Task::none() };
         let Some(merge) = cache.merge.as_mut() else { return Task::none() };
         // A detached HEAD is remembered as `HEAD`, as `merge_request` asks for it.
@@ -2078,7 +2111,21 @@ impl Brain {
         merge.target = Some(target);
         cache.reload = true;
         self.target_epoch += 1;
-        Task::none()
+        back
+    }
+
+    /// The branches the target field offers: the list, with the chosen target in front if it
+    /// isn't in it. The field's state is built anew only when they change (typing in it would
+    /// start over otherwise).
+    fn sync_target_options(&mut self) {
+        let Some(cache) = self.selected_cache() else { return };
+        let mut options = cache.choices.clone();
+        if let Some(target) = cache.merge.as_ref().and_then(|m| m.target.as_ref()).filter(|t| !options.contains(t)) {
+            options.insert(0, target.clone());
+        }
+        if self.target_options.options() != options.as_slice() {
+            self.target_options = iced::widget::combo_box::State::new(options);
+        }
     }
 
     /// Writes the selected session's conversation to `~/.claude-brain/exports/` as Markdown.
@@ -3089,6 +3136,18 @@ impl Brain {
             _ => None,
         };
         let cmd = modifiers.command();
+        // The target field in the title bar has the keys while it is open: esc closes it and the
+        // keyboard goes back to the terminal; the rest is the field's.
+        if self.target_editing || self.target_closing {
+            if named == Some(Named::Escape) && captured {
+                self.target_editing = false;
+                self.target_closing = false;
+                return self.focus_terminal();
+            }
+            if self.target_editing && captured {
+                return Task::none();
+            }
+        }
         let menu_open = self.context_menu.take().is_some() | self.project_menu.take().is_some();
         if menu_open && named == Some(Named::Escape) {
             return Task::none();

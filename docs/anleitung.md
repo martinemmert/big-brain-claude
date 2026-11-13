@@ -134,8 +134,9 @@ hat:
 - Das **Ziel** schlägt Brain vor: der Standard-Branch des Repos (`origin/HEAD`, sonst `main`, sonst
   `master`); steht der Branch selbst darauf, `origin/<branch>` (die noch nicht gepushten Commits),
   ohne Remote nur, was nicht committet ist. In der Titelleiste steht der Branch als Text, dahinter „→“ und ein
-  **Auswahlfeld** mit den lokalen und Remote-Branches („Ziel wählen“, solange keins gesetzt ist);
-  ein neues Ziel lädt die Dateien und Zähler neu und schließt die offene Liste und das Blatt. Die
+  **Auswahlfeld** mit den lokalen und Remote-Branches („Ziel wählen“, solange keins gesetzt ist).
+  Ein Klick öffnet die Liste, Tippen sucht darin, ↑/↓ und ⏎ wählen, esc schließt; danach hat
+  das Terminal der Session die Tasten wieder. Ein neues Ziel lädt die Dateien und Zähler neu und schließt die offene Liste und das Blatt. Die
   Wahl gilt für dieses Repo und diesen Branch, nicht für die Session. Der Knopf daneben („4 Dateien
   +67 −3“) öffnet die Liste; ist nichts geändert, steht dort „keine Änderungen“. Ohne Git (oder ohne Commit) fällt Brain auf die Dateien aus dem Transkript zurück,
   ohne Diff-Basis. Brain liest nur (`merge-base`, `diff`, `status`, `rev-parse`, `for-each-ref`),

@@ -3,7 +3,7 @@
 use brain_core::changes::SessionChange;
 use brain_core::later;
 use brain_core::state::{Ask, Phase, Session};
-use iced::widget::{button, column, container, mouse_area, pick_list, row, scrollable, stack, text, text_input, Space};
+use iced::widget::{button, column, combo_box, container, mouse_area, row, scrollable, stack, text, text_input, Space};
 use iced::{Background, Border, Color, Element, Fill, Length, Padding};
 
 use crate::companion::Command;
@@ -609,38 +609,37 @@ fn changes_button<'a>(brain: &Brain, cache: &app::ChangesCache) -> Element<'a, M
     container(segment).padding(1).style(|_| boxed(INK, LINE, 8.0)).into()
 }
 
-/// The select's width: room for most branch names.
+/// The field's width: room for most branch names.
 const TARGET_SELECT_WIDTH: f32 = 170.0;
 
-/// "feature/x → [main ⌄]": the branch as plain text, then a select for the target. Picking one
-/// reads the merge request anew. Without git there is none.
-fn branch_target<'a>(brain: &Brain, cache: &app::ChangesCache) -> Option<Element<'a, Message>> {
+/// "feature/x → [main ⌄]": the branch as plain text, then a field for the target: a click opens
+/// the list of branches, typing narrows it, the arrows and ⏎ choose. Choosing reads the merge
+/// request anew. Without git there is none.
+fn branch_target<'a>(brain: &'a Brain, cache: &app::ChangesCache) -> Option<Element<'a, Message>> {
     let merge = cache.merge.as_ref()?;
     let rest = (TARGET_SELECT_WIDTH / 6.6) as usize + 10;
     let branch = crate::format::clip_branch(&merge.branch, branch_room(brain, rest));
-    let mut options = cache.choices.clone();
-    if let Some(target) = merge.target.as_ref().filter(|target| !options.contains(target)) {
-        options.insert(0, target.clone());
-    }
-    let select = pick_list(options, merge.target.clone(), Message::PickTarget)
-        .placeholder(t("Ziel wählen", "Choose target"))
+    let field = combo_box(&brain.target_options, &t("Ziel wählen", "Choose target"), merge.target.as_ref(), Message::PickTarget)
+        .on_open(Message::TargetOpened)
+        .on_close(Message::TargetClosed)
         .width(TARGET_SELECT_WIDTH)
-        .padding([5, 8])
-        .text_size(12)
+        .padding(Padding { top: 5.0, right: 24.0, bottom: 5.0, left: 8.0 })
+        .size(12)
         .font(UI)
-        .handle(pick_list::Handle::Arrow { size: Some(iced::Pixels(10.0)) })
-        .style(|_, status| {
+        .input_style(|_, status| {
             let (background, border) = match status {
-                pick_list::Status::Active => (INK, LINE),
-                pick_list::Status::Hovered => (RAISED, LINE_STRONG),
-                pick_list::Status::Opened { .. } => (RAISED, alpha(WORKING, 0x99)),
+                text_input::Status::Active => (INK, LINE),
+                text_input::Status::Hovered => (RAISED, LINE_STRONG),
+                text_input::Status::Focused { .. } => (RAISED, alpha(WORKING, 0x99)),
+                text_input::Status::Disabled => (INK, LINE),
             };
-            pick_list::Style {
-                text_color: TEXT_STRONG,
-                placeholder_color: TEXT_FAINT,
-                handle_color: TEXT_MUTED,
+            text_input::Style {
                 background: Background::Color(background),
                 border: Border { color: border, width: 1.0, radius: 7.0.into() },
+                icon: TEXT_MUTED,
+                placeholder: TEXT_FAINT,
+                value: TEXT_STRONG,
+                selection: alpha(WORKING, 0x55),
             }
         })
         .menu_style(|_| iced::overlay::menu::Style {
@@ -651,11 +650,19 @@ fn branch_target<'a>(brain: &Brain, cache: &app::ChangesCache) -> Option<Element
             selected_background: Background::Color(LINE_STRONG),
             shadow: iced::Shadow { color: Color::from_rgba8(0, 0, 0, 0.6), offset: iced::Vector::new(0.0, 8.0), blur_radius: 24.0 },
         });
+    // The chevron lies over the field's right end and lets clicks through.
+    let chevron = container(style::chevron(false, 10.0, TEXT_MUTED))
+        .width(Fill)
+        .height(Fill)
+        .padding(Padding { right: 8.0, ..Padding::ZERO })
+        .align_x(iced::alignment::Horizontal::Right)
+        .align_y(iced::alignment::Vertical::Center);
+    let field = stack![field, chevron].width(TARGET_SELECT_WIDTH);
     Some(
         row![
             text(branch).size(12).color(TEXT_STRONG).font(style::semibold()).wrapping(text::Wrapping::None),
             text("→").size(12).color(TEXT_MUTED).font(UI),
-            select,
+            field,
         ]
         .spacing(6)
         .align_y(iced::Center)
