@@ -481,7 +481,7 @@ pub enum Message {
     FreshEdit(iced::widget::text_editor::Action),
     FreshSubmit,
     /// The new session of "Clear …" started (or not): the old one (key) ends.
-    Cleared(SessionKey, String, Result<String, String>),
+    Cleared(SessionKey, String, String, Option<String>, Result<String, String>),
     MoveProjectQuery(String),
     MoveProjectPick(usize),
     OpenGarden,
@@ -885,6 +885,9 @@ pub struct Brain {
     /// A background session Brain just started or took over: select and attach it once
     /// `claude agents` lists it (account, short id).
     pending_attach: Option<(String, String)>,
+    /// A session started by "Clear …": once it is ready, Brain renames it like the old one and
+    /// feeds the prompt.
+    pending_fresh: Option<fresh::PendingFresh>,
     /// An iTerm session being moved into Brain: its `/exit` was sent; once the process ended it
     /// continues in the background (`claude --bg --resume`).
     takeover: Option<SessionKey>,
@@ -1071,6 +1074,7 @@ impl Brain {
             file_hover: false,
             reader: None,
             pending_attach: None,
+            pending_fresh: None,
             takeover: None,
             synced_selection: None,
             dragging_sidebar: false,
@@ -1890,7 +1894,7 @@ impl Brain {
                 Task::none()
             }
             Message::FreshSubmit => self.submit_fresh(),
-            Message::Cleared(old, account, result) => self.finish_fresh(old, account, result),
+            Message::Cleared(old, account, name, prompt, result) => self.finish_fresh(old, account, name, prompt, result),
             Message::MoveProjectPick(index) => self.move_project_pick(index),
             Message::AdoptLater => {
                 self.adopt_later();
@@ -2096,6 +2100,7 @@ impl Brain {
         tasks.push(self.refresh_open_diff());
         tasks.push(self.continue_takeover());
         tasks.push(self.continue_restart());
+        self.continue_fresh();
         let shown_for = Duration::from_secs(if self.status_action.is_some() { 10 } else { 6 });
         if self.status.as_ref().is_some_and(|(_, at)| at.elapsed() > shown_for) {
             self.status = None;
