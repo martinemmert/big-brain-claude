@@ -330,6 +330,8 @@ impl Brain {
             Item::standard(t("Im Dock ablegen", "Minimize"), c"performMiniaturize:").keys("m", CMD).into(),
             Item::standard(t("Zoomen", "Zoom"), c"performZoom:").into(),
             Entry::Separator,
+            commands.palette(PaletteCommand::Artifacts, t("Artefakte …", "Artifacts …"), "artifacts").into(),
+            Entry::Separator,
         ];
         let keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
         for (key, (session_key, title)) in keys.into_iter().zip(needing) {

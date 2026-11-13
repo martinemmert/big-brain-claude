@@ -45,6 +45,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::MoveProject => move_project(brain),
         Mode::Fresh => fresh(brain),
         Mode::Worktrees => worktrees(brain),
+        Mode::Artifacts => artifact_dialog(brain),
         Mode::WorktreeAsk => worktree_ask(brain),
         Mode::Relaunch => relaunch(brain),
         Mode::NewSession => new_session(brain),
@@ -91,6 +92,8 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
     // So does the list of changed files; never both at once.
     let changes: Element<'_, Message> = if brain.changes_open {
         changes_popover_layer(brain)
+    } else if brain.artifacts_open {
+        artifacts_popover_layer(brain, now)
     } else {
         Space::new().into()
     };
@@ -516,6 +519,10 @@ fn titlebar(brain: &Brain) -> Element<'_, Message> {
                 }
                 bar = bar.push(changes_button(brain, cache));
             }
+            let published = brain.selected_artifacts().len();
+            if published > 0 {
+                bar = bar.push(style::text_button(tr!("Artefakte · {published}", "Artifacts · {published}"), brain.artifacts_open, Message::ToggleArtifacts));
+            }
         }
         None => bar = bar.push(Space::new().width(Fill)),
     }
@@ -816,6 +823,84 @@ fn changes_popover_layer(brain: &Brain) -> Element<'_, Message> {
     };
     let card = column![top, body, container(tip).padding([4, 8])].spacing(4);
     popover_card(container(card).max_height(CHANGE_ROW_H * 12.0 + 70.0), 460.0, brain)
+}
+
+/// The selected session's artifacts under the title bar: title, when, short URL. A click opens
+/// one in the browser.
+fn artifacts_popover_layer(brain: &Brain, now: i64) -> Element<'_, Message> {
+    let list = brain.selected_artifacts();
+    let count = list.len();
+    let head = text(tr!("{count} Artefakte", "{count} artifacts")).size(12).color(TEXT_MUTED).font(style::semibold());
+    let rows = list.iter().map(|artifact| {
+        let title = artifact.title.clone().unwrap_or_else(|| t("Ohne Titel", "Untitled").to_string());
+        let when = if artifact.last_ms > 0 { ago_phrase(artifact.last_ms, now) } else { String::new() };
+        let line = column![
+            row![text(clip(&title, 48)).size(12.5).color(TEXT_STRONG).font(UI).wrapping(text::Wrapping::None), Space::new().width(Fill), text(when).size(11).color(TEXT_MUTED).font(UI)]
+                .spacing(8),
+            text(brain_core::artifacts::short_url(&artifact.url).to_string()).size(11).color(TEXT_FAINT).font(MONO).wrapping(text::Wrapping::None),
+        ]
+        .spacing(2);
+        row_button(container(line).padding([6, 8]), Message::OpenArtifact(artifact.url.clone()))
+    });
+    let card = column![container(head).padding([6, 8]), scrollable(column(rows.collect::<Vec<_>>()).width(Fill)).style(scrollbar)].spacing(4);
+    popover_card(container(card).max_height(CHANGE_ROW_H * 12.0 + 70.0), 420.0, brain)
+}
+
+/// "Artefakte …": what the sessions of the last 14 days published, by project, newest first; a
+/// field filters by title and session; a click or ⏎ opens one in the browser.
+fn artifact_dialog(brain: &Brain) -> Element<'_, Message> {
+    let dialog = &brain.artifact_dialog;
+    let now = now_ms();
+    let field = text_input(t("Nach Titel oder Session filtern", "Filter by title or session"), &dialog.query)
+        .id(app::ARTIFACT_SEARCH)
+        .on_input(Message::ArtifactQuery)
+        .size(13)
+        .font(UI)
+        .padding([9, 12])
+        .style(field_style);
+    let found = app::artifacts::arranged(&dialog.rows, &dialog.query);
+    let mut lines: Vec<Element<'_, Message>> = Vec::new();
+    let mut project: Option<&str> = None;
+    for (i, row) in found.iter().enumerate() {
+        if project != Some(row.project.as_str()) {
+            project = Some(row.project.as_str());
+            lines.push(container(text(clip(&row.project, 60)).size(12).color(TEXT_MUTED).font(style::semibold())).padding(Padding { top: if i == 0 { 0.0 } else { 12.0 }, bottom: 4.0, left: 10.0, ..Padding::ZERO }).into());
+        }
+        let active = i == dialog.index;
+        let title = row.artifact.title.clone().unwrap_or_else(|| t("Ohne Titel", "Untitled").to_string());
+        let when = if row.artifact.last_ms > 0 { ago_phrase(row.artifact.last_ms, now) } else { String::new() };
+        let line = column![
+            row![
+                text(clip(&title, 56)).size(13).color(if active { TEXT_STRONG } else { TEXT }).font(UI).wrapping(text::Wrapping::None),
+                Space::new().width(Fill),
+                text(when).size(11.5).color(TEXT_MUTED).font(UI),
+            ]
+            .spacing(8),
+            text(format!("{} · {}", clip(&row.session, 40), brain_core::artifacts::short_url(&row.artifact.url))).size(11).color(TEXT_FAINT).font(MONO).wrapping(text::Wrapping::None),
+        ]
+        .spacing(2);
+        lines.push(
+            button(line)
+                .width(Fill)
+                .padding([7, 10])
+                .on_press(Message::ArtifactPick(i))
+                .style(style::entry_style(active, Color::TRANSPARENT, RAISED, Color::TRANSPARENT, 6.0))
+                .into(),
+        );
+    }
+    if lines.is_empty() {
+        let none = if dialog.loading { t("Liest die Sessions …", "Reading the sessions …") } else { t("Keine Artefakte.", "No artifacts.") };
+        lines.push(text(none).size(12.5).color(TEXT_MUTED).font(UI).into());
+    }
+    column![
+        dialog_title(t("Artefakte der letzten 14 Tage", "Artifacts of the last 14 days")),
+        field,
+        scrollable(column(lines).spacing(2)).height(Fill).style(scrollbar),
+        container(text(t("⏎ öffnen · ↑↓ · esc", "⏎ open · ↑↓ · esc")).size(11.5).color(TEXT_FAINT).font(UI)).padding(Padding { bottom: 16.0, ..Padding::ZERO }),
+    ]
+    .spacing(14)
+    .padding(Padding { top: 24.0, right: 28.0, bottom: 0.0, left: 28.0 })
+    .into()
 }
 
 /// The sheet's head: which branch goes where.

@@ -4,6 +4,7 @@
 pub mod account;
 pub mod account_setup;
 pub mod agents;
+pub mod artifacts;
 pub mod brief;
 pub mod changes;
 pub mod commands;

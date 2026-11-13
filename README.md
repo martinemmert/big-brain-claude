@@ -62,6 +62,12 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   prune`; for *check* ones Brain can ask the session. Ending, clearing or deleting a session that
   works in a worktree first offers to ask it whether it still needs the worktree, and shows its
   answer before it goes on.
+- **Artifacts.** What a session published with Claude Code's Artifact tool (also through its subagents) shows as
+  *Artifacts · n* in the title bar, right of the changes button: a click lists title, time and short
+  URL, a click on one opens it in the browser. *Window → Artifacts …* (also the palette) collects
+  those of all sessions of the last 14 days by project, newest first, with a field that filters by
+  title and session (`⏎` opens the chosen one). Only publications count; a link that is just mentioned
+  or an artifact that was only opened does not.
 - **Review comments.** In a changed file's Quick Look a `+` in front of a diff line (or the button
   for the whole file) opens a field; `⌘⏎` saves the comment as a draft. `Send review to Claude`
   hands all drafts to the session as one message, at once when it waits for a new prompt, else

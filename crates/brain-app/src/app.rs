@@ -13,10 +13,12 @@ use iced::{window, Subscription, Task};
 
 mod account;
 mod adopt;
+pub(crate) mod artifacts;
 mod fresh;
 mod worktrees;
 pub use fresh::FRESH_PROMPT;
 pub use worktrees::{Intent, WorktreeAsk, WorktreeRow};
+pub use artifacts::ArtifactRow;
 pub(crate) mod move_project;
 mod tree_drag;
 pub use tree_drag::{DragTarget, Grab, TreeDrag};
@@ -65,6 +67,7 @@ pub const SHEET_FILES: &str = "sheet-files";
 pub const FIND: &str = "find";
 pub const PALETTE: &str = "palette";
 pub const MOVE_PROJECT: &str = "move-project";
+pub const ARTIFACT_SEARCH: &str = "artifact-search";
 pub const COMPOSER: &str = "composer";
 
 /// Where typed keys go.
@@ -98,6 +101,8 @@ pub enum Mode {
     /// Where the selected session goes: a project to choose or name.
     MoveProject,
     Fresh,
+    /// The artifacts of the sessions of the last 14 days.
+    Artifacts,
     /// The worktrees of the projects, and which can go.
     Worktrees,
     /// A session in a worktree is asked about it before it ends, clears or is deleted.
@@ -173,6 +178,8 @@ pub enum PaletteCommand {
     AdoptProjects,
     /// The worktrees of the projects, to check and clean up.
     Worktrees,
+    /// The artifacts of the last 14 days.
+    Artifacts,
     /// Today's log in the editor.
     OpenLog,
     /// The selected session into this project, or back into its own (`None`).
@@ -377,6 +384,15 @@ pub enum Message {
     /// Open or close the list of files the selected session changed, under the title bar.
     ToggleChanges,
     CloseChanges,
+    /// The title bar's artifacts popover: open or close; an artifact clicked; what the selected
+    /// session's transcript says (key, size, list).
+    ToggleArtifacts,
+    OpenArtifact(String),
+    ArtifactsLoaded(SessionKey, u64, Vec<brain_core::artifacts::Artifact>),
+    /// The collected dialog: what it read, what is typed, a line picked.
+    ArtifactDialogRead(u64, Vec<ArtifactRow>),
+    ArtifactQuery(String),
+    ArtifactPick(usize),
     /// A changed file clicked in that list: it opens on the Quick Look sheet.
     OpenPreview(String),
     /// The sheet pages to the file at this place in the list.
@@ -813,6 +829,11 @@ pub struct Brain {
     /// The files the selected session changed, for the tree.
     pub changes: Option<ChangesCache>,
     changes_loading: bool,
+    /// The artifacts the selected session published, for the title bar's button.
+    pub artifacts: Option<artifacts::ArtifactCache>,
+    artifacts_loading: bool,
+    pub artifacts_open: bool,
+    pub artifact_dialog: artifacts::ArtifactDialog,
     /// The diff card over the terminal; while it is open the terminal gets no keys.
     pub preview: Option<Preview>,
     /// The review comments of each session, drafts and sent.
@@ -1025,6 +1046,10 @@ impl Brain {
             menubar: MenuBar::new(),
             status_open: false,
             changes_open: false,
+            artifacts: None,
+            artifacts_loading: false,
+            artifacts_open: false,
+            artifact_dialog: artifacts::ArtifactDialog::default(),
             target_epoch: 0,
             appmenu: crate::appmenu::AppMenu::new(),
             menu_commands: HashMap::new(),
@@ -1411,6 +1436,7 @@ impl Brain {
             }
             Message::CloseChanges => {
                 self.changes_open = false;
+                self.artifacts_open = false;
                 Task::none()
             }
             Message::PopupClicked => Task::none(),
@@ -1524,6 +1550,21 @@ impl Brain {
                 Task::none()
             }
             Message::ToggleChanges => self.toggle_changes_popover(),
+            Message::ToggleArtifacts => self.toggle_artifacts_popover(),
+            Message::OpenArtifact(url) => self.open_artifact(url),
+            Message::ArtifactsLoaded(key, len, list) => {
+                self.artifacts_loaded(key, len, list);
+                Task::none()
+            }
+            Message::ArtifactDialogRead(scan, rows) => {
+                self.artifact_dialog_read(scan, rows);
+                Task::none()
+            }
+            Message::ArtifactQuery(text) => {
+                self.artifact_query(text);
+                Task::none()
+            }
+            Message::ArtifactPick(index) => self.artifact_pick(index),
             Message::TargetsLoaded(key, choices) => {
                 if let Some(cache) = self.changes.as_mut().filter(|c| c.key == key) {
                     cache.choices = choices;
@@ -2217,6 +2258,9 @@ impl Brain {
         if self.changes_open && !self.has_changes_button() {
             self.changes_open = false;
         }
+        if self.artifacts_open && self.selected_artifacts().is_empty() {
+            self.artifacts_open = false;
+        }
         self.sync_conversation();
         let attach = self.sync_terminal();
         self.sync_shown_terminal();
@@ -2236,7 +2280,8 @@ impl Brain {
         let history = self.load_history();
         let brief = self.load_brief();
         let changes = self.load_changes();
-        Task::batch([attach, host, branches, history, brief, changes])
+        let artifacts = self.load_artifacts();
+        Task::batch([attach, host, branches, history, brief, changes, artifacts])
     }
 
     /// Background sessions open in Brain's terminal: when one gets selected (or Brain started it
@@ -2404,6 +2449,7 @@ impl Brain {
             return Task::none();
         }
         self.changes_open = true;
+        self.artifacts_open = false;
         self.status_open = false;
         self.keys_leave_terminal()
     }
@@ -2632,6 +2678,7 @@ impl Brain {
         all.push((t("Alle Tasten", "All keys").to_string(), "⌘?", PaletteCommand::Keys));
         all.push((t("Projekte übernehmen", "Adopt projects").to_string(), "", PaletteCommand::AdoptProjects));
         all.push((t("Worktrees prüfen …", "Check worktrees …").to_string(), "", PaletteCommand::Worktrees));
+        all.push((t("Artefakte …", "Artifacts …").to_string(), "", PaletteCommand::Artifacts));
         all.push((t("Gärtner: kaputte Sessions finden und beenden", "Gardener: find and end broken sessions").to_string(), "", PaletteCommand::Garden));
         all.push((t("Log öffnen (Meldungen und Fehler)", "Open the log (messages and errors)").to_string(), "", PaletteCommand::OpenLog));
         all.push((t("Änderungen der Session zeigen", "Show the session's changes").to_string(), "", PaletteCommand::ToggleChanges));
@@ -2719,6 +2766,7 @@ impl Brain {
             PaletteCommand::SyncAccounts => self.open_sync(),
             PaletteCommand::Garden => self.open_garden(),
             PaletteCommand::Worktrees => self.open_worktrees(None),
+            PaletteCommand::Artifacts => self.open_artifact_dialog(),
             PaletteCommand::AdoptProjects => {
                 self.open_adopt();
                 Task::none()
@@ -3515,9 +3563,10 @@ impl Brain {
             self.status_open = false;
             return Task::none();
         }
-        // The same for the list of changed files.
-        if named == Some(Named::Escape) && self.changes_open {
+        // The same for the list of changed files and the artifacts.
+        if named == Some(Named::Escape) && (self.changes_open || self.artifacts_open) {
             self.changes_open = false;
+            self.artifacts_open = false;
             return Task::none();
         }
         // Space in the list of changes shows the newest file.
@@ -3671,6 +3720,7 @@ impl Brain {
                 return Task::none();
             }
             Mode::Worktrees => return Task::none(),
+            Mode::Artifacts => return self.on_artifact_dialog_key(named),
             Mode::MoveProject => return self.on_move_project_key(named),
             Mode::Keys => {
                 if text.as_deref() == Some("?") {
@@ -3771,7 +3821,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden | Mode::Adopt | Mode::MoveProject | Mode::Fresh | Mode::Worktrees | Mode::WorktreeAsk => {
+            Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden | Mode::Adopt | Mode::MoveProject | Mode::Fresh | Mode::Worktrees | Mode::WorktreeAsk | Mode::Artifacts => {
                 self.mode = Mode::Normal;
                 unfocus()
             }
