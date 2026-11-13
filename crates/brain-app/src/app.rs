@@ -13,6 +13,8 @@ use iced::{window, Subscription, Task};
 
 mod account;
 mod adopt;
+mod fresh;
+pub use fresh::FRESH_PROMPT;
 pub(crate) mod move_project;
 mod tree_drag;
 pub use tree_drag::{DragTarget, Grab, TreeDrag};
@@ -93,6 +95,7 @@ pub enum Mode {
     Adopt,
     /// Where the selected session goes: a project to choose or name.
     MoveProject,
+    Fresh,
     /// A short question before something that can't be taken back.
     Confirm,
 }
@@ -232,6 +235,8 @@ pub enum Action {
     RestartWith,
     /// The same conversation in a fresh process: plugins and Brain's mod load anew.
     Reload,
+    /// "Clear …": the dialog for a fresh conversation in a new session.
+    Fresh,
     End,
     Hide,
     Trash,
@@ -473,6 +478,10 @@ pub enum Message {
     AdoptConfirm,
     AdoptLater,
     /// The move dialog: what is typed, and a line picked.
+    FreshEdit(iced::widget::text_editor::Action),
+    FreshSubmit,
+    /// The new session of "Clear …" started (or not): the old one (key) ends.
+    Cleared(SessionKey, String, Result<String, String>),
     MoveProjectQuery(String),
     MoveProjectPick(usize),
     OpenGarden,
@@ -908,6 +917,9 @@ pub struct Brain {
     pub adopt_dismissed: bool,
     /// The "into another project" dialog.
     pub move_project: move_project::MoveDialog,
+    pub fresh: fresh::FreshDialog,
+    /// The project the old session had by hand, for the session just started in its place.
+    pending_project: Option<(String, String, String)>,
     pub garden_count: usize,
     /// Sessions whose terminal closed right after attaching, with its last lines.
     unreachable: HashMap<SessionKey, Vec<String>>,
@@ -1082,6 +1094,8 @@ impl Brain {
             adopt: adopt::AdoptDialog::default(),
             adopt_dismissed: false,
             move_project: move_project::MoveDialog::default(),
+            fresh: fresh::FreshDialog::default(),
+            pending_project: None,
             garden_count: 0,
             unreachable: HashMap::new(),
             terminal_started: HashMap::new(),
@@ -1871,6 +1885,12 @@ impl Brain {
                 self.move_project_query(text);
                 Task::none()
             }
+            Message::FreshEdit(action) => {
+                self.fresh.prompt.perform(action);
+                Task::none()
+            }
+            Message::FreshSubmit => self.submit_fresh(),
+            Message::Cleared(old, account, result) => self.finish_fresh(old, account, result),
             Message::MoveProjectPick(index) => self.move_project_pick(index),
             Message::AdoptLater => {
                 self.adopt_later();
@@ -2160,6 +2180,10 @@ impl Brain {
             });
             if let Some(key) = found.cloned() {
                 self.pending_attach = None;
+                if let Some((_, _, project)) = self.pending_project.take().filter(|(a, i, _)| *a == account && *i == id) {
+                    self.prefs.set_project(&key, Some(project));
+                    self.prefs.save();
+                }
                 just_started = true;
                 self.selected = Some(key);
                 self.filter = None;
@@ -2521,6 +2545,7 @@ impl Brain {
             }
             all.push((t("In ein anderes Konto oder forken …", "Into another account or fork …").to_string(), "", PaletteCommand::Act(Action::Relaunch)));
             all.push((t("Neu laden (gleiches Gespräch, Plugins frisch)", "Reload (same conversation, fresh plugins)").to_string(), "", PaletteCommand::Act(Action::Reload)));
+            all.push((t("Clear … (frisch beginnen, Plugins neu)", "Clear … (start fresh, plugins anew)").to_string(), "", PaletteCommand::Act(Action::Fresh)));
             all.push((t("Neu starten mit … (z. B. --chrome)", "Restart with … (e.g. --chrome)").to_string(), "", PaletteCommand::Act(Action::RestartWith)));
             all.push((t("Beenden / Hintergrund-Session stoppen", "End / stop the background session").to_string(), "⌥⌘X", PaletteCommand::Act(Action::End)));
             all.push((t("Ausblenden", "Hide").to_string(), "⌫", PaletteCommand::Act(Action::Hide)));
@@ -3504,6 +3529,12 @@ impl Brain {
             }
             return Task::none();
         }
+        if self.mode == Mode::Fresh {
+            if cmd && named == Some(Named::Enter) {
+                return self.submit_fresh();
+            }
+            return Task::none();
+        }
         if self.mode == Mode::Composer {
             if cmd && named == Some(Named::Enter) {
                 return self.send_composer();
@@ -3661,7 +3692,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden | Mode::Adopt | Mode::MoveProject => {
+            Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden | Mode::Adopt | Mode::MoveProject | Mode::Fresh => {
                 self.mode = Mode::Normal;
                 unfocus()
             }
@@ -3858,6 +3889,7 @@ impl Brain {
                     }
                 };
             }
+            Action::Fresh => return self.open_fresh(),
             Action::MoveTo(index) => return self.move_selected(index, Vec::new()),
             Action::ForkTo(index) => return self.fork_selected(index, Vec::new()),
             Action::End => return self.end_selected(),

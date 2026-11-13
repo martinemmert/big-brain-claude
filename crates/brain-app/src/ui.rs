@@ -42,6 +42,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::Garden => garden(brain),
         Mode::Adopt => adopt(brain),
         Mode::MoveProject => move_project(brain),
+        Mode::Fresh => fresh(brain),
         Mode::Relaunch => relaunch(brain),
         Mode::NewSession => new_session(brain),
         _ => detail(brain),
@@ -314,6 +315,7 @@ fn menu_lines(brain: &Brain, s: &Session) -> Vec<MenuLine> {
     // The same conversation in a fresh process (plugins and Brain's mod load anew), e.g. after `/clear`.
     if !ended {
         keep.push((t("Neu laden", "Reload").to_string(), "⇧⌘R", Action::Reload, false));
+        keep.push((t("Clear …", "Clear …").to_string(), "", Action::Fresh, false));
     }
     keep.push((t("In ein anderes Konto oder forken …", "Into another account or fork …").to_string(), "", Action::Relaunch, false));
     keep.push((t("In ein anderes Projekt …", "Into another project …").to_string(), "", Action::MoveToProject, false));
@@ -2707,6 +2709,48 @@ fn later(brain: &Brain) -> Element<'_, Message> {
 /// "Into another account or fork …" (`A`, `F`): the account (each with how much of its limits is
 /// used, so the one with room is easy to spot), whether the original keeps running, flags for the
 /// new start, and in one sentence what ⏎ does with that. "Restart with …": only the flags.
+/// "Clear …": what happens, and an optional prompt for the new conversation.
+fn fresh(brain: &Brain) -> Element<'_, Message> {
+    let editor = iced::widget::text_editor(&brain.fresh.prompt)
+        .id(app::FRESH_PROMPT)
+        .on_action(Message::FreshEdit)
+        .placeholder(t("Nächster Prompt (optional)", "Next prompt (optional)"))
+        .height(160)
+        .padding(12)
+        .size(14)
+        .font(UI)
+        .style(|_, _| iced::widget::text_editor::Style {
+            background: Background::Color(INK),
+            border: Border { color: LINE_STRONG, width: 1.0, radius: 8.0.into() },
+            placeholder: TEXT_FAINT,
+            value: TEXT,
+            selection: alpha(WORKING, 0x55),
+        });
+    column![
+        dialog_title(brain.fresh_title()),
+        text(t(
+            "Das Gespräch wird geleert, Plugins und Brains Mod laden neu. Das bisherige Gespräch bleibt als beendete Session erhalten.",
+            "The conversation is cleared, plugins and Brain's mod load anew. The conversation so far stays as an ended session."
+        ))
+        .size(13)
+        .line_height(1.5)
+        .color(TEXT)
+        .font(UI),
+        text(t("Nächster Prompt (optional)", "Next prompt (optional)")).size(12).color(TEXT_MUTED).font(style::semibold()),
+        editor,
+        row![
+            Space::new().width(Fill),
+            action(t("Abbrechen", "Cancel"), "esc", false, Some(Message::Close)),
+            action(t("Frisch beginnen", "Start fresh"), "⌘⏎", true, Some(Message::FreshSubmit)),
+        ]
+        .spacing(10),
+    ]
+    .spacing(12)
+    .max_width(640)
+    .padding(Padding { top: 24.0, right: 28.0, bottom: 20.0, left: 28.0 })
+    .into()
+}
+
 fn relaunch(brain: &Brain) -> Element<'_, Message> {
     let Some(session) = brain.selected_session() else { return Space::new().into() };
     let name = session.display_name();

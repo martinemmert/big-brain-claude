@@ -242,6 +242,7 @@ hat:
 | `⌘L` | für später: Aufgaben aus `/later`, `⏎` startet eine als neue Session, `⌫` hakt ab |
 | Menü *In anderes Konto*, *Forken in* | **in ein anderes Konto oder forken …**: ein Dialog für Konto (`1`, `2`, … – mit dem Verbrauch jedes Kontos), ob das Original weiterläuft (`⇥`), und Flags. Er sagt, was `⏎` tut: anderes Konto → *umziehen* (z. B. wenn ein Limit voll ist); Original läuft weiter → *forken*. Neu starten mit Flags (`--chrome`, `--model opus`) geht über Menü *Session* oder ⌘K → „Neu starten mit …“, nach Brain holen mit `⌥⌘O` |
 | Menü *Session → Neu starten mit …* | derselbe Dialog, vorbelegt mit Flags |
+| Rechtsklick → *Clear …*, Menü *Session → Clear …*, ⌘K | wie `/clear`, nur sauber: ein Dialog mit einem optionalen nächsten Prompt; `⌘⏎` startet eine neue Session im selben Ordner, Konto, Projekt und mit Namen und Modell der alten (Plugins und Brains Mod laden frisch) und beendet die alte, die als beendete Session bleibt. Geht erst, wenn die Session fertig ist und auf dich wartet |
 
 Was sich zurücknehmen lässt (beenden, ausblenden, in den Papierkorb, Projekt entfernen), geschieht sofort; die
 Einblendung unten hat dann einen Knopf (*Rückgängig* oder *Fortsetzen*, 10 Sekunden), den auch `⌘Z` auslöst,
