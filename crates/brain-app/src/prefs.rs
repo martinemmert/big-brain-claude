@@ -70,6 +70,12 @@ pub struct Prefs {
     /// Leave out the sidebar with the tree (View → Sidebar).
     #[serde(default)]
     pub hide_sidebar: bool,
+    /// Leave out the list of files at the left of the Quick Look sheet.
+    #[serde(default)]
+    pub hide_sheet_files: bool,
+    /// The sheet's list of files as a tree of nested folders, not as an island per folder.
+    #[serde(default)]
+    pub sheet_tree: bool,
     /// Projects whose "for later" notes are unfolded in the tree.
     #[serde(default)]
     open_notes: BTreeSet<String>,

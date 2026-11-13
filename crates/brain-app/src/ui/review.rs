@@ -23,7 +23,7 @@ pub const PLUS_W: f32 = 22.0;
 /// has comments, else nothing.
 pub fn plus<'a>(row: usize, hovered: bool, commented: Option<bool>) -> Element<'a, Message> {
     if hovered {
-        let plus = button(style::centered(text("+").size(13).color(Color::WHITE).font(style::semibold())))
+        let plus = button(container(style::plus(10.0, Color::WHITE)).center(Fill))
             .width(18)
             .height(18)
             .padding(0)
@@ -186,12 +186,14 @@ pub fn file_count<'a>(review: Option<&Review>, path: &str) -> Option<Element<'a,
 
 /// The button that opens the field for the whole file, in the list on hover and in the strip.
 pub fn file_button<'a>(label: Option<String>, index: usize) -> Element<'a, Message> {
+    let plain = label.is_none();
     let content: Element<'a, Message> = match label {
         Some(label) => text(label).size(12).color(TEXT).font(UI).into(),
-        None => text("+").size(13).color(TEXT_MUTED).font(style::semibold()).into(),
+        None => container(style::plus(10.0, TEXT_MUTED)).center(Fill).into(),
     };
-    button(style::centered(content))
-        .padding([0, 7])
+    button(if plain { content } else { style::centered(content) })
+        .padding([0, if plain { 0 } else { 7 }])
+        .width(if plain { Length::Fixed(22.0) } else { Length::Shrink })
         .height(22)
         .on_press(Message::ReviewCommentFile(index))
         .style(|_, status| {

@@ -23,7 +23,7 @@ mod menus;
 pub(crate) mod status_popup;
 mod quick_look;
 mod review;
-pub use quick_look::{folders, sheet_size, DiffRow, Preview, LIST_TOP};
+pub use quick_look::{folders, sheet_size, tree_lines, DiffRow, Preview, TreeLine, LIST_TOP};
 pub use review::{place as place_comments, ReviewEditor, REVIEW_EDITOR};
 
 pub use account::ACCOUNT_NAME;
@@ -273,6 +273,8 @@ pub enum Message {
     /// The sheet's list of files was scrolled; a folder in it is folded or opened.
     SheetListScrolled(scrollable::Viewport),
     ToggleSheetDir(String),
+    /// The sheet's list as a tree (true) or as islands per folder.
+    SetSheetTree(bool),
     CheckPrs,
     PrsLoaded(HashMap<SessionKey, brain_core::github::PullRequest>),
     BriefLoaded(SessionKey, brain_core::brief::Brief),
@@ -1270,6 +1272,7 @@ impl Brain {
                 }
                 Task::none()
             }
+            Message::SetSheetTree(tree) => self.set_sheet_tree(tree),
             Message::CheckPrs => {
                 let work = self.pr_lookups();
                 Task::perform(off_thread(move || lookup_prs(work)), Message::PrsLoaded)

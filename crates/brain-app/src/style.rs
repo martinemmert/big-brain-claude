@@ -324,6 +324,40 @@ impl<M> iced::widget::canvas::Program<M> for Chevron {
     }
 }
 
+/// A plus drawn as two strokes, exactly in the middle of its square: the "+" glyph of SF sits a
+/// little high. `size` is the square in points (the arms are 60 % of it).
+pub fn plus<'a, M: 'a>(size: f32, color: Color) -> Element<'a, M> {
+    iced::widget::canvas(Plus { color }).width(size).height(size).into()
+}
+
+struct Plus {
+    color: Color,
+}
+
+impl<M> iced::widget::canvas::Program<M> for Plus {
+    type State = ();
+
+    fn draw(
+        &self,
+        _: &(),
+        renderer: &iced::Renderer,
+        _: &iced::Theme,
+        bounds: iced::Rectangle,
+        _: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas::{Frame, LineCap, Path, Stroke};
+        let mut frame = Frame::new(renderer, bounds.size());
+        let k = bounds.width / 10.0;
+        // A 10 × 10 box: the arms run from 2 to 8 around the middle at 5.
+        let horizontal = Path::line(iced::Point::new(2.0 * k, 5.0 * k), iced::Point::new(8.0 * k, 5.0 * k));
+        let vertical = Path::line(iced::Point::new(5.0 * k, 2.0 * k), iced::Point::new(5.0 * k, 8.0 * k));
+        let stroke = Stroke::default().with_color(self.color).with_width(1.5 * k).with_line_cap(LineCap::Round);
+        frame.stroke(&horizontal, stroke);
+        frame.stroke(&vertical, stroke);
+        vec![frame.into_geometry()]
+    }
+}
+
 /// The sidebar symbol of a Mac title bar: a rounded window with its left part set off.
 pub fn sidebar_icon<'a, M: 'a>(size: f32, color: Color) -> Element<'a, M> {
     iced::widget::canvas(SidebarIcon { color }).width(size).height(size).into()

@@ -397,6 +397,12 @@ fn divider<'a>() -> Element<'a, Message> {
 
 /// The sidebar button, as in Finder and Mail: folds the sidebar away and back (⌃⌘S).
 fn sidebar_button<'a>(hidden: bool) -> Element<'a, Message> {
+    sidebar_toggle(hidden, t("Seitenleiste zeigen  ⌃⌘S", "Show sidebar  ⌃⌘S"), t("Seitenleiste ausblenden  ⌃⌘S", "Hide sidebar  ⌃⌘S"))
+}
+
+/// The button with the sidebar symbol; the same shortcut folds the Quick Look sheet's list while the
+/// sheet is open.
+fn sidebar_toggle<'a>(hidden: bool, show: &'a str, hide: &'a str) -> Element<'a, Message> {
     let toggle = button(style::sidebar_icon(16.0, if hidden { TEXT_MUTED } else { TEXT_FAINT }))
         .padding([3, 5])
         .on_press(Message::Menu(crate::app::MenuCommand::ToggleSidebar))
@@ -405,7 +411,7 @@ fn sidebar_button<'a>(hidden: bool) -> Element<'a, Message> {
             border: iced::border::rounded(5),
             ..button::Style::default()
         });
-    let tip = container(text(if hidden { t("Seitenleiste zeigen  ⌃⌘S", "Show sidebar  ⌃⌘S") } else { t("Seitenleiste ausblenden  ⌃⌘S", "Hide sidebar  ⌃⌘S") }).size(11.5).color(TEXT).font(UI))
+    let tip = container(text(if hidden { show } else { hide }).size(11.5).color(TEXT).font(UI))
         .padding([4, 8])
         .style(|_| boxed(RAISED, LINE_STRONG, 6.0));
     iced::widget::tooltip(toggle, tip, iced::widget::tooltip::Position::Bottom).gap(4).into()
@@ -1454,7 +1460,9 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
     let (dir, base) = change.relative.rsplit_once('/').map_or(("", change.relative.as_str()), |(dir, base)| (dir, base));
     let dir = if dir.is_empty() { String::new() } else { format!("{dir}/") };
     let place = index + 1;
+    let list_hidden = brain.prefs.hide_sheet_files;
     let mut title = row![
+        sidebar_toggle(list_hidden, t("Dateiliste zeigen  ⌃⌘S", "Show file list  ⌃⌘S"), t("Dateiliste ausblenden  ⌃⌘S", "Hide file list  ⌃⌘S")),
         row![step("←", -1, index > 0), step("→", 1, index + 1 < total)].spacing(4),
         text(tr!("{place} von {total}", "{place} of {total}")).size(12).color(TEXT_MUTED).font(UI),
         merge_line(merge),
@@ -1588,7 +1596,7 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
         .into(),
     };
 
-    let list = sheet_files(brain, &files, index, merge.is_some(), reviewing);
+    let list = (!list_hidden).then(|| sheet_files(brain, &files, index, merge.is_some(), reviewing));
     let mut hints = row![].spacing(6).align_y(iced::Center);
     if merge.is_some() {
         hints = hints.push(session_mark()).push(text(t("von dieser Session", "from this session")).size(11.5).color(TEXT_MUTED).font(UI)).push(Space::new().width(10));
@@ -1615,7 +1623,11 @@ fn quick_look(brain: &Brain) -> Element<'_, Message> {
     let mut right = column![said, edge()];
     right = right.push(container(body).width(Fill).height(Fill).style(|_| style::fill(INK)));
     let vertical_edge = || container(Space::new().width(1).height(Fill)).style(|_| style::fill(LINE));
-    let sheet = container(column![head, edge(), row![list, vertical_edge(), right.width(Fill)].height(Fill), review::bar(brain, &preview.key), foot])
+    let middle = match list {
+        Some(list) => row![list, vertical_edge(), right.width(Fill)],
+        None => row![right.width(Fill)],
+    };
+    let sheet = container(column![head, edge(), middle.height(Fill), review::bar(brain, &preview.key), foot])
         .width(Fill)
         .height(Fill)
         .clip(true)
@@ -1681,9 +1693,24 @@ fn sheet_files<'a>(brain: &'a Brain, files: &[&'a SessionChange], index: usize, 
         let removed = removed.filter(|r| *r > 0).map(|r| format!("−{r}").chars().count() + 1);
         (added.unwrap_or(0) + removed.unwrap_or(0)).saturating_sub(1)
     };
-    let counts_w = files.iter().map(|f| counts_len(f.added, f.removed)).max().unwrap_or(0) as f32 * 6.6 + 4.0;
+    let tree_mode = brain.prefs.sheet_tree;
+    let tree_lines = if tree_mode { app::tree_lines(files, |d| brain.folded_dirs.contains(d)) } else { Vec::new() };
+    let folder_sums = tree_lines.iter().filter_map(|l| match l {
+        app::TreeLine::Dir { added, removed, .. } => Some(counts_len(Some(*added), Some(*removed))),
+        app::TreeLine::File { .. } => None,
+    });
+    let counts_w = files.iter().map(|f| counts_len(f.added, f.removed)).chain(folder_sums).max().unwrap_or(0) as f32 * 6.6 + 4.0;
     let (total_added, total_removed) = files.iter().fold((0, 0), |(a, r), f| (a + f.added.unwrap_or(0), r + f.removed.unwrap_or(0)));
     let file_count = files.len();
+    let modes = container(style::segmented_in(
+        vec![
+            (t("Ordner", "Folders").to_string(), !tree_mode, Message::SetSheetTree(false)),
+            (t("Baum", "Tree").to_string(), tree_mode, Message::SetSheetTree(true)),
+        ],
+        LINE_STRONG,
+        Color::from_rgba8(0xff, 0xff, 0xff, 0.06),
+    ))
+    .padding(Padding { top: 10.0, right: 12.0, bottom: 0.0, left: 12.0 });
     let header = container(
         row![
             text(tr!("{file_count} Dateien", "{file_count} files")).size(12).color(TEXT_MUTED).font(style::semibold()).wrapping(text::Wrapping::None),
@@ -1694,10 +1721,26 @@ fn sheet_files<'a>(brain: &'a Brain, files: &[&'a SessionChange], index: usize, 
         .spacing(FILE_GAP)
         .align_y(iced::Center),
     )
-    .padding(Padding { top: 12.0, right: 12.0 + tree::ISLAND_PAD_X + FILE_PAD, bottom: 0.0, left: 12.0 + tree::ISLAND_PAD_X + FILE_PAD + HEAD_GUTTER });
+    .padding(Padding { top: 10.0, right: 12.0 + tree::ISLAND_PAD_X + FILE_PAD, bottom: 0.0, left: 12.0 + tree::ISLAND_PAD_X + FILE_PAD + HEAD_GUTTER });
 
     let mut islands: Vec<Element<'a, Message>> = Vec::new();
-    for folder in app::folders(files) {
+    if tree_mode {
+        // One surface for the whole tree: folders nest by indent, so islands per folder would
+        // only cut the picture into pieces again.
+        let rows: Vec<Element<'a, Message>> = tree_lines
+            .iter()
+            .map(|line| match line {
+                app::TreeLine::File { index: i, depth } => {
+                    sheet_file_row(brain, files[*i], *i, *i == index, merged, reviewing, inner, counts_w, (*depth + 1) as f32 * TREE_INDENT)
+                }
+                app::TreeLine::Dir { dir, label, depth, folded, count, added, removed } => {
+                    sheet_dir_row(dir, label, *depth as f32 * TREE_INDENT, *folded, *count, (*added, *removed), inner, counts_w)
+                }
+            })
+            .collect();
+        islands.push(island(column(rows).spacing(tree::GAP)));
+    }
+    for folder in if tree_mode { Vec::new() } else { app::folders(files) } {
         let folded = brain.folded_dirs.contains(&folder.dir);
         let label = if folder.dir.is_empty() {
             t("Oberste Ebene", "Top level").to_string()
@@ -1718,7 +1761,7 @@ fn sheet_files<'a>(brain: &'a Brain, files: &[&'a SessionChange], index: usize, 
         let mut lines: Vec<Element<'a, Message>> = vec![head.into()];
         if !folded {
             for i in folder.first..folder.first + folder.len {
-                lines.push(sheet_file_row(brain, files[i], i, i == index, merged, reviewing, inner, counts_w));
+                lines.push(sheet_file_row(brain, files[i], i, i == index, merged, reviewing, inner, counts_w, 0.0));
             }
         }
         islands.push(island(column(lines).spacing(tree::GAP)));
@@ -1732,11 +1775,42 @@ fn sheet_files<'a>(brain: &'a Brain, files: &[&'a SessionChange], index: usize, 
         .width(Fill)
         .height(Fill)
         .style(scrollbar);
-    container(column![header, scrolled]).width(SHEET_LIST_W).height(Fill).style(|_| style::fill(CHROME)).into()
+    container(column![modes, header, scrolled]).width(SHEET_LIST_W).height(Fill).style(|_| style::fill(CHROME)).into()
+}
+
+/// How far each level of the tree is moved in: the room of a folder's arrow.
+const TREE_INDENT: f32 = 14.0;
+
+/// A folder's line in the tree: arrow, its path (a run of folders with one subfolder each is one
+/// line, cut at the front so the end stays), how many files lie in it, and their summed counts in
+/// the columns of the file rows. A click folds it.
+fn sheet_dir_row<'a>(dir: &str, label: &str, indent: f32, folded: bool, count: usize, sums: (u64, u64), inner: f32, counts_w: f32) -> Element<'a, Message> {
+    let room = inner - 2.0 * FILE_PAD - indent - TREE_INDENT - FILE_PLUS_W - counts_w - FILE_COMMENTS_W - 4.0 * FILE_GAP;
+    let line = row![
+        container(style::chevron(folded, 10.0, TEXT_FAINT)).width(TREE_INDENT),
+        text(clip_start(label, fitting(room, 12.5))).size(12.5).color(if folded { TEXT_MUTED } else { TEXT_STRONG }).font(style::semibold()).wrapping(text::Wrapping::None),
+        Space::new().width(Fill),
+        container(text(count.to_string()).size(11.5).color(TEXT_FAINT).font(UI).wrapping(text::Wrapping::None)).width(FILE_PLUS_W).align_x(iced::alignment::Horizontal::Right),
+        container(counts(Some(sums.0), Some(sums.1))).width(counts_w).align_x(iced::alignment::Horizontal::Right),
+        Space::new().width(FILE_COMMENTS_W),
+    ]
+    .spacing(FILE_GAP)
+    .align_y(iced::Center);
+    button(style::centered(line))
+        .width(Fill)
+        .height(tree::ROW_H)
+        .padding(Padding { top: 0.0, right: FILE_PAD, bottom: 0.0, left: FILE_PAD + indent })
+        .on_press(Message::ToggleSheetDir(dir.to_string()))
+        .style(|_, status| button::Style {
+            background: matches!(status, button::Status::Hovered | button::Status::Pressed).then_some(Background::Color(style::ISLAND_HOVER)),
+            border: iced::border::rounded(6),
+            ..button::Style::default()
+        })
+        .into()
 }
 
 /// One file in the sheet's list: `inner` is the width inside an island, `counts_w` the width of
-/// the column of counts.
+/// the column of counts, `indent` how far the tree moves it in.
 fn sheet_file_row<'a>(
     brain: &Brain,
     file: &SessionChange,
@@ -1746,6 +1820,7 @@ fn sheet_file_row<'a>(
     reviewing: Option<&brain_core::review::Review>,
     inner: f32,
     counts_w: f32,
+    indent: f32,
 ) -> Element<'a, Message> {
     let name = file.relative.rsplit_once('/').map_or(file.relative.as_str(), |(_, name)| name);
     let hovered = brain.review_hover_file == Some(index);
@@ -1753,7 +1828,7 @@ fn sheet_file_row<'a>(
     // What the name leaves: the padding, the dot, the mark, the fixed columns and the gaps.
     let mark_w = label.map_or(0.0, |(label, _)| label.chars().count() as f32 * 9.5 * 0.56 + 12.0);
     let items = 5 + merged as usize + label.is_some() as usize;
-    let taken = 2.0 * FILE_PAD + if merged { 6.0 } else { 0.0 } + mark_w + FILE_PLUS_W + counts_w + FILE_COMMENTS_W + (items - 1) as f32 * FILE_GAP;
+    let taken = 2.0 * FILE_PAD + indent + if merged { 6.0 } else { 0.0 } + mark_w + FILE_PLUS_W + counts_w + FILE_COMMENTS_W + (items - 1) as f32 * FILE_GAP;
     let mut line = row![].spacing(FILE_GAP).align_y(iced::Center);
     if merged {
         line = line.push(if file.from_session { session_mark() } else { Space::new().width(6).into() });
@@ -1781,7 +1856,7 @@ fn sheet_file_row<'a>(
         .height(tree::ROW_H)
         .center_y(tree::ROW_H)
         .width(Fill)
-        .padding([0.0, FILE_PAD])
+        .padding(Padding { top: 0.0, right: FILE_PAD, bottom: 0.0, left: FILE_PAD + indent })
         .clip(true)
         .style(move |_| boxed(background, Color::TRANSPARENT, 6.0));
     mouse_area(entry)

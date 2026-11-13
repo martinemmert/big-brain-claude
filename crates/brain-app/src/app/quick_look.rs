@@ -161,6 +161,123 @@ pub fn folders(files: &[&SessionChange]) -> Vec<Folder> {
     out
 }
 
+/// A folder of the tree: `dir` is its whole path (the deepest folder, when folders with one
+/// subfolder and no file are drawn as one line), `label` what its line says, `/` between them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DirNode {
+    dir: String,
+    label: String,
+    /// Indices of its own files in the list the tree was built from.
+    files: Vec<usize>,
+    children: Vec<DirNode>,
+}
+
+impl DirNode {
+    fn new(dir: &str, label: &str) -> Self {
+        DirNode { dir: dir.to_string(), label: label.to_string(), files: Vec::new(), children: Vec::new() }
+    }
+
+    /// The folders of `files`, children in the order they first appear, folders without files and
+    /// with one subfolder drawn together with it. The root stands for the top level.
+    fn build(files: &[&SessionChange]) -> Self {
+        let mut root = DirNode::new("", "");
+        for (i, file) in files.iter().enumerate() {
+            let mut node = &mut root;
+            let mut dir = String::new();
+            for part in folder_of(&file.relative).split('/').filter(|p| !p.is_empty()) {
+                if !dir.is_empty() {
+                    dir.push('/');
+                }
+                dir.push_str(part);
+                let at = match node.children.iter().position(|c| c.dir == dir) {
+                    Some(at) => at,
+                    None => {
+                        node.children.push(DirNode::new(&dir, part));
+                        node.children.len() - 1
+                    }
+                };
+                node = &mut node.children[at];
+            }
+            node.files.push(i);
+        }
+        root.pull_together();
+        root
+    }
+
+    fn pull_together(&mut self) {
+        for child in &mut self.children {
+            while child.files.is_empty() && child.children.len() == 1 {
+                if let Some(only) = child.children.pop() {
+                    child.label = format!("{}/{}", child.label, only.label);
+                    child.dir = only.dir;
+                    child.files = only.files;
+                    child.children = only.children;
+                }
+            }
+            child.pull_together();
+        }
+    }
+
+    /// Own files first, then the folders: the order paging goes in.
+    fn walk(&self, out: &mut Vec<usize>) {
+        out.extend(&self.files);
+        for child in &self.children {
+            child.walk(out);
+        }
+    }
+
+    /// How many files lie in it and below, and their added and removed lines.
+    fn totals(&self, files: &[&SessionChange]) -> (usize, u64, u64) {
+        let own = self.files.iter().fold((self.files.len(), 0, 0), |(n, a, r), i| (n, a + files[*i].added.unwrap_or(0), r + files[*i].removed.unwrap_or(0)));
+        self.children.iter().fold(own, |(n, a, r), child| {
+            let (cn, ca, cr) = child.totals(files);
+            (n + cn, a + ca, r + cr)
+        })
+    }
+
+    fn lines(&self, files: &[&SessionChange], folded: &impl Fn(&str) -> bool, depth: usize, out: &mut Vec<TreeLine>) {
+        out.extend(self.files.iter().map(|index| TreeLine::File { index: *index, depth }));
+        for child in &self.children {
+            let (count, added, removed) = child.totals(files);
+            let is_folded = folded(&child.dir);
+            out.push(TreeLine::Dir { dir: child.dir.clone(), label: child.label.clone(), depth, folded: is_folded, count, added, removed });
+            if !is_folded {
+                child.lines(files, folded, depth + 1, out);
+            }
+        }
+    }
+}
+
+/// Puts the files in the order of the tree: a folder's own files, then its folders.
+pub fn tree_order(files: &mut Vec<&SessionChange>) {
+    let mut order = Vec::with_capacity(files.len());
+    DirNode::build(files).walk(&mut order);
+    *files = order.into_iter().map(|i| files[i]).collect();
+}
+
+/// One line of the sheet's tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TreeLine {
+    Dir { dir: String, label: String, depth: usize, folded: bool, count: usize, added: u64, removed: u64 },
+    File { index: usize, depth: usize },
+}
+
+/// The lines of the tree for files already in tree order; what lies in a folded folder is left out.
+pub fn tree_lines(files: &[&SessionChange], folded: impl Fn(&str) -> bool) -> Vec<TreeLine> {
+    let mut out = Vec::new();
+    DirNode::build(files).lines(files, &folded, 0, &mut out);
+    out
+}
+
+/// The top and bottom of file `index`'s row in the tree, which is one island of rows of equal
+/// height; `None` when a folded folder hides it.
+pub fn tree_file_span(lines: &[TreeLine], index: usize) -> Option<(f32, f32)> {
+    use crate::tree::{GAP, ISLAND_PAD_Y, ROW_H};
+    let at = lines.iter().position(|l| matches!(l, TreeLine::File { index: i, .. } if *i == index))?;
+    let top = LIST_TOP + ISLAND_PAD_Y + at as f32 * (ROW_H + GAP);
+    Some((top, top + ROW_H))
+}
+
 /// Where the sheet's list starts below its top edge, before the first island.
 pub const LIST_TOP: f32 = 8.0;
 
@@ -208,11 +325,20 @@ impl Brain {
     /// Scrolls the sheet's list so the open file's row is in view; its folder is opened first.
     fn scroll_sheet_to_file(&mut self) -> Task<Message> {
         let Some((index, _)) = self.preview_position() else { return Task::none() };
+        let dir = folder_of(&self.changes_in_order()[index].relative).to_string();
+        if self.prefs.sheet_tree {
+            // Every folder on the way to the file is opened.
+            self.folded_dirs.retain(|d| dir != *d && !dir.starts_with(&format!("{d}/")));
+        } else {
+            self.folded_dirs.remove(&dir);
+        }
         let files = self.changes_in_order();
-        let dir = folder_of(&files[index].relative).to_string();
-        let folders = folders(&files);
-        self.folded_dirs.remove(&dir);
-        let Some((top, bottom)) = file_span(&folders, |d| self.folded_dirs.contains(d), index) else { return Task::none() };
+        let span = if self.prefs.sheet_tree {
+            tree_file_span(&tree_lines(&files, |d| self.folded_dirs.contains(d)), index)
+        } else {
+            file_span(&folders(&files), |d| self.folded_dirs.contains(d), index)
+        };
+        let Some((top, bottom)) = span else { return Task::none() };
         match scroll_target(top, bottom, self.sheet_viewport) {
             Some(y) => iced::widget::operation::scroll_to(super::SHEET_FILES, iced::widget::scrollable::AbsoluteOffset { x: 0.0, y }),
             None => Task::none(),
@@ -229,7 +355,26 @@ impl Brain {
             files.sort_by_key(|c| std::cmp::Reverse(c.last_ms));
         }
         order_files(&mut files, by_path);
+        if self.prefs.sheet_tree {
+            tree_order(&mut files);
+        }
         files
+    }
+
+    /// Shows or hides the sheet's list of files (⌃⌘S while the sheet is open).
+    pub(super) fn toggle_sheet_files(&mut self) -> Task<Message> {
+        self.prefs.hide_sheet_files = !self.prefs.hide_sheet_files;
+        self.prefs.save();
+        self.sheet_viewport = None;
+        self.scroll_sheet_to_file()
+    }
+
+    /// Switches the list between flat islands per folder and the tree; the open file stays open.
+    pub(super) fn set_sheet_tree(&mut self, tree: bool) -> Task<Message> {
+        self.prefs.sheet_tree = tree;
+        self.prefs.save();
+        self.sheet_viewport = None;
+        self.scroll_sheet_to_file()
     }
 
     /// Where the open sheet's file stands in the list: its place and how many there are.
@@ -443,6 +588,88 @@ mod tests {
         assert_eq!(scroll_target(50.0, 80.0, Some((100.0, 400.0))), Some(42.0));
         assert_eq!(scroll_target(600.0, 630.0, Some((100.0, 400.0))), Some(238.0));
         assert_eq!(scroll_target(4.0, 34.0, None), Some(0.0));
+    }
+
+    fn counted(relative: &str, added: u64, removed: u64) -> SessionChange {
+        SessionChange { added: Some(added), removed: Some(removed), ..change(relative, 1) }
+    }
+
+    #[test]
+    fn the_tree_nests_folders_and_pages_through_a_folders_files_before_its_folders() {
+        let all = [change("src/a/x.rs", 1), change("README.md", 2), change("src/b.rs", 3), change("src/a/y.rs", 4), change("docs/z.md", 5)];
+        let mut files: Vec<&SessionChange> = all.iter().collect();
+
+        tree_order(&mut files);
+
+        let order: Vec<&str> = files.iter().map(|f| f.relative.as_str()).collect();
+        assert_eq!(order, ["README.md", "src/b.rs", "src/a/x.rs", "src/a/y.rs", "docs/z.md"]);
+        let shape: Vec<(String, usize)> = tree_lines(&files, |_| false)
+            .iter()
+            .map(|l| match l {
+                TreeLine::Dir { dir, depth, .. } => (format!("{dir}/"), *depth),
+                TreeLine::File { index, depth } => (files[*index].relative.clone(), *depth),
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("README.md".to_string(), 0),
+                ("src/".into(), 0),
+                ("src/b.rs".into(), 1),
+                ("src/a/".into(), 1),
+                ("src/a/x.rs".into(), 2),
+                ("src/a/y.rs".into(), 2),
+                ("docs/".into(), 0),
+                ("docs/z.md".into(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_folder_with_only_one_subfolder_is_drawn_together_with_it() {
+        let all = [change("src/Phoenix/Applets/a.php", 1), change("src/Phoenix/Applets/b.php", 2), change("src/Phoenix/Core/c.php", 3), change("lib/x/y/z.rs", 4)];
+        let mut files: Vec<&SessionChange> = all.iter().collect();
+        tree_order(&mut files);
+
+        let dirs: Vec<(String, String, usize)> = tree_lines(&files, |_| false)
+            .into_iter()
+            .filter_map(|l| match l {
+                TreeLine::Dir { dir, label, depth, .. } => Some((dir, label, depth)),
+                _ => None,
+            })
+            .collect();
+
+        // "src" holds nothing but "Phoenix": one line "src/Phoenix", which has two folders below
+        // it and stays; lib/x/y is one line.
+        assert_eq!(
+            dirs,
+            [
+                ("src/Phoenix".to_string(), "src/Phoenix".to_string(), 0),
+                ("src/Phoenix/Applets".into(), "Applets".into(), 1),
+                ("src/Phoenix/Core".into(), "Core".into(), 1),
+                ("lib/x/y".into(), "lib/x/y".into(), 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_folder_sums_the_files_and_lines_below_it_and_a_folded_one_hides_them() {
+        let all = [counted("src/a.rs", 3, 1), counted("src/deep/b.rs", 10, 0), counted("src/deep/c.rs", 2, 5)];
+        let mut files: Vec<&SessionChange> = all.iter().collect();
+        tree_order(&mut files);
+
+        let open = tree_lines(&files, |_| false);
+        let TreeLine::Dir { count, added, removed, .. } = &open[0] else { panic!("{open:?}") };
+        assert_eq!((*count, *added, *removed), (3, 15, 6));
+
+        let closed = tree_lines(&files, |d| d == "src");
+        assert_eq!(closed.len(), 1);
+        assert_eq!(tree_file_span(&closed, 1), None);
+        // Open: src, a.rs, deep, b.rs, c.rs: the file `c.rs` (index 2) is the fifth line.
+        let (top, bottom) = tree_file_span(&open, 2).unwrap();
+        let line_h = crate::tree::ROW_H + crate::tree::GAP;
+        assert_eq!(top, LIST_TOP + crate::tree::ISLAND_PAD_Y + 4.0 * line_h);
+        assert_eq!(bottom - top, crate::tree::ROW_H);
     }
 
     #[test]

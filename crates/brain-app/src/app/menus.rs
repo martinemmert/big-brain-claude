@@ -418,6 +418,8 @@ impl Brain {
                 }
                 unfocus()
             }
+            // While the Quick Look sheet is open, the shortcut folds its list of files.
+            MenuCommand::ToggleSidebar if self.preview.is_some() && self.mode == Mode::Normal && !self.overview => self.toggle_sheet_files(),
             MenuCommand::ToggleSidebar => {
                 self.prefs.hide_sidebar = !self.prefs.hide_sidebar;
                 self.prefs.save();
