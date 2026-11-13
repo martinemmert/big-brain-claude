@@ -98,11 +98,12 @@ fn run(account: &Account, args: &[&str]) -> Result<(), String> {
     Err(crate::hook::one_line(&text, 200))
 }
 
-/// The short id in `claude --bg`'s answer: `backgrounded · 824489b9 · name (idle …)`.
+/// The short id in `claude --bg`'s answer: `backgrounded · 824489b9 · name (idle …)`, or without a
+/// name `backgrounded · 2cfee62a (idle …)` (Claude Code 2.1.323): the first word after the dot.
 pub fn started_id(output: &str) -> Option<String> {
     let line = output.lines().find(|l| l.trim_start().starts_with("backgrounded"))?;
-    let id = line.split('·').nth(1)?.trim();
-    (!id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric())).then(|| id.to_string())
+    let id = line.split('·').nth(1)?.split_whitespace().next()?;
+    id.chars().all(|c| c.is_ascii_alphanumeric()).then(|| id.to_string())
 }
 
 /// What a new background session starts with, each optional.
@@ -209,6 +210,9 @@ mod tests {
     fn reads_the_id_from_the_background_start_message() {
         let out = "backgrounded · 824489b9 · bg-empty-test (idle — send a prompt to start)\n  claude agents             list sessions\n";
         assert_eq!(started_id(out).as_deref(), Some("824489b9"));
+        // Without a name (Claude Code 2.1.323): the id is followed by the state, not a dot.
+        let unnamed = "backgrounded · 2cfee62a (idle — send a prompt to start)\n  claude agents             list sessions\n";
+        assert_eq!(started_id(unnamed).as_deref(), Some("2cfee62a"));
         assert_eq!(started_id("Workspace not trusted. Run `claude` in /tmp once"), None);
     }
 
