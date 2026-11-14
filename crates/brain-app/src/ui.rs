@@ -2608,10 +2608,19 @@ fn new_session(brain: &Brain) -> Element<'_, Message> {
         .align_y(iced::Center),
     ]
     .spacing(14);
-    // The output style: as the account's settings say, or one picked here (⇧⇥).
+    // The output style: as the account's settings say, or one picked here (⌘P).
     let mut styles = vec![(t("wie eingestellt", "as configured").to_string(), dialog.style.is_none(), Message::NewStyle(None))];
     styles.extend(brain.new_session_styles().into_iter().map(|s| (s.name.clone(), dialog.style.as_deref() == Some(s.name.as_str()), Message::NewStyle(Some(s.name)))));
     content = content.push(row![text(t("Profil", "Style")).size(12.5).color(TEXT_MUTED).font(UI), segmented(styles)].spacing(10).align_y(iced::Center));
+    let name_field = text_input(t("Name (optional)", "Name (optional)"), &dialog.name)
+        .id(app::NEW_SESSION_NAME)
+        .on_input(Message::NewName)
+        .on_submit(Message::NewSubmit)
+        .size(13)
+        .font(UI)
+        .padding([9, 12])
+        .style(field_style);
+    content = content.push(row![text(t("Name", "Name")).size(12.5).color(TEXT_MUTED).font(UI), name_field].spacing(10).align_y(iced::Center));
     if let Some(c) = chosen.filter(|c| !c.template.prompt.is_empty()) {
         let prompt: String = c.template.fill(&c.values).lines().take(6).collect::<Vec<_>>().join("\n");
         content = content.push(container(text(prompt).size(12.5).color(TEXT).font(UI).line_height(1.5)).padding([9, 12]).width(Fill).style(|_| boxed(SURFACE, LINE, 8.0)));
@@ -2651,7 +2660,7 @@ fn new_session(brain: &Brain) -> Element<'_, Message> {
     content = content.push(scrollable(column(choices).spacing(2)).height(Fill).style(scrollbar));
     content = content.push(
         container(
-            text(t("⏎ wählen/starten · ↑↓ · ~/ → Ordner · ⌘O Ordner wählen · ⇥ Konto · ⇧⇥ Profil · ⌘I Brain/iTerm · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc", "⏎ pick/start · ↑↓ · ~/ → folders · ⌘O choose folder · ⇥ account · ⇧⇥ style · ⌘I Brain/iTerm · ⌘E edit template · ⌘⇧N new template · esc"))
+            text(t("⏎ wählen/starten · ↑↓ · ~/ → Ordner · ⌘O Ordner wählen · ⇥ Name · ⌘U Konto · ⌘P Profil · ⌘I Brain/iTerm · ⌘E Vorlage bearbeiten · ⌘⇧N neue Vorlage · esc", "⏎ pick/start · ↑↓ · ~/ → folders · ⌘O choose folder · ⇥ name · ⌘U account · ⌘P style · ⌘I Brain/iTerm · ⌘E edit template · ⌘⇧N new template · esc"))
                 .size(11.5)
                 .color(TEXT_FAINT)
                 .font(UI),

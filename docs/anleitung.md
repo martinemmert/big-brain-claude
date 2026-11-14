@@ -177,8 +177,9 @@ hat:
   (auch bei einer Notiz „Für später“). „Vertrauen und starten“ trägt es ein und startet; in iTerm fragt Claude selbst.
 - **Neue Session:** `⌘N`. Ordner, Konto, Modell und erster Prompt, auf Wunsch aus einer
   Vorlage. Zuletzt benutzte Ordner stehen oben; tippst du einen Pfad (`~/`), listet Brain die
-  Ordner darin, `→` geht in den gewählten hinein. `⇧⇥` wählt das Antwort-Profil (Output-Style),
-  sonst gilt, was in den Einstellungen des Kontos steht. Sie läuft als Claude-Code-Hintergrund-Session
+  Ordner darin, `→` geht in den gewählten hinein. Das Feld „Name“ gibt der Session einen Namen
+  (`⇥` springt hin, `⇧⇥` zurück zum Ordner; eine Vorlage füllt es mit ihrem Namen vor). `⌘U` wählt das Konto,
+  `⌘P` das Antwort-Profil (Output-Style), sonst gilt, was in den Einstellungen des Kontos steht. Sie läuft als Claude-Code-Hintergrund-Session
   in Brains Terminal weiter, auch wenn Brain beendet wird.
 - **Antwort-Profil wechseln:** `⌘K` → „Antwort-Profil von …“ tippt `/output-style <Name>` in die
   Session; es gilt ab der nächsten Nachricht.
@@ -385,7 +386,7 @@ Chrome-Profil ihr Konto nutzt.
 | `⌥⌘F` | Liste durchsuchen |
 | `⌘O` | Session fortsetzen: suchen, auch unter den beendeten |
 | `⇥` / `⇧⇥` | Kontofilter |
-| `⌘N` / `⌥⌘N` / `⇧⌘N` | neue Session / im Projekt / neues Projekt (im `⌘N`-Dialog: `⌘O` Ordner wählen) |
+| `⌘N` / `⌥⌘N` / `⇧⌘N` | neue Session / im Projekt / neues Projekt (im `⌘N`-Dialog: `⌘O` Ordner wählen, `⇥` Name, `⌘U` Konto, `⌘P` Profil) |
 | `⌘L` / `⇧⌘L` | für später / Später-Notizen des Projekts |
 | `⌘Y` / `⇧⌘Y` | Freigabe erlauben / ablehnen |
 | `⌘R` | umbenennen |

@@ -62,6 +62,7 @@ pub const CLEANUP_DAYS: [i64; 4] = [1, 3, 7, 14];
 pub const SEARCH: &str = "search";
 pub const RENAME: &str = "rename";
 pub const NEW_SESSION: &str = "new-session";
+pub const NEW_SESSION_NAME: &str = "new-session-name";
 pub const LIST: &str = "session-list";
 pub const SHEET_FILES: &str = "sheet-files";
 pub const FIND: &str = "find";
@@ -345,6 +346,7 @@ pub enum Message {
     Rename(String),
     RenameSubmit,
     NewInput(String),
+    NewName(String),
     /// "Choose folder …": the native folder dialog.
     NewChooseFolder,
     NewSubmit,
@@ -655,8 +657,12 @@ pub struct NewSession {
     pub chosen: Option<Chosen>,
     /// ⌥⏎ starts it in an iTerm tab instead of in Brain.
     pub in_iterm: bool,
-    /// ⇧⇥: the output style it starts with; none keeps what the account's settings say.
+    /// ⌘P: the output style it starts with; none keeps what the account's settings say.
     pub style: Option<String>,
+    /// The session's name (`-n`); a template's name until typed over. Empty: none.
+    pub name: String,
+    /// ⇥ moved the keyboard from the folder field to the name field.
+    pub name_focused: bool,
 }
 
 pub struct Chosen {
@@ -1388,6 +1394,12 @@ impl Brain {
             Message::NewInput(text) => {
                 self.new_session.folder = text;
                 self.new_session.pick = 0;
+                self.new_session.name_focused = false;
+                Task::none()
+            }
+            Message::NewName(text) => {
+                self.new_session.name = text;
+                self.new_session.name_focused = true;
                 Task::none()
             }
             Message::NewChooseFolder => self.choose_folder(),
@@ -4938,6 +4950,11 @@ impl Brain {
         folders
     }
 
+    /// The field that has the keyboard in the dialog.
+    fn new_session_field(&self) -> &'static str {
+        if self.new_session.name_focused { NEW_SESSION_NAME } else { NEW_SESSION }
+    }
+
     /// What the dialog lists right now: templates and folders while picking, only folders once a
     /// template without a folder is chosen, nothing while a placeholder is asked for.
     pub fn new_session_choices(&self) -> Vec<Choice> {
@@ -4996,14 +5013,29 @@ impl Brain {
             }
             return Task::none();
         }
+        // ⇥ and ⇧⇥ go between the folder field and the name field; ⌘U picks the account, ⌘P the style.
+        if named == Some(Named::Tab) {
+            self.new_session.name_focused = !self.new_session.name_focused;
+            return operation::focus(self.new_session_field());
+        }
+        if cmd && character == Some("u") {
+            self.new_session.account = (self.new_session.account + 1) % self.model.accounts.len().max(1);
+            return Task::none();
+        }
+        if cmd && character == Some("p") {
+            self.new_session.style = self.next_style(self.new_session.style.as_deref());
+            return Task::none();
+        }
+        // In the name field the arrows are its cursor's, not the list's.
+        if self.new_session.name_focused && matches!(named, Some(Named::ArrowDown | Named::ArrowUp)) {
+            return Task::none();
+        }
         let count = self.new_session_choices().len();
         match named {
             Some(Named::ArrowDown) => self.new_session.pick = (self.new_session.pick + 1).min(count.saturating_sub(1)),
             Some(Named::ArrowUp) => self.new_session.pick = self.new_session.pick.saturating_sub(1),
-            Some(Named::Tab) if shift => self.new_session.style = self.next_style(self.new_session.style.as_deref()),
-            Some(Named::Tab) => self.new_session.account = (self.new_session.account + 1) % self.model.accounts.len().max(1),
             // Every other key goes to the field (it lost its focus to a click).
-            _ => return operation::focus(NEW_SESSION),
+            _ => return operation::focus(self.new_session_field()),
         }
         Task::none()
     }
@@ -5034,7 +5066,7 @@ impl Brain {
         brain_core::styles::available(&account.config_dir, session.cwd.as_deref().map(std::path::Path::new))
     }
 
-    /// ⇧⇥: as the account's settings say → each style in turn → as the settings say.
+    /// ⌘P: as the account's settings say → each style in turn → as the settings say.
     fn next_style(&self, current: Option<&str>) -> Option<String> {
         let names: Vec<String> = self.new_session_styles().into_iter().map(|s| s.name).collect();
         match current.and_then(|c| names.iter().position(|n| n == c)) {
@@ -5068,7 +5100,8 @@ impl Brain {
             if self.pending_placeholder().is_none() && has_folder {
                 return self.start_new_session(None);
             }
-            return Task::none();
+            self.new_session.name_focused = false;
+            return operation::focus(NEW_SESSION);
         }
         match self.new_session_choices().get(self.new_session.pick).cloned() {
             Some(Choice::Template(i)) => {
@@ -5077,13 +5110,18 @@ impl Brain {
                     self.new_session.account = index;
                 }
                 let ready = template.folder.is_some() && template.placeholders().is_empty();
+                if self.new_session.name.trim().is_empty() {
+                    self.new_session.name = template.name.clone();
+                }
                 self.new_session.chosen = Some(Chosen { template, values: Vec::new() });
                 self.new_session.folder.clear();
                 self.new_session.pick = 0;
                 if ready {
                     return self.start_new_session(None);
                 }
-                Task::none()
+                // The next input (placeholder value or folder) goes into the folder field.
+                self.new_session.name_focused = false;
+                operation::focus(NEW_SESSION)
             }
             Some(Choice::Folder(folder)) => self.start_new_session(Some(folder)),
             None => {
@@ -5110,7 +5148,7 @@ impl Brain {
         }
         let model = chosen.and_then(|c| c.template.model.clone());
         let prompt = chosen.map(|c| c.template.fill(&c.values)).filter(|p| !p.is_empty());
-        let name = chosen.map(|c| c.template.name.clone());
+        let name = session_name(&self.new_session.name, chosen.map(|c| c.template.name.as_str()));
         let in_iterm = self.new_session.in_iterm;
         let style = self.new_session.style.clone();
         if let Some(account) = self.model.accounts.get(self.new_session.account).cloned() {
@@ -5128,6 +5166,9 @@ impl Brain {
             let mut command = String::from("claude");
             if let Some(model) = &model {
                 command.push_str(&format!(" --model {}", shell_quote(model)));
+            }
+            if let Some(name) = &name {
+                command.push_str(&format!(" -n {}", shell_quote(name)));
             }
             if let Some(style) = &style {
                 command.push_str(&format!(" --settings {}", shell_quote(&brain_core::styles::settings(style))));
@@ -5407,6 +5448,12 @@ fn app_is_active() -> bool {
 }
 
 /// A path as a shell word, like iTerm pastes dropped files: spaces and specials backslashed.
+/// The name a new session starts with: the one typed in the dialog, else the template's; none
+/// when both are empty.
+fn session_name(typed: &str, template: Option<&str>) -> Option<String> {
+    [typed, template.unwrap_or_default()].into_iter().map(str::trim).find(|n| !n.is_empty()).map(str::to_string)
+}
+
 fn escape_path(path: &str) -> String {
     let mut out = String::new();
     for c in path.chars() {
@@ -5478,6 +5525,13 @@ mod tests {
     use super::*;
     use brain_core::event::{Event, Kind, Source};
     use chrono::TimeZone;
+
+    #[test]
+    fn the_typed_name_wins_over_the_template_and_empty_means_none() {
+        assert_eq!(session_name(" Fix ", Some("Vorlage")).as_deref(), Some("Fix"));
+        assert_eq!(session_name("", Some("Vorlage")).as_deref(), Some("Vorlage"));
+        assert_eq!(session_name("  ", None), None);
+    }
 
     #[test]
     fn a_background_start_in_an_untrusted_folder_asks_first() {
