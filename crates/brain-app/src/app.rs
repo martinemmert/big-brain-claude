@@ -3109,6 +3109,9 @@ impl Brain {
     /// ⌘-click on a link in the terminal: URLs open in the browser, file paths in the reader
     /// beside the terminal (relative ones from the session's folder).
     fn open_link(&mut self, key: &SessionKey, link: &str) -> Task<Message> {
+        // `(https://…)` and "see https://….": the detection takes the closing bracket and the
+        // full stop along.
+        let link = crate::browser::trim_link(link);
         if link.contains("://") || link.starts_with("mailto:") {
             // Only web and mail links: the output may come from anywhere (a fetched page, a file),
             // and `open` would hand other schemes (file://, ssh:, app schemes) to whatever app.

@@ -132,7 +132,47 @@ pub fn session_args(account: &str) -> Vec<String> {
 pub fn open_url(url: &str, account: Option<&str>) -> bool {
     let profile = account.and_then(|a| profile_for(&crate::config::path(), a, &chrome_profiles()));
     let Some(args) = open_args(url, profile.as_deref()) else { return false };
-    std::process::Command::new("open").args(args).spawn().is_ok()
+    if profile.is_none() {
+        return std::process::Command::new("open").args(args).spawn().is_ok();
+    }
+    // The new instance hands the URL to the running Chrome and ends without bringing it forward,
+    // so the tab opened behind Brain: once it handed over, Chrome is brought to the front.
+    std::thread::spawn(move || {
+        let handed = std::process::Command::new("open").args(args).status().is_ok_and(|s| s.success());
+        if handed {
+            let _ = std::process::Command::new("open").args(["-a", CHROME_APP]).status();
+        }
+    });
+    true
+}
+
+/// A link as the terminal's link detection found it, without what only stands around it: a
+/// closing bracket it doesn't open itself (`(see https://x.y/a)` → `https://x.y/a`, but
+/// `…/wiki/Foo_(bar)` keeps its own), and a sentence's last punctuation or quote.
+pub fn trim_link(link: &str) -> &str {
+    let mut end = link.len();
+    loop {
+        let Some(last) = link[..end].chars().next_back() else { break };
+        let open = match last {
+            ')' => Some('('),
+            ']' => Some('['),
+            '}' => Some('{'),
+            '>' => Some('<'),
+            _ => None,
+        };
+        let cut = match open {
+            Some(open) => {
+                let part = &link[..end];
+                part.matches(last).count() > part.matches(open).count()
+            }
+            None => matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '"' | '`' | '*'),
+        };
+        if !cut {
+            break;
+        }
+        end -= last.len_utf8();
+    }
+    &link[..end]
 }
 
 #[cfg(test)]
@@ -143,6 +183,18 @@ mod tests {
         [("Profile 6", "fastbill.com"), ("Profile 9", "Claude Second"), ("Profile 10", "Claude Third")]
             .map(|(dir, name)| ChromeProfile { dir: dir.into(), name: name.into() })
             .into()
+    }
+
+    #[test]
+    fn a_link_loses_the_bracket_and_punctuation_around_it_but_keeps_its_own() {
+        assert_eq!(trim_link("https://claude.ai/artifact/abc)"), "https://claude.ai/artifact/abc");
+        assert_eq!(trim_link("https://claude.ai/artifact/abc)."), "https://claude.ai/artifact/abc");
+        assert_eq!(trim_link("https://example.com/x,"), "https://example.com/x");
+        assert_eq!(trim_link("https://en.wikipedia.org/wiki/Foo_(bar)"), "https://en.wikipedia.org/wiki/Foo_(bar)");
+        assert_eq!(trim_link("https://en.wikipedia.org/wiki/Foo_(bar))"), "https://en.wikipedia.org/wiki/Foo_(bar)");
+        assert_eq!(trim_link("https://example.com/a?b=1"), "https://example.com/a?b=1");
+        assert_eq!(trim_link("src/main.rs:"), "src/main.rs");
+        assert_eq!(trim_link("https://x.y/`"), "https://x.y/");
     }
 
     #[test]
