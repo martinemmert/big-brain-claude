@@ -24,8 +24,7 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
 
 - **Sessions run in Brain.** `⌘N` starts a session as a Claude Code background session
   (`claude --bg`) and opens it in Brain's own terminal: Claude Code exactly as in your terminal,
-  in your iTerm2 font and colours (`"chat_font"` and `"chat_font_size"` in
-  `~/.claude-brain/config.json` pick another font), at a readable width. It keeps running when Brain quits, and
+  in your iTerm2 font and colours (Settings → Terminal picks another font), at a readable width. It keeps running when Brain quits, and
   `claude attach <id>` opens it from any terminal. *File → Move from iTerm into Brain* (`⌥⌘O`)
   moves a session from an iTerm tab into Brain without losing its conversation (`/exit` there,
   `claude --bg --resume` here).
@@ -40,12 +39,12 @@ A short guide with every feature, in German: [docs/anleitung.md](docs/anleitung.
   you're not looking at marks it. `⌘D` keeps one terminal on screen beside
   the next session you pick; `⌘⇧A` shows every session that runs in Brain as a live preview.
 - **Links in the account's Chrome profile.** Every link Brain opens for a session (⌘-click in the terminal,
-  artifacts) opens in the Chrome profile of its account. Pick it under Brain → "Chrome profile per account"
+  artifacts) opens in the Chrome profile of its account. Pick it under Settings → Accounts
   (`chrome_profiles` in `~/.claude-brain/config.json`); a profile named like the account ("Claude Second" for
   `second`) is suggested while nothing is picked. Without a profile or Chrome: the default browser. Brain tells new sessions at start which Chrome
   profile their account uses.
-- **Quick terminal.** A key you pick, e.g. `"quick_terminal": "cmd+shift+b"` in
-  `~/.claude-brain/config.json`, brings Brain forward from any app with the longest-waiting
+- **Quick terminal.** A key you pick under Settings → General (`quick_terminal` in
+  `~/.claude-brain/config.json`, e.g. `"cmd+shift+b"`) brings Brain forward from any app with the longest-waiting
   session's terminal; again hides Brain. Off until set: a global key takes the combination
   everywhere, also from macOS (⌃⌥Space switches the input source).
 - **Command palette.** `⌘K`: every action, `/compact`, `/context`, `/model` and other slash
@@ -405,7 +404,7 @@ start and end), and none of the menu's shortcuts uses them.
 | `⌘+` `⌘-` `⌘0` | larger / smaller / actual size of the whole window (the level is remembered) |
 | `⌘`-click | open a path (Markdown in YAMV, else the reader) or URL from the terminal output |
 | `⌘K` | command palette: everything, also what has no key (open/fold sections, sync accounts …) |
-| `⌘,` | settings: `~/.claude-brain/config.json` in the text editor |
+| `⌘,` | settings: quick-terminal key, notifications, font, account colours and Chrome profiles, templates |
 | `⌘?` | every key |
 | `esc` | close a dialog or the find bar; clear the search |
 | your `quick_terminal` key | from any app: Brain with the waiting session's terminal (again: hide) |

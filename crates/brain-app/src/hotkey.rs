@@ -48,6 +48,7 @@ extern "C" {
         options: u32,
         out_ref: *mut EventHotKeyRef,
     ) -> OSStatus;
+    fn UnregisterEventHotKey(hot_key: EventHotKeyRef) -> OSStatus;
 }
 
 const fn four_cc(code: &[u8; 4]) -> OSType {
@@ -98,20 +99,87 @@ pub fn parse(spec: &str) -> Option<(u32, u32)> {
     (modifiers != 0).then_some((key?, modifiers))
 }
 
-/// Registers the hotkey once (on the main thread, at start). Returns false when the text names
-/// no valid key or macOS refused it (another app owns the combination).
-pub fn register(spec: &str) -> bool {
+/// The registered hotkey (an `EventHotKeyRef`, as an address), 0 when none.
+static CURRENT: Mutex<usize> = Mutex::new(0);
+/// The press handler is installed once per run.
+static HANDLER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Sets the hotkey (on the main thread): the previous one is released first; `None` leaves
+/// none. Returns false when the text names no valid key or macOS refused it (another app owns
+/// the combination); the previous key is gone then too.
+pub fn set(spec: Option<&str>) -> bool {
+    let Ok(mut current) = CURRENT.lock() else { return false };
+    if *current != 0 {
+        // SAFETY: the address is the ref RegisterEventHotKey gave, and nothing released it since.
+        unsafe { UnregisterEventHotKey(*current as EventHotKeyRef) };
+        *current = 0;
+    }
+    let Some(spec) = spec else { return true };
     let Some((key, modifiers)) = parse(spec) else { return false };
-    let spec = EventTypeSpec { event_class: K_EVENT_CLASS_KEYBOARD, event_kind: K_EVENT_HOT_KEY_PRESSED };
+    let installed = *HANDLER.get_or_init(|| {
+        let types = EventTypeSpec { event_class: K_EVENT_CLASS_KEYBOARD, event_kind: K_EVENT_HOT_KEY_PRESSED };
+        // SAFETY: a plain Carbon call with valid pointers; the handler is a static function.
+        unsafe { InstallEventHandler(GetApplicationEventTarget(), on_hot_key, 1, &types, std::ptr::null_mut(), std::ptr::null_mut()) == 0 }
+    });
+    if !installed {
+        return false;
+    }
     let mut hot_key: EventHotKeyRef = std::ptr::null_mut();
-    // SAFETY: plain Carbon calls with valid pointers; the handler is a static function and the
-    // hotkey stays registered for the life of the process.
-    unsafe {
-        let target = GetApplicationEventTarget();
-        if InstallEventHandler(target, on_hot_key, 1, &spec, std::ptr::null_mut(), std::ptr::null_mut()) != 0 {
-            return false;
+    // SAFETY: a plain Carbon call with valid pointers; the ref is kept until the next `set`.
+    let ok = unsafe { RegisterEventHotKey(key, modifiers, EventHotKeyID { signature: four_cc(b"BRNq"), id: 1 }, GetApplicationEventTarget(), 0, &mut hot_key) == 0 };
+    if ok {
+        *current = hot_key as usize;
+    }
+    ok
+}
+
+/// A key press as a spec (`"cmd+shift+b"`), when it has a modifier and a key the hotkey can
+/// take (a letter or space).
+pub fn spec_of(key: &iced::keyboard::Key, modifiers: iced::keyboard::Modifiers) -> Option<String> {
+    use iced::keyboard::{key::Named, Key};
+    let name = match key {
+        Key::Named(Named::Space) => "space".to_string(),
+        Key::Character(c) => c.to_lowercase(),
+        _ => return None,
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for (held, part) in [(modifiers.control(), "ctrl"), (modifiers.alt(), "option"), (modifiers.shift(), "shift"), (modifiers.logo(), "cmd")] {
+        if held {
+            parts.push(part);
         }
-        RegisterEventHotKey(key, modifiers, EventHotKeyID { signature: four_cc(b"BRNq"), id: 1 }, target, 0, &mut hot_key) == 0
+    }
+    parts.push(&name);
+    let spec = parts.join("+");
+    parse(&spec).map(|_| spec)
+}
+
+/// The spec in Mac symbols: `"cmd+shift+b"` → `⇧⌘B`.
+pub fn symbols(spec: &str) -> String {
+    let Some((key, modifiers)) = parse(spec) else { return spec.to_string() };
+    let mut out = String::new();
+    for (bit, symbol) in [(CONTROL, "⌃"), (OPTION, "⌥"), (SHIFT, "⇧"), (CMD, "⌘")] {
+        if modifiers & bit != 0 {
+            out.push_str(symbol);
+        }
+    }
+    match LETTERS.iter().find(|(_, code)| *code == key) {
+        Some((letter, _)) => out.push_str(&letter.to_uppercase()),
+        None => out.push_str(crate::i18n::t("Leertaste", "Space")),
+    }
+    out
+}
+
+/// What a combination collides with on the Mac, when it is a known one.
+pub fn warning(spec: &str) -> Option<&'static str> {
+    let (key, modifiers) = parse(spec)?;
+    if key == SPACE && modifiers == CONTROL | OPTION {
+        Some(crate::i18n::t("⌃⌥Leertaste wechselt in macOS die Eingabequelle.", "⌃⌥Space switches the input source in macOS."))
+    } else if key == SPACE && modifiers == CMD {
+        Some(crate::i18n::t("⌘Leertaste öffnet Spotlight.", "⌘Space opens Spotlight."))
+    } else if modifiers == CMD {
+        Some(crate::i18n::t("⌘ mit nur einem Buchstaben ist in fast jeder App belegt – nimm ⇧ oder ⌥ dazu.", "⌘ with a single letter is taken in almost every app – add ⇧ or ⌥."))
+    } else {
+        None
     }
 }
 
@@ -139,5 +207,14 @@ mod tests {
         assert_eq!(parse("Cmd + Shift + B"), Some((0x0b, CMD | SHIFT)));
         assert_eq!(parse("space"), None, "a bare key would swallow typing everywhere");
         assert_eq!(parse("ctrl+ä"), None);
+    }
+
+    #[test]
+    fn a_spec_reads_in_mac_symbols_and_known_collisions_are_named() {
+        assert_eq!(symbols("cmd+shift+b"), "⇧⌘B");
+        assert!(symbols("ctrl+option+space").starts_with("⌃⌥"));
+        assert!(warning("ctrl+option+space").is_some());
+        assert!(warning("cmd+b").is_some());
+        assert!(warning("cmd+shift+b").is_none());
     }
 }

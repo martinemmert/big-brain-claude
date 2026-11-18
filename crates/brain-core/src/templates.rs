@@ -101,6 +101,40 @@ pub fn load_all(dir: &Path) -> Vec<Template> {
     out
 }
 
+/// The file text of a template: the header (empty fields left out) and the prompt.
+pub fn render(template: &Template) -> String {
+    let clean = |s: &str| s.replace(['\n', '\r'], " ").trim().to_string();
+    let mut header = format!("---\nname: {}\n", clean(&template.name));
+    for (key, value) in [("folder", &template.folder), ("account", &template.account), ("model", &template.model)] {
+        if let Some(value) = value.as_deref().map(clean).filter(|v| !v.is_empty()) {
+            header.push_str(&format!("{key}: {value}\n"));
+        }
+    }
+    format!("{header}---\n{}\n", template.prompt.trim())
+}
+
+/// A file name for a new template from its name (`Review MR` → `review-mr.md`), not taken yet.
+pub fn new_path(dir: &Path, name: &str) -> PathBuf {
+    let slug: String = name.to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+    let slug = slug.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");
+    let slug = if slug.is_empty() { "template".to_string() } else { slug };
+    let mut path = dir.join(format!("{slug}.md"));
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("{slug}-{n}.md"));
+        n += 1;
+    }
+    path
+}
+
+/// Writes the template to its path (a new one gets [`new_path`]) and returns where.
+pub fn save(dir: &Path, template: &Template) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let path = if template.path.as_os_str().is_empty() { new_path(dir, &template.name) } else { template.path.clone() };
+    std::fs::write(&path, render(template))?;
+    Ok(path)
+}
+
 /// Writes a new template skeleton and returns its path (`new-template.md`, `-2`, …).
 pub fn create(dir: &Path, name: &str, prompt: &str) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
@@ -130,6 +164,25 @@ mod tests {
             t.fill(&[("branch".into(), "fix-42".into()), ("ticket".into(), "FUX-7".into())]),
             "Review fix-42 for FUX-7. Then fix-42 again. Keep JSON like {\"a\": 1} and {not a name}."
         );
+    }
+
+    #[test]
+    fn a_saved_template_reads_back_the_same_and_gets_a_file_named_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let template = Template {
+            path: PathBuf::new(),
+            name: "Review MR".into(),
+            folder: Some("~/Work/app".into()),
+            account: None,
+            model: Some("haiku".into()),
+            prompt: "Review {branch}.\n\nThen list blockers.".into(),
+        };
+        let path = save(dir.path(), &template).unwrap();
+        assert_eq!(path, dir.path().join("review-mr.md"));
+        assert_eq!(parse(&path, &std::fs::read_to_string(&path).unwrap()), Template { path: path.clone(), ..template.clone() });
+        assert_eq!(save(dir.path(), &template).unwrap(), dir.path().join("review-mr-2.md"), "a second new one doesn't overwrite the first");
+        let changed = Template { path: path.clone(), prompt: "Anders.".into(), ..template };
+        assert_eq!(save(dir.path(), &changed).unwrap(), path, "an existing one is written in place");
     }
 
     #[test]

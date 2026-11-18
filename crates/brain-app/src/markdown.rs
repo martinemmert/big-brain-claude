@@ -24,7 +24,7 @@ fn cells(font: &ChatFont, chars: f32) -> Length {
 }
 
 pub fn conversation<'a, M: 'a>(messages: &[Message]) -> Vec<Element<'a, M>> {
-    let font = chat_font::get();
+    let font = &chat_font::get();
     let mut out = Vec::new();
     let mut i = 0;
     while i < messages.len() {

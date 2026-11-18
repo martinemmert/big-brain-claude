@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 const CHROME_APP: &str = "Google Chrome";
 
@@ -74,23 +74,7 @@ pub fn profile_for(config: &Path, account: &str, profiles: &[ChromeProfile]) -> 
 /// Sets `chrome_profiles.<account>` and leaves every other key of the file as it is. `None`
 /// stores `""` (default browser).
 pub fn set_profile(config: &Path, account: &str, dir: Option<&str>) -> std::io::Result<()> {
-    let invalid = |e: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string());
-    let mut root = match std::fs::read(config) {
-        Ok(bytes) => serde_json::from_slice::<Value>(&bytes).map_err(|e| invalid(&e.to_string()))?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Object(Map::new()),
-        Err(e) => return Err(e),
-    };
-    let object = root.as_object_mut().ok_or_else(|| invalid("config.json is not an object"))?;
-    let table = object.entry("chrome_profiles").or_insert_with(|| Value::Object(Map::new()));
-    if !table.is_object() {
-        *table = Value::Object(Map::new());
-    }
-    table[account] = Value::String(dir.unwrap_or_default().to_string());
-    if let Some(parent) = config.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let text = serde_json::to_string_pretty(&root).map_err(|e| invalid(&e.to_string()))?;
-    std::fs::write(config, text + "\n")
+    crate::config::set_in(config, "chrome_profiles", account, Value::String(dir.unwrap_or_default().to_string()))
 }
 
 /// The arguments for `open`, or none when the URL isn't http(s). Without a profile: the default

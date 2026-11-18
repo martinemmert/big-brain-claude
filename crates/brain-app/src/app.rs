@@ -31,6 +31,8 @@ mod menus;
 pub(crate) mod status_popup;
 mod quick_look;
 mod review;
+pub(crate) mod settings;
+pub use settings::{SettingsMsg, TEMPLATE_NAME};
 pub use quick_look::{folders, sheet_files_width, sheet_size, SHEET_RING, tree_lines, DiffRow, Preview, TreeLine, LIST_TOP};
 pub use review::{place as place_comments, ReviewEditor, REVIEW_EDITOR};
 
@@ -110,6 +112,8 @@ pub enum Mode {
     WorktreeAsk,
     /// A short question before something that can't be taken back.
     Confirm,
+    /// The settings (⌘,).
+    Settings,
 }
 
 /// What the confirm dialog asks about; ⏎ does it.
@@ -555,6 +559,8 @@ pub enum Message {
     WorktreeSend,
     WorktreeJustDo,
     WorktreeAnswered(WorktreeAsk, Option<String>),
+    /// What the settings sheet asks for.
+    Settings(SettingsMsg),
     /// The new session of "Clear …" started (or not): the old one (key) ends.
     Cleared(SessionKey, String, String, Option<String>, Result<String, String>),
     MoveProjectQuery(String),
@@ -624,6 +630,7 @@ impl Message {
                 | Message::ReviewHoverRow(_)
                 | Message::ReviewHoverFile(_)
                 | Message::ReviewEdit(_)
+                | Message::Settings(_)
         )
     }
 }
@@ -819,8 +826,8 @@ pub struct Brain {
     /// The menu bar of the app, and what its items stand for.
     appmenu: Option<crate::appmenu::AppMenu>,
     menu_commands: HashMap<String, Message>,
-    /// Chrome's profiles for the Chrome-profile menu, read again after half a minute.
-    chrome_profiles: (Option<Instant>, Vec<crate::browser::ChromeProfile>),
+    /// Chrome's profiles, read when the settings open.
+    pub chrome_profiles: Vec<crate::browser::ChromeProfile>,
     /// ⌘O: the session search lists the ended sessions too.
     resume_search: bool,
     /// `None` shows every account.
@@ -981,6 +988,9 @@ pub struct Brain {
     /// The question dialog for such a session, and later its answer.
     pub worktree_ask: Option<WorktreeAsk>,
     pub worktrees: worktrees::WorktreeDialog,
+    pub settings: settings::SettingsSheet,
+    /// The colour each account picked in the settings (`account_colors`).
+    account_colors: HashMap<String, usize>,
     /// An iTerm session being moved into Brain: its `/exit` was sent; once the process ended it
     /// continues in the background (`claude --bg --resume`).
     takeover: Option<SessionKey>,
@@ -1088,7 +1098,7 @@ impl Brain {
             target_epoch: 0,
             appmenu: crate::appmenu::AppMenu::new(),
             menu_commands: HashMap::new(),
-            chrome_profiles: (None, Vec::new()),
+            chrome_profiles: Vec::new(),
             resume_search: false,
             filter: None,
             selected: None,
@@ -1176,6 +1186,8 @@ impl Brain {
             pending_worktree_check: None,
             worktree_ask: None,
             worktrees: worktrees::WorktreeDialog::default(),
+            settings: settings::SettingsSheet::default(),
+            account_colors: HashMap::new(),
             takeover: None,
             synced_selection: None,
             dragging_sidebar: false,
@@ -1216,8 +1228,9 @@ impl Brain {
         brain.reviews = saved.into_iter().map(|r| (r.key(), r)).collect();
         brain.refresh_later();
         brain.selected = brain.nav_keys().first().cloned();
+        brain.account_colors = crate::config::account_colors();
         if let Some(spec) = crate::config::quick_terminal().filter(|_| !demo) {
-            if !crate::hotkey::register(&spec) {
+            if !crate::hotkey::set(Some(&spec)) {
                 brain.set_status(tr!("Die Tastenkombination „{spec}“ ist vergeben oder ungültig.", "The hotkey “{spec}” is taken or invalid."));
             }
         }
@@ -2033,6 +2046,7 @@ impl Brain {
             Message::WorktreeAskRow(index) => self.ask_worktree_session(index),
             Message::WorktreeDone(result) => self.worktree_done(result),
             Message::WorktreeChecked(key, intent, worktree) => self.worktree_checked(key, intent, worktree),
+            Message::Settings(msg) => self.update_settings(msg),
             Message::WorktreeSend => self.send_worktree_question(),
             Message::WorktreeJustDo => self.do_without_asking(),
             Message::WorktreeAnswered(ask, answer) => self.worktree_answered(ask, answer),
@@ -2192,6 +2206,9 @@ impl Brain {
             None => Vec::new(),
         };
         self.asking = Some(asking);
+        // Settings → General → Notifications; the file is read only when there is something to say.
+        let notify = !(newly_asking.is_empty() && refreshed.is_empty()) && crate::config::notifications();
+        let (newly_asking, refreshed) = if notify { (newly_asking, refreshed) } else { (Vec::new(), Vec::new()) };
         for key in newly_asking {
             if self.prefs.snoozed_until(&key, now).is_some() || self.prefs.is_muted(&key) || self.is_quiet(&key) {
                 continue;
@@ -2590,7 +2607,7 @@ impl Brain {
             env.insert("TERM".to_string(), "xterm-256color".to_string());
             let font = crate::chat_font::get();
             let settings = iced_term::settings::Settings {
-                font: iced_term::settings::FontSettings { size: font.size, font_type: font.regular, scale_factor: 1.3 },
+                font: iced_term::settings::FontSettings { size: font.size, font_type: font.regular, scale_factor: settings::SHELL_LINE },
                 theme: iced_term::settings::ThemeSettings::new(Box::new(crate::style::terminal_palette())),
                 backend: iced_term::settings::BackendSettings { program: shell, args: vec!["-l".into()], env, working_directory: Some(cwd.into()) },
             };
@@ -3167,7 +3184,7 @@ impl Brain {
             let font = crate::chat_font::get();
             let settings = iced_term::settings::Settings {
                 // A little more line spacing than the terminal default reads better at length.
-                font: iced_term::settings::FontSettings { size: font.size, font_type: font.regular, scale_factor: 1.4 },
+                font: iced_term::settings::FontSettings { size: font.size, font_type: font.regular, scale_factor: settings::SESSION_LINE },
                 theme: iced_term::settings::ThemeSettings::new(Box::new(crate::style::terminal_palette())),
                 backend: iced_term::settings::BackendSettings {
                     program: program.into(),
@@ -3534,10 +3551,6 @@ impl Brain {
         self.prefs.save();
     }
 
-    pub fn account_index(&self, account: &str) -> usize {
-        self.model.accounts.iter().position(|a| a.id == account).unwrap_or(0)
-    }
-
     /// How large the window is drawn: 1.0 is 100 %.
     pub fn zoom(&self) -> f32 {
         self.prefs.zoom.unwrap_or(1.0).clamp(ZOOM_STEPS[0], ZOOM_STEPS[ZOOM_STEPS.len() - 1])
@@ -3588,6 +3601,24 @@ impl Brain {
             _ => None,
         };
         let cmd = modifiers.command();
+        // The settings sheet: the key field takes the next combination while it listens; ⌘S saves
+        // the template being edited, esc steps back (out of the editor, then out of the sheet).
+        if self.mode == Mode::Settings {
+            if self.record_hotkey(&key, modifiers) {
+                return Task::none();
+            }
+            if cmd && character.as_deref() == Some("s") && self.settings.draft.is_some() {
+                return self.update_settings(SettingsMsg::SaveTemplate);
+            }
+            if named == Some(Named::Escape) {
+                let msg = match self.settings.draft.as_ref().map(|d| d.confirm_delete) {
+                    Some(true) => SettingsMsg::KeepTemplate,
+                    Some(false) => SettingsMsg::CancelTemplate,
+                    None => return self.escape(),
+                };
+                return self.update_settings(msg);
+            }
+        }
         // The target field in the title bar has the keys while it is open: esc closes it and the
         // keyboard goes back to the terminal; the rest is the field's.
         if self.target_editing || self.target_closing {
@@ -3701,6 +3732,10 @@ impl Brain {
             if cmd && named == Some(Named::Enter) {
                 return self.submit_fresh();
             }
+            return Task::none();
+        }
+        // The settings' keys were handled above; letters belong to its fields, never to Brain.
+        if self.mode == Mode::Settings {
             return Task::none();
         }
         if self.mode == Mode::Composer {
@@ -3868,7 +3903,7 @@ impl Brain {
                 self.mode = Mode::Normal;
                 unfocus()
             }
-            Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden | Mode::Adopt | Mode::MoveProject | Mode::Fresh | Mode::Worktrees | Mode::WorktreeAsk | Mode::Artifacts => {
+            Mode::Rename | Mode::NewSession | Mode::Cleanup | Mode::Later | Mode::Palette | Mode::Composer | Mode::Pairing | Mode::AccountSetup | Mode::Relaunch | Mode::Sync | Mode::Keys | Mode::Garden | Mode::Adopt | Mode::MoveProject | Mode::Fresh | Mode::Worktrees | Mode::WorktreeAsk | Mode::Artifacts | Mode::Settings => {
                 self.mode = Mode::Normal;
                 unfocus()
             }

@@ -23,6 +23,7 @@ use crate::tr;
 use crate::tree::HeadKey;
 
 mod review;
+mod settings;
 
 /// Room for the window's traffic lights at the left of the title bar.
 const TRAFFIC_LIGHTS: f32 = 78.0;
@@ -47,6 +48,7 @@ pub fn view(brain: &Brain) -> Element<'_, Message> {
         Mode::Worktrees => worktrees(brain),
         Mode::Artifacts => artifact_dialog(brain),
         Mode::WorktreeAsk => worktree_ask(brain),
+        Mode::Settings => settings::view(brain),
         Mode::Relaunch => relaunch(brain),
         Mode::NewSession => new_session(brain),
         _ => detail(brain),

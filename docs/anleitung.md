@@ -226,11 +226,12 @@ hat:
 - **Benachrichtigungen:** Nur wenn eine Session dich direkt fragt (eine Frage, eine Freigabe oder
   ein `brain report --waiting`). Eine fertige Runde („du bist dran“)
   steht nur in der Liste. Auf dem iPhone gilt dasselbe. Erinnerungen gibt es nicht. Direkt in der Mitteilung kannst du
-  antworten (nur am entsperrten Mac), öffnen oder 15 Minuten pausieren.
+  antworten (nur am entsperrten Mac), öffnen oder 15 Minuten pausieren. Abschalten lassen sich
+  die Mitteilungen unter Einstellungen → Allgemein.
 - **Quick Terminal:** Eine Taste deiner Wahl holt Brain aus jeder App mit dem Terminal der
-  wartenden Session nach vorn; nochmal drücken blendet Brain aus. Ist aus, bis du sie in der
-  Config setzt (`"quick_terminal": "cmd+shift+b"`). Eine globale Taste gilt überall, auch
-  gegenüber macOS: ⌃⌥Space etwa wechselt dort die Eingabequelle.
+  wartenden Session nach vorn; nochmal drücken blendet Brain aus. Ist aus, bis du sie unter
+  Einstellungen → Allgemein aufnimmst. Eine globale Taste gilt überall, auch gegenüber macOS:
+  ⌃⌥Space etwa wechselt dort die Eingabequelle; das Blatt warnt bei solchen Kombinationen.
 ## Ordnung halten
 
 | Taste | Wirkung |
@@ -350,18 +351,31 @@ Tempo der letzten 24 Stunden (Brain merkt sich dafür alle zehn Minuten den Stan
 
 ## Einstellungen
 
-Alles optional, in `~/.claude-brain/config.json`:
+`⌘,` öffnet die Einstellungen als Blatt im Fenster. Jede Änderung gilt sofort und steht danach in
+`~/.claude-brain/config.json`:
+
+- **Allgemein:** das Kürzel des Quick Terminals (ins Feld klicken, Kombination drücken; `⌫` schaltet
+  aus) und ob Brain eine Mitteilung schickt, wenn eine Session dich braucht.
+- **Terminal:** Schrift und Größe für Terminals und Verlauf, mit Vorschau; offene Terminals stellen
+  sofort um. Ohne Wahl gilt die Schrift deines iTerm-Profils.
+- **Konten:** je Konto eine der vier Farben und das Chrome-Profil.
+- **Vorlagen:** anlegen, bearbeiten, löschen (in den Papierkorb). Sie liegen als Markdown-Dateien in
+  `~/.claude-brain/templates/` und werden erst mit „Sichern“ (`⌘S`) geschrieben.
+
+Die Schlüssel der Datei, für alles, was das Blatt nicht zeigt („config.json öffnen“):
 
 | Schlüssel | Bedeutung |
 |---|---|
 | `language` | `"de"` oder `"en"` |
-| `chat_font`, `chat_font_size` | Schrift des Gesprächs, sonst die von iTerm |
-| `quick_terminal` | Tastenkürzel des Quick Terminals, z. B. `"cmd+shift+b"`; ohne Eintrag aus |
-| `chrome_profiles` | Chrome-Profil je Konto, z. B. `{"second": "Profile 9"}`; `""` = Standardbrowser. Setzt man am besten über Brain → „Chrome-Profil je Konto“ |
+| `chat_font`, `chat_font_size` | Schrift von Terminal und Verlauf, sonst die von iTerm |
+| `quick_terminal` | Tastenkürzel des Quick Terminals, z. B. `"cmd+shift+b"`; ohne Eintrag oder `"off"` aus |
+| `notifications` | `false` schaltet die Mitteilungen ab |
+| `account_colors` | Farbe je Konto, 0–3, z. B. `{"second": 2}` |
+| `chrome_profiles` | Chrome-Profil je Konto, z. B. `{"second": "Profile 9"}`; `""` = Standardbrowser |
 
 **Links im Chrome-Profil des Kontos.** Jeder Link, den Brain für eine Session öffnet (⌘-Klick im Terminal,
 Artefakte), geht im Chrome-Profil ihres Kontos auf, damit z. B. ein Artefakt im richtigen Claude-Login
-erscheint. Gewählt wird unter Brain → „Chrome-Profil je Konto“; heißt ein Profil wie das Konto („Claude
+erscheint. Gewählt wird unter Einstellungen → Konten; heißt ein Profil wie das Konto („Claude
 Second“ für `second`) und ist es das einzige, gilt es als „Vorschlag“, solange nichts gewählt ist. Ohne
 Profil oder ohne Chrome öffnet der Standardbrowser. Brain sagt neuen Sessions beim Start, welches
 Chrome-Profil ihr Konto nutzt.
@@ -407,7 +421,7 @@ Chrome-Profil ihr Konto nutzt.
 | `⌘+` `⌘-` `⌘0` | Fenster größer / kleiner / Originalgröße (die Stufe bleibt gemerkt) |
 | `⌘`-Klick | Pfad oder Link aus der Ausgabe öffnen |
 | `⌘K` | Befehlspalette: alles, auch was keine Taste hat (Abschnitte aufklappen, Konten abgleichen …) |
-| `⌘,` | Einstellungen: `~/.claude-brain/config.json` im Texteditor |
+| `⌘,` | Einstellungen: Quick-Terminal-Kürzel, Mitteilungen, Schrift, Kontofarben und Chrome-Profile, Vorlagen |
 | `⌘?` | alle Tasten |
 | `esc` | Dialog oder Suchleiste schließen, Suche leeren |
 | deine `quick_terminal`-Taste | Quick Terminal, aus jeder App |
