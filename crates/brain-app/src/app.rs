@@ -3832,7 +3832,7 @@ impl Brain {
                 // The field lost its focus (a click elsewhere): give it back instead of acting.
                 return operation::focus(RENAME);
             }
-            Mode::Search if !matches!(named, Some(Named::ArrowUp | Named::ArrowDown | Named::Enter)) => {
+            Mode::Search if !matches!(named, Some(Named::ArrowUp | Named::ArrowDown | Named::Enter)) && !is_modifier(named) => {
                 // Not captured, so the field isn't focused any more: keys act on the list again.
                 self.mode = Mode::Normal;
             }
@@ -5072,6 +5072,9 @@ impl Brain {
         match named {
             Some(Named::ArrowDown) => self.new_session.pick = (self.new_session.pick + 1).min(count.saturating_sub(1)),
             Some(Named::ArrowUp) => self.new_session.pick = self.new_session.pick.saturating_sub(1),
+            // ⇧ alone comes before a capital letter, and no field takes it: it must not move the
+            // focus (a click into the name field isn't known until something is typed there).
+            _ if is_modifier(named) => {}
             // Every other key goes to the field (it lost its focus to a click).
             _ => return operation::focus(self.new_session_field()),
         }
@@ -5490,6 +5493,12 @@ fn app_is_active() -> bool {
 /// when both are empty.
 fn session_name(typed: &str, template: Option<&str>) -> Option<String> {
     [typed, template.unwrap_or_default()].into_iter().map(str::trim).find(|n| !n.is_empty()).map(str::to_string)
+}
+
+/// A modifier pressed alone (⇧ before a capital letter, ⌘ before a shortcut): no text field
+/// takes it, and it means nothing by itself.
+fn is_modifier(named: Option<Named>) -> bool {
+    matches!(named, Some(Named::Shift | Named::Control | Named::Alt | Named::Super | Named::Meta | Named::CapsLock | Named::Fn | Named::Hyper))
 }
 
 fn escape_path(path: &str) -> String {
