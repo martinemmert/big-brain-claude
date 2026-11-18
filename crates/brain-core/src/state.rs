@@ -270,8 +270,14 @@ impl Session {
     /// through its terminal in Brain rather than a terminal app.
     pub fn waits_for_input(&self) -> bool {
         match &self.agent {
-            // "Needs you" may be a dialog, which typed text would answer.
-            Some(_) => matches!(self.phase(), Phase::YourTurn | Phase::Background | Phase::Asleep),
+            Some(_) => match self.phase() {
+                Phase::YourTurn | Phase::Background | Phase::Asleep => true,
+                // "Needs you" may be a dialog, which typed text would answer; but a question
+                // Claude reported once its turn ended (`brain report --waiting`, Claude Code then
+                // lists it as blocked) leaves the prompt box open: the answer is typed.
+                Phase::NeedsYou => self.alive && matches!(self.current_signal(), Some((Signal::Idle, _))),
+                _ => false,
+            },
             None => self.accepts_input(),
         }
     }
@@ -896,6 +902,11 @@ mod tests {
         // "blocked" says nothing by itself: the status file decides, here it is idle.
         board.set_agents("second", &[agent("blocked")]);
         assert!(board.get(&key()).unwrap().waits_for_input());
+        // A question reported after the turn ended: it needs the user, and the answer is typed.
+        board.apply_event(&ev(12, Source::Report, Kind::Waiting, Some("Soll ich rc.53 anheben?")));
+        let session = board.get(&key()).unwrap();
+        assert_eq!(session.phase(), Phase::NeedsYou);
+        assert!(session.waits_for_input(), "no dialog is open: the prompt box takes the answer");
         board.apply_session_file("second", &file("waiting", 15), true);
         assert!(!board.get(&key()).unwrap().waits_for_input(), "a dialog is open: typed text would answer it");
         board.apply_session_file("second", &file("busy", 20), true);
